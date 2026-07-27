@@ -193,11 +193,20 @@ fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
 
 pub(super) fn reconcile_fts(connection: &Connection) -> Result<bool> {
     const INDEXES: &[&str] = &["passage_fts_word", "passage_fts_trigram"];
+    const VERSION: &str = "1";
+    let existing_version = connection
+        .query_row(
+            "SELECT version FROM index_state WHERE name = 'PASSAGE_FTS'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let force_rebuild = existing_version.as_deref() != Some(VERSION);
     let mut failed = Vec::new();
 
     for index in INDEXES {
         let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 1)");
-        if connection.execute(&integrity, []).is_err() {
+        if force_rebuild || connection.execute(&integrity, []).is_err() {
             let rebuild = format!("INSERT INTO {index}({index}) VALUES('rebuild')");
             if connection.execute(&rebuild, []).is_err() {
                 failed.push(*index);
@@ -213,16 +222,21 @@ pub(super) fn reconcile_fts(connection: &Connection) -> Result<bool> {
             Some(format!("could not rebuild {}", failed.join(", "))),
         )
     };
+    let stored_version = if failed.is_empty() {
+        VERSION
+    } else {
+        existing_version.as_deref().unwrap_or(VERSION)
+    };
     connection.execute(
         "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
-         VALUES('PASSAGE_FTS', '1', ?1, NULL, 0, ?2)
+         VALUES('PASSAGE_FTS', ?1, ?2, NULL, 0, ?3)
          ON CONFLICT(name) DO UPDATE SET
             version = excluded.version,
             status = excluded.status,
             cursor = NULL,
             updated_at = excluded.updated_at,
             error = excluded.error",
-        params![status, error],
+        params![stored_version, status, error],
     )?;
     Ok(failed.is_empty())
 }

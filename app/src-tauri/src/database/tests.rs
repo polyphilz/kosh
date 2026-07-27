@@ -691,7 +691,7 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
             'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10
          );
          UPDATE index_state
-         SET status = 'RUNNING', updated_at = 10
+         SET version = 'legacy', status = 'RUNNING', updated_at = 10
          WHERE name = 'PASSAGE_FTS';
          COMMIT;",
     )
@@ -700,14 +700,14 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
 
     let database = Database::initialize(pair.paths.clone()).expect("authored data opens");
     let read_only = database.open_main_read_only().expect("read-only main");
-    let state: String = read_only
+    let state: (String, String) = read_only
         .query_row(
-            "SELECT status FROM index_state WHERE name = 'PASSAGE_FTS'",
+            "SELECT status, version FROM index_state WHERE name = 'PASSAGE_FTS'",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("recovered index state");
-    assert_eq!(state, "DIRTY");
+    assert_eq!(state, ("DIRTY".into(), "legacy".into()));
     let before: i64 = read_only
         .query_row(
             "SELECT count(*)
@@ -733,14 +733,14 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
         )
         .expect("rebuilt search");
     assert_eq!(matches, 1);
-    let state: String = read_only
+    let state: (String, String) = read_only
         .query_row(
-            "SELECT status FROM index_state WHERE name = 'PASSAGE_FTS'",
+            "SELECT status, version FROM index_state WHERE name = 'PASSAGE_FTS'",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("maintained index state");
-    assert_eq!(state, "IDLE");
+    assert_eq!(state, ("IDLE".into(), "1".into()));
 }
 
 #[test]
