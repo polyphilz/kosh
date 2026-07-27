@@ -36,6 +36,12 @@ pub enum DatabaseError {
     #[error("database writer is unavailable")]
     WriterUnavailable,
 
+    #[error("invalid database command: {0}")]
+    InvalidInput(String),
+
+    #[error("media blob is still referenced by {references} attachment(s)")]
+    MediaInUse { references: i64 },
+
     #[error("database writer failed to shut down cleanly")]
     WriterPanicked,
 }

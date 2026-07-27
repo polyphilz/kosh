@@ -24,7 +24,7 @@ pub use paths::DatabasePaths;
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
-use connection::DatabaseKind;
+use connection::{DatabaseKind, FileState};
 
 #[derive(Debug)]
 pub struct Database {
@@ -40,10 +40,21 @@ impl Database {
         let main_state = connection::inspect_file(&paths.main)?;
         let media_state = connection::inspect_file(&paths.media)?;
         if main_state != media_state {
-            return Err(DatabaseError::IncompletePair {
-                main_state: main_state.label(),
-                media_state: media_state.label(),
-            });
+            let can_resume_pristine_pair = match (main_state, media_state) {
+                (FileState::Existing, FileState::Fresh) => {
+                    connection::is_pristine_identified(&paths.main, DatabaseKind::Main)?
+                }
+                (FileState::Fresh, FileState::Existing) => {
+                    connection::is_pristine_identified(&paths.media, DatabaseKind::Media)?
+                }
+                _ => false,
+            };
+            if !can_resume_pristine_pair {
+                return Err(DatabaseError::IncompletePair {
+                    main_state: main_state.label(),
+                    media_state: media_state.label(),
+                });
+            }
         }
 
         let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, main_state)?;
@@ -59,6 +70,10 @@ impl Database {
         if main_status.pending {
             migrations::run_main(&mut main)?;
         }
+        // Reap capabilities never persist across launches. The single writer
+        // creates and consumes them in one transaction after a live main-
+        // database reference check.
+        media.execute("DELETE FROM media_blob_reap_authorization", [])?;
         validation::validate_migrated_pair(&mut main, &mut media, &paths.main, &paths.media)?;
 
         let (sender, receiver) = mpsc::channel();
@@ -97,8 +112,9 @@ impl Database {
             .map_err(|_| DatabaseError::WriterPanicked)?
             .take();
         if let Some(thread) = thread {
-            self.client.shutdown()?;
+            let shutdown = self.client.shutdown();
             thread.join().map_err(|_| DatabaseError::WriterPanicked)?;
+            shutdown?;
         }
         Ok(())
     }
@@ -120,6 +136,16 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
         match message {
             WriterMessage::Diagnostics { reply } => {
                 let _ = reply.send(writer::diagnostics(&mut main, &mut media));
+            }
+            WriterMessage::ReapMediaBlob {
+                sha256,
+                now,
+                reason,
+                reply,
+            } => {
+                let _ = reply.send(writer::reap_media_blob(
+                    &main, &mut media, sha256, now, reason,
+                ));
             }
             WriterMessage::Shutdown => break,
         }

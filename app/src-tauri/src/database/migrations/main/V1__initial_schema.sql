@@ -16,7 +16,7 @@ CREATE TABLE tidbit (
     updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
     deleted_at INTEGER CHECK (deleted_at IS NULL OR deleted_at >= created_at),
     current_revision_id TEXT NOT NULL,
-    FOREIGN KEY (current_revision_id) REFERENCES tidbit_revision(id)
+    FOREIGN KEY (id, current_revision_id) REFERENCES tidbit_revision(tidbit_id, id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
@@ -41,6 +41,7 @@ CREATE TABLE tidbit_revision (
     body_markdown TEXT NOT NULL,
     content_hash BLOB NOT NULL CHECK (length(content_hash) = 32),
     UNIQUE (tidbit_id, revision_number),
+    UNIQUE (tidbit_id, id),
     FOREIGN KEY (tidbit_id) REFERENCES tidbit(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     CHECK (title IS NULL OR length(title) > 0)
@@ -434,6 +435,37 @@ CREATE TRIGGER source_prevent_delete
 BEFORE DELETE ON source
 BEGIN
     SELECT RAISE(ABORT, 'sources are retained');
+END;
+
+CREATE TRIGGER attachment_identity_prevent_update
+BEFORE UPDATE OF created_at, sha256, byte_length, kind ON attachment
+BEGIN
+    SELECT RAISE(ABORT, 'attachment identity is immutable');
+END;
+
+CREATE TRIGGER attachment_extraction_identity_prevent_update
+BEFORE UPDATE OF attachment_id, extractor, extractor_version, content_hash, created_at
+ON attachment_extraction
+BEGIN
+    SELECT RAISE(ABORT, 'attachment extraction identity is immutable');
+END;
+
+CREATE TRIGGER attachment_extraction_prevent_delete
+BEFORE DELETE ON attachment_extraction
+BEGIN
+    SELECT RAISE(ABORT, 'attachment extractions are retained');
+END;
+
+CREATE TRIGGER attachment_segment_prevent_update
+BEFORE UPDATE ON attachment_segment
+BEGIN
+    SELECT RAISE(ABORT, 'attachment segments are immutable');
+END;
+
+CREATE TRIGGER attachment_segment_prevent_delete
+BEFORE DELETE ON attachment_segment
+BEGIN
+    SELECT RAISE(ABORT, 'attachment segments are retained');
 END;
 
 CREATE TRIGGER passage_prevent_update

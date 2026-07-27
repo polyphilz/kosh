@@ -1,6 +1,6 @@
 use std::sync::mpsc::{self, Sender, SyncSender};
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{
     error::{DatabaseError, Result},
@@ -21,6 +21,12 @@ pub(super) enum WriterMessage {
     Diagnostics {
         reply: SyncSender<Result<DatabaseDiagnostics>>,
     },
+    ReapMediaBlob {
+        sha256: Vec<u8>,
+        now: i64,
+        reason: String,
+        reply: SyncSender<Result<bool>>,
+    },
     Shutdown,
 }
 
@@ -38,6 +44,21 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::Diagnostics { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn reap_media_blob(&self, sha256: Vec<u8>, now: i64, reason: String) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ReapMediaBlob {
+                sha256,
+                now,
+                reason,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
@@ -72,4 +93,67 @@ pub(super) fn diagnostics(
         main_foreign_keys,
         media_foreign_keys,
     })
+}
+
+pub(super) fn reap_media_blob(
+    main: &Connection,
+    media: &mut Connection,
+    sha256: Vec<u8>,
+    now: i64,
+    reason: String,
+) -> Result<bool> {
+    if sha256.len() != 32 {
+        return Err(DatabaseError::InvalidInput(
+            "media digest must contain 32 bytes".into(),
+        ));
+    }
+    if now < 0 {
+        return Err(DatabaseError::InvalidInput(
+            "media reap timestamp must not be negative".into(),
+        ));
+    }
+    if reason.trim().is_empty() {
+        return Err(DatabaseError::InvalidInput(
+            "media reap reason must not be empty".into(),
+        ));
+    }
+
+    // Both writable connections are owned by this worker, so no attachment
+    // mutation can race this reference check and the following media transaction.
+    let references: i64 = main.query_row(
+        "SELECT count(*) FROM attachment WHERE sha256 = ?1",
+        params![&sha256],
+        |row| row.get(0),
+    )?;
+    if references > 0 {
+        return Err(DatabaseError::MediaInUse { references });
+    }
+
+    let transaction = media.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let exists = transaction
+        .query_row(
+            "SELECT 1 FROM media_blob WHERE sha256 = ?1",
+            params![&sha256],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !exists {
+        transaction.rollback()?;
+        return Ok(false);
+    }
+
+    transaction.execute(
+        "DELETE FROM media_blob_reap_authorization WHERE sha256 = ?1",
+        params![&sha256],
+    )?;
+    transaction.execute(
+        "INSERT INTO media_blob_reap_authorization(sha256, authorized_at, reason)
+         VALUES(?1, ?2, ?3)",
+        params![&sha256, now, reason],
+    )?;
+    let deleted =
+        transaction.execute("DELETE FROM media_blob WHERE sha256 = ?1", params![&sha256])?;
+    transaction.commit()?;
+    Ok(deleted == 1)
 }

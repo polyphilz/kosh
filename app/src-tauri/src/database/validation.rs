@@ -46,8 +46,6 @@ pub fn validate_migrated_pair(
 ) -> Result<()> {
     connection::verify_application_id(main, main_path, DatabaseKind::Main)?;
     connection::verify_application_id(media, media_path, DatabaseKind::Media)?;
-    validate_integrity(main, DatabaseKind::Main)?;
-    validate_integrity(media, DatabaseKind::Media)?;
     validate_expected_heads(main, media)?;
     validate_required_features(main)?;
     validate_tables(main, DatabaseKind::Main, MAIN_TABLES)?;
@@ -61,9 +59,11 @@ pub fn validate_migrated_pair(
             .filter(|table| !table.starts_with("passage_fts_")),
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
+    reconcile_fts(main)?;
+    validate_integrity(main, DatabaseKind::Main)?;
+    validate_integrity(media, DatabaseKind::Media)?;
     validate_foreign_keys(main, DatabaseKind::Main)?;
     validate_foreign_keys(media, DatabaseKind::Media)?;
-    validate_fts(main)?;
     validate_media_relationship(main, media)?;
     Ok(())
 }
@@ -152,14 +152,38 @@ fn validate_strict_tables<'a>(
     Ok(())
 }
 
-fn validate_fts(connection: &Connection) -> Result<()> {
+fn reconcile_fts(connection: &Connection) -> Result<()> {
+    const INDEXES: &[&str] = &["passage_fts_word", "passage_fts_trigram"];
+    let mut failed = Vec::new();
+
+    for index in INDEXES {
+        let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 1)");
+        if connection.execute(&integrity, []).is_err() {
+            let rebuild = format!("INSERT INTO {index}({index}) VALUES('rebuild')");
+            if connection.execute(&rebuild, []).is_err() {
+                failed.push(*index);
+            }
+        }
+    }
+
+    let (status, error) = if failed.is_empty() {
+        ("IDLE", None)
+    } else {
+        (
+            "DIRTY",
+            Some(format!("could not rebuild {}", failed.join(", "))),
+        )
+    };
     connection.execute(
-        "INSERT INTO passage_fts_word(passage_fts_word) VALUES('integrity-check')",
-        [],
-    )?;
-    connection.execute(
-        "INSERT INTO passage_fts_trigram(passage_fts_trigram) VALUES('integrity-check')",
-        [],
+        "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
+         VALUES('PASSAGE_FTS', '1', ?1, NULL, 0, ?2)
+         ON CONFLICT(name) DO UPDATE SET
+            version = excluded.version,
+            status = excluded.status,
+            cursor = NULL,
+            updated_at = excluded.updated_at,
+            error = excluded.error",
+        params![status, error],
     )?;
     Ok(())
 }

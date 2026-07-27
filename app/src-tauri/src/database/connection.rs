@@ -80,6 +80,18 @@ pub fn open_read_only(path: &Path, kind: DatabaseKind) -> Result<Connection> {
     Ok(connection)
 }
 
+pub fn is_pristine_identified(path: &Path, kind: DatabaseKind) -> Result<bool> {
+    let connection = open_read_only(path, kind)?;
+    let owned_schema_objects: i64 = connection.query_row(
+        "SELECT count(*)
+         FROM sqlite_schema
+         WHERE name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(owned_schema_objects == 0)
+}
+
 pub fn verify_application_id(
     connection: &Connection,
     path: &Path,
