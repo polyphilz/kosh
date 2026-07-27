@@ -5,7 +5,7 @@ export default defineConfig({
   outputDir: "./test-results/playwright",
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:1420",
+    baseURL: "http://127.0.0.1:1422",
     trace: "retain-on-failure",
   },
   projects: [
@@ -16,7 +16,7 @@ export default defineConfig({
   ],
   webServer: {
     command: "pnpm dev:test",
-    url: "http://127.0.0.1:1420",
-    reuseExistingServer: !process.env.CI,
+    url: "http://127.0.0.1:1422",
+    reuseExistingServer: false,
   },
 });

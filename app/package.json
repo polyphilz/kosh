@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:test": "VITE_KOSH_BACKEND=fake vite --host 127.0.0.1",
+    "dev:test": "VITE_KOSH_BACKEND=fake vite --host 127.0.0.1 --port 1422",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "KOSH_DATA_DIR=\"$PWD/.data/local\" tauri",
