@@ -82,3 +82,10 @@ echo "review-request reactions:"
   -H "Accept: application/vnd.github+json" \
   "repos/$repo/issues/comments/$request_id/reactions?per_page=100" |
   jq -r '.[][] | "\(.content) \(.user.login) \(.created_at)"'
+echo "PR reactions:"
+"$gh_bin" api \
+  --paginate \
+  --slurp \
+  -H "Accept: application/vnd.github+json" \
+  "repos/$repo/issues/$pr_number/reactions?per_page=100" |
+  jq -r '.[][] | "\(.content) \(.user.login) \(.created_at)"'

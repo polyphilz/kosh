@@ -132,6 +132,13 @@ request_reactions_json="$(
     -H "Accept: application/vnd.github+json" \
     "repos/$repo/issues/comments/$request_id/reactions?per_page=100"
 )"
+pr_reactions_json="$(
+  "$gh_bin" api \
+    --paginate \
+    --slurp \
+    -H "Accept: application/vnd.github+json" \
+    "repos/$repo/issues/$pr_number/reactions?per_page=100"
+)"
 request_approval_count="$(
   jq \
     --arg bot "$review_bot" \
@@ -146,7 +153,45 @@ request_approval_count="$(
     ] | length' \
     <<<"$request_reactions_json"
 )"
-((request_approval_count > 0)) ||
-  fail "no clean +1 from $review_bot on the current-head review request"
+pr_approval_count="$(
+  jq \
+    --arg bot "$review_bot" \
+    --arg requested "$request_created_at" \
+    '[
+      .[][]
+      | select(
+          .user.login == $bot
+          and .content == "+1"
+          and .created_at >= $requested
+        )
+    ] | length' \
+    <<<"$pr_reactions_json"
+)"
+((request_approval_count + pr_approval_count > 0)) ||
+  fail "no fresh +1 from $review_bot on the PR or current-head review request"
+
+head_short="${head_sha:0:10}"
+matching_review_count="$(
+  jq \
+    --arg bot "$review_bot" \
+    --arg requested "$request_created_at" \
+    --arg reviewed "$head_short" \
+    '[
+      .[][]
+      | select(
+          .user.login == $bot
+          and .created_at >= $requested
+          and (.body | contains("Reviewed commit:"))
+          and (.body | contains($reviewed))
+          and (
+            (.body | test("Didn.t find any major issues"; "i"))
+            or (.body | test("found no major issues"; "i"))
+          )
+        )
+    ] | length' \
+    <<<"$comments_json"
+)"
+((matching_review_count > 0)) ||
+  fail "no clean Codex completion comment matches current head $head_short"
 
 echo "merge gate passed for $pr_url at $head_sha"
