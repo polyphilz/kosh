@@ -24,6 +24,9 @@ pub(super) enum WriterMessage {
     FullIntegrityCheck {
         reply: SyncSender<Result<()>>,
     },
+    ReconcileFts {
+        reply: SyncSender<Result<bool>>,
+    },
     ReapMediaBlob {
         sha256: Vec<u8>,
         now: i64,
@@ -72,6 +75,16 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::FullIntegrityCheck { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn reconcile_fts(&self) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ReconcileFts { reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

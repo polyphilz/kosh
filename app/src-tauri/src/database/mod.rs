@@ -140,6 +140,9 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
             WriterMessage::FullIntegrityCheck { reply } => {
                 let _ = reply.send(validation::full_integrity_check_pair(&main, &media));
             }
+            WriterMessage::ReconcileFts { reply } => {
+                let _ = reply.send(validation::reconcile_fts(&main));
+            }
             WriterMessage::ReapMediaBlob {
                 sha256,
                 now,

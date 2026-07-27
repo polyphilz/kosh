@@ -217,9 +217,27 @@ CREATE TABLE attachment_segment (
     FOREIGN KEY (extraction_id) REFERENCES attachment_extraction(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     CHECK (
-        (locator_kind = 'PDF_PAGE' AND page_number IS NOT NULL)
-        OR (locator_kind = 'OCR_REGION' AND region_json IS NOT NULL)
-        OR (locator_kind = 'TEXT_LINES' AND line_start IS NOT NULL AND line_end IS NOT NULL)
+        (
+            locator_kind = 'PDF_PAGE'
+            AND page_number IS NOT NULL
+            AND line_start IS NULL
+            AND line_end IS NULL
+            AND region_json IS NULL
+        )
+        OR (
+            locator_kind = 'OCR_REGION'
+            AND region_json IS NOT NULL
+            AND json_type(region_json) = 'object'
+            AND line_start IS NULL
+            AND line_end IS NULL
+        )
+        OR (
+            locator_kind = 'TEXT_LINES'
+            AND page_number IS NULL
+            AND line_start IS NOT NULL
+            AND line_end IS NOT NULL
+            AND region_json IS NULL
+        )
     )
 ) STRICT;
 
@@ -258,6 +276,45 @@ CREATE TABLE passage (
             owner_kind = 'ATTACHMENT'
             AND tidbit_revision_id IS NULL
             AND attachment_segment_id IS NOT NULL
+        )
+    ),
+    CONSTRAINT passage_locator_shape CHECK (
+        (
+            owner_kind = 'AUTHOR'
+            AND locator_kind = 'MARKDOWN_BLOCKS'
+            AND json_type(locator_json, '$.start') = 'integer'
+            AND json_extract(locator_json, '$.start') >= 0
+            AND json_type(locator_json, '$.end') = 'integer'
+            AND json_extract(locator_json, '$.end') >= json_extract(locator_json, '$.start')
+        )
+        OR (
+            owner_kind = 'ATTACHMENT'
+            AND (
+                (
+                    locator_kind = 'PDF_PAGE'
+                    AND json_type(locator_json, '$.page') = 'integer'
+                    AND json_extract(locator_json, '$.page') > 0
+                )
+                OR (
+                    locator_kind = 'OCR_REGION'
+                    AND json_type(locator_json, '$.region') = 'object'
+                    AND (
+                        json_type(locator_json, '$.page') IS NULL
+                        OR (
+                            json_type(locator_json, '$.page') = 'integer'
+                            AND json_extract(locator_json, '$.page') > 0
+                        )
+                    )
+                )
+                OR (
+                    locator_kind = 'TEXT_LINES'
+                    AND json_type(locator_json, '$.start') = 'integer'
+                    AND json_extract(locator_json, '$.start') > 0
+                    AND json_type(locator_json, '$.end') = 'integer'
+                    AND json_extract(locator_json, '$.end')
+                        >= json_extract(locator_json, '$.start')
+                )
+            )
         )
     )
 ) STRICT;
@@ -418,6 +475,9 @@ CREATE TABLE index_state (
     error TEXT
 ) STRICT;
 
+INSERT INTO index_state(name, version, status, cursor, updated_at, error)
+VALUES('PASSAGE_FTS', '1', 'IDLE', NULL, 0, NULL);
+
 CREATE TRIGGER tidbit_revision_prevent_update
 BEFORE UPDATE ON tidbit_revision
 BEGIN
@@ -495,6 +555,37 @@ CREATE TRIGGER attachment_segment_prevent_delete
 BEFORE DELETE ON attachment_segment
 BEGIN
     SELECT RAISE(ABORT, 'attachment segments are retained');
+END;
+
+CREATE TRIGGER passage_attachment_locator_validate
+BEFORE INSERT ON passage
+WHEN new.owner_kind = 'ATTACHMENT'
+BEGIN
+    SELECT RAISE(ABORT, 'passage locator does not match attachment segment')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM attachment_segment AS segment
+        WHERE segment.id = new.attachment_segment_id
+          AND segment.locator_kind = new.locator_kind
+          AND (
+              (
+                  segment.locator_kind = 'PDF_PAGE'
+                  AND segment.page_number = json_extract(new.locator_json, '$.page')
+              )
+              OR (
+                  segment.locator_kind = 'OCR_REGION'
+                  AND coalesce(segment.page_number, -1)
+                      = coalesce(json_extract(new.locator_json, '$.page'), -1)
+                  AND json(segment.region_json)
+                      = json(json_extract(new.locator_json, '$.region'))
+              )
+              OR (
+                  segment.locator_kind = 'TEXT_LINES'
+                  AND segment.line_start = json_extract(new.locator_json, '$.start')
+                  AND segment.line_end = json_extract(new.locator_json, '$.end')
+              )
+          )
+    );
 END;
 
 CREATE TRIGGER passage_prevent_update

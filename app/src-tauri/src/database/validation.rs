@@ -59,7 +59,7 @@ pub fn validate_migrated_pair(
             .filter(|table| !table.starts_with("passage_fts_")),
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
-    reconcile_fts(main)?;
+    recover_interrupted_derived_work(main)?;
     validate_foreign_keys(main, DatabaseKind::Main)?;
     validate_foreign_keys(media, DatabaseKind::Media)?;
     validate_media_relationship(main, media)?;
@@ -155,7 +155,20 @@ fn validate_strict_tables<'a>(
     Ok(())
 }
 
-fn reconcile_fts(connection: &Connection) -> Result<()> {
+fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "UPDATE index_state
+         SET status = 'DIRTY',
+             cursor = NULL,
+             updated_at = 0,
+             error = 'maintenance was interrupted'
+         WHERE status = 'RUNNING'",
+        [],
+    )?;
+    Ok(())
+}
+
+pub(super) fn reconcile_fts(connection: &Connection) -> Result<bool> {
     const INDEXES: &[&str] = &["passage_fts_word", "passage_fts_trigram"];
     let mut failed = Vec::new();
 
@@ -188,7 +201,7 @@ fn reconcile_fts(connection: &Connection) -> Result<()> {
             error = excluded.error",
         params![status, error],
     )?;
-    Ok(())
+    Ok(failed.is_empty())
 }
 
 fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<()> {

@@ -23,7 +23,7 @@ impl TestPair {
 fn initial_migration_checksums_remain_stable() {
     assert_eq!(
         migrations::main_runner().get_migrations()[0].checksum(),
-        12_368_639_227_656_403_893
+        4_156_421_841_949_187_765
     );
     assert_eq!(
         migrations::media_runner().get_migrations()[0].checksum(),
@@ -343,6 +343,34 @@ fn attachment_citation_provenance_cannot_silently_retarget() {
 
     assert!(main
         .execute(
+            "INSERT INTO passage(
+                id, attachment_segment_id, owner_kind, ordinal, content,
+                content_hash, locator_kind, locator_json, created_at
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000000404',
+                '019f547b-6200-7000-8000-000000000403',
+                'ATTACHMENT', 0, 'evidence', zeroblob(32),
+                'TEXT_LINES', '{\"start\":1,\"end\":2}', 10
+             )",
+            [],
+        )
+        .is_err());
+    main.execute(
+        "INSERT INTO passage(
+            id, attachment_segment_id, owner_kind, ordinal, content,
+            content_hash, locator_kind, locator_json, created_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000404',
+            '019f547b-6200-7000-8000-000000000403',
+            'ATTACHMENT', 0, 'evidence', zeroblob(32),
+            'TEXT_LINES', '{\"start\":1,\"end\":1}', 10
+         )",
+        [],
+    )
+    .expect("passage locator matches stored segment");
+
+    assert!(main
+        .execute(
             "UPDATE attachment_extraction
              SET content_hash = randomblob(32)
              WHERE id = '019f547b-6200-7000-8000-000000000402'",
@@ -507,7 +535,7 @@ fn orphaned_media_stage_is_recoverable_but_missing_committed_bytes_are_not() {
 }
 
 #[test]
-fn stale_fts_is_rebuilt_without_blocking_authored_content() {
+fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
     let pair = TestPair::new();
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
     let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
@@ -535,13 +563,39 @@ fn stale_fts_is_rebuilt_without_blocking_authored_content() {
             'AUTHOR', 0, 'recoverable lexical evidence', zeroblob(32),
             'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10
          );
+         UPDATE index_state
+         SET status = 'RUNNING', updated_at = 10
+         WHERE name = 'PASSAGE_FTS';
          COMMIT;",
     )
     .expect("passage without derived index row");
     drop(main);
 
-    let database = Database::initialize(pair.paths.clone()).expect("FTS reconciliation");
+    let database = Database::initialize(pair.paths.clone()).expect("authored data opens");
     let read_only = database.open_main_read_only().expect("read-only main");
+    let state: String = read_only
+        .query_row(
+            "SELECT status FROM index_state WHERE name = 'PASSAGE_FTS'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("recovered index state");
+    assert_eq!(state, "DIRTY");
+    let before: i64 = read_only
+        .query_row(
+            "SELECT count(*)
+             FROM passage_fts_word
+             WHERE passage_fts_word MATCH 'lexical'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stale search remains optional");
+    assert_eq!(before, 0);
+
+    assert!(database
+        .client()
+        .reconcile_fts()
+        .expect("explicit FTS maintenance"));
     let matches: i64 = read_only
         .query_row(
             "SELECT count(*)
@@ -552,6 +606,14 @@ fn stale_fts_is_rebuilt_without_blocking_authored_content() {
         )
         .expect("rebuilt search");
     assert_eq!(matches, 1);
+    let state: String = read_only
+        .query_row(
+            "SELECT status FROM index_state WHERE name = 'PASSAGE_FTS'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("maintained index state");
+    assert_eq!(state, "IDLE");
 }
 
 #[test]
