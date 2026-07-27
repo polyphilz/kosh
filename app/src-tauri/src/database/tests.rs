@@ -25,7 +25,7 @@ impl TestPair {
 fn initial_migration_checksums_remain_stable() {
     assert_eq!(
         migrations::main_runner().get_migrations()[0].checksum(),
-        6_070_907_847_574_384_874
+        1_893_190_742_697_353_014
     );
     assert_eq!(
         migrations::media_runner().get_migrations()[0].checksum(),
@@ -480,7 +480,7 @@ fn attachment_citation_provenance_cannot_silently_retarget() {
 }
 
 #[test]
-fn interrupted_extractions_are_requeued_only_for_the_same_content() {
+fn extractions_require_current_content_and_discard_partial_outputs() {
     let pair = TestPair::new();
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
     let valid_digest = vec![13_u8; 32];
@@ -502,19 +502,9 @@ fn interrupted_extractions_are_requeued_only_for_the_same_content() {
 
     let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
         .expect("main writer");
-    for (attachment_id, extraction_id, digest, extraction_hash) in [
-        (
-            "019f547b-6200-7000-8000-000000000801",
-            "019f547b-6200-7000-8000-000000000802",
-            &valid_digest,
-            valid_digest.clone(),
-        ),
-        (
-            "019f547b-6200-7000-8000-000000000803",
-            "019f547b-6200-7000-8000-000000000804",
-            &changed_digest,
-            vec![15_u8; 32],
-        ),
+    for (attachment_id, digest) in [
+        ("019f547b-6200-7000-8000-000000000801", &valid_digest),
+        ("019f547b-6200-7000-8000-000000000803", &changed_digest),
     ] {
         main.execute(
             "INSERT INTO attachment(
@@ -524,15 +514,35 @@ fn interrupted_extractions_are_requeued_only_for_the_same_content() {
             params![attachment_id, digest],
         )
         .expect("attachment");
-        main.execute(
+    }
+    main.execute(
+        "INSERT INTO attachment_extraction(
+            id, attachment_id, extractor, extractor_version, content_hash,
+            status, created_at, started_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000802',
+            '019f547b-6200-7000-8000-000000000801',
+            'ocr', 'fixture-v1', ?1, 'RUNNING', 10, 11
+         )",
+        params![&valid_digest],
+    )
+    .expect("running extraction");
+    let mismatch = main
+        .execute(
             "INSERT INTO attachment_extraction(
                 id, attachment_id, extractor, extractor_version, content_hash,
-                status, created_at, started_at
-             ) VALUES(?1, ?2, 'ocr', 'fixture-v1', ?3, 'RUNNING', 10, 11)",
-            params![extraction_id, attachment_id, extraction_hash],
+                status, created_at
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000000804',
+                '019f547b-6200-7000-8000-000000000803',
+                'ocr', 'fixture-v1', ?1, 'READY', 10
+             )",
+            params![vec![15_u8; 32]],
         )
-        .expect("running extraction");
-    }
+        .expect_err("extraction hash must match attachment");
+    assert!(mismatch
+        .to_string()
+        .contains("FOREIGN KEY constraint failed"));
     main.execute(
         "INSERT INTO attachment_segment(
             id, extraction_id, ordinal, locator_kind, page_number, content, content_hash
@@ -573,17 +583,6 @@ fn interrupted_extractions_are_requeued_only_for_the_same_content() {
         .expect("requeued extraction");
     assert_eq!(valid, ("PENDING".into(), None, "fixture-v1".into()));
 
-    let changed: (String, Option<String>) = read_only
-        .query_row(
-            "SELECT status, error
-             FROM attachment_extraction
-             WHERE id = '019f547b-6200-7000-8000-000000000804'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("changed extraction");
-    assert_eq!(changed.0, "FAILED");
-    assert!(changed.1.is_some());
     let partial_segments: i64 = read_only
         .query_row(
             "SELECT count(*)

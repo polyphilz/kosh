@@ -113,7 +113,8 @@ CREATE TABLE attachment (
     byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
     kind TEXT NOT NULL CHECK (kind IN ('IMAGE', 'PDF', 'TEXT', 'BINARY')),
     extraction_state TEXT NOT NULL
-        CHECK (extraction_state IN ('PENDING', 'READY', 'FAILED', 'NOT_APPLICABLE'))
+        CHECK (extraction_state IN ('PENDING', 'READY', 'FAILED', 'NOT_APPLICABLE')),
+    UNIQUE (id, sha256)
 ) STRICT;
 
 CREATE TABLE tidbit_revision_attachment (
@@ -183,7 +184,7 @@ CREATE TABLE attachment_extraction (
     started_at INTEGER,
     completed_at INTEGER,
     UNIQUE (attachment_id, extractor, extractor_version, content_hash),
-    FOREIGN KEY (attachment_id) REFERENCES attachment(id)
+    FOREIGN KEY (attachment_id, content_hash) REFERENCES attachment(id, sha256)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     CHECK (started_at IS NULL OR started_at >= created_at),
     CHECK (completed_at IS NULL OR completed_at >= coalesce(started_at, created_at)),
@@ -614,6 +615,9 @@ BEGIN
         FROM attachment_segment AS segment
         JOIN attachment_extraction AS extraction
           ON extraction.id = segment.extraction_id
+        JOIN attachment
+          ON attachment.id = extraction.attachment_id
+         AND attachment.sha256 = extraction.content_hash
         WHERE segment.id = new.attachment_segment_id
           AND extraction.status = 'READY'
           AND segment.locator_kind = new.locator_kind
