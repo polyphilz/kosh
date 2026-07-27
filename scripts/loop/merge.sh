@@ -6,8 +6,14 @@ if (($# < 1 || $# > 2)); then
   exit 2
 fi
 
-repo="${2:-$(gh repo view --json nameWithOwner --jq '.nameWithOwner')}"
+gh_bin="${GH_BIN:-gh}"
+repo="${2:-$("$gh_bin" repo view --json nameWithOwner --jq '.nameWithOwner')}"
 pr_number="$1"
+head_sha="$(
+  "$gh_bin" pr view "$pr_number" --repo "$repo" \
+    --json headRefOid --jq '.headRefOid'
+)"
 
 "$(dirname "$0")/gate.sh" "$pr_number" "$repo"
-gh pr merge "$pr_number" --repo "$repo" --squash --delete-branch
+"$gh_bin" pr merge "$pr_number" --repo "$repo" --squash --delete-branch \
+  --match-head-commit "$head_sha"

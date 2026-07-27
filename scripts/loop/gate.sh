@@ -84,6 +84,8 @@ head_committed_at="$(
 
 reactions_json="$(
   "$gh_bin" api \
+    --paginate \
+    --slurp \
     -H "Accept: application/vnd.github+json" \
     "repos/$repo/issues/$pr_number/reactions?per_page=100"
 )"
@@ -92,7 +94,7 @@ fresh_approval_count="$(
     --arg bot "$review_bot" \
     --arg committed "$head_committed_at" \
     '[
-      .[]
+      .[][]
       | select(
           .user.login == $bot
           and .content == "+1"
@@ -106,6 +108,8 @@ fresh_approval_count="$(
 
 comments_json="$(
   "$gh_bin" api \
+    --paginate \
+    --slurp \
     -H "Accept: application/vnd.github+json" \
     "repos/$repo/issues/$pr_number/comments?per_page=100"
 )"
@@ -116,7 +120,7 @@ matching_review_count="$(
     --arg committed "$head_committed_at" \
     --arg reviewed "$head_short" \
     '[
-      .[]
+      .[][]
       | select(
           .user.login == $bot
           and .created_at >= $committed

@@ -10,28 +10,45 @@ cat >"$temp_dir/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -euo pipefail
 
-case "${1:-} ${2:-}" in
-  "repo view")
+case "${1:-}" in
+  "repo")
     echo "polyphilz/kosh"
     ;;
-  "pr view")
-    echo "$FAKE_PR_JSON"
-    ;;
-  "pr checks")
-    echo "$FAKE_CHECKS_JSON"
-    ;;
-  "api repos/polyphilz/kosh/commits/"*)
-    echo "$FAKE_COMMITTED_AT"
-    ;;
-  "api -H")
-    request="${4:-}"
-    if [[ "$request" == *"/reactions?"* ]]; then
-      echo "$FAKE_REACTIONS_JSON"
-    elif [[ "$request" == *"/comments?"* ]]; then
-      echo "$FAKE_COMMENTS_JSON"
+  "pr")
+    if [[ "${2:-}" == "view" && " $* " == *" --jq "* ]]; then
+      echo "$FAKE_HEAD_SHA"
+    elif [[ "${2:-}" == "view" ]]; then
+      echo "$FAKE_PR_JSON"
+    elif [[ "${2:-}" == "checks" ]]; then
+      echo "$FAKE_CHECKS_JSON"
+    elif [[ "${2:-}" == "merge" ]]; then
+      [[ " $* " == *" --match-head-commit $FAKE_HEAD_SHA "* ]] || {
+        echo "merge was not bound to expected head" >&2
+        exit 2
+      }
+      : >"$FAKE_MERGE_MARKER"
     else
-      echo "unexpected API request: $request" >&2
+      echo "unexpected fake gh PR invocation: $*" >&2
       exit 2
+    fi
+    ;;
+  "api")
+    if [[ "${2:-}" == "repos/polyphilz/kosh/commits/"* ]]; then
+      echo "$FAKE_COMMITTED_AT"
+    else
+      [[ " $* " == *" --paginate "* && " $* " == *" --slurp "* ]] || {
+        echo "review evidence request was not paginated and slurped" >&2
+        exit 2
+      }
+      request="${*: -1}"
+      if [[ "$request" == *"/reactions?"* ]]; then
+        jq -cn --argjson page "$FAKE_REACTIONS_JSON" '[$page]'
+      elif [[ "$request" == *"/comments?"* ]]; then
+        jq -cn --argjson page "$FAKE_COMMENTS_JSON" '[$page]'
+      else
+        echo "unexpected API request: $request" >&2
+        exit 2
+      fi
     fi
     ;;
   *)
@@ -47,6 +64,8 @@ readonly committed_at="2026-07-27T18:00:00Z"
 readonly bot="chatgpt-codex-connector[bot]"
 
 export GH_BIN="$temp_dir/gh"
+export FAKE_HEAD_SHA="$head_sha"
+export FAKE_MERGE_MARKER="$temp_dir/merged"
 FAKE_PR_JSON="$(
   jq -cn \
     --arg head "$head_sha" \
@@ -85,6 +104,11 @@ FAKE_COMMENTS_JSON="$(
 export FAKE_COMMENTS_JSON
 
 "$gate" 1 polyphilz/kosh >/dev/null
+"$repo_root/scripts/loop/merge.sh" 1 polyphilz/kosh >/dev/null
+[[ -f "$FAKE_MERGE_MARKER" ]] || {
+  echo "merge wrapper did not invoke a guarded merge" >&2
+  exit 1
+}
 
 expect_blocked() {
   local label="$1"

@@ -37,8 +37,9 @@ commits that invalidate an in-flight review.
 4. a mergeable GitHub state.
 
 The commit match prevents a reaction from an older revision of the PR from
-authorizing a newer revision. `scripts/loop/merge.sh` runs the gate and uses the
-repository's squash-only merge policy.
+authorizing a newer revision. `scripts/loop/merge.sh` runs the gate, binds the
+merge atomically to that head SHA, and uses the repository's squash-only merge
+policy.
 
 ## Review feedback
 

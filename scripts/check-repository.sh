@@ -12,6 +12,7 @@ fi
 
 bash -n "${shell_scripts[@]}"
 scripts/check-secrets.sh
+scripts/test-secret-check.sh
 git diff --check
 
 echo "repository checks passed"
