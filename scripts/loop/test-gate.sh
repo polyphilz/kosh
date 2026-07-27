@@ -177,7 +177,7 @@ FAKE_RUNS_JSON="$(
           head_sha: $head
         },
         {
-          created_at: "2026-07-27T18:03:00Z",
+          created_at: "2026-07-27T18:02:00Z",
           event: "pull_request",
           head_sha: $head
         }
@@ -185,6 +185,6 @@ FAKE_RUNS_JSON="$(
     }'
 )"
 export FAKE_RUNS_JSON
-expect_blocked "review request predates latest transition to current head"
+expect_blocked "review request is not newer than latest transition to current head"
 
 echo "merge gate tests passed"

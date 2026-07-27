@@ -112,7 +112,7 @@ review_request="$(
       .[][]
       | select(
           .user.login != $bot
-          and .created_at >= $observed
+          and .created_at > $observed
           and (.body | test("^\\s*@codex\\s+review(?:\\s.*)?$"; "i"))
         )
     ] | sort_by(.created_at) | last // empty' \
