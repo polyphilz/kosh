@@ -126,6 +126,9 @@ export FAKE_COMMENTS_JSON
 status_output="$("$status" polyphilz/kosh)"
 grep -F "review request: issue comment 77" <<<"$status_output" >/dev/null
 grep -F "PR reactions:" <<<"$status_output" >/dev/null
+grep -F "matching clean completions:" <<<"$status_output" >/dev/null
+grep -F "clean $bot 2026-07-27T18:05:00Z reviewed 0123456789" \
+  <<<"$status_output" >/dev/null
 
 # A +1 is likewise sufficient when Codex does not post a clean comment.
 FAKE_REQUEST_REACTIONS_JSON="$(

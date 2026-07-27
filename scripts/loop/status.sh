@@ -74,6 +74,8 @@ if [[ -z "$review_request" ]]; then
 fi
 
 request_id="$(jq -r '.id' <<<"$review_request")"
+request_created_at="$(jq -r '.created_at' <<<"$review_request")"
+head_short="${head_sha:0:10}"
 echo "review request: issue comment $request_id"
 echo "review-request reactions:"
 "$gh_bin" api \
@@ -89,3 +91,23 @@ echo "PR reactions:"
   -H "Accept: application/vnd.github+json" \
   "repos/$repo/issues/$pr_number/reactions?per_page=100" |
   jq -r '.[][] | "\(.content) \(.user.login) \(.created_at)"'
+echo "matching clean completions:"
+jq -r \
+  --arg bot "$review_bot" \
+  --arg requested "$request_created_at" \
+  --arg reviewed "$head_short" \
+  '
+    .[][]
+    | select(
+        .user.login == $bot
+        and .created_at >= $requested
+        and (.body | contains("Reviewed commit:"))
+        and (.body | contains($reviewed))
+        and (
+          (.body | test("Didn.t find any major issues"; "i"))
+          or (.body | test("found no major issues"; "i"))
+        )
+      )
+    | "clean \(.user.login) \(.created_at) reviewed \($reviewed)"
+  ' \
+  <<<"$comments_json"

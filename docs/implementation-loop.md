@@ -32,14 +32,13 @@ commits that invalidate an in-flight review.
 1. at least one CI check and no failed, pending, or canceled checks;
 2. a user-authored `@codex review` request created after the latest GitHub
    Actions run records a transition to the current head on GitHub;
-3. a later `+1` reaction from `chatgpt-codex-connector[bot]` on the PR or that
-   request, which is Codex's clean-review signal;
-4. a later clean completion comment from the bot naming the exact current head
-   SHA; and
-5. a mergeable GitHub state.
+3. one later clean-review signal from `chatgpt-codex-connector[bot]`, either:
+   - a `+1` reaction on the PR or that review request; or
+   - a clean completion comment naming the exact current head SHA; and
+4. a mergeable GitHub state.
 
 The server-side workflow timestamp prevents author-controlled Git timestamps
-or a reaction from an older revision from authorizing a newer revision.
+or clean evidence from an older revision from authorizing a newer revision.
 `scripts/loop/merge.sh` runs the gate, binds the merge atomically to that head
 SHA, and uses the repository's squash-only merge policy.
 
