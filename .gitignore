@@ -1,2 +1,37 @@
-# Local implementation plans
+# macOS
+.DS_Store
+
+# Local implementation plans and loop state
 .plans/
+.kosh-loop/
+
+# Dependencies and build output
+node_modules/
+dist/
+target/
+coverage/
+playwright-report/
+test-results/
+**/.pnpm-store
+
+# Local application data and model artifacts
+app/.data/
+*.sqlite3
+*.sqlite3-*
+backups/
+models/
+*.gguf
+*.onnx
+
+# Generated release sidecars
+app/src-tauri/resources/release/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+pnpm-debug.log*
+npm-debug.log*
