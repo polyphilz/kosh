@@ -17,6 +17,9 @@ pub enum DatabaseError {
         media_state: &'static str,
     },
 
+    #[error("Kosh library at {path} is already open by another writer")]
+    DatabaseInUse { path: PathBuf },
+
     #[error(
         "{kind} database at {path} has application_id {actual:#010x}; expected {expected:#010x}"
     )]

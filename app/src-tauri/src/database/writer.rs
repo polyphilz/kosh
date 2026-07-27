@@ -122,7 +122,7 @@ pub(super) fn diagnostics(
 }
 
 pub(super) fn reap_media_blob(
-    main: &Connection,
+    main: &mut Connection,
     media: &mut Connection,
     sha256: Vec<u8>,
     now: i64,
@@ -144,14 +144,17 @@ pub(super) fn reap_media_blob(
         ));
     }
 
-    // Both writable connections are owned by this worker, so no attachment
-    // mutation can race this reference check and the following media transaction.
-    let references: i64 = main.query_row(
+    // The library ownership lock excludes other Kosh writers. The main write
+    // transaction additionally keeps the reference check serialized through
+    // the media deletion if a non-cooperating SQLite writer appears.
+    let main_transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let references: i64 = main_transaction.query_row(
         "SELECT count(*) FROM attachment WHERE sha256 = ?1",
         params![&sha256],
         |row| row.get(0),
     )?;
     if references > 0 {
+        main_transaction.rollback()?;
         return Err(DatabaseError::MediaInUse { references });
     }
 
@@ -166,6 +169,7 @@ pub(super) fn reap_media_blob(
         .is_some();
     if !exists {
         transaction.rollback()?;
+        main_transaction.rollback()?;
         return Ok(false);
     }
 
@@ -181,5 +185,6 @@ pub(super) fn reap_media_blob(
     let deleted =
         transaction.execute("DELETE FROM media_blob WHERE sha256 = ?1", params![&sha256])?;
     transaction.commit()?;
+    main_transaction.commit()?;
     Ok(deleted == 1)
 }

@@ -5,6 +5,7 @@ pub struct DatabasePaths {
     pub root: PathBuf,
     pub main: PathBuf,
     pub media: PathBuf,
+    pub ownership_lock: PathBuf,
 }
 
 impl DatabasePaths {
@@ -13,6 +14,7 @@ impl DatabasePaths {
         Self {
             main: root.join("kosh.sqlite3"),
             media: root.join("media.sqlite3"),
+            ownership_lock: root.join("kosh.lock"),
             root,
         }
     }

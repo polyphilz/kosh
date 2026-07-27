@@ -9,7 +9,7 @@ mod writer;
 mod tests;
 
 use std::{
-    fs,
+    fs::{self, File, OpenOptions, TryLockError},
     sync::{
         mpsc::{self, Receiver},
         Mutex,
@@ -31,11 +31,27 @@ pub struct Database {
     paths: DatabasePaths,
     client: DatabaseClient,
     writer_thread: Mutex<Option<JoinHandle<()>>>,
+    ownership_lock: Mutex<Option<File>>,
 }
 
 impl Database {
     pub fn initialize(paths: DatabasePaths) -> Result<Self> {
         fs::create_dir_all(paths.root())?;
+        let ownership_lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&paths.ownership_lock)?;
+        match ownership_lock.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                return Err(DatabaseError::DatabaseInUse {
+                    path: paths.root.clone(),
+                });
+            }
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
 
         let main_state = connection::inspect_file(&paths.main)?;
         let media_state = connection::inspect_file(&paths.media)?;
@@ -86,6 +102,7 @@ impl Database {
             paths,
             client,
             writer_thread: Mutex::new(Some(writer_thread)),
+            ownership_lock: Mutex::new(Some(ownership_lock)),
         })
     }
 
@@ -111,12 +128,18 @@ impl Database {
             .lock()
             .map_err(|_| DatabaseError::WriterPanicked)?
             .take();
-        if let Some(thread) = thread {
+        let outcome = if let Some(thread) = thread {
             let shutdown = self.client.shutdown();
-            thread.join().map_err(|_| DatabaseError::WriterPanicked)?;
-            shutdown?;
-        }
-        Ok(())
+            let joined = thread.join().map_err(|_| DatabaseError::WriterPanicked);
+            joined.and(shutdown)
+        } else {
+            Ok(())
+        };
+        self.ownership_lock
+            .lock()
+            .map_err(|_| DatabaseError::WriterPanicked)?
+            .take();
+        outcome
     }
 }
 
@@ -127,6 +150,9 @@ impl Drop for Database {
             if let Some(thread) = thread.take() {
                 let _ = thread.join();
             }
+        }
+        if let Ok(lock) = self.ownership_lock.get_mut() {
+            lock.take();
         }
     }
 }
@@ -150,7 +176,7 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
                 reply,
             } => {
                 let _ = reply.send(writer::reap_media_blob(
-                    &main, &mut media, sha256, now, reason,
+                    &mut main, &mut media, sha256, now, reason,
                 ));
             }
             WriterMessage::Shutdown => break,

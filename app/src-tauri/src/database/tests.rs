@@ -67,6 +67,18 @@ fn full_integrity_scan_is_an_explicit_maintenance_operation() {
 }
 
 #[test]
+fn database_pair_allows_only_one_active_writer() {
+    let pair = TestPair::new();
+    let first = Database::initialize(pair.paths.clone()).expect("first writer");
+
+    let error = Database::initialize(pair.paths.clone()).expect_err("second writer refused");
+    assert!(matches!(error, DatabaseError::DatabaseInUse { .. }));
+
+    first.shutdown().expect("release first writer");
+    drop(Database::initialize(pair.paths.clone()).expect("replacement writer"));
+}
+
+#[test]
 fn pending_migrations_apply_to_an_identified_empty_pair() {
     let pair = TestPair::new();
     std::fs::create_dir_all(pair.paths.root()).expect("pair root");
