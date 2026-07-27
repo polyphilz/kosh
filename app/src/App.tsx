@@ -1,4 +1,10 @@
+import { Outlet } from "@tanstack/react-router";
+
 export function App() {
+  return <Outlet />;
+}
+
+export function LandingPage() {
   return (
     <main className="shell">
       <p className="eyebrow">Local knowledge, close at hand</p>

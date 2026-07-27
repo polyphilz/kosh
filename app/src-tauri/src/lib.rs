@@ -1,13 +1,14 @@
+mod runtime;
+
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 use std::path::PathBuf;
 
-use tauri::Manager;
+use runtime::RuntimeState;
+use tauri::{Builder, Manager, Runtime};
 
 const DATA_DIR_ENV: &str = "KOSH_DATA_DIR";
-
-#[derive(Clone, Debug)]
-pub struct AppPaths {
-    pub data_dir: PathBuf,
-}
 
 fn select_data_dir(
     app_data_dir: PathBuf,
@@ -23,9 +24,13 @@ fn select_data_dir(
     app_data_dir
 }
 
+fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
+    builder.invoke_handler(tauri::generate_handler![runtime::runtime_probe])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    with_commands(tauri::Builder::default())
         .setup(|app| {
             let data_dir = select_data_dir(
                 app.path().app_data_dir()?,
@@ -33,12 +38,14 @@ pub fn run() {
                 cfg!(debug_assertions),
             );
             std::fs::create_dir_all(&data_dir)?;
-            app.manage(AppPaths { data_dir });
+            app.manage(RuntimeState::production(data_dir));
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running Kosh");
 }
+
+pub use runtime::RuntimeProbe;
 
 #[cfg(test)]
 mod tests {
