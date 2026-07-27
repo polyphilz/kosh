@@ -23,7 +23,7 @@ impl TestPair {
 fn initial_migration_checksums_remain_stable() {
     assert_eq!(
         migrations::main_runner().get_migrations()[0].checksum(),
-        6_623_193_754_736_977_434
+        17_634_497_153_830_872_077
     );
     assert_eq!(
         migrations::media_runner().get_migrations()[0].checksum(),
@@ -327,6 +327,23 @@ fn current_revision_must_belong_to_its_tidbit() {
             [],
         )
         .is_err());
+
+    for locator in ["{}", "{\"start\":0}"] {
+        assert!(main
+            .execute(
+                "INSERT INTO passage(
+                    id, tidbit_revision_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000000305',
+                    '019f547b-6200-7000-8000-000000000302',
+                    'AUTHOR', 0, 'unresolvable', zeroblob(32),
+                    'MARKDOWN_BLOCKS', ?1, 10
+                 )",
+                params![locator],
+            )
+            .is_err());
+    }
 }
 
 #[test]

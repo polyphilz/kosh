@@ -282,9 +282,9 @@ CREATE TABLE passage (
         (
             owner_kind = 'AUTHOR'
             AND locator_kind = 'MARKDOWN_BLOCKS'
-            AND json_type(locator_json, '$.start') = 'integer'
+            AND json_type(locator_json, '$.start') IS 'integer'
             AND json_extract(locator_json, '$.start') >= 0
-            AND json_type(locator_json, '$.end') = 'integer'
+            AND json_type(locator_json, '$.end') IS 'integer'
             AND json_extract(locator_json, '$.end') >= json_extract(locator_json, '$.start')
         )
         OR (
@@ -292,25 +292,25 @@ CREATE TABLE passage (
             AND (
                 (
                     locator_kind = 'PDF_PAGE'
-                    AND json_type(locator_json, '$.page') = 'integer'
+                    AND json_type(locator_json, '$.page') IS 'integer'
                     AND json_extract(locator_json, '$.page') > 0
                 )
                 OR (
                     locator_kind = 'OCR_REGION'
-                    AND json_type(locator_json, '$.region') = 'object'
+                    AND json_type(locator_json, '$.region') IS 'object'
                     AND (
                         json_type(locator_json, '$.page') IS NULL
                         OR (
-                            json_type(locator_json, '$.page') = 'integer'
+                            json_type(locator_json, '$.page') IS 'integer'
                             AND json_extract(locator_json, '$.page') > 0
                         )
                     )
                 )
                 OR (
                     locator_kind = 'TEXT_LINES'
-                    AND json_type(locator_json, '$.start') = 'integer'
+                    AND json_type(locator_json, '$.start') IS 'integer'
                     AND json_extract(locator_json, '$.start') > 0
-                    AND json_type(locator_json, '$.end') = 'integer'
+                    AND json_type(locator_json, '$.end') IS 'integer'
                     AND json_extract(locator_json, '$.end')
                         >= json_extract(locator_json, '$.start')
                 )
