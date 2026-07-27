@@ -545,6 +545,25 @@ BEGIN
     SELECT RAISE(ABORT, 'attachment extractions are retained');
 END;
 
+CREATE TRIGGER embedding_index_identity_prevent_update
+BEFORE UPDATE OF id, model_id, model_version, dimension, distance_metric, created_at
+ON embedding_index
+BEGIN
+    SELECT RAISE(ABORT, 'embedding index identity is immutable');
+END;
+
+CREATE TRIGGER passage_embedding_prevent_update
+BEFORE UPDATE ON passage_embedding
+BEGIN
+    SELECT RAISE(ABORT, 'passage embeddings are immutable');
+END;
+
+CREATE TRIGGER passage_embedding_prevent_delete
+BEFORE DELETE ON passage_embedding
+BEGIN
+    SELECT RAISE(ABORT, 'passage embeddings are retained');
+END;
+
 CREATE TRIGGER attachment_segment_prevent_update
 BEFORE UPDATE ON attachment_segment
 BEGIN

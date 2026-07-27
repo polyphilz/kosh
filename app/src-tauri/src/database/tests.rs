@@ -23,7 +23,7 @@ impl TestPair {
 fn initial_migration_checksums_remain_stable() {
     assert_eq!(
         migrations::main_runner().get_migrations()[0].checksum(),
-        4_156_421_841_949_187_765
+        6_623_193_754_736_977_434
     );
     assert_eq!(
         migrations::media_runner().get_migrations()[0].checksum(),
@@ -242,6 +242,27 @@ fn strict_schema_rejects_non_uuidv7_ids_and_preserves_immutable_rows() {
             [],
         )
         .is_err());
+
+    main.execute(
+        "INSERT INTO embedding_index(
+            id, model_id, model_version, dimension, distance_metric, created_at
+         ) VALUES('fixture-index', 'fixture-model', 'v1', 3, 'COSINE', 10)",
+        [],
+    )
+    .expect("embedding index");
+    assert!(main
+        .execute(
+            "UPDATE embedding_index
+             SET model_version = 'v2'
+             WHERE id = 'fixture-index'",
+            [],
+        )
+        .is_err());
+    main.execute(
+        "UPDATE embedding_index SET active = 1 WHERE id = 'fixture-index'",
+        [],
+    )
+    .expect("activation remains mutable");
 }
 
 #[test]
@@ -395,6 +416,88 @@ fn attachment_citation_provenance_cannot_silently_retarget() {
 }
 
 #[test]
+fn interrupted_extractions_are_requeued_only_for_the_same_content() {
+    let pair = TestPair::new();
+    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+    let valid_digest = vec![13_u8; 32];
+    let changed_digest = vec![14_u8; 32];
+
+    let media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Existing)
+            .expect("media writer");
+    for digest in [&valid_digest, &changed_digest] {
+        media
+            .execute(
+                "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+                 VALUES(?1, x'01', 1, 10)",
+                params![digest],
+            )
+            .expect("media blob");
+    }
+    drop(media);
+
+    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
+        .expect("main writer");
+    for (attachment_id, extraction_id, digest, extraction_hash) in [
+        (
+            "019f547b-6200-7000-8000-000000000801",
+            "019f547b-6200-7000-8000-000000000802",
+            &valid_digest,
+            valid_digest.clone(),
+        ),
+        (
+            "019f547b-6200-7000-8000-000000000803",
+            "019f547b-6200-7000-8000-000000000804",
+            &changed_digest,
+            vec![15_u8; 32],
+        ),
+    ] {
+        main.execute(
+            "INSERT INTO attachment(
+                id, created_at, updated_at, sha256, display_filename,
+                media_type, byte_length, kind, extraction_state
+             ) VALUES(?1, 10, 10, ?2, 'scan.png', 'image/png', 1, 'IMAGE', 'PENDING')",
+            params![attachment_id, digest],
+        )
+        .expect("attachment");
+        main.execute(
+            "INSERT INTO attachment_extraction(
+                id, attachment_id, extractor, extractor_version, content_hash,
+                status, created_at, started_at
+             ) VALUES(?1, ?2, 'ocr', 'fixture-v1', ?3, 'RUNNING', 10, 11)",
+            params![extraction_id, attachment_id, extraction_hash],
+        )
+        .expect("running extraction");
+    }
+    drop(main);
+
+    let database = Database::initialize(pair.paths.clone()).expect("recovered pair");
+    let read_only = database.open_main_read_only().expect("read-only main");
+    let valid: (String, Option<i64>, String) = read_only
+        .query_row(
+            "SELECT status, started_at, extractor_version
+             FROM attachment_extraction
+             WHERE id = '019f547b-6200-7000-8000-000000000802'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("requeued extraction");
+    assert_eq!(valid, ("PENDING".into(), None, "fixture-v1".into()));
+
+    let changed: (String, Option<String>) = read_only
+        .query_row(
+            "SELECT status, error
+             FROM attachment_extraction
+             WHERE id = '019f547b-6200-7000-8000-000000000804'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("changed extraction");
+    assert_eq!(changed.0, "FAILED");
+    assert!(changed.1.is_some());
+}
+
+#[test]
 fn revision_provenance_links_cannot_be_retargeted_or_deleted() {
     let pair = TestPair::new();
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
@@ -513,15 +616,39 @@ fn orphaned_media_stage_is_recoverable_but_missing_committed_bytes_are_not() {
         .expect("main writer");
     main.execute(
         "INSERT INTO attachment(
-            id, created_at, updated_at, sha256, display_filename,
+            id, created_at, updated_at, deleted_at, sha256, display_filename,
             media_type, byte_length, kind, extraction_state
          ) VALUES(
             '019f547b-6200-7000-8000-000000000101',
-            10, 10, ?1, 'missing.pdf', 'application/pdf', 3, 'PDF', 'PENDING'
+            10, 11, 11, ?1, 'missing.pdf', 'application/pdf', 3, 'PDF', 'PENDING'
          )",
         params![vec![8_u8; 32]],
     )
-    .expect("attachment without blob");
+    .expect("deleted attachment without blob");
+    main.execute_batch(
+        "BEGIN;
+         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000102',
+            10, 10, '019f547b-6200-7000-8000-000000000103'
+         );
+         INSERT INTO tidbit_revision(
+            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000103',
+            '019f547b-6200-7000-8000-000000000102',
+            1, 10, 'historical attachment', zeroblob(32)
+         );
+         INSERT INTO tidbit_revision_attachment(
+            tidbit_revision_id, attachment_id, sort_order, display_role
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000103',
+            '019f547b-6200-7000-8000-000000000101',
+            0, 'ATTACHMENT'
+         );
+         COMMIT;",
+    )
+    .expect("historical attachment provenance");
     drop(main);
 
     let error = Database::initialize(pair.paths.clone()).expect_err("missing committed bytes");

@@ -165,6 +165,29 @@ fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
          WHERE status = 'RUNNING'",
         [],
     )?;
+    connection.execute(
+        "UPDATE attachment_extraction
+         SET status = 'PENDING',
+             error = NULL,
+             started_at = NULL,
+             completed_at = NULL
+         WHERE status = 'RUNNING'
+           AND EXISTS (
+               SELECT 1
+               FROM attachment
+               WHERE attachment.id = attachment_extraction.attachment_id
+                 AND attachment.sha256 = attachment_extraction.content_hash
+           )",
+        [],
+    )?;
+    connection.execute(
+        "UPDATE attachment_extraction
+         SET status = 'FAILED',
+             error = 'attachment content hash changed before recovery',
+             completed_at = coalesce(started_at, created_at)
+         WHERE status = 'RUNNING'",
+        [],
+    )?;
     Ok(())
 }
 
@@ -208,7 +231,6 @@ fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<
     let mut attachments = main.prepare(
         "SELECT id, sha256, byte_length
          FROM attachment
-         WHERE deleted_at IS NULL
          ORDER BY id",
     )?;
     let rows = attachments.query_map([], |row| {
