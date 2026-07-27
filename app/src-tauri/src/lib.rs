@@ -1,3 +1,4 @@
+mod database;
 mod runtime;
 
 #[cfg(feature = "test-support")]
@@ -38,13 +39,14 @@ pub fn run() {
                 cfg!(debug_assertions),
             );
             std::fs::create_dir_all(&data_dir)?;
-            app.manage(RuntimeState::production(data_dir));
+            app.manage(RuntimeState::production(data_dir)?);
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running Kosh");
 }
 
+pub use database::{Database, DatabaseDiagnostics, DatabaseError, DatabasePaths};
 pub use runtime::RuntimeProbe;
 
 #[cfg(test)]
