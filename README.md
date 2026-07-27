@@ -12,6 +12,7 @@ tools. The repository pins the language toolchains; pnpm is pinned in
 ```bash
 cd app
 pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
 pnpm tauri dev
 ```
 
@@ -34,6 +35,8 @@ Focused commands are also available:
 pnpm lint
 pnpm fmt:check
 pnpm build
+pnpm test
+pnpm test:browser
 pnpm check:native
 ```
 
