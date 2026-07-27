@@ -31,7 +31,8 @@ commits that invalidate an in-flight review.
 
 1. at least one CI check and no failed, pending, or canceled checks;
 2. a `+1` reaction from `chatgpt-codex-connector[bot]` created after the current
-   head commit;
+   head commit, either on the PR for an automatic review or on the latest
+   current-head `@codex review` request;
 3. a clean-review completion comment from that bot naming the current head
    commit; and
 4. a mergeable GitHub state.

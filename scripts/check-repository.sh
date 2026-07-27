@@ -14,5 +14,10 @@ bash -n "${shell_scripts[@]}"
 scripts/check-secrets.sh
 scripts/test-secret-check.sh
 git diff --check
+git diff --cached --check
+if [[ -n "${KOSH_DIFF_BASE:-}" && ! "$KOSH_DIFF_BASE" =~ ^0+$ ]]; then
+  git rev-parse --verify "$KOSH_DIFF_BASE^{commit}" >/dev/null
+  git diff --check "$KOSH_DIFF_BASE"...HEAD
+fi
 
 echo "repository checks passed"

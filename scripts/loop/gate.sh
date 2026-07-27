@@ -82,14 +82,21 @@ head_committed_at="$(
 )"
 [[ -n "$head_committed_at" ]] || fail "could not resolve the head commit timestamp"
 
-reactions_json="$(
+comments_json="$(
+  "$gh_bin" api \
+    --paginate \
+    --slurp \
+    -H "Accept: application/vnd.github+json" \
+    "repos/$repo/issues/$pr_number/comments?per_page=100"
+)"
+pr_reactions_json="$(
   "$gh_bin" api \
     --paginate \
     --slurp \
     -H "Accept: application/vnd.github+json" \
     "repos/$repo/issues/$pr_number/reactions?per_page=100"
 )"
-fresh_approval_count="$(
+pr_approval_count="$(
   jq \
     --arg bot "$review_bot" \
     --arg committed "$head_committed_at" \
@@ -101,18 +108,53 @@ fresh_approval_count="$(
           and .created_at >= $committed
         )
     ] | length' \
-    <<<"$reactions_json"
+    <<<"$pr_reactions_json"
 )"
-((fresh_approval_count > 0)) ||
-  fail "no fresh +1 reaction from $review_bot for the current head"
+review_request="$(
+  jq -c \
+    --arg bot "$review_bot" \
+    --arg committed "$head_committed_at" \
+    '[
+      .[][]
+      | select(
+          .user.login != $bot
+          and .created_at >= $committed
+          and (.body | test("^\\s*@codex\\s+review(?:\\s.*)?$"; "i"))
+        )
+    ] | sort_by(.created_at) | last // empty' \
+    <<<"$comments_json"
+)"
+request_approval_count=0
+if [[ -n "$review_request" ]]; then
+  request_id="$(jq -r '.id' <<<"$review_request")"
+  request_created_at="$(jq -r '.created_at' <<<"$review_request")"
+  [[ "$request_id" =~ ^[1-9][0-9]*$ ]] ||
+    fail "latest Codex review request has an invalid comment ID"
+  request_reactions_json="$(
+    "$gh_bin" api \
+      --paginate \
+      --slurp \
+      -H "Accept: application/vnd.github+json" \
+      "repos/$repo/issues/comments/$request_id/reactions?per_page=100"
+  )"
+  request_approval_count="$(
+    jq \
+      --arg bot "$review_bot" \
+      --arg requested "$request_created_at" \
+      '[
+        .[][]
+        | select(
+            .user.login == $bot
+            and .content == "+1"
+            and .created_at >= $requested
+          )
+      ] | length' \
+      <<<"$request_reactions_json"
+  )"
+fi
+((pr_approval_count + request_approval_count > 0)) ||
+  fail "no fresh +1 from $review_bot on the PR or latest review request"
 
-comments_json="$(
-  "$gh_bin" api \
-    --paginate \
-    --slurp \
-    -H "Accept: application/vnd.github+json" \
-    "repos/$repo/issues/$pr_number/comments?per_page=100"
-)"
 head_short="${head_sha:0:10}"
 matching_review_count="$(
   jq \

@@ -16,7 +16,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Check shell syntax and secret hygiene
         run: scripts/check-repository.sh
+        env:
+          KOSH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
       - name: Test merge gate
         run: scripts/loop/test-gate.sh

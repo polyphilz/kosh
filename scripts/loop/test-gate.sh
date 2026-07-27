@@ -41,7 +41,9 @@ case "${1:-}" in
         exit 2
       }
       request="${*: -1}"
-      if [[ "$request" == *"/reactions?"* ]]; then
+      if [[ "$request" == *"/issues/comments/77/reactions?"* ]]; then
+        jq -cn --argjson page "$FAKE_REQUEST_REACTIONS_JSON" '[$page]'
+      elif [[ "$request" == *"/reactions?"* ]]; then
         jq -cn --argjson page "$FAKE_REACTIONS_JSON" '[$page]'
       elif [[ "$request" == *"/comments?"* ]]; then
         jq -cn --argjson page "$FAKE_COMMENTS_JSON" '[$page]'
@@ -83,6 +85,10 @@ export FAKE_PR_JSON
 export FAKE_CHECKS_JSON='[{"bucket":"pass","link":"","name":"check","state":"SUCCESS","workflow":"check"}]'
 export FAKE_COMMITTED_AT="$committed_at"
 FAKE_REACTIONS_JSON="$(
+  jq -cn '[]'
+)"
+export FAKE_REACTIONS_JSON
+FAKE_REQUEST_REACTIONS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
     '[{
@@ -91,15 +97,24 @@ FAKE_REACTIONS_JSON="$(
       created_at: "2026-07-27T18:05:00Z"
     }]'
 )"
-export FAKE_REACTIONS_JSON
+export FAKE_REQUEST_REACTIONS_JSON
 FAKE_COMMENTS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
-    '[{
-      user: {login: $bot},
-      created_at: "2026-07-27T18:05:00Z",
-      body: "Codex Review: Didn'\''t find any major issues.\n\n**Reviewed commit:** `0123456789`"
-    }]'
+    '[
+      {
+        id: 77,
+        user: {login: "polyphilz"},
+        created_at: "2026-07-27T18:02:00Z",
+        body: "@codex review"
+      },
+      {
+        id: 78,
+        user: {login: $bot},
+        created_at: "2026-07-27T18:05:00Z",
+        body: "Codex Review: Didn'\''t find any major issues.\n\n**Reviewed commit:** `0123456789`"
+      }
+    ]'
 )"
 export FAKE_COMMENTS_JSON
 
@@ -109,6 +124,30 @@ export FAKE_COMMENTS_JSON
   echo "merge wrapper did not invoke a guarded merge" >&2
   exit 1
 }
+
+export FAKE_REQUEST_REACTIONS_JSON='[]'
+FAKE_REACTIONS_JSON="$(
+  jq -cn \
+    --arg bot "$bot" \
+    '[{
+      user: {login: $bot},
+      content: "+1",
+      created_at: "2026-07-27T18:05:00Z"
+    }]'
+)"
+export FAKE_REACTIONS_JSON
+"$gate" 1 polyphilz/kosh >/dev/null
+export FAKE_REACTIONS_JSON='[]'
+FAKE_REQUEST_REACTIONS_JSON="$(
+  jq -cn \
+    --arg bot "$bot" \
+    '[{
+      user: {login: $bot},
+      content: "+1",
+      created_at: "2026-07-27T18:05:00Z"
+    }]'
+)"
+export FAKE_REQUEST_REACTIONS_JSON
 
 expect_blocked() {
   local label="$1"
@@ -122,7 +161,7 @@ export FAKE_CHECKS_JSON='[{"bucket":"fail","link":"","name":"check","state":"FAI
 expect_blocked "failed CI"
 export FAKE_CHECKS_JSON='[{"bucket":"pass","link":"","name":"check","state":"SUCCESS","workflow":"check"}]'
 
-FAKE_REACTIONS_JSON="$(
+FAKE_REQUEST_REACTIONS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
     '[{
@@ -131,9 +170,9 @@ FAKE_REACTIONS_JSON="$(
       created_at: "2026-07-27T17:59:59Z"
     }]'
 )"
-export FAKE_REACTIONS_JSON
+export FAKE_REQUEST_REACTIONS_JSON
 expect_blocked "stale reaction"
-FAKE_REACTIONS_JSON="$(
+FAKE_REQUEST_REACTIONS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
     '[{
@@ -142,16 +181,25 @@ FAKE_REACTIONS_JSON="$(
       created_at: "2026-07-27T18:05:00Z"
     }]'
 )"
-export FAKE_REACTIONS_JSON
+export FAKE_REQUEST_REACTIONS_JSON
 
 FAKE_COMMENTS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
-    '[{
-      user: {login: $bot},
-      created_at: "2026-07-27T18:05:00Z",
-      body: "Codex Review: Didn'\''t find any major issues.\n\n**Reviewed commit:** `fffffffff0`"
-    }]'
+    '[
+      {
+        id: 77,
+        user: {login: "polyphilz"},
+        created_at: "2026-07-27T18:02:00Z",
+        body: "@codex review"
+      },
+      {
+        id: 78,
+        user: {login: $bot},
+        created_at: "2026-07-27T18:05:00Z",
+        body: "Codex Review: Didn'\''t find any major issues.\n\n**Reviewed commit:** `fffffffff0`"
+      }
+    ]'
 )"
 export FAKE_COMMENTS_JSON
 expect_blocked "reviewed commit mismatch"

@@ -39,4 +39,22 @@ if (
   exit 1
 fi
 
+printf '%s=\n%s=\n' \
+  "$access_key_name" \
+  "$secret_key_name" \
+  >"$temp_dir/.env.example"
+readonly fine_grained_prefix="github_pat_"
+printf '%s%s\n' \
+  "$fine_grained_prefix" \
+  '11AA22BB33CC44DD55EE66FF77GG88HH99II00JJ' \
+  >"$temp_dir/credentials.txt"
+git -C "$temp_dir" add .env.example credentials.txt
+if (
+  cd "$temp_dir"
+  scripts/check-secrets.sh >/dev/null 2>&1
+); then
+  echo "secret checker accepted a fine-grained GitHub token" >&2
+  exit 1
+fi
+
 echo "secret checker tests passed"
