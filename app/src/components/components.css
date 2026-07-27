@@ -1,0 +1,438 @@
+.kosh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: var(--surface);
+  font-family: var(--font-family-app);
+  font-weight: 680;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease,
+    transform 120ms ease;
+}
+
+.kosh-button--standard {
+  min-height: 34px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.kosh-button--compact {
+  min-height: 28px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  font-size: 10px;
+}
+
+.kosh-button--icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.kosh-button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.kosh-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.kosh-button--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.kosh-button--ghost:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.kosh-button--primary {
+  border-color: var(--ink);
+  color: var(--canvas);
+  background: var(--ink);
+}
+
+.kosh-button--accent {
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent);
+}
+
+.kosh-button--accent:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+:root[data-appearance="DARK"] .kosh-button--accent {
+  color: #191817;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-appearance="LIGHT"]) .kosh-button--accent {
+    color: #191817;
+  }
+}
+
+.kosh-button--danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+  color: var(--danger);
+  background: var(--surface);
+}
+
+.kosh-button--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.kosh-button:focus-visible,
+.kosh-input:focus-visible,
+.kosh-textarea:focus-visible,
+.kosh-select select:focus-visible,
+.kosh-toggle:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.kosh-button:disabled {
+  cursor: default;
+  opacity: 0.46;
+}
+
+.kosh-input,
+.kosh-textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface-solid) 84%, transparent);
+  outline: none;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+
+.kosh-input {
+  min-height: 38px;
+  padding: 8px 11px;
+  font-size: 12px;
+}
+
+.kosh-textarea {
+  min-height: 220px;
+  padding: 13px;
+  resize: vertical;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.kosh-input::placeholder,
+.kosh-textarea::placeholder {
+  color: var(--muted-soft);
+}
+
+.kosh-select {
+  position: relative;
+  display: inline-flex;
+  min-width: 132px;
+}
+
+.kosh-select select {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 28px 6px 9px;
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  background: var(--surface-solid);
+  font: 650 11px/1.1 var(--font-family-app);
+  cursor: pointer;
+}
+
+.kosh-select svg {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  width: 9px;
+  height: 6px;
+  color: var(--muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.kosh-select path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5px;
+}
+
+.kosh-toggle {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-color: var(--line-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 20%, transparent);
+}
+
+.kosh-toggle:hover:not(:disabled) {
+  transform: none;
+}
+
+.kosh-toggle > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+  transition:
+    left 150ms ease,
+    background-color 150ms ease;
+}
+
+.kosh-toggle[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.kosh-toggle[aria-checked="true"] > span {
+  left: 19px;
+  background: #fff;
+}
+
+.kosh-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  min-height: 24px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 9px;
+  font-weight: 620;
+}
+
+.kosh-status > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.kosh-status--success > span {
+  background: var(--success);
+}
+
+.kosh-status--warning > span {
+  background: var(--warning);
+}
+
+.kosh-status--danger > span {
+  background: var(--danger);
+}
+
+.kosh-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.kosh-shortcut kbd {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-bottom-color: var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-solid) 88%, transparent);
+  font: 620 9px/1 var(--font-family-app);
+  box-shadow: 0 1px 0 var(--line);
+}
+
+.kosh-tooltip {
+  position: relative;
+  display: inline-flex;
+}
+
+.kosh-tooltip > [role="tooltip"] {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: max-content;
+  max-width: 210px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  font-size: 9px;
+  line-height: 1.35;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 3px);
+  transition:
+    opacity 100ms ease,
+    transform 100ms ease;
+}
+
+.kosh-tooltip:hover > [role="tooltip"],
+.kosh-tooltip:focus-within > [role="tooltip"],
+.kosh-tooltip--open > [role="tooltip"] {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.kosh-state {
+  display: grid;
+  min-height: 210px;
+  place-items: center;
+  align-content: center;
+  padding: 28px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  color: var(--muted);
+  text-align: center;
+}
+
+.page > .kosh-state {
+  margin-top: 28px;
+}
+
+.kosh-state h2 {
+  margin: 10px 0 5px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.kosh-state p {
+  max-width: 390px;
+  margin: 0 0 16px;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.kosh-state__mark {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--surface);
+  font-size: 14px;
+}
+
+.kosh-state--error .kosh-state__mark {
+  color: var(--danger);
+}
+
+.kosh-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: kosh-spin 850ms linear infinite;
+}
+
+@keyframes kosh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.kosh-dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(14, 12, 10, 0.42);
+  backdrop-filter: blur(7px);
+}
+
+.kosh-dialog {
+  width: min(440px, 100%);
+  padding: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  outline: none;
+}
+
+.kosh-dialog header > p {
+  margin: 0 0 5px;
+  color: var(--accent);
+  font-size: 8px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.kosh-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  letter-spacing: -0.035em;
+}
+
+.kosh-dialog header > span,
+.kosh-dialog__body {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.kosh-dialog__body {
+  padding: 14px 0 20px;
+}
+
+.kosh-dialog__body p {
+  margin: 0;
+}
+
+.kosh-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kosh-spinner {
+    border-color: var(--line);
+    border-top-color: var(--accent);
+    animation: none;
+  }
+}

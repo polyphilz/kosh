@@ -32,9 +32,14 @@ export function RuntimePage() {
   }, [backend]);
 
   return (
-    <main className="shell">
-      <p className="eyebrow">Typed IPC smoke route</p>
-      <h1>Runtime</h1>
+    <main className="page">
+      <header className="page-header">
+        <div>
+          <p className="page-kicker">Typed IPC smoke route</p>
+          <h1>Runtime</h1>
+          <p>This internal view proves the frontend/native boundary.</p>
+        </div>
+      </header>
       {state.status === "loading" && <p role="status">Loading runtime probe…</p>}
       {state.status === "error" && <p role="alert">{state.message}</p>}
       {state.status === "ready" && (

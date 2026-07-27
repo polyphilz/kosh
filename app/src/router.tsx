@@ -5,21 +5,53 @@ import {
   createRouter,
   type RouterHistory,
 } from "@tanstack/react-router";
-import { App, LandingPage } from "./App";
+import { App } from "./App";
+import { AddPage } from "./routes/AddPage";
+import { CatalogPage } from "./routes/CatalogPage";
+import { ResearchPage } from "./routes/ResearchPage";
 import { RuntimePage } from "./routes/RuntimePage";
+import { SearchPage } from "./routes/SearchPage";
+import { SettingsPage } from "./routes/SettingsPage";
 
 const rootRoute = createRootRoute({ component: App });
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: LandingPage,
+  component: SearchPage,
+});
+const addRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/add",
+  component: AddPage,
+});
+const researchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/research",
+  component: ResearchPage,
+});
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: SettingsPage,
+});
+const catalogRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/catalog",
+  component: CatalogPage,
 });
 const runtimeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/runtime",
   component: RuntimePage,
 });
-const routeTree = rootRoute.addChildren([indexRoute, runtimeRoute]);
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  addRoute,
+  researchRoute,
+  settingsRoute,
+  catalogRoute,
+  runtimeRoute,
+]);
 
 export function createAppRouter(history: RouterHistory = createHashHistory()) {
   return createRouter({ history, routeTree });
