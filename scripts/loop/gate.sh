@@ -98,7 +98,7 @@ head_observed_at="$(
       | .workflow_runs[]?
       | select(.head_sha == $head and .event == "pull_request")
       | .created_at
-    ] | min // empty' \
+    ] | max // empty' \
     <<<"$workflow_runs_json"
 )"
 [[ -n "$head_observed_at" ]] ||

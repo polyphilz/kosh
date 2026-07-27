@@ -30,8 +30,8 @@ commits that invalidate an in-flight review.
 `main`, it requires:
 
 1. at least one CI check and no failed, pending, or canceled checks;
-2. a user-authored `@codex review` request created after a GitHub Actions run
-   records the current head on GitHub;
+2. a user-authored `@codex review` request created after the latest GitHub
+   Actions run records a transition to the current head on GitHub;
 3. a later `+1` reaction from `chatgpt-codex-connector[bot]` on that exact
    request, which is Codex's clean-review signal; and
 4. a mergeable GitHub state.

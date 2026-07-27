@@ -170,14 +170,21 @@ FAKE_RUNS_JSON="$(
   jq -cn \
     --arg head "$head_sha" \
     '{
-      workflow_runs: [{
-        created_at: "2026-07-27T18:03:00Z",
-        event: "pull_request",
-        head_sha: $head
-      }]
+      workflow_runs: [
+        {
+          created_at: "2026-07-27T18:00:00Z",
+          event: "pull_request",
+          head_sha: $head
+        },
+        {
+          created_at: "2026-07-27T18:03:00Z",
+          event: "pull_request",
+          head_sha: $head
+        }
+      ]
     }'
 )"
 export FAKE_RUNS_JSON
-expect_blocked "review request predates current head"
+expect_blocked "review request predates latest transition to current head"
 
 echo "merge gate tests passed"
