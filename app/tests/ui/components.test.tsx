@@ -75,7 +75,13 @@ describe("shared controls", () => {
     const trigger = screen.getByRole("button", { name: "Open confirmation" });
     await user.click(trigger);
     const cancel = await screen.findByRole("button", { name: "Cancel" });
+    const remove = screen.getByRole("button", { name: "Remove" });
     await waitFor(() => expect(cancel).toHaveFocus());
+
+    await user.tab({ shift: true });
+    expect(remove).toHaveFocus();
+    await user.tab();
+    expect(cancel).toHaveFocus();
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

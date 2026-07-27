@@ -52,3 +52,15 @@ test("primary destinations support keyboard navigation", async ({ page }) => {
   await expect(page).toHaveURL(/#\/add$/);
   await expect(page.getByRole("heading", { name: "Add a tidbit" })).toBeVisible();
 });
+
+test("supported compact windows retain visible navigation labels", async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 700 });
+  await page.goto("/#/");
+
+  const links = page.getByRole("navigation", { name: "Primary" }).getByRole("link");
+  await expect(links).toHaveCount(4);
+
+  for (const link of await links.all()) {
+    await expect(link).not.toHaveCSS("color", "rgba(0, 0, 0, 0)");
+  }
+});
