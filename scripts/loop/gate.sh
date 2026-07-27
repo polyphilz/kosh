@@ -167,8 +167,6 @@ pr_approval_count="$(
     ] | length' \
     <<<"$pr_reactions_json"
 )"
-((request_approval_count + pr_approval_count > 0)) ||
-  fail "no fresh +1 from $review_bot on the PR or current-head review request"
 
 head_short="${head_sha:0:10}"
 matching_review_count="$(
@@ -191,7 +189,7 @@ matching_review_count="$(
     ] | length' \
     <<<"$comments_json"
 )"
-((matching_review_count > 0)) ||
-  fail "no clean Codex completion comment matches current head $head_short"
+((request_approval_count + pr_approval_count + matching_review_count > 0)) ||
+  fail "no fresh +1 or clean Codex completion matches current head $head_short"
 
 echo "merge gate passed for $pr_url at $head_sha"

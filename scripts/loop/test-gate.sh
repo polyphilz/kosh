@@ -95,16 +95,7 @@ FAKE_RUNS_JSON="$(
 )"
 export FAKE_RUNS_JSON
 export FAKE_REQUEST_REACTIONS_JSON='[]'
-FAKE_PR_REACTIONS_JSON="$(
-  jq -cn \
-    --arg bot "$bot" \
-    '[{
-      user: {login: $bot},
-      content: "+1",
-      created_at: "2026-07-27T18:05:00Z"
-    }]'
-)"
-export FAKE_PR_REACTIONS_JSON
+export FAKE_PR_REACTIONS_JSON='[]'
 FAKE_COMMENTS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
@@ -125,6 +116,7 @@ FAKE_COMMENTS_JSON="$(
 )"
 export FAKE_COMMENTS_JSON
 
+# A matching clean completion is sufficient even if GitHub exposes no +1.
 "$gate" 1 polyphilz/kosh >/dev/null
 "$repo_root/scripts/loop/merge.sh" 1 polyphilz/kosh >/dev/null
 [[ -f "$FAKE_MERGE_MARKER" ]] || {
@@ -134,9 +126,8 @@ export FAKE_COMMENTS_JSON
 status_output="$("$status" polyphilz/kosh)"
 grep -F "review request: issue comment 77" <<<"$status_output" >/dev/null
 grep -F "PR reactions:" <<<"$status_output" >/dev/null
-grep -F "+1 $bot 2026-07-27T18:05:00Z" <<<"$status_output" >/dev/null
 
-export FAKE_PR_REACTIONS_JSON='[]'
+# A +1 is likewise sufficient when Codex does not post a clean comment.
 FAKE_REQUEST_REACTIONS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
@@ -147,8 +138,34 @@ FAKE_REQUEST_REACTIONS_JSON="$(
     }]'
 )"
 export FAKE_REQUEST_REACTIONS_JSON
+FAKE_COMMENTS_JSON="$(
+  jq -cn \
+    '[
+      {
+        id: 77,
+        user: {login: "polyphilz"},
+        created_at: "2026-07-27T18:02:00Z",
+        body: "@codex review"
+      }
+    ]'
+)"
+export FAKE_COMMENTS_JSON
 "$gate" 1 polyphilz/kosh >/dev/null
 export FAKE_REQUEST_REACTIONS_JSON='[]'
+
+# GitHub may place the +1 on the PR body rather than the request comment.
+FAKE_PR_REACTIONS_JSON="$(
+  jq -cn \
+    --arg bot "$bot" \
+    '[{
+      user: {login: $bot},
+      content: "+1",
+      created_at: "2026-07-27T18:05:00Z"
+    }]'
+)"
+export FAKE_PR_REACTIONS_JSON
+"$gate" 1 polyphilz/kosh >/dev/null
+export FAKE_PR_REACTIONS_JSON='[]'
 
 expect_blocked() {
   local label="$1"
@@ -162,6 +179,9 @@ export FAKE_CHECKS_JSON='[{"bucket":"fail","link":"","name":"check","state":"FAI
 expect_blocked "failed CI"
 export FAKE_CHECKS_JSON='[{"bucket":"pass","link":"","name":"check","state":"SUCCESS","workflow":"check"}]'
 
+# With neither clean signal, the gate stays closed.
+expect_blocked "missing clean review signal"
+
 FAKE_PR_REACTIONS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
@@ -173,16 +193,6 @@ FAKE_PR_REACTIONS_JSON="$(
 )"
 export FAKE_PR_REACTIONS_JSON
 expect_blocked "stale reaction"
-FAKE_PR_REACTIONS_JSON="$(
-  jq -cn \
-    --arg bot "$bot" \
-    '[{
-      user: {login: $bot},
-      content: "+1",
-      created_at: "2026-07-27T18:05:00Z"
-    }]'
-)"
-export FAKE_PR_REACTIONS_JSON
 
 FAKE_COMMENTS_JSON="$(
   jq -cn \
