@@ -76,12 +76,6 @@ if [[ -n "$blocking_checks" ]]; then
   fail "CI checks are not all complete and successful"
 fi
 
-head_committed_at="$(
-  "$gh_bin" api "repos/$repo/commits/$head_sha" \
-    --jq '.commit.committer.date'
-)"
-[[ -n "$head_committed_at" ]] || fail "could not resolve the head commit timestamp"
-
 comments_json="$(
   "$gh_bin" api \
     --paginate \
@@ -89,94 +83,70 @@ comments_json="$(
     -H "Accept: application/vnd.github+json" \
     "repos/$repo/issues/$pr_number/comments?per_page=100"
 )"
-pr_reactions_json="$(
+workflow_runs_json="$(
   "$gh_bin" api \
     --paginate \
     --slurp \
     -H "Accept: application/vnd.github+json" \
-    "repos/$repo/issues/$pr_number/reactions?per_page=100"
+    "repos/$repo/actions/runs?head_sha=$head_sha&event=pull_request&per_page=100"
 )"
-pr_approval_count="$(
-  jq \
-    --arg bot "$review_bot" \
-    --arg committed "$head_committed_at" \
+head_observed_at="$(
+  jq -r \
+    --arg head "$head_sha" \
     '[
-      .[][]
-      | select(
-          .user.login == $bot
-          and .content == "+1"
-          and .created_at >= $committed
-        )
-    ] | length' \
-    <<<"$pr_reactions_json"
+      .[]
+      | .workflow_runs[]?
+      | select(.head_sha == $head and .event == "pull_request")
+      | .created_at
+    ] | min // empty' \
+    <<<"$workflow_runs_json"
 )"
+[[ -n "$head_observed_at" ]] ||
+  fail "no GitHub Actions run records when the current head reached GitHub"
+
 review_request="$(
   jq -c \
     --arg bot "$review_bot" \
-    --arg committed "$head_committed_at" \
+    --arg observed "$head_observed_at" \
     '[
       .[][]
       | select(
           .user.login != $bot
-          and .created_at >= $committed
+          and .created_at >= $observed
           and (.body | test("^\\s*@codex\\s+review(?:\\s.*)?$"; "i"))
         )
     ] | sort_by(.created_at) | last // empty' \
     <<<"$comments_json"
 )"
-request_approval_count=0
-if [[ -n "$review_request" ]]; then
-  request_id="$(jq -r '.id' <<<"$review_request")"
-  request_created_at="$(jq -r '.created_at' <<<"$review_request")"
-  [[ "$request_id" =~ ^[1-9][0-9]*$ ]] ||
-    fail "latest Codex review request has an invalid comment ID"
-  request_reactions_json="$(
-    "$gh_bin" api \
-      --paginate \
-      --slurp \
-      -H "Accept: application/vnd.github+json" \
-      "repos/$repo/issues/comments/$request_id/reactions?per_page=100"
-  )"
-  request_approval_count="$(
-    jq \
-      --arg bot "$review_bot" \
-      --arg requested "$request_created_at" \
-      '[
-        .[][]
-        | select(
-            .user.login == $bot
-            and .content == "+1"
-            and .created_at >= $requested
-          )
-      ] | length' \
-      <<<"$request_reactions_json"
-  )"
-fi
-((pr_approval_count + request_approval_count > 0)) ||
-  fail "no fresh +1 from $review_bot on the PR or latest review request"
+[[ -n "$review_request" ]] ||
+  fail "no Codex review request follows GitHub's observation of the current head"
 
-head_short="${head_sha:0:10}"
-matching_review_count="$(
+request_id="$(jq -r '.id' <<<"$review_request")"
+request_created_at="$(jq -r '.created_at' <<<"$review_request")"
+[[ "$request_id" =~ ^[1-9][0-9]*$ ]] ||
+  fail "latest Codex review request has an invalid comment ID"
+request_reactions_json="$(
+  "$gh_bin" api \
+    --paginate \
+    --slurp \
+    -H "Accept: application/vnd.github+json" \
+    "repos/$repo/issues/comments/$request_id/reactions?per_page=100"
+)"
+request_approval_count="$(
   jq \
     --arg bot "$review_bot" \
-    --arg committed "$head_committed_at" \
-    --arg reviewed "$head_short" \
+    --arg requested "$request_created_at" \
     '[
       .[][]
       | select(
           .user.login == $bot
-          and .created_at >= $committed
-          and (.body | contains("Reviewed commit:"))
-          and (.body | contains($reviewed))
-          and (
-            (.body | test("Didn.t find any major issues"; "i"))
-            or (.body | test("found no major issues"; "i"))
-          )
+          and .content == "+1"
+          and .created_at >= $requested
         )
     ] | length' \
-    <<<"$comments_json"
+    <<<"$request_reactions_json"
 )"
-((matching_review_count > 0)) ||
-  fail "no clean Codex completion comment matches current head $head_short"
+((request_approval_count > 0)) ||
+  fail "no clean +1 from $review_bot on the current-head review request"
 
 echo "merge gate passed for $pr_url at $head_sha"

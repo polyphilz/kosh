@@ -33,24 +33,20 @@ case "${1:-}" in
     fi
     ;;
   "api")
-    if [[ "${2:-}" == "repos/polyphilz/kosh/commits/"* ]]; then
-      echo "$FAKE_COMMITTED_AT"
+    [[ " $* " == *" --paginate "* && " $* " == *" --slurp "* ]] || {
+      echo "review evidence request was not paginated and slurped" >&2
+      exit 2
+    }
+    request="${*: -1}"
+    if [[ "$request" == *"/issues/comments/77/reactions?"* ]]; then
+      jq -cn --argjson page "$FAKE_REQUEST_REACTIONS_JSON" '[$page]'
+    elif [[ "$request" == *"/issues/"*"/comments?"* ]]; then
+      jq -cn --argjson page "$FAKE_COMMENTS_JSON" '[$page]'
+    elif [[ "$request" == *"/actions/runs?"* ]]; then
+      jq -cn --argjson page "$FAKE_RUNS_JSON" '[$page]'
     else
-      [[ " $* " == *" --paginate "* && " $* " == *" --slurp "* ]] || {
-        echo "review evidence request was not paginated and slurped" >&2
-        exit 2
-      }
-      request="${*: -1}"
-      if [[ "$request" == *"/issues/comments/77/reactions?"* ]]; then
-        jq -cn --argjson page "$FAKE_REQUEST_REACTIONS_JSON" '[$page]'
-      elif [[ "$request" == *"/reactions?"* ]]; then
-        jq -cn --argjson page "$FAKE_REACTIONS_JSON" '[$page]'
-      elif [[ "$request" == *"/comments?"* ]]; then
-        jq -cn --argjson page "$FAKE_COMMENTS_JSON" '[$page]'
-      else
-        echo "unexpected API request: $request" >&2
-        exit 2
-      fi
+      echo "unexpected API request: $request" >&2
+      exit 2
     fi
     ;;
   *)
@@ -62,7 +58,6 @@ FAKE_GH
 chmod +x "$temp_dir/gh"
 
 readonly head_sha="0123456789abcdef0123456789abcdef01234567"
-readonly committed_at="2026-07-27T18:00:00Z"
 readonly bot="chatgpt-codex-connector[bot]"
 
 export GH_BIN="$temp_dir/gh"
@@ -83,11 +78,18 @@ FAKE_PR_JSON="$(
 )"
 export FAKE_PR_JSON
 export FAKE_CHECKS_JSON='[{"bucket":"pass","link":"","name":"check","state":"SUCCESS","workflow":"check"}]'
-export FAKE_COMMITTED_AT="$committed_at"
-FAKE_REACTIONS_JSON="$(
-  jq -cn '[]'
+FAKE_RUNS_JSON="$(
+  jq -cn \
+    --arg head "$head_sha" \
+    '{
+      workflow_runs: [{
+        created_at: "2026-07-27T18:01:00Z",
+        event: "pull_request",
+        head_sha: $head
+      }]
+    }'
 )"
-export FAKE_REACTIONS_JSON
+export FAKE_RUNS_JSON
 FAKE_REQUEST_REACTIONS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
@@ -112,7 +114,7 @@ FAKE_COMMENTS_JSON="$(
         id: 78,
         user: {login: $bot},
         created_at: "2026-07-27T18:05:00Z",
-        body: "Codex Review: Didn'\''t find any major issues.\n\n**Reviewed commit:** `0123456789`"
+        body: "review metadata does not authorize a merge"
       }
     ]'
 )"
@@ -124,30 +126,6 @@ export FAKE_COMMENTS_JSON
   echo "merge wrapper did not invoke a guarded merge" >&2
   exit 1
 }
-
-export FAKE_REQUEST_REACTIONS_JSON='[]'
-FAKE_REACTIONS_JSON="$(
-  jq -cn \
-    --arg bot "$bot" \
-    '[{
-      user: {login: $bot},
-      content: "+1",
-      created_at: "2026-07-27T18:05:00Z"
-    }]'
-)"
-export FAKE_REACTIONS_JSON
-"$gate" 1 polyphilz/kosh >/dev/null
-export FAKE_REACTIONS_JSON='[]'
-FAKE_REQUEST_REACTIONS_JSON="$(
-  jq -cn \
-    --arg bot "$bot" \
-    '[{
-      user: {login: $bot},
-      content: "+1",
-      created_at: "2026-07-27T18:05:00Z"
-    }]'
-)"
-export FAKE_REQUEST_REACTIONS_JSON
 
 expect_blocked() {
   local label="$1"
@@ -183,25 +161,18 @@ FAKE_REQUEST_REACTIONS_JSON="$(
 )"
 export FAKE_REQUEST_REACTIONS_JSON
 
-FAKE_COMMENTS_JSON="$(
+FAKE_RUNS_JSON="$(
   jq -cn \
-    --arg bot "$bot" \
-    '[
-      {
-        id: 77,
-        user: {login: "polyphilz"},
-        created_at: "2026-07-27T18:02:00Z",
-        body: "@codex review"
-      },
-      {
-        id: 78,
-        user: {login: $bot},
-        created_at: "2026-07-27T18:05:00Z",
-        body: "Codex Review: Didn'\''t find any major issues.\n\n**Reviewed commit:** `fffffffff0`"
-      }
-    ]'
+    --arg head "$head_sha" \
+    '{
+      workflow_runs: [{
+        created_at: "2026-07-27T18:03:00Z",
+        event: "pull_request",
+        head_sha: $head
+      }]
+    }'
 )"
-export FAKE_COMMENTS_JSON
-expect_blocked "reviewed commit mismatch"
+export FAKE_RUNS_JSON
+expect_blocked "review request predates current head"
 
 echo "merge gate tests passed"
