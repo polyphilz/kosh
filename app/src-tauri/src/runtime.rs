@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::database::{Database, DatabasePaths};
+use crate::database::{Database, DatabaseClient, DatabasePaths};
 
 pub(crate) trait Clock: Send + Sync {
     fn now_ms(&self) -> i64;
@@ -38,7 +38,7 @@ impl IdGenerator for UuidV7Generator {
 
 pub(crate) struct RuntimeState {
     data_dir: PathBuf,
-    _database: Arc<Database>,
+    database: Arc<Database>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
 }
@@ -48,7 +48,7 @@ impl RuntimeState {
         let database = Database::initialize(DatabasePaths::new(&data_dir))?;
         Ok(Self {
             data_dir,
-            _database: Arc::new(database),
+            database: Arc::new(database),
             clock: Arc::new(SystemClock),
             ids: Arc::new(UuidV7Generator),
         })
@@ -64,10 +64,22 @@ impl RuntimeState {
             Database::initialize(DatabasePaths::new(&data_dir)).expect("temporary Kosh database");
         Self {
             data_dir,
-            _database: Arc::new(database),
+            database: Arc::new(database),
             clock,
             ids,
         }
+    }
+
+    pub(crate) fn database_client(&self) -> DatabaseClient {
+        self.database.client()
+    }
+
+    pub(crate) fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
+    }
+
+    pub(crate) fn next_ids(&self, count: usize) -> Vec<String> {
+        (0..count).map(|_| self.ids.next_id()).collect()
     }
 }
 

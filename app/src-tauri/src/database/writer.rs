@@ -5,6 +5,10 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use super::{
     error::{DatabaseError, Result},
     migrations::MigrationHeads,
+    tidbits::{
+        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput, Tidbit,
+        TidbitListPage,
+    },
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -32,6 +36,27 @@ pub(super) enum WriterMessage {
         now: i64,
         reason: String,
         reply: SyncSender<Result<bool>>,
+    },
+    CreateTidbit {
+        write: CreateTidbitWrite,
+        reply: SyncSender<Result<Tidbit>>,
+    },
+    LoadTidbit {
+        id: String,
+        reply: SyncSender<Result<Tidbit>>,
+    },
+    ListTidbits {
+        input: ListTidbitsInput,
+        reply: SyncSender<Result<TidbitListPage>>,
+    },
+    EditTidbit {
+        write: EditTidbitWrite,
+        reply: SyncSender<Result<Tidbit>>,
+    },
+    DeleteTidbit {
+        input: DeleteTidbitInput,
+        now_ms: i64,
+        reply: SyncSender<Result<Tidbit>>,
     },
     Shutdown,
 }
@@ -85,6 +110,60 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::ReconcileFts { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn create_tidbit(&self, write: CreateTidbitWrite) -> Result<Tidbit> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::CreateTidbit { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_tidbit(&self, id: String) -> Result<Tidbit> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadTidbit { id, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn list_tidbits(&self, input: ListTidbitsInput) -> Result<TidbitListPage> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ListTidbits { input, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn edit_tidbit(&self, write: EditTidbitWrite) -> Result<Tidbit> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::EditTidbit { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn delete_tidbit(&self, input: DeleteTidbitInput, now_ms: i64) -> Result<Tidbit> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::DeleteTidbit {
+                input,
+                now_ms,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

@@ -1,4 +1,15 @@
-import type { Backend, RuntimeProbe } from "./contracts";
+import type {
+  Backend,
+  DeleteTidbitInput,
+  EditTidbitInput,
+  ListTidbitsInput,
+  RuntimeProbe,
+  SourceDraft,
+  TidbitDraft,
+  TidbitListPage,
+  TidbitRecord,
+  TidbitSource,
+} from "./contracts";
 
 export const browserRuntimeProbe: RuntimeProbe = {
   dataDir: "/tmp/kosh-browser-fixture",
@@ -8,12 +19,200 @@ export const browserRuntimeProbe: RuntimeProbe = {
 
 export class FakeBackend implements Backend {
   private readonly probe: RuntimeProbe;
+  private readonly tidbits = new Map<string, TidbitRecord>();
+  private sequence = 0;
 
-  constructor(probe: RuntimeProbe = browserRuntimeProbe) {
+  constructor(probe: RuntimeProbe = browserRuntimeProbe, tidbits: TidbitRecord[] = []) {
     this.probe = probe;
+    this.sequence = tidbits.length;
+    for (const tidbit of tidbits) {
+      this.tidbits.set(tidbit.id, cloneTidbit(tidbit));
+    }
   }
 
   async runtimeProbe(): Promise<RuntimeProbe> {
     return { ...this.probe };
   }
+
+  async createTidbit(input: TidbitDraft): Promise<TidbitRecord> {
+    const sequence = this.nextSequence();
+    const bodyMarkdown = validateBody(input.bodyMarkdown);
+    const title = normalizeText(input.title);
+    const sources = input.sources.map((source) => this.prepareSource(source));
+    const tidbit: TidbitRecord = {
+      id: `fake-tidbit-${sequence}`,
+      currentRevisionId: `fake-revision-${sequence}`,
+      revisionNumber: 1,
+      createdAtMs: this.probe.nowMs + sequence,
+      updatedAtMs: this.probe.nowMs + sequence,
+      deletedAtMs: null,
+      title,
+      displayTitle: deriveDisplayTitle(title, bodyMarkdown),
+      bodyMarkdown,
+      sources,
+    };
+    this.tidbits.set(tidbit.id, tidbit);
+    return cloneTidbit(tidbit);
+  }
+
+  async loadTidbit(id: string): Promise<TidbitRecord> {
+    return cloneTidbit(this.requireTidbit(id));
+  }
+
+  async listTidbits(input: ListTidbitsInput): Promise<TidbitListPage> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new Error("limit must be between 1 and 100");
+    }
+    const sorted = [...this.tidbits.values()]
+      .filter((tidbit) => tidbit.deletedAtMs === null)
+      .sort(
+        (left, right) => right.updatedAtMs - left.updatedAtMs || right.id.localeCompare(left.id),
+      );
+    const afterCursor = input.cursor
+      ? sorted.filter(
+          (tidbit) =>
+            tidbit.updatedAtMs < input.cursor!.updatedAtMs ||
+            (tidbit.updatedAtMs === input.cursor!.updatedAtMs && tidbit.id < input.cursor!.id),
+        )
+      : sorted;
+    const hasMore = afterCursor.length > input.limit;
+    const page = afterCursor.slice(0, input.limit);
+    const last = page.at(-1);
+    return {
+      items: page.map((tidbit) => ({
+        id: tidbit.id,
+        currentRevisionId: tidbit.currentRevisionId,
+        createdAtMs: tidbit.createdAtMs,
+        updatedAtMs: tidbit.updatedAtMs,
+        title: tidbit.title,
+        displayTitle: tidbit.displayTitle,
+        bodyPreview: collapseAndTruncate(tidbit.bodyMarkdown, 240),
+      })),
+      nextCursor:
+        hasMore && last
+          ? {
+              updatedAtMs: last.updatedAtMs,
+              id: last.id,
+            }
+          : null,
+    };
+  }
+
+  async editTidbit(input: EditTidbitInput): Promise<TidbitRecord> {
+    const current = this.requireTidbit(input.id);
+    if (current.deletedAtMs !== null) {
+      throw new Error(`tidbit ${input.id} is deleted`);
+    }
+    if (current.currentRevisionId !== input.expectedRevisionId) {
+      throw new Error(`tidbit ${input.id} is stale`);
+    }
+    const sequence = this.nextSequence();
+    const bodyMarkdown = validateBody(input.bodyMarkdown);
+    const title = normalizeText(input.title);
+    const updated: TidbitRecord = {
+      ...current,
+      currentRevisionId: `fake-revision-${sequence}`,
+      revisionNumber: current.revisionNumber + 1,
+      updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
+      title,
+      displayTitle: deriveDisplayTitle(title, bodyMarkdown),
+      bodyMarkdown,
+      sources: input.sources.map((source) => this.prepareSource(source)),
+    };
+    this.tidbits.set(updated.id, updated);
+    return cloneTidbit(updated);
+  }
+
+  async deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord> {
+    const current = this.requireTidbit(input.id);
+    if (current.deletedAtMs !== null) {
+      throw new Error(`tidbit ${input.id} is deleted`);
+    }
+    if (current.currentRevisionId !== input.expectedRevisionId) {
+      throw new Error(`tidbit ${input.id} is stale`);
+    }
+    const deletedAtMs = Math.max(current.updatedAtMs + 1, this.probe.nowMs + this.nextSequence());
+    const deleted = {
+      ...current,
+      updatedAtMs: deletedAtMs,
+      deletedAtMs,
+    };
+    this.tidbits.set(deleted.id, deleted);
+    return cloneTidbit(deleted);
+  }
+
+  private nextSequence(): number {
+    this.sequence += 1;
+    return this.sequence;
+  }
+
+  private requireTidbit(id: string): TidbitRecord {
+    const tidbit = this.tidbits.get(id);
+    if (!tidbit) {
+      throw new Error(`tidbit ${id} was not found`);
+    }
+    return tidbit;
+  }
+
+  private prepareSource(input: SourceDraft): TidbitSource {
+    const label = normalizeText(input.label);
+    const rawUrl = normalizeText(input.url);
+    let url: string | null = null;
+    if (rawUrl) {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("source URL must use HTTP or HTTPS");
+      }
+      parsed.hash = "";
+      url = parsed.toString();
+    }
+    if (!label && !url) {
+      throw new Error("each source needs a label or HTTP(S) URL");
+    }
+    return {
+      id: `fake-source-${this.nextSequence()}`,
+      label,
+      url,
+    };
+  }
+}
+
+function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
+  return {
+    ...tidbit,
+    sources: tidbit.sources.map((source) => ({ ...source })),
+  };
+}
+
+function normalizeText(value: string | null): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized ? normalized : null;
+}
+
+function validateBody(value: string): string {
+  if (!value.trim()) {
+    throw new Error("bodyMarkdown must contain non-whitespace text");
+  }
+  return value;
+}
+
+function deriveDisplayTitle(title: string | null, bodyMarkdown: string): string {
+  if (title) {
+    return truncate(title, 96);
+  }
+  const line = bodyMarkdown
+    .split(/\r?\n/u)
+    .map((candidate) => candidate.trim())
+    .find((candidate) => candidate && !candidate.startsWith("```") && !candidate.startsWith("~~~"));
+  const stripped = line?.replace(/^[#>*+\-\s]+/u, "") || "Untitled tidbit";
+  return truncate(stripped, 96);
+}
+
+function collapseAndTruncate(value: string, limit: number): string {
+  return truncate(value.trim().split(/\s+/u).join(" "), limit);
+}
+
+function truncate(value: string, limit: number): string {
+  const characters = [...value];
+  return characters.length > limit ? `${characters.slice(0, limit).join("")}…` : value;
 }

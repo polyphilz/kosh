@@ -42,6 +42,21 @@ pub enum DatabaseError {
     #[error("invalid database command: {0}")]
     InvalidInput(String),
 
+    #[error("{entity} {id} was not found")]
+    NotFound { entity: &'static str, id: String },
+
+    #[error(
+        "tidbit {id} changed before this operation: current revision is {actual_revision_id}, expected {expected_revision_id}"
+    )]
+    StaleTidbit {
+        id: String,
+        expected_revision_id: String,
+        actual_revision_id: String,
+    },
+
+    #[error("tidbit {id} is deleted")]
+    TidbitDeleted { id: String },
+
     #[error("media blob is still referenced by {references} attachment(s)")]
     MediaInUse { references: i64 },
 

@@ -1,12 +1,16 @@
+pub(crate) mod commands;
 mod connection;
 mod error;
 mod migrations;
 mod paths;
+mod tidbits;
 mod validation;
 mod writer;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tidbits_tests;
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
@@ -21,6 +25,10 @@ use rusqlite::Connection;
 
 pub use error::{DatabaseError, Result};
 pub use paths::DatabasePaths;
+pub use tidbits::{
+    DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, SourceDraft, Tidbit, TidbitDraft,
+    TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
+};
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
@@ -179,6 +187,25 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
                 let _ = reply.send(writer::reap_media_blob(
                     &mut main, &mut media, sha256, now, reason,
                 ));
+            }
+            WriterMessage::CreateTidbit { write, reply } => {
+                let _ = reply.send(tidbits::create_tidbit(&mut main, write));
+            }
+            WriterMessage::LoadTidbit { id, reply } => {
+                let _ = reply.send(tidbits::load_tidbit(&main, &id));
+            }
+            WriterMessage::ListTidbits { input, reply } => {
+                let _ = reply.send(tidbits::list_tidbits(&main, input));
+            }
+            WriterMessage::EditTidbit { write, reply } => {
+                let _ = reply.send(tidbits::edit_tidbit(&mut main, write));
+            }
+            WriterMessage::DeleteTidbit {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(tidbits::delete_tidbit(&mut main, input, now_ms));
             }
             WriterMessage::Shutdown => break,
         }

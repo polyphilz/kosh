@@ -26,7 +26,14 @@ fn select_data_dir(
 }
 
 fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
-    builder.invoke_handler(tauri::generate_handler![runtime::runtime_probe])
+    builder.invoke_handler(tauri::generate_handler![
+        runtime::runtime_probe,
+        database::commands::create_tidbit,
+        database::commands::load_tidbit,
+        database::commands::list_tidbits,
+        database::commands::edit_tidbit,
+        database::commands::delete_tidbit,
+    ])
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,7 +53,11 @@ pub fn run() {
         .expect("error while running Kosh");
 }
 
-pub use database::{Database, DatabaseDiagnostics, DatabaseError, DatabasePaths};
+pub use database::{
+    Database, DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput,
+    EditTidbitInput, ListTidbitsInput, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor,
+    TidbitListItem, TidbitListPage, TidbitSource,
+};
 pub use runtime::RuntimeProbe;
 
 #[cfg(test)]
