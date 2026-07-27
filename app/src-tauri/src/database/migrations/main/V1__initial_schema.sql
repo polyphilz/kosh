@@ -437,6 +437,30 @@ BEGIN
     SELECT RAISE(ABORT, 'sources are retained');
 END;
 
+CREATE TRIGGER tidbit_revision_source_prevent_update
+BEFORE UPDATE ON tidbit_revision_source
+BEGIN
+    SELECT RAISE(ABORT, 'revision source links are immutable');
+END;
+
+CREATE TRIGGER tidbit_revision_source_prevent_delete
+BEFORE DELETE ON tidbit_revision_source
+BEGIN
+    SELECT RAISE(ABORT, 'revision source links are retained');
+END;
+
+CREATE TRIGGER tidbit_revision_attachment_prevent_update
+BEFORE UPDATE ON tidbit_revision_attachment
+BEGIN
+    SELECT RAISE(ABORT, 'revision attachment links are immutable');
+END;
+
+CREATE TRIGGER tidbit_revision_attachment_prevent_delete
+BEFORE DELETE ON tidbit_revision_attachment
+BEGIN
+    SELECT RAISE(ABORT, 'revision attachment links are retained');
+END;
+
 CREATE TRIGGER attachment_identity_prevent_update
 BEFORE UPDATE OF created_at, sha256, byte_length, kind ON attachment
 BEGIN

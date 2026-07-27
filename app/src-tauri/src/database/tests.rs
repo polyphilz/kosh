@@ -23,7 +23,7 @@ impl TestPair {
 fn initial_migration_checksums_remain_stable() {
     assert_eq!(
         migrations::main_runner().get_migrations()[0].checksum(),
-        11_151_929_077_668_977_415
+        15_663_328_490_870_771_519
     );
     assert_eq!(
         migrations::media_runner().get_migrations()[0].checksum(),
@@ -318,6 +318,88 @@ fn attachment_citation_provenance_cannot_silently_retarget() {
             "UPDATE attachment_segment
              SET content = 'different evidence'
              WHERE id = '019f547b-6200-7000-8000-000000000403'",
+            [],
+        )
+        .is_err());
+}
+
+#[test]
+fn revision_provenance_links_cannot_be_retargeted_or_deleted() {
+    let pair = TestPair::new();
+    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
+        .expect("main writer");
+    main.execute_batch(
+        "BEGIN;
+         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000701',
+            10, 10, '019f547b-6200-7000-8000-000000000702'
+         );
+         INSERT INTO tidbit_revision(
+            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000702',
+            '019f547b-6200-7000-8000-000000000701',
+            1, 10, 'historical evidence', zeroblob(32)
+         );
+         INSERT INTO source(id, created_at, label, normalized_url)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000703',
+            10, 'Primary source', 'https://example.com/source'
+         );
+         INSERT INTO attachment(
+            id, created_at, updated_at, sha256, display_filename,
+            media_type, byte_length, kind, extraction_state
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000704',
+            10, 10, randomblob(32), 'evidence.txt', 'text/plain',
+            12, 'TEXT', 'PENDING'
+         );
+         INSERT INTO tidbit_revision_source(tidbit_revision_id, source_id, sort_order)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000702',
+            '019f547b-6200-7000-8000-000000000703',
+            0
+         );
+         INSERT INTO tidbit_revision_attachment(
+            tidbit_revision_id, attachment_id, sort_order, display_role
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000702',
+            '019f547b-6200-7000-8000-000000000704',
+            0, 'ATTACHMENT'
+         );
+         COMMIT;",
+    )
+    .expect("revision provenance");
+
+    assert!(main
+        .execute(
+            "UPDATE tidbit_revision_source
+             SET sort_order = 1
+             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
+            [],
+        )
+        .is_err());
+    assert!(main
+        .execute(
+            "DELETE FROM tidbit_revision_source
+             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
+            [],
+        )
+        .is_err());
+    assert!(main
+        .execute(
+            "UPDATE tidbit_revision_attachment
+             SET display_role = 'INLINE'
+             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
+            [],
+        )
+        .is_err());
+    assert!(main
+        .execute(
+            "DELETE FROM tidbit_revision_attachment
+             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
             [],
         )
         .is_err());
