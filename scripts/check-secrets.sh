@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-secret_pattern='(cfat_[A-Za-z0-9_-]{20,}|gh[opsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|-----BEGIN ([A-Z ]+ )?PRIVATE KEY-----|KOSH_R2_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)[[:space:]]*=[[:space:]]*[^[:space:]<]+)'
+secret_pattern='(cfat_[A-Za-z0-9_-]{20,}|gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|-----BEGIN ([A-Z ]+ )?PRIVATE KEY-----|KOSH_R2_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)[[:space:]]*=[[:space:]]*[^[:space:]<]+)'
 
 find_env_paths() {
   awk '

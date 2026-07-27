@@ -59,6 +59,22 @@ fi
 git -C "$temp_dir" restore --staged credentials.txt
 rm "$temp_dir/credentials.txt"
 
+readonly refresh_token_prefix="ghr_"
+printf '%s%s\n' \
+  "$refresh_token_prefix" \
+  '11AA22BB33CC44DD55EE66FF77GG88HH99II00JJ' \
+  >"$temp_dir/refresh-token.txt"
+git -C "$temp_dir" add refresh-token.txt
+if (
+  cd "$temp_dir"
+  KOSH_DIFF_BASE='' scripts/check-secrets.sh >/dev/null 2>&1
+); then
+  echo "secret checker accepted a GitHub refresh token" >&2
+  exit 1
+fi
+git -C "$temp_dir" restore --staged refresh-token.txt
+rm "$temp_dir/refresh-token.txt"
+
 printf '%s%s\n' \
   "$fine_grained_prefix" \
   'AA11BB22CC33DD44EE55FF66GG77HH88II99JJ00' \

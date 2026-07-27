@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 gate="$repo_root/scripts/loop/gate.sh"
+status="$repo_root/scripts/loop/status.sh"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 
@@ -72,6 +73,7 @@ FAKE_PR_JSON="$(
       isDraft: false,
       mergeStateStatus: "CLEAN",
       mergeable: "MERGEABLE",
+      number: 1,
       state: "OPEN",
       url: "https://github.com/polyphilz/kosh/pull/1"
     }'
@@ -126,6 +128,9 @@ export FAKE_COMMENTS_JSON
   echo "merge wrapper did not invoke a guarded merge" >&2
   exit 1
 }
+status_output="$("$status" polyphilz/kosh)"
+grep -F "review request: issue comment 77" <<<"$status_output" >/dev/null
+grep -F "+1 $bot 2026-07-27T18:05:00Z" <<<"$status_output" >/dev/null
 
 expect_blocked() {
   local label="$1"
