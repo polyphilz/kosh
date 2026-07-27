@@ -9,6 +9,7 @@
 node_modules/
 dist/
 target/
+.vite/
 coverage/
 playwright-report/
 test-results/
@@ -22,14 +23,26 @@ backups/
 models/
 *.gguf
 *.onnx
+*.safetensors
 
 # Generated release sidecars
 app/src-tauri/resources/release/
+app/src-tauri/binaries/
+app/src-tauri/gen/
+
+# Non-macOS variants emitted by `tauri icon`
+app/src-tauri/icons/android/
+app/src-tauri/icons/ios/
+app/src-tauri/icons/Square*Logo.png
+app/src-tauri/icons/StoreLogo.png
+app/src-tauri/icons/icon.ico
 
 # Secrets
 .env
 .env.*
 !.env.example
+.envrc
+.direnv/
 
 # Logs
 *.log

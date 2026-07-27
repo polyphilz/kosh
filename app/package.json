@@ -1,0 +1,39 @@
+{
+  "name": "kosh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "tauri": "KOSH_DATA_DIR=\"$PWD/.data/local\" tauri",
+    "lint": "oxlint",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "check:frontend": "pnpm lint && pnpm fmt:check && pnpm build",
+    "check:native": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "check": "pnpm check:frontend && pnpm check:native"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "24.13.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.4",
+    "oxfmt": "0.60.0",
+    "oxlint": "1.75.0",
+    "typescript": "6.0.3",
+    "vite": "8.1.5"
+  },
+  "engines": {
+    "node": "22.12.0",
+    "pnpm": "10.4.0"
+  },
+  "packageManager": "pnpm@10.4.0"
+}

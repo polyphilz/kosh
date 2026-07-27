@@ -1,0 +1,21 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  role="img"
+  aria-label="Kosh"
+>
+  <rect width="512" height="512" rx="112" fill="#191817" />
+  <path
+    d="M116 128h248c18 0 32 14 32 32v36H148c-18 0-32-14-32-32v-36Z"
+    fill="#e08043"
+  />
+  <path
+    d="M148 216h248v68H148c-18 0-32-14-32-32v-4c0-18 14-32 32-32Z"
+    fill="#eee8df"
+  />
+  <path
+    d="M116 304h248c18 0 32 14 32 32v48H148c-18 0-32-14-32-32v-16c0-18 14-32 32-32Z"
+    fill="#a99e94"
+  />
+  <circle cx="352" cy="162" r="14" fill="#191817" />
+</svg>

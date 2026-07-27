@@ -42,7 +42,7 @@ scripts/check-repository.sh
 ```
 
 Once `app/package.json` exists, prefer the repository's aggregate `pnpm check`
-command plus targeted Rust or UI tests for the active slice.
+command from `app/` plus targeted Rust or UI tests for the active slice.
 
 ## Code Review Rules
 
