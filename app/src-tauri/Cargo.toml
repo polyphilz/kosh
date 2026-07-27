@@ -1,0 +1,16 @@
+[package]
+name = "kosh"
+version = "0.1.0"
+description = "Capture loose knowledge and find the exact passage that matters"
+edition = "2021"
+rust-version = "1.97.0"
+
+[lib]
+name = "kosh_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.3", features = [] }
