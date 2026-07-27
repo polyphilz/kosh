@@ -21,6 +21,9 @@ pub(super) enum WriterMessage {
     Diagnostics {
         reply: SyncSender<Result<DatabaseDiagnostics>>,
     },
+    FullIntegrityCheck {
+        reply: SyncSender<Result<()>>,
+    },
     ReapMediaBlob {
         sha256: Vec<u8>,
         now: i64,
@@ -59,6 +62,16 @@ impl DatabaseClient {
                 reason,
                 reply,
             })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn full_integrity_check(&self) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::FullIntegrityCheck { reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

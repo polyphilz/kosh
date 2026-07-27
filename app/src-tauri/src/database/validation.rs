@@ -60,15 +60,18 @@ pub fn validate_migrated_pair(
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
     reconcile_fts(main)?;
-    validate_integrity(main, DatabaseKind::Main)?;
-    validate_integrity(media, DatabaseKind::Media)?;
     validate_foreign_keys(main, DatabaseKind::Main)?;
     validate_foreign_keys(media, DatabaseKind::Media)?;
     validate_media_relationship(main, media)?;
     Ok(())
 }
 
-pub fn validate_integrity(connection: &Connection, kind: DatabaseKind) -> Result<()> {
+pub(super) fn full_integrity_check_pair(main: &Connection, media: &Connection) -> Result<()> {
+    full_integrity_check(main, DatabaseKind::Main)?;
+    full_integrity_check(media, DatabaseKind::Media)
+}
+
+fn full_integrity_check(connection: &Connection, kind: DatabaseKind) -> Result<()> {
     let mut statement = connection.prepare("PRAGMA integrity_check")?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {

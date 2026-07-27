@@ -1,11 +1,13 @@
 use std::{fs, path::Path, time::Duration};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{limits::Limit, Connection, OpenFlags};
 
 use super::error::{DatabaseError, Result};
 
 pub const MAIN_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KOSH");
 pub const MEDIA_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KMED");
+pub const MAX_MEDIA_BLOB_BYTES: i64 = 256 * 1024 * 1024;
+const MEDIA_CONNECTION_LENGTH_LIMIT: i32 = MAX_MEDIA_BLOB_BYTES as i32 + 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseKind {
@@ -58,13 +60,14 @@ pub fn open_writer(path: &Path, kind: DatabaseKind, state: FileState) -> Result<
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = Connection::open_with_flags(path, flags)?;
-    if state == FileState::Existing {
+    if state == FileState::Fresh {
+        // The application ID must be the first persistent write. That leaves
+        // an interrupted first launch recognizable and safely resumable.
+        connection.pragma_update(None, "application_id", kind.application_id())?;
+    } else {
         verify_application_id(&connection, path, kind)?;
     }
-    configure_writer(&connection)?;
-    if state == FileState::Fresh {
-        connection.pragma_update(None, "application_id", kind.application_id())?;
-    }
+    configure_writer(&connection, kind)?;
     verify_application_id(&connection, path, kind)?;
     Ok(connection)
 }
@@ -72,6 +75,7 @@ pub fn open_writer(path: &Path, kind: DatabaseKind, state: FileState) -> Result<
 pub fn open_read_only(path: &Path, kind: DatabaseKind) -> Result<Connection> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = Connection::open_with_flags(path, flags)?;
+    configure_length_limit(&connection, kind)?;
     connection.busy_timeout(Duration::from_millis(5_000))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "trusted_schema", "OFF")?;
@@ -110,7 +114,8 @@ pub fn verify_application_id(
     Ok(())
 }
 
-fn configure_writer(connection: &Connection) -> Result<()> {
+fn configure_writer(connection: &Connection, kind: DatabaseKind) -> Result<()> {
+    configure_length_limit(connection, kind)?;
     connection.busy_timeout(Duration::from_millis(5_000))?;
     let journal_mode: String =
         connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
@@ -129,6 +134,13 @@ fn configure_writer(connection: &Connection) -> Result<()> {
     verify_pragma(connection, "trusted_schema", 0)?;
     verify_pragma(connection, "cache_size", -20_000)?;
     verify_pragma(connection, "temp_store", 2)?;
+    Ok(())
+}
+
+fn configure_length_limit(connection: &Connection, kind: DatabaseKind) -> Result<()> {
+    if kind == DatabaseKind::Media {
+        connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, MEDIA_CONNECTION_LENGTH_LIMIT)?;
+    }
     Ok(())
 }
 

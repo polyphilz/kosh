@@ -70,6 +70,11 @@ CREATE TABLE source (
     normalized_url TEXT,
     CHECK (label IS NULL OR length(label) > 0),
     CHECK (normalized_url IS NULL OR length(normalized_url) > 0),
+    CONSTRAINT source_url_safe_scheme CHECK (
+        normalized_url IS NULL
+        OR substr(normalized_url, 1, 7) = 'http://'
+        OR substr(normalized_url, 1, 8) = 'https://'
+    ),
     CHECK (label IS NOT NULL OR normalized_url IS NOT NULL)
 ) STRICT;
 

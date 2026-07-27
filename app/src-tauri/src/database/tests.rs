@@ -23,11 +23,11 @@ impl TestPair {
 fn initial_migration_checksums_remain_stable() {
     assert_eq!(
         migrations::main_runner().get_migrations()[0].checksum(),
-        15_663_328_490_870_771_519
+        12_368_639_227_656_403_893
     );
     assert_eq!(
         migrations::media_runner().get_migrations()[0].checksum(),
-        11_141_227_704_927_312_419
+        14_137_568_078_953_250_380
     );
 }
 
@@ -53,6 +53,17 @@ fn fresh_pair_reopens_with_durable_pragmas_and_schema() {
             .migration_heads,
         migrations::expected_heads()
     );
+}
+
+#[test]
+fn full_integrity_scan_is_an_explicit_maintenance_operation() {
+    let pair = TestPair::new();
+    let database = Database::initialize(pair.paths.clone()).expect("fresh pair");
+
+    database
+        .client()
+        .full_integrity_check()
+        .expect("explicit integrity scan");
 }
 
 #[test]
@@ -204,9 +215,23 @@ fn strict_schema_rejects_non_uuidv7_ids_and_preserves_immutable_rows() {
             [],
         )
         .is_err());
+    let unsafe_url = main
+        .execute(
+            "INSERT INTO source(id, created_at, normalized_url)
+             VALUES(
+                '019f547b-6200-7000-8000-000000000200',
+                10, 'javascript:alert(1)'
+             )",
+            [],
+        )
+        .expect_err("unsafe source URL");
+    assert!(unsafe_url.to_string().contains("source_url_safe_scheme"));
     main.execute(
-        "INSERT INTO source(id, created_at, label)
-         VALUES('019f547b-6200-7000-8000-000000000201', 10, 'valid')",
+        "INSERT INTO source(id, created_at, label, normalized_url)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000201',
+            10, 'valid', 'https://example.com/evidence'
+         )",
         [],
     )
     .expect("valid UUIDv7 source");
@@ -217,6 +242,24 @@ fn strict_schema_rejects_non_uuidv7_ids_and_preserves_immutable_rows() {
             [],
         )
         .is_err());
+}
+
+#[test]
+fn media_schema_enforces_the_product_blob_size_limit() {
+    let pair = TestPair::new();
+    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+    let media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Existing)
+            .expect("media writer");
+    let error = media
+        .execute(
+            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+             VALUES(?1, x'00', ?2, 10)",
+            params![vec![12_u8; 32], connection::MAX_MEDIA_BLOB_BYTES + 1],
+        )
+        .expect_err("oversized media blob");
+
+    assert!(error.to_string().contains("media_blob_size_limit"));
 }
 
 #[test]

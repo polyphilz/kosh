@@ -1,8 +1,10 @@
 CREATE TABLE media_blob (
     sha256 BLOB PRIMARY KEY CHECK (length(sha256) = 32),
     bytes BLOB NOT NULL,
-    byte_length INTEGER NOT NULL CHECK (byte_length >= 0 AND byte_length = length(bytes)),
-    created_at INTEGER NOT NULL CHECK (created_at >= 0)
+    byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    CONSTRAINT media_blob_size_limit CHECK (byte_length <= 268435456),
+    CHECK (byte_length = length(bytes))
 ) STRICT;
 
 CREATE TABLE media_blob_lease (
