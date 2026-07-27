@@ -545,6 +545,13 @@ BEGIN
     SELECT RAISE(ABORT, 'attachment extractions are retained');
 END;
 
+CREATE TRIGGER attachment_extraction_ready_prevent_regression
+BEFORE UPDATE OF status ON attachment_extraction
+WHEN old.status = 'READY' AND new.status != 'READY'
+BEGIN
+    SELECT RAISE(ABORT, 'ready attachment extractions are terminal');
+END;
+
 CREATE TRIGGER embedding_index_identity_prevent_update
 BEFORE UPDATE OF id, model_id, model_version, dimension, distance_metric, created_at
 ON embedding_index
@@ -564,6 +571,21 @@ BEGIN
     SELECT RAISE(ABORT, 'passage embeddings are retained');
 END;
 
+CREATE TRIGGER passage_embedding_provenance_validate
+BEFORE INSERT ON passage_embedding
+BEGIN
+    SELECT RAISE(ABORT, 'passage embedding provenance mismatch')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM passage
+        JOIN embedding_index
+          ON embedding_index.id = new.embedding_index_id
+        WHERE passage.id = new.passage_id
+          AND passage.content_hash = new.passage_content_hash
+          AND length(new.vector_bytes) = embedding_index.dimension * 4
+    );
+END;
+
 CREATE TRIGGER attachment_segment_prevent_update
 BEFORE UPDATE ON attachment_segment
 BEGIN
@@ -572,6 +594,12 @@ END;
 
 CREATE TRIGGER attachment_segment_prevent_delete
 BEFORE DELETE ON attachment_segment
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM attachment_extraction
+    WHERE attachment_extraction.id = old.extraction_id
+      AND attachment_extraction.status = 'RUNNING'
+)
 BEGIN
     SELECT RAISE(ABORT, 'attachment segments are retained');
 END;
@@ -584,7 +612,10 @@ BEGIN
     WHERE NOT EXISTS (
         SELECT 1
         FROM attachment_segment AS segment
+        JOIN attachment_extraction AS extraction
+          ON extraction.id = segment.extraction_id
         WHERE segment.id = new.attachment_segment_id
+          AND extraction.status = 'READY'
           AND segment.locator_kind = new.locator_kind
           AND (
               (

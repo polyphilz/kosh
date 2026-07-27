@@ -25,7 +25,7 @@ impl TestPair {
 fn initial_migration_checksums_remain_stable() {
     assert_eq!(
         migrations::main_runner().get_migrations()[0].checksum(),
-        17_634_497_153_830_872_077
+        6_070_907_847_574_384_874
     );
     assert_eq!(
         migrations::media_runner().get_migrations()[0].checksum(),
@@ -405,11 +405,11 @@ fn attachment_citation_provenance_cannot_silently_retarget() {
          );
          INSERT INTO attachment_extraction(
             id, attachment_id, extractor, extractor_version, content_hash,
-            status, created_at
+            status, created_at, started_at, completed_at
          ) VALUES(
             '019f547b-6200-7000-8000-000000000402',
             '019f547b-6200-7000-8000-000000000401',
-            'text', '1', zeroblob(32), 'PENDING', 10
+            'text', '1', zeroblob(32), 'READY', 10, 10, 10
          );
          INSERT INTO attachment_segment(
             id, extraction_id, ordinal, locator_kind, line_start, line_end,
@@ -458,13 +458,17 @@ fn attachment_citation_provenance_cannot_silently_retarget() {
             [],
         )
         .is_err());
-    main.execute(
-        "UPDATE attachment_extraction
-         SET status = 'RUNNING', started_at = 11
-         WHERE id = '019f547b-6200-7000-8000-000000000402'",
-        [],
-    )
-    .expect("extraction lifecycle may advance");
+    let regression = main
+        .execute(
+            "UPDATE attachment_extraction
+             SET status = 'RUNNING'
+             WHERE id = '019f547b-6200-7000-8000-000000000402'",
+            [],
+        )
+        .expect_err("ready extraction cannot regress");
+    assert!(regression
+        .to_string()
+        .contains("ready attachment extractions are terminal"));
     assert!(main
         .execute(
             "UPDATE attachment_segment
@@ -529,6 +533,31 @@ fn interrupted_extractions_are_requeued_only_for_the_same_content() {
         )
         .expect("running extraction");
     }
+    main.execute(
+        "INSERT INTO attachment_segment(
+            id, extraction_id, ordinal, locator_kind, page_number, content, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000805',
+            '019f547b-6200-7000-8000-000000000802',
+            0, 'PDF_PAGE', 1, 'partial output', zeroblob(32)
+         )",
+        [],
+    )
+    .expect("partial segment");
+    assert!(main
+        .execute(
+            "INSERT INTO passage(
+                id, attachment_segment_id, owner_kind, ordinal, content,
+                content_hash, locator_kind, locator_json, created_at
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000000806',
+                '019f547b-6200-7000-8000-000000000805',
+                'ATTACHMENT', 0, 'partial output', zeroblob(32),
+                'PDF_PAGE', '{\"page\":1}', 11
+             )",
+            [],
+        )
+        .is_err());
     drop(main);
 
     let database = Database::initialize(pair.paths.clone()).expect("recovered pair");
@@ -555,6 +584,95 @@ fn interrupted_extractions_are_requeued_only_for_the_same_content() {
         .expect("changed extraction");
     assert_eq!(changed.0, "FAILED");
     assert!(changed.1.is_some());
+    let partial_segments: i64 = read_only
+        .query_row(
+            "SELECT count(*)
+             FROM attachment_segment
+             WHERE extraction_id = '019f547b-6200-7000-8000-000000000802'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("partial segment count");
+    assert_eq!(partial_segments, 0);
+}
+
+#[test]
+fn passage_embeddings_require_exact_passage_and_index_provenance() {
+    let pair = TestPair::new();
+    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
+        .expect("main writer");
+    main.execute_batch(
+        "BEGIN;
+         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000901',
+            10, 10, '019f547b-6200-7000-8000-000000000902'
+         );
+         INSERT INTO tidbit_revision(
+            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000902',
+            '019f547b-6200-7000-8000-000000000901',
+            1, 10, 'semantic evidence', zeroblob(32)
+         );
+         INSERT INTO embedding_index(
+            id, model_id, model_version, dimension, distance_metric, created_at
+         ) VALUES('fixture-semantic-v1', 'fixture-semantic', 'v1', 3, 'COSINE', 10);
+         COMMIT;",
+    )
+    .expect("embedding provenance fixture");
+    let passage_hash = vec![21_u8; 32];
+    main.execute(
+        "INSERT INTO passage(
+            id, tidbit_revision_id, owner_kind, ordinal, content,
+            content_hash, locator_kind, locator_json, created_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000903',
+            '019f547b-6200-7000-8000-000000000902',
+            'AUTHOR', 0, 'semantic evidence', ?1,
+            'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10
+         )",
+        params![&passage_hash],
+    )
+    .expect("passage");
+
+    let vector = vec![0_u8; 12];
+    let mismatch = main
+        .execute(
+            "INSERT INTO passage_embedding(
+                passage_id, embedding_index_id, passage_content_hash, vector_bytes, created_at
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000000903',
+                'fixture-semantic-v1', ?1, ?2, 11
+             )",
+            params![vec![22_u8; 32], &vector],
+        )
+        .expect_err("stale passage hash");
+    assert!(mismatch
+        .to_string()
+        .contains("passage embedding provenance mismatch"));
+    assert!(main
+        .execute(
+            "INSERT INTO passage_embedding(
+                passage_id, embedding_index_id, passage_content_hash, vector_bytes, created_at
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000000903',
+                'fixture-semantic-v1', ?1, zeroblob(8), 11
+             )",
+            params![&passage_hash],
+        )
+        .is_err());
+    main.execute(
+        "INSERT INTO passage_embedding(
+            passage_id, embedding_index_id, passage_content_hash, vector_bytes, created_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000903',
+            'fixture-semantic-v1', ?1, ?2, 11
+         )",
+        params![&passage_hash, &vector],
+    )
+    .expect("matching embedding provenance");
 }
 
 #[test]

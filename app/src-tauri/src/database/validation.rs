@@ -155,8 +155,10 @@ fn validate_strict_tables<'a>(
     Ok(())
 }
 
-fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
-    connection.execute(
+fn recover_interrupted_derived_work(connection: &mut Connection) -> Result<()> {
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute(
         "UPDATE index_state
          SET status = 'DIRTY',
              cursor = NULL,
@@ -165,7 +167,20 @@ fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
          WHERE status = 'RUNNING'",
         [],
     )?;
-    connection.execute(
+    // Segments are not installed evidence until their extraction becomes
+    // READY. Remove partial output while the attempt is still RUNNING so the
+    // same immutable ordinals can be produced safely on retry.
+    transaction.execute(
+        "DELETE FROM attachment_segment
+         WHERE EXISTS (
+             SELECT 1
+             FROM attachment_extraction
+             WHERE attachment_extraction.id = attachment_segment.extraction_id
+               AND attachment_extraction.status = 'RUNNING'
+         )",
+        [],
+    )?;
+    transaction.execute(
         "UPDATE attachment_extraction
          SET status = 'PENDING',
              error = NULL,
@@ -180,7 +195,7 @@ fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
            )",
         [],
     )?;
-    connection.execute(
+    transaction.execute(
         "UPDATE attachment_extraction
          SET status = 'FAILED',
              error = 'attachment content hash changed before recovery',
@@ -188,6 +203,7 @@ fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
          WHERE status = 'RUNNING'",
         [],
     )?;
+    transaction.commit()?;
     Ok(())
 }
 
