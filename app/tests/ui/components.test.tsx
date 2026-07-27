@@ -83,6 +83,11 @@ describe("shared controls", () => {
     await user.tab();
     expect(cancel).toHaveFocus();
 
+    const dialog = screen.getByRole("dialog");
+    dialog.focus();
+    await user.tab({ shift: true });
+    expect(remove).toHaveFocus();
+
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
