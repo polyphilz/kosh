@@ -191,7 +191,7 @@ fn recover_interrupted_derived_work(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn reconcile_fts(connection: &Connection) -> Result<bool> {
+pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
     const INDEXES: &[&str] = &["passage_fts_word", "passage_fts_trigram"];
     const VERSION: &str = "1";
     let existing_version = connection
@@ -202,13 +202,28 @@ pub(super) fn reconcile_fts(connection: &Connection) -> Result<bool> {
         )
         .optional()?;
     let force_rebuild = existing_version.as_deref() != Some(VERSION);
+    // Commit the in-progress marker separately. A crash during the following
+    // atomic rebuild leaves RUNNING for startup to recover to DIRTY.
+    connection.execute(
+        "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
+         VALUES('PASSAGE_FTS', ?1, 'RUNNING', NULL, 0, NULL)
+         ON CONFLICT(name) DO UPDATE SET
+            status = 'RUNNING',
+            cursor = NULL,
+            updated_at = 0,
+            error = NULL",
+        params![existing_version.as_deref().unwrap_or(VERSION)],
+    )?;
+
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mut failed = Vec::new();
 
     for index in INDEXES {
         let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 1)");
-        if force_rebuild || connection.execute(&integrity, []).is_err() {
+        if force_rebuild || transaction.execute(&integrity, []).is_err() {
             let rebuild = format!("INSERT INTO {index}({index}) VALUES('rebuild')");
-            if connection.execute(&rebuild, []).is_err() {
+            if transaction.execute(&rebuild, []).is_err() {
                 failed.push(*index);
             }
         }
@@ -227,7 +242,7 @@ pub(super) fn reconcile_fts(connection: &Connection) -> Result<bool> {
     } else {
         existing_version.as_deref().unwrap_or(VERSION)
     };
-    connection.execute(
+    transaction.execute(
         "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
          VALUES('PASSAGE_FTS', ?1, ?2, NULL, 0, ?3)
          ON CONFLICT(name) DO UPDATE SET
@@ -238,6 +253,7 @@ pub(super) fn reconcile_fts(connection: &Connection) -> Result<bool> {
             error = excluded.error",
         params![stored_version, status, error],
     )?;
+    transaction.commit()?;
     Ok(failed.is_empty())
 }
 

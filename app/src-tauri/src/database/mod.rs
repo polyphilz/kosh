@@ -27,11 +27,16 @@ pub use writer::{DatabaseClient, DatabaseDiagnostics};
 use connection::{DatabaseKind, FileState};
 
 #[derive(Debug)]
+struct DatabaseOwnership {
+    writer_thread: Option<JoinHandle<()>>,
+    library_lock: Option<File>,
+}
+
+#[derive(Debug)]
 pub struct Database {
     paths: DatabasePaths,
     client: DatabaseClient,
-    writer_thread: Mutex<Option<JoinHandle<()>>>,
-    ownership_lock: Mutex<Option<File>>,
+    ownership: Mutex<DatabaseOwnership>,
 }
 
 impl Database {
@@ -101,8 +106,10 @@ impl Database {
         Ok(Self {
             paths,
             client,
-            writer_thread: Mutex::new(Some(writer_thread)),
-            ownership_lock: Mutex::new(Some(ownership_lock)),
+            ownership: Mutex::new(DatabaseOwnership {
+                writer_thread: Some(writer_thread),
+                library_lock: Some(ownership_lock),
+            }),
         })
     }
 
@@ -123,22 +130,18 @@ impl Database {
     }
 
     pub fn shutdown(&self) -> Result<()> {
-        let thread = self
-            .writer_thread
+        let mut ownership = self
+            .ownership
             .lock()
-            .map_err(|_| DatabaseError::WriterPanicked)?
-            .take();
-        let outcome = if let Some(thread) = thread {
+            .map_err(|_| DatabaseError::WriterPanicked)?;
+        let outcome = if let Some(thread) = ownership.writer_thread.take() {
             let shutdown = self.client.shutdown();
             let joined = thread.join().map_err(|_| DatabaseError::WriterPanicked);
             joined.and(shutdown)
         } else {
             Ok(())
         };
-        self.ownership_lock
-            .lock()
-            .map_err(|_| DatabaseError::WriterPanicked)?
-            .take();
+        ownership.library_lock.take();
         outcome
     }
 }
@@ -146,13 +149,11 @@ impl Database {
 impl Drop for Database {
     fn drop(&mut self) {
         let _ = self.client.shutdown();
-        if let Ok(thread) = self.writer_thread.get_mut() {
-            if let Some(thread) = thread.take() {
+        if let Ok(ownership) = self.ownership.get_mut() {
+            if let Some(thread) = ownership.writer_thread.take() {
                 let _ = thread.join();
             }
-        }
-        if let Ok(lock) = self.ownership_lock.get_mut() {
-            lock.take();
+            ownership.library_lock.take();
         }
     }
 }
@@ -167,7 +168,7 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
                 let _ = reply.send(validation::full_integrity_check_pair(&main, &media));
             }
             WriterMessage::ReconcileFts { reply } => {
-                let _ = reply.send(validation::reconcile_fts(&main));
+                let _ = reply.send(validation::reconcile_fts(&mut main));
             }
             WriterMessage::ReapMediaBlob {
                 sha256,

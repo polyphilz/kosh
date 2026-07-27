@@ -1,3 +1,5 @@
+use std::sync::{Arc, Barrier};
+
 use rusqlite::{params, Connection};
 use tempfile::TempDir;
 
@@ -75,6 +77,35 @@ fn database_pair_allows_only_one_active_writer() {
     assert!(matches!(error, DatabaseError::DatabaseInUse { .. }));
 
     first.shutdown().expect("release first writer");
+    drop(Database::initialize(pair.paths.clone()).expect("replacement writer"));
+}
+
+#[test]
+fn concurrent_shutdown_serializes_writer_join_and_ownership_release() {
+    let pair = TestPair::new();
+    let database =
+        Arc::new(Database::initialize(pair.paths.clone()).expect("exclusive database owner"));
+    let barrier = Arc::new(Barrier::new(3));
+    let shutdowns = (0..2)
+        .map(|_| {
+            let database = Arc::clone(&database);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                database.shutdown()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    barrier.wait();
+    for shutdown in shutdowns {
+        shutdown
+            .join()
+            .expect("shutdown caller did not panic")
+            .expect("shutdown succeeded");
+    }
+
+    drop(database);
     drop(Database::initialize(pair.paths.clone()).expect("replacement writer"));
 }
 
