@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useAppearance } from "../components/Appearance";
 import { Select } from "../components/Select";
 import { Status } from "../components/Status";
 import { Toggle } from "../components/Toggle";
-
-type Appearance = "SYSTEM" | "LIGHT" | "DARK";
 
 const appearanceOptions = [
   { label: "System", value: "SYSTEM" },
@@ -12,15 +11,8 @@ const appearanceOptions = [
 ] as const;
 
 export function SettingsPage() {
-  const [appearance, setAppearance] = useState<Appearance>("SYSTEM");
+  const { appearance, setAppearance } = useAppearance();
   const [citationPreview, setCitationPreview] = useState(true);
-
-  useEffect(() => {
-    document.documentElement.dataset.appearance = appearance;
-    return () => {
-      delete document.documentElement.dataset.appearance;
-    };
-  }, [appearance]);
 
   return (
     <main className="page page--narrow">

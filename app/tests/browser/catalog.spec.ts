@@ -64,3 +64,21 @@ test("supported compact windows retain visible navigation labels", async ({ page
     await expect(link).not.toHaveCSS("color", "rgba(0, 0, 0, 0)");
   }
 });
+
+test("fixed appearance survives navigation and reload", async ({ page }) => {
+  await page.goto("/#/settings");
+  await page.getByRole("combobox", { name: "Appearance" }).selectOption("DARK");
+  await expect(page.locator("html")).toHaveAttribute("data-appearance", "DARK");
+
+  await page
+    .getByRole("navigation", { name: "Primary" })
+    .getByRole("link", {
+      name: "Search",
+      exact: true,
+    })
+    .click();
+  await expect(page.locator("html")).toHaveAttribute("data-appearance", "DARK");
+
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-appearance", "DARK");
+});
