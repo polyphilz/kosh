@@ -363,6 +363,35 @@ fn unsafe_source_urls_are_rejected_without_partial_authored_data() {
         .expect_err("unsafe URL");
     assert!(matches!(error, DatabaseError::InvalidInput(_)));
 
+    let duplicate = library
+        .database
+        .client()
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: None,
+                body_markdown: "Duplicate provenance".into(),
+                sources: vec![
+                    SourceDraft {
+                        label: Some("Reference".into()),
+                        url: Some("HTTPS://Example.COM:443/page#first".into()),
+                    },
+                    SourceDraft {
+                        label: Some(" Reference ".into()),
+                        url: Some("https://example.com/page#second".into()),
+                    },
+                ],
+            },
+            now_ms: 10,
+            tidbit_id: "019f547b-6200-7000-8000-000000001304".into(),
+            revision_id: "019f547b-6200-7000-8000-000000001305".into(),
+            source_ids: vec![
+                "019f547b-6200-7000-8000-000000001306".into(),
+                "019f547b-6200-7000-8000-000000001307".into(),
+            ],
+        })
+        .expect_err("duplicate normalized sources");
+    assert!(matches!(duplicate, DatabaseError::InvalidInput(_)));
+
     let main = library
         .database
         .open_main_read_only()

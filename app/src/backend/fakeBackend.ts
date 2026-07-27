@@ -38,7 +38,7 @@ export class FakeBackend implements Backend {
     const sequence = this.nextSequence();
     const bodyMarkdown = validateBody(input.bodyMarkdown);
     const title = normalizeText(input.title);
-    const sources = input.sources.map((source) => this.prepareSource(source));
+    const sources = this.prepareSources(input.sources);
     const tidbit: TidbitRecord = {
       id: `fake-tidbit-${sequence}`,
       currentRevisionId: `fake-revision-${sequence}`,
@@ -117,7 +117,7 @@ export class FakeBackend implements Backend {
       title,
       displayTitle: deriveDisplayTitle(title, bodyMarkdown),
       bodyMarkdown,
-      sources: input.sources.map((source) => this.prepareSource(source)),
+      sources: this.prepareSources(input.sources),
     };
     this.tidbits.set(updated.id, updated);
     return cloneTidbit(updated);
@@ -174,6 +174,19 @@ export class FakeBackend implements Backend {
       label,
       url,
     };
+  }
+
+  private prepareSources(inputs: SourceDraft[]): TidbitSource[] {
+    const sources = inputs.map((source) => this.prepareSource(source));
+    const identities = new Set<string>();
+    for (const source of sources) {
+      const identity = JSON.stringify([source.label, source.url]);
+      if (identities.has(identity)) {
+        throw new Error("sources must not contain duplicates");
+      }
+      identities.add(identity);
+    }
+    return sources;
   }
 }
 

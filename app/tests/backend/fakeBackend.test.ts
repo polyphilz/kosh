@@ -50,4 +50,35 @@ describe("FakeBackend tidbits", () => {
     expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toEqual([]);
     expect((await backend.loadTidbit(deleted.id)).deletedAtMs).toBe(deleted.deletedAtMs);
   });
+
+  it("rejects sources that become duplicates after normalization", async () => {
+    const backend = new FakeBackend();
+    const duplicateSources = [
+      { label: "Reference", url: "HTTPS://Example.COM:443/page#first" },
+      { label: " Reference ", url: "https://example.com/page#second" },
+    ];
+
+    await expect(
+      backend.createTidbit({
+        title: null,
+        bodyMarkdown: "Duplicate provenance",
+        sources: duplicateSources,
+      }),
+    ).rejects.toThrow("sources must not contain duplicates");
+
+    const created = await backend.createTidbit({
+      title: null,
+      bodyMarkdown: "Valid provenance",
+      sources: [],
+    });
+    await expect(
+      backend.editTidbit({
+        id: created.id,
+        expectedRevisionId: created.currentRevisionId,
+        title: null,
+        bodyMarkdown: created.bodyMarkdown,
+        sources: duplicateSources,
+      }),
+    ).rejects.toThrow("sources must not contain duplicates");
+  });
 });
