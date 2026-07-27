@@ -20,9 +20,11 @@ printf '%s=\n%s=\n' \
   "$secret_key_name" \
   >"$temp_dir/.env.example"
 git -C "$temp_dir" add .env.example scripts/check-secrets.sh
+git -C "$temp_dir" commit --quiet -m baseline
+base_commit="$(git -C "$temp_dir" rev-parse HEAD)"
 (
   cd "$temp_dir"
-  scripts/check-secrets.sh >/dev/null
+  KOSH_DIFF_BASE="$base_commit" scripts/check-secrets.sh >/dev/null
 )
 
 printf '%s=%s\n%s=\n' \
@@ -33,16 +35,13 @@ printf '%s=%s\n%s=\n' \
 git -C "$temp_dir" add .env.example
 if (
   cd "$temp_dir"
-  scripts/check-secrets.sh >/dev/null 2>&1
+  KOSH_DIFF_BASE='' scripts/check-secrets.sh >/dev/null 2>&1
 ); then
   echo "secret checker accepted a populated .env.example credential" >&2
   exit 1
 fi
 
-printf '%s=\n%s=\n' \
-  "$access_key_name" \
-  "$secret_key_name" \
-  >"$temp_dir/.env.example"
+git -C "$temp_dir" restore --source=HEAD --staged --worktree .env.example
 readonly fine_grained_prefix="github_pat_"
 printf '%s%s\n' \
   "$fine_grained_prefix" \
@@ -51,9 +50,28 @@ printf '%s%s\n' \
 git -C "$temp_dir" add .env.example credentials.txt
 if (
   cd "$temp_dir"
-  scripts/check-secrets.sh >/dev/null 2>&1
+  KOSH_DIFF_BASE='' scripts/check-secrets.sh >/dev/null 2>&1
 ); then
   echo "secret checker accepted a fine-grained GitHub token" >&2
+  exit 1
+fi
+
+git -C "$temp_dir" restore --staged credentials.txt
+rm "$temp_dir/credentials.txt"
+
+printf '%s%s\n' \
+  "$fine_grained_prefix" \
+  'AA11BB22CC33DD44EE55FF66GG77HH88II99JJ00' \
+  >"$temp_dir/past-credential.txt"
+git -C "$temp_dir" add past-credential.txt
+git -C "$temp_dir" commit --quiet -m 'add past credential'
+git -C "$temp_dir" rm --quiet past-credential.txt
+git -C "$temp_dir" commit --quiet -m 'remove past credential'
+if (
+  cd "$temp_dir"
+  KOSH_DIFF_BASE="$base_commit" scripts/check-secrets.sh >/dev/null 2>&1
+); then
+  echo "secret checker accepted a credential removed later in history" >&2
   exit 1
 fi
 

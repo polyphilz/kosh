@@ -61,4 +61,6 @@ documents variable names with blank credential values. Packaged application
 credentials will move to macOS Keychain when backup work is implemented.
 
 `scripts/check-secrets.sh` rejects tracked environment files and common secret
-forms. It is a backstop, not permission to place secrets in source files.
+forms in the worktree, index, and every commit introduced since the CI base.
+It reports only affected paths so CI logs do not repeat credential values. It
+is a backstop, not permission to place secrets in source files.
