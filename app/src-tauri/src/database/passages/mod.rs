@@ -292,6 +292,14 @@ fn reconcile_author_passage_batch_transaction(
             params![CONSTRUCTION_VERSION],
             |row| row.get::<_, bool>(0),
         )?;
+    let search_index_needs_rebuild = !has_more
+        && transaction.query_row(
+            "SELECT version != ?1 OR status != 'IDLE'
+             FROM index_state
+             WHERE name = 'PASSAGE_FTS'",
+            params![search::FTS_VERSION],
+            |row| row.get::<_, bool>(0),
+        )?;
     if active_set_differs {
         transaction.execute("DELETE FROM active_passage", [])?;
         transaction.execute(
@@ -306,6 +314,8 @@ fn reconcile_author_passage_batch_transaction(
              ORDER BY tidbit.id, passage.ordinal",
             params![CONSTRUCTION_VERSION],
         )?;
+    }
+    if active_set_differs || search_index_needs_rebuild {
         search::rebuild_documents(&transaction)?;
     }
     let status = if has_more { "DIRTY" } else { "IDLE" };

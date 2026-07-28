@@ -1,11 +1,12 @@
 use std::sync::{Arc, Barrier};
 
+use refinery::Target;
 use rusqlite::{params, Connection};
 use tempfile::TempDir;
 
 use super::{
     connection::{self, DatabaseKind, FileState},
-    migrations, Database, DatabaseError, DatabasePaths,
+    migrations, Database, DatabaseError, DatabasePaths, LexicalSearchMode, SearchPassagesInput,
 };
 
 struct TestPair {
@@ -136,6 +137,85 @@ fn pending_migrations_apply_to_an_identified_empty_pair() {
             .expect("diagnostics")
             .migration_heads,
         migrations::expected_heads()
+    );
+}
+
+#[test]
+fn lexical_upgrade_defers_backfill_until_post_start_reconciliation() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(3))
+        .run(&mut main)
+        .expect("main schema through passage provenance");
+    let mut media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
+            .expect("fresh media writer");
+    migrations::run_media(&mut media).expect("media schema");
+    main.execute_batch(
+        "BEGIN;
+         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000121',
+            10, 10, '019f547b-6200-7000-8000-000000000122'
+         );
+         INSERT INTO tidbit_revision(
+            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000122',
+            '019f547b-6200-7000-8000-000000000121',
+            1, 10, 'deferred lexical upgrade evidence', zeroblob(32)
+         );
+         COMMIT;",
+    )
+    .expect("pre-lexical authored data");
+
+    migrations::run_main(&mut main).expect("lexical schema migration");
+    assert_eq!(
+        main.query_row("SELECT count(*) FROM passage_search_document", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("empty derived projection"),
+        0
+    );
+    assert_eq!(
+        main.query_row(
+            "SELECT status, error FROM index_state WHERE name = 'PASSAGE_FTS'",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .expect("deferred lexical state"),
+        (
+            "DIRTY".into(),
+            Some("initial lexical backfill pending".into())
+        )
+    );
+    drop(main);
+    drop(media);
+
+    let database = Database::initialize(pair.paths.clone()).expect("authored library opens");
+    database
+        .client()
+        .reconcile_author_passages()
+        .expect("post-start passage and search reconciliation");
+    let results = database
+        .client()
+        .search_passages(SearchPassagesInput {
+            query: "deferred lexical upgrade".into(),
+            mode: LexicalSearchMode::Default,
+            limit: 10,
+        })
+        .expect("search after deferred backfill");
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0]
+            .citation
+            .tidbit
+            .as_ref()
+            .expect("authored citation")
+            .id,
+        "019f547b-6200-7000-8000-000000000121"
     );
 }
 

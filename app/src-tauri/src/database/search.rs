@@ -15,7 +15,7 @@ const MAX_HIGHLIGHTS_PER_RESULT: usize = 32;
 const MIN_CANDIDATE_LIMIT: u32 = 64;
 const MAX_CANDIDATE_LIMIT: u32 = 512;
 const RRF_RANK_CONSTANT: f64 = 60.0;
-const FTS_VERSION: &str = "lexical-v1";
+pub(super) const FTS_VERSION: &str = "lexical-v1";
 
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
     result_limit

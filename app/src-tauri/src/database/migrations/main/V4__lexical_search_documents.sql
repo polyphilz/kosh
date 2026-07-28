@@ -483,117 +483,35 @@ BEGIN
       AND new.deleted_at IS NULL;
 END;
 
-INSERT INTO passage_search_document(
-    rowid,
-    passage_id,
-    tidbit_id,
-    title,
-    heading_context,
-    body,
-    source_labels,
-    source_domains,
-    attachment_names,
-    extracted_text,
-    owner_content_hash,
-    updated_at
-)
-SELECT
-    passage.rowid,
-    passage.id,
-    active.tidbit_id,
-    coalesce(revision.title, ''),
-    coalesce(
-        (
-            SELECT group_concat(value, char(10))
-            FROM json_each(passage.heading_context_json)
-        ),
-        ''
-    ),
-    passage.content,
-    coalesce(
-        (
-            SELECT group_concat(coalesce(source.label, ''), char(10))
-            FROM tidbit_revision_source AS membership
-            JOIN source ON source.id = membership.source_id
-            WHERE membership.tidbit_revision_id = revision.id
-            ORDER BY membership.sort_order
-        ),
-        ''
-    ),
-    coalesce(
-        (
-            SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
-            FROM tidbit_revision_source AS membership
-            JOIN source ON source.id = membership.source_id
-            WHERE membership.tidbit_revision_id = revision.id
-            ORDER BY membership.sort_order
-        ),
-        ''
-    ),
-    coalesce(
-        (
-            SELECT group_concat(attachment.display_filename, char(10))
-            FROM tidbit_revision_attachment AS membership
-            JOIN attachment ON attachment.id = membership.attachment_id
-            WHERE membership.tidbit_revision_id = revision.id
-              AND attachment.deleted_at IS NULL
-            ORDER BY membership.sort_order
-        ),
-        ''
-    ),
-    '',
-    revision.content_hash,
-    tidbit.updated_at
-FROM active_passage AS active
-JOIN passage ON passage.id = active.passage_id
-JOIN tidbit ON tidbit.id = active.tidbit_id
-JOIN tidbit_revision AS revision
-  ON revision.id = passage.tidbit_revision_id
- AND revision.id = tidbit.current_revision_id
- AND revision.tidbit_id = tidbit.id
-WHERE tidbit.deleted_at IS NULL
-  AND passage.owner_kind = 'AUTHOR';
-
-INSERT INTO passage_search_document(
-    rowid,
-    passage_id,
-    tidbit_id,
-    title,
-    heading_context,
-    body,
-    source_labels,
-    source_domains,
-    attachment_names,
-    extracted_text,
-    owner_content_hash,
-    updated_at
-)
-SELECT
-    passage.rowid,
-    passage.id,
-    NULL,
-    '',
-    coalesce(
-        (
-            SELECT group_concat(value, char(10))
-            FROM json_each(passage.heading_context_json)
-        ),
-        ''
-    ),
-    '',
-    '',
-    '',
-    attachment.display_filename,
-    passage.content,
-    passage.content_hash,
-    attachment.updated_at
-FROM current_attachment_passage AS current
-JOIN passage ON passage.id = current.passage_id
-JOIN attachment ON attachment.id = current.attachment_id;
-
 UPDATE index_state
 SET version = 'lexical-v1',
-    status = 'IDLE',
+    status = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM tidbit
+            JOIN tidbit_revision AS revision
+              ON revision.id = tidbit.current_revision_id
+             AND revision.tidbit_id = tidbit.id
+            WHERE tidbit.deleted_at IS NULL
+              AND length(trim(revision.body_markdown)) > 0
+        )
+        OR EXISTS (SELECT 1 FROM current_attachment_passage)
+        THEN 'DIRTY'
+        ELSE 'IDLE'
+    END,
     cursor = NULL,
-    error = NULL
+    error = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM tidbit
+            JOIN tidbit_revision AS revision
+              ON revision.id = tidbit.current_revision_id
+             AND revision.tidbit_id = tidbit.id
+            WHERE tidbit.deleted_at IS NULL
+              AND length(trim(revision.body_markdown)) > 0
+        )
+        OR EXISTS (SELECT 1 FROM current_attachment_passage)
+        THEN 'initial lexical backfill pending'
+        ELSE NULL
+    END
 WHERE name = 'PASSAGE_FTS';
