@@ -38,7 +38,14 @@ pnpm build
 pnpm test
 pnpm test:browser
 pnpm check:native
+pnpm relevance:validate
+pnpm relevance:empty
+pnpm relevance:scale
 ```
+
+The relevance commands validate the checked-in search corpus, emit the
+intentionally failing empty-retrieval baseline, and generate the deterministic
+10,000-tidbit performance workload under ignored `app/.data/relevance/`.
 
 Repository policy and secret checks run from the repository root:
 

@@ -1,0 +1,823 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "kosh-relevance-v1",
+  "description": "Synthetic citation-sized passages spanning lexical, semantic, attachment, and near-duplicate retrieval behavior.",
+  "corpus": [
+    {
+      "id": "passage-heat-modern",
+      "tidbitId": "tidbit-heat-modern",
+      "title": "Heat and temperature",
+      "headingContext": ["Thermodynamics", "Kinetic model"],
+      "content": "Heat is impatient motion transferred between systems. Temperature describes a distribution of particle energies rather than one particle.",
+      "sources": [
+        {
+          "label": "Thermodynamics lecture",
+          "domain": "notes.example.test"
+        }
+      ],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 2,
+        "endBlock": 2,
+        "sourceStartByte": 36,
+        "sourceEndByte": 174,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-heat-caloric",
+      "tidbitId": "tidbit-heat-caloric",
+      "title": "Obsolete caloric theory",
+      "headingContext": ["History of thermodynamics"],
+      "content": "The obsolete caloric theory treated heat as a weightless fluid that flowed from hot bodies into cold bodies.",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 29,
+        "sourceEndByte": 137,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-code-cache-key",
+      "tidbitId": "tidbit-code-cache-key",
+      "title": "Passage cache",
+      "headingContext": ["Rust", "Stable identifiers"],
+      "content": "fn passage_cache_key(revision: &str, ordinal: u32) -> String {\n    format!(\"{revision}:{ordinal}\")\n}",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 3,
+        "endBlock": 3,
+        "sourceStartByte": 54,
+        "sourceEndByte": 168,
+        "startChar": null,
+        "endChar": null,
+        "startLine": 1,
+        "endLine": 3
+      }
+    },
+    {
+      "id": "passage-formula-bayes",
+      "tidbitId": "tidbit-formula-bayes",
+      "title": "Bayes rule",
+      "headingContext": ["Probability"],
+      "content": "$$P(A|B) = \\frac{P(B|A)P(A)}{P(B)}$$",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 15,
+        "sourceEndByte": 59,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-source-sqlite",
+      "tidbitId": "tidbit-source-sqlite",
+      "title": "FTS tokenizer reminder",
+      "headingContext": ["SQLite"],
+      "content": "FTS5 tokenizers decide how query terms and document text become searchable tokens.",
+      "sources": [
+        {
+          "label": "SQLite FTS5 documentation",
+          "domain": "sqlite.org"
+        }
+      ],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 10,
+        "sourceEndByte": 91,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-ocr-receipt",
+      "tidbitId": "tidbit-ocr-receipt",
+      "title": "Workshop receipt",
+      "headingContext": [],
+      "content": "Invoice QZ-4817 — replacement bearings and ceramic lubricant — total 86.40.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "workshop-receipt.png",
+          "mediaType": "image/png"
+        }
+      ],
+      "locator": {
+        "kind": "OCR_REGION",
+        "page": null,
+        "region": {
+          "x": 84,
+          "y": 122,
+          "width": 1032,
+          "height": 214
+        }
+      }
+    },
+    {
+      "id": "passage-pdf-transformer",
+      "tidbitId": "tidbit-pdf-transformer",
+      "title": "Transformer chapter notes",
+      "headingContext": ["Multi-head attention"],
+      "content": "Different attention heads can focus on distinct representation subspaces at different positions.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "transformer-notes.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 42
+      }
+    },
+    {
+      "id": "passage-synonym-automobile",
+      "tidbitId": "tidbit-synonym-automobile",
+      "title": "Automobile maintenance",
+      "headingContext": ["Seasonal checklist"],
+      "content": "An automobile upkeep schedule should include tire pressure, brake fluid, coolant, and battery inspection.",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 23,
+        "sourceEndByte": 126,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-misspelling-concurrency",
+      "tidbitId": "tidbit-misspelling-concurrency",
+      "title": "Concurrency limit",
+      "headingContext": ["Workers"],
+      "content": "A semaphore bounds concurrency by requiring each worker to hold a permit while expensive work is active.",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 12,
+        "sourceEndByte": 113,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-filename-model",
+      "tidbitId": "tidbit-filename-model",
+      "title": "Embedding artifact",
+      "headingContext": ["Local models"],
+      "content": "The checked model manifest records its SHA-256 digest, dimensions, and tokenizer revision.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "jina-embeddings-v5-small.onnx",
+          "mediaType": "application/octet-stream"
+        }
+      ],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 16,
+        "sourceEndByte": 105,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-unicode-cafe",
+      "tidbitId": "tidbit-unicode-cafe",
+      "title": "Résumé review",
+      "headingContext": ["Writing"],
+      "content": "A naïve résumé draft mentioned the café project but omitted measurable outcomes.",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 11,
+        "sourceEndByte": 91,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-code-resolve-citation",
+      "tidbitId": "tidbit-code-resolve-citation",
+      "title": "Trusted citation boundary",
+      "headingContext": ["TypeScript"],
+      "content": "const resolveCitationTarget = (passageId: string) => backend.resolveCitation(passageId);",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 2,
+        "endBlock": 2,
+        "sourceStartByte": 32,
+        "sourceEndByte": 121,
+        "startChar": null,
+        "endChar": null,
+        "startLine": 1,
+        "endLine": 1
+      }
+    },
+    {
+      "id": "passage-formula-fourier",
+      "tidbitId": "tidbit-formula-fourier",
+      "title": "Fourier transform",
+      "headingContext": ["Signals"],
+      "content": "$$F(\\omega)=\\int_{-\\infty}^{\\infty} f(t)e^{-i\\omega t}\\,dt$$",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 10,
+        "sourceEndByte": 72,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-prose-gardening",
+      "tidbitId": "tidbit-prose-gardening",
+      "title": "Basil watering",
+      "headingContext": ["Herb garden"],
+      "content": "Check the top centimeter of soil before watering basil; drooping at noon can be temporary heat stress.",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 14,
+        "sourceEndByte": 114,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-phrase-dough",
+      "tidbitId": "tidbit-phrase-dough",
+      "title": "Bread experiment",
+      "headingContext": ["Autolyse"],
+      "content": "Resting dough before kneading lets flour hydrate and makes the dough easier to stretch.",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 10,
+        "sourceEndByte": 94,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-source-rust",
+      "tidbitId": "tidbit-source-rust",
+      "title": "Rust iterator note",
+      "headingContext": ["Ownership"],
+      "content": "Iterator adaptors are lazy and do nothing until a consuming adaptor requests values.",
+      "sources": [
+        {
+          "label": "Rust standard library",
+          "domain": "doc.rust-lang.org"
+        }
+      ],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 12,
+        "sourceEndByte": 94,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    }
+  ],
+  "queries": [
+    {
+      "id": "query-heat-phrase",
+      "text": "\"impatient motion\"",
+      "searchMode": "DEFAULT",
+      "category": "PHRASE",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-heat-modern",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": ["passage-heat-caloric"],
+      "expectedCitation": {
+        "passageId": "passage-heat-modern",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 2,
+          "endBlock": 2,
+          "sourceStartByte": 36,
+          "sourceEndByte": 174,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-cache-identifier",
+      "text": "passage_cache_key",
+      "searchMode": "DEFAULT",
+      "category": "CODE_IDENTIFIER",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-code-cache-key",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-code-cache-key",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 3,
+          "endBlock": 3,
+          "sourceStartByte": 54,
+          "sourceEndByte": 168,
+          "startChar": null,
+          "endChar": null,
+          "startLine": 1,
+          "endLine": 3
+        }
+      }
+    },
+    {
+      "id": "query-bayes-formula",
+      "text": "P(A|B) P(B|A)",
+      "searchMode": "DEFAULT",
+      "category": "FORMULA",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-formula-bayes",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": ["passage-formula-fourier"],
+      "expectedCitation": {
+        "passageId": "passage-formula-bayes",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 15,
+          "sourceEndByte": 59,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-sqlite-domain",
+      "text": "sqlite.org FTS5 tokenizer",
+      "searchMode": "DEFAULT",
+      "category": "SOURCE_DOMAIN",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-source-sqlite",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": ["passage-source-rust"],
+      "expectedCitation": {
+        "passageId": "passage-source-sqlite",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 10,
+          "sourceEndByte": 91,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-ocr-invoice",
+      "text": "QZ-4817 ceramic lubricant",
+      "searchMode": "DEFAULT",
+      "category": "OCR",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-ocr-receipt",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-ocr-receipt",
+        "locator": {
+          "kind": "OCR_REGION",
+          "page": null,
+          "region": {
+            "x": 84,
+            "y": 122,
+            "width": 1032,
+            "height": 214
+          }
+        }
+      }
+    },
+    {
+      "id": "query-pdf-attention",
+      "text": "attention heads representation subspaces page 42",
+      "searchMode": "DEFAULT",
+      "category": "PDF",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-pdf-transformer",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-pdf-transformer",
+        "locator": {
+          "kind": "PDF_PAGE",
+          "page": 42
+        }
+      }
+    },
+    {
+      "id": "query-car-upkeep",
+      "text": "car upkeep schedule",
+      "searchMode": "DEFAULT",
+      "category": "SYNONYM",
+      "retrievalNeed": "SEMANTIC",
+      "relevance": [
+        {
+          "passageId": "passage-synonym-automobile",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-synonym-automobile",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 23,
+          "sourceEndByte": 126,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-concurrency-misspelling",
+      "text": "concurency semafore worker permits",
+      "searchMode": "DEFAULT",
+      "category": "MISSPELLING",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-misspelling-concurrency",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-misspelling-concurrency",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 12,
+          "sourceEndByte": 113,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-obsolete-caloric",
+      "text": "obsolete weightless heat fluid theory",
+      "searchMode": "DEFAULT",
+      "category": "NEAR_DUPLICATE",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-heat-caloric",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": ["passage-heat-modern"],
+      "expectedCitation": {
+        "passageId": "passage-heat-caloric",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 29,
+          "sourceEndByte": 137,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-resolve-citation-exact",
+      "text": "resolveCitationTarget",
+      "searchMode": "EXACT",
+      "category": "EXACT",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-code-resolve-citation",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-code-resolve-citation",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 2,
+          "endBlock": 2,
+          "sourceStartByte": 32,
+          "sourceEndByte": 121,
+          "startChar": null,
+          "endChar": null,
+          "startLine": 1,
+          "endLine": 1
+        }
+      }
+    },
+    {
+      "id": "query-unicode-diacritics",
+      "text": "naive cafe resume outcomes",
+      "searchMode": "DEFAULT",
+      "category": "UNICODE",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-unicode-cafe",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-unicode-cafe",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 11,
+          "sourceEndByte": 91,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-model-filename",
+      "text": "jina-embeddings-v5-small.onnx tokenizer digest",
+      "searchMode": "EXACT",
+      "category": "EXACT",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-filename-model",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-filename-model",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 16,
+          "sourceEndByte": 105,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-herb-hydration",
+      "text": "when should I hydrate a wilted herb",
+      "searchMode": "DEFAULT",
+      "category": "SYNONYM",
+      "retrievalNeed": "SEMANTIC",
+      "relevance": [
+        {
+          "passageId": "passage-prose-gardening",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-prose-gardening",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 14,
+          "sourceEndByte": 114,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-dough-phrase",
+      "text": "\"resting dough before kneading\"",
+      "searchMode": "DEFAULT",
+      "category": "PHRASE",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-phrase-dough",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-phrase-dough",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 10,
+          "sourceEndByte": 94,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-fourier-formula",
+      "text": "integral negative infinity e^{-i omega t}",
+      "searchMode": "DEFAULT",
+      "category": "FORMULA",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-formula-fourier",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": ["passage-formula-bayes"],
+      "expectedCitation": {
+        "passageId": "passage-formula-fourier",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 10,
+          "sourceEndByte": 72,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-rust-domain",
+      "text": "doc.rust-lang.org lazy iterator adaptor",
+      "searchMode": "DEFAULT",
+      "category": "SOURCE_DOMAIN",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-source-rust",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": ["passage-source-sqlite"],
+      "expectedCitation": {
+        "passageId": "passage-source-rust",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 12,
+          "sourceEndByte": 94,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-heat-models",
+      "text": "different models of heat and temperature",
+      "searchMode": "DEFAULT",
+      "category": "PROSE",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-heat-modern",
+          "grade": 3
+        },
+        {
+          "passageId": "passage-heat-caloric",
+          "grade": 1
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-heat-modern",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 2,
+          "endBlock": 2,
+          "sourceStartByte": 36,
+          "sourceEndByte": 174,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    }
+  ]
+}
