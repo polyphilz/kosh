@@ -25,7 +25,7 @@ impl TestLibrary {
                 input,
                 now_ms,
                 draft_id: draft_id.into(),
-                media_lease_duration_ms: super::MediaLimits::default().draft_lease_duration_ms,
+                media_limits: super::MediaLimits::default(),
             })
             .expect("save draft")
     }
@@ -187,7 +187,7 @@ fn edit_draft_requires_the_matching_tidbit_revision() {
             },
             now_ms: 32,
             draft_id: "019f547b-6200-7000-8000-000000006013".into(),
-            media_lease_duration_ms: super::MediaLimits::default().draft_lease_duration_ms,
+            media_limits: super::MediaLimits::default(),
         })
         .expect_err("reject unrelated revision");
     assert!(matches!(error, DatabaseError::InvalidInput(_)));

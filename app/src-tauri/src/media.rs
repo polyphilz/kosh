@@ -282,7 +282,7 @@ mod tests {
                 },
                 now_ms: 90,
                 draft_id: "019f547b-6200-7000-8000-000000000901".into(),
-                media_lease_duration_ms: MediaLimits::default().draft_lease_duration_ms,
+                media_limits: MediaLimits::default(),
             })
             .expect("protocol draft");
         let staged = StagedAttachment::from_reader(

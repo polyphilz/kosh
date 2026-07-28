@@ -227,7 +227,7 @@ pub(crate) async fn save_draft(
             .into_iter()
             .next()
             .expect("requested draft ID"),
-        media_lease_duration_ms: state.media_limits().draft_lease_duration_ms,
+        media_limits: state.media_limits(),
     };
     run_writer(move || client.save_draft(write)).await
 }

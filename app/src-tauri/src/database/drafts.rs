@@ -44,13 +44,14 @@ pub(crate) struct SaveDraftWrite {
     pub input: SaveDraftInput,
     pub now_ms: i64,
     pub draft_id: String,
-    pub media_lease_duration_ms: i64,
+    pub media_limits: media::MediaLimits,
 }
 
 pub(super) fn save_draft(connection: &mut Connection, write: SaveDraftWrite) -> Result<Draft> {
     validate_timestamp(write.now_ms)?;
     validate_uuid_v7(&write.draft_id, "draftId")?;
     validate_context(&write.input)?;
+    let media_limits = write.media_limits.validate()?;
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     validate_edit_base(&transaction, &write.input)?;
@@ -138,7 +139,8 @@ pub(super) fn save_draft(connection: &mut Connection, write: SaveDraftWrite) -> 
         &draft_id,
         &write.input.body_markdown,
         updated_at_ms,
-        write.media_lease_duration_ms,
+        media_limits.max_attachments_per_draft,
+        media_limits.draft_lease_duration_ms,
     )?;
     transaction.commit()?;
 

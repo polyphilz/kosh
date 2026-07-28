@@ -763,6 +763,7 @@ pub(crate) fn sync_draft_media_leases(
     draft_id: &str,
     body_markdown: &str,
     now_ms: i64,
+    max_attachments_per_draft: u32,
     lease_duration_ms: i64,
 ) -> Result<()> {
     validate_timestamp(now_ms, "nowMs")?;
@@ -772,6 +773,13 @@ pub(crate) fn sync_draft_media_leases(
         ));
     }
     let references = referenced_attachments(body_markdown);
+    let reference_count = u32::try_from(references.len())
+        .map_err(|_| DatabaseError::InvalidInput("too many attachment references".into()))?;
+    if reference_count > max_attachments_per_draft {
+        return Err(DatabaseError::InvalidInput(format!(
+            "a draft may contain at most {max_attachments_per_draft} attachments"
+        )));
+    }
     let wanted = references
         .iter()
         .map(|reference| reference.id.as_str())

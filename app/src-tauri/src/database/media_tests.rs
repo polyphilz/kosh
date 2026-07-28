@@ -57,7 +57,7 @@ impl TestLibrary {
                 },
                 now_ms,
                 draft_id: CAPTURE_DRAFT_ID.into(),
-                media_lease_duration_ms: MediaLimits::default().draft_lease_duration_ms,
+                media_limits: MediaLimits::default(),
             })
             .expect("save capture draft")
     }
@@ -548,21 +548,25 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
         .expect("clear capture lease"));
 
     let edit_context = format!("edit:{}", tidbit.id);
+    let edit_limits = MediaLimits {
+        max_attachments_per_draft: 1,
+        ..MediaLimits::default()
+    };
     let edit_draft = library
         .database
         .client()
         .save_draft(SaveDraftWrite {
             input: SaveDraftInput {
-                context_key: edit_context,
-                tidbit_id: Some(tidbit.id),
-                base_revision_id: Some(tidbit.current_revision_id),
+                context_key: edit_context.clone(),
+                tidbit_id: Some(tidbit.id.clone()),
+                base_revision_id: Some(tidbit.current_revision_id.clone()),
                 title: Some("Illustrated note".into()),
-                body_markdown: body,
+                body_markdown: body.clone(),
                 sources: Vec::new(),
             },
             now_ms: 15,
             draft_id: id(0x74d),
-            media_lease_duration_ms: MediaLimits::default().draft_lease_duration_ms,
+            media_limits: edit_limits,
         })
         .expect("save edit draft with base-revision media");
 
@@ -579,6 +583,48 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
             )
             .expect("edit draft lease count"),
         0
+    );
+
+    let added = library
+        .database
+        .ingest_attachment(
+            AttachmentIngestInput {
+                draft_id: edit_draft.id.clone(),
+                display_filename: "added.txt".into(),
+                media_type: "text/plain".into(),
+                now_ms: 16,
+                limits: edit_limits,
+            },
+            Cursor::new(b"new edit media"),
+        )
+        .expect("stage one new edit attachment");
+    let over_capacity = library
+        .database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: edit_context.clone(),
+                tidbit_id: Some(tidbit.id),
+                base_revision_id: Some(tidbit.current_revision_id),
+                title: Some("Illustrated note".into()),
+                body_markdown: format!("{body}\n{{{{kosh:attachment:{}}}}}", added.id),
+                sources: Vec::new(),
+            },
+            now_ms: 17,
+            draft_id: id(0x74e),
+            media_limits: edit_limits,
+        })
+        .expect_err("cap inherited and newly leased attachment references together");
+    assert!(matches!(over_capacity, DatabaseError::InvalidInput(_)));
+    assert_eq!(
+        library
+            .database
+            .client()
+            .load_draft(edit_context)
+            .expect("load unchanged edit draft")
+            .expect("edit draft remains")
+            .body_markdown,
+        body
     );
 }
 
@@ -601,7 +647,7 @@ fn integrity_scan_reports_missing_corrupt_and_extra_blobs() {
             },
             now_ms: 10,
             draft_id: CAPTURE_DRAFT_ID.into(),
-            media_lease_duration_ms: MediaLimits::default().draft_lease_duration_ms,
+            media_limits: MediaLimits::default(),
         })
         .expect("capture draft");
     assert_eq!(draft.id, CAPTURE_DRAFT_ID);
