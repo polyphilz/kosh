@@ -155,9 +155,8 @@ impl ParsedLexicalQuery {
             .atoms
             .iter()
             .filter_map(|atom| {
-                let text = atom.text.trim();
-                (normalize(text).chars().count() >= 3)
-                    .then(|| format!("\"{}\"", text.replace('"', "\"\"")))
+                let text = normalize_for_search(atom.text.trim());
+                (text.chars().count() >= 3).then(|| format!("\"{}\"", text.replace('"', "\"\"")))
             })
             .collect::<Vec<_>>();
         join_fts_clauses(clauses, self.mode)
@@ -829,10 +828,10 @@ fn push_atom(atoms: &mut Vec<QueryAtom>, current: &mut String, quoted: bool) {
 }
 
 fn word_tokens(value: &str) -> Vec<String> {
-    value
+    normalize_for_search(value)
         .split(|character: char| !character.is_alphanumeric() && character != '_')
         .filter(|token| !token.is_empty())
-        .map(str::to_lowercase)
+        .map(str::to_owned)
         .collect()
 }
 
@@ -845,7 +844,7 @@ fn join_fts_clauses(clauses: Vec<String>, mode: LexicalSearchMode) -> Option<Str
     })
 }
 
-fn normalize(value: &str) -> String {
+pub(crate) fn normalize_for_search(value: &str) -> String {
     normalize_with_mapping(value).0.into_iter().collect()
 }
 
@@ -868,7 +867,7 @@ fn normalize_with_mapping(value: &str) -> (Vec<char>, Vec<usize>) {
 
 fn find_normalized_spans(value: &str, needle: &str) -> Vec<(u32, u32)> {
     let (haystack, original_indices) = normalize_with_mapping(value);
-    let needle = normalize(needle).chars().collect::<Vec<_>>();
+    let needle = normalize_for_search(needle).chars().collect::<Vec<_>>();
     if needle.is_empty() || needle.len() > haystack.len() {
         return Vec::new();
     }
@@ -1128,8 +1127,9 @@ mod tests {
                     id: created.id.clone(),
                     expected_revision_id: created.current_revision_id.clone(),
                     title: Some("Updated lexical note".into()),
-                    body_markdown: "# Search\n\nThe replacement carries café C R2 and $$E=mc^2$$."
-                        .into(),
+                    body_markdown:
+                        "# Search\n\nThe replacement carries café, a ﬁle, C, R2, and $$E=mc^2$$."
+                            .into(),
                     sources: Vec::new(),
                 },
                 now_ms: 20,
@@ -1145,7 +1145,7 @@ mod tests {
             })
             .expect("old revision search")
             .is_empty());
-        for query in ["cafe", "C", "R2", "E=mc^2"] {
+        for query in ["cafe", "file", "C", "R2", "E=mc^2"] {
             let results = client
                 .search_passages(SearchPassagesInput {
                     query: query.into(),

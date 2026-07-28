@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, time::Instant};
 
 use crate::database::passages::builder::build_markdown_passages;
 use crate::database::search::{
-    candidate_limit, parse_lexical_query, rank_lexical_documents, LexicalDocument,
-    LexicalSearchMode, SearchField,
+    candidate_limit, normalize_for_search, parse_lexical_query, rank_lexical_documents,
+    LexicalDocument, LexicalSearchMode, SearchField,
 };
 use rusqlite::{params, Connection, Statement};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,9 @@ pub const INTERACTIVE_LEXICAL_P95_BUDGET_MS: f64 = 100.0;
 const BENCHMARK_RESULT_LIMIT: u32 = 20;
 
 pub struct LexicalFixtureRetriever;
+
+type FixtureRanks = (Option<usize>, Option<usize>);
+type FixtureCandidates = BTreeMap<usize, FixtureRanks>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -59,14 +62,18 @@ impl Retriever for LexicalFixtureRetriever {
         else {
             return Ok(Vec::new());
         };
-        let documents = corpus
-            .iter()
-            .map(|passage| LexicalDocument {
-                passage_id: passage.id.clone(),
-                updated_at_ms: 0,
-                fields: fixture_fields(passage),
-                word_rank: None,
-                trigram_rank: None,
+        let candidates = fixture_candidate_ranks(corpus, &query, limit)?;
+        let documents = candidates
+            .into_iter()
+            .map(|(index, (word_rank, trigram_rank))| {
+                let passage = &corpus[index];
+                LexicalDocument {
+                    passage_id: passage.id.clone(),
+                    updated_at_ms: 0,
+                    fields: fixture_fields(passage),
+                    word_rank,
+                    trigram_rank,
+                }
             })
             .collect();
         let passages = corpus
@@ -93,6 +100,118 @@ impl Retriever for LexicalFixtureRetriever {
             })
             .collect()
     }
+}
+
+fn fixture_candidate_ranks(
+    corpus: &[EvaluationPassage],
+    query: &crate::database::search::ParsedLexicalQuery,
+    result_limit: usize,
+) -> std::result::Result<FixtureCandidates, String> {
+    let connection = Connection::open_in_memory().map_err(|error| error.to_string())?;
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE fixture_word USING fts5(
+                title, heading_context, body, source_labels, source_domains,
+                attachment_names, extracted_text,
+                tokenize = 'unicode61 remove_diacritics 2 tokenchars ''_'''
+             );
+             CREATE VIRTUAL TABLE fixture_trigram USING fts5(
+                title, heading_context, body, source_labels, source_domains,
+                attachment_names, extracted_text,
+                tokenize = 'trigram'
+             );",
+        )
+        .map_err(|error| error.to_string())?;
+    for (index, passage) in corpus.iter().enumerate() {
+        let rowid = i64::try_from(index + 1).map_err(|error| error.to_string())?;
+        let fields = fixture_fields(passage);
+        let values = params![
+            rowid,
+            normalize_for_search(&fields[&SearchField::Title]),
+            normalize_for_search(&fields[&SearchField::HeadingContext]),
+            normalize_for_search(&fields[&SearchField::Body]),
+            normalize_for_search(&fields[&SearchField::SourceLabel]),
+            normalize_for_search(&fields[&SearchField::SourceDomain]),
+            normalize_for_search(&fields[&SearchField::AttachmentName]),
+            normalize_for_search(&fields[&SearchField::ExtractedText]),
+        ];
+        connection
+            .execute(
+                "INSERT INTO fixture_word(
+                    rowid, title, heading_context, body, source_labels,
+                    source_domains, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                values,
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO fixture_trigram(
+                    rowid, title, heading_context, body, source_labels,
+                    source_domains, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                values,
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let limit = candidate_limit(u32::try_from(result_limit).unwrap_or(u32::MAX));
+    let mut candidates = BTreeMap::new();
+    if let Some(word_query) = query.word_match_query() {
+        install_fixture_ranks(
+            &connection,
+            "fixture_word",
+            &word_query,
+            limit,
+            &mut candidates,
+            true,
+        )?;
+    }
+    if let Some(trigram_query) = query.trigram_match_query() {
+        install_fixture_ranks(
+            &connection,
+            "fixture_trigram",
+            &trigram_query,
+            limit,
+            &mut candidates,
+            false,
+        )?;
+    }
+    Ok(candidates)
+}
+
+fn install_fixture_ranks(
+    connection: &Connection,
+    index: &'static str,
+    query: &str,
+    limit: u32,
+    candidates: &mut FixtureCandidates,
+    word: bool,
+) -> std::result::Result<(), String> {
+    let sql = format!(
+        "SELECT rowid
+         FROM {index}
+         WHERE {index} MATCH ?1
+         ORDER BY bm25({index}, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5)
+         LIMIT ?2"
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![query, limit], |row| row.get::<_, i64>(0))
+        .map_err(|error| error.to_string())?;
+    for (position, rowid) in rows.enumerate() {
+        let index = usize::try_from(rowid.map_err(|error| error.to_string())? - 1)
+            .map_err(|error| error.to_string())?;
+        let ranks = candidates.entry(index).or_default();
+        if word {
+            ranks.0 = Some(position + 1);
+        } else {
+            ranks.1 = Some(position + 1);
+        }
+    }
+    Ok(())
 }
 
 fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchField, String> {
@@ -261,7 +380,7 @@ pub fn benchmark_scale_lexical(
                 })?;
                 let rowid = i64::from(passage_count);
                 let heading_context = passage.heading_context.join("\n");
-                let values = params![
+                let document_values = params![
                     rowid,
                     tidbit.title.as_deref().unwrap_or_default(),
                     heading_context,
@@ -272,13 +391,23 @@ pub fn benchmark_scale_lexical(
                     ""
                 ];
                 insert_document
-                    .execute(values)
+                    .execute(document_values)
                     .map_err(|error| benchmark_error("insert source document", error))?;
+                let index_values = params![
+                    rowid,
+                    normalize_for_search(tidbit.title.as_deref().unwrap_or_default()),
+                    normalize_for_search(&heading_context),
+                    normalize_for_search(&passage.content),
+                    normalize_for_search(&source_labels),
+                    normalize_for_search(&source_domains),
+                    normalize_for_search(&attachment_names),
+                    ""
+                ];
                 insert_word
-                    .execute(values)
+                    .execute(index_values)
                     .map_err(|error| benchmark_error("insert word document", error))?;
                 insert_trigram
-                    .execute(values)
+                    .execute(index_values)
                     .map_err(|error| benchmark_error("insert trigram document", error))?;
             }
         }

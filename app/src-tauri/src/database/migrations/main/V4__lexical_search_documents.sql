@@ -105,15 +105,27 @@ BEGIN
         rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        new.rowid, new.title, new.heading_context, new.body, new.source_labels,
-        new.source_domains, new.attachment_names, new.extracted_text
+        new.rowid,
+        kosh_search_normalize(new.title),
+        kosh_search_normalize(new.heading_context),
+        kosh_search_normalize(new.body),
+        kosh_search_normalize(new.source_labels),
+        kosh_search_normalize(new.source_domains),
+        kosh_search_normalize(new.attachment_names),
+        kosh_search_normalize(new.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
         rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        new.rowid, new.title, new.heading_context, new.body, new.source_labels,
-        new.source_domains, new.attachment_names, new.extracted_text
+        new.rowid,
+        kosh_search_normalize(new.title),
+        kosh_search_normalize(new.heading_context),
+        kosh_search_normalize(new.body),
+        kosh_search_normalize(new.source_labels),
+        kosh_search_normalize(new.source_domains),
+        kosh_search_normalize(new.attachment_names),
+        kosh_search_normalize(new.extracted_text)
     );
 END;
 
@@ -124,17 +136,27 @@ BEGIN
         passage_fts_word, rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        'delete', old.rowid, old.title, old.heading_context, old.body,
-        old.source_labels, old.source_domains, old.attachment_names,
-        old.extracted_text
+        'delete', old.rowid,
+        kosh_search_normalize(old.title),
+        kosh_search_normalize(old.heading_context),
+        kosh_search_normalize(old.body),
+        kosh_search_normalize(old.source_labels),
+        kosh_search_normalize(old.source_domains),
+        kosh_search_normalize(old.attachment_names),
+        kosh_search_normalize(old.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
         passage_fts_trigram, rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        'delete', old.rowid, old.title, old.heading_context, old.body,
-        old.source_labels, old.source_domains, old.attachment_names,
-        old.extracted_text
+        'delete', old.rowid,
+        kosh_search_normalize(old.title),
+        kosh_search_normalize(old.heading_context),
+        kosh_search_normalize(old.body),
+        kosh_search_normalize(old.source_labels),
+        kosh_search_normalize(old.source_domains),
+        kosh_search_normalize(old.attachment_names),
+        kosh_search_normalize(old.extracted_text)
     );
 END;
 
@@ -154,31 +176,53 @@ BEGIN
         passage_fts_word, rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        'delete', old.rowid, old.title, old.heading_context, old.body,
-        old.source_labels, old.source_domains, old.attachment_names,
-        old.extracted_text
+        'delete', old.rowid,
+        kosh_search_normalize(old.title),
+        kosh_search_normalize(old.heading_context),
+        kosh_search_normalize(old.body),
+        kosh_search_normalize(old.source_labels),
+        kosh_search_normalize(old.source_domains),
+        kosh_search_normalize(old.attachment_names),
+        kosh_search_normalize(old.extracted_text)
     );
     INSERT INTO passage_fts_word(
         rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        new.rowid, new.title, new.heading_context, new.body, new.source_labels,
-        new.source_domains, new.attachment_names, new.extracted_text
+        new.rowid,
+        kosh_search_normalize(new.title),
+        kosh_search_normalize(new.heading_context),
+        kosh_search_normalize(new.body),
+        kosh_search_normalize(new.source_labels),
+        kosh_search_normalize(new.source_domains),
+        kosh_search_normalize(new.attachment_names),
+        kosh_search_normalize(new.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
         passage_fts_trigram, rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        'delete', old.rowid, old.title, old.heading_context, old.body,
-        old.source_labels, old.source_domains, old.attachment_names,
-        old.extracted_text
+        'delete', old.rowid,
+        kosh_search_normalize(old.title),
+        kosh_search_normalize(old.heading_context),
+        kosh_search_normalize(old.body),
+        kosh_search_normalize(old.source_labels),
+        kosh_search_normalize(old.source_domains),
+        kosh_search_normalize(old.attachment_names),
+        kosh_search_normalize(old.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
         rowid, title, heading_context, body, source_labels,
         source_domains, attachment_names, extracted_text
     ) VALUES(
-        new.rowid, new.title, new.heading_context, new.body, new.source_labels,
-        new.source_domains, new.attachment_names, new.extracted_text
+        new.rowid,
+        kosh_search_normalize(new.title),
+        kosh_search_normalize(new.heading_context),
+        kosh_search_normalize(new.body),
+        kosh_search_normalize(new.source_labels),
+        kosh_search_normalize(new.source_domains),
+        kosh_search_normalize(new.attachment_names),
+        kosh_search_normalize(new.extracted_text)
     );
 END;
 

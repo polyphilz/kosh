@@ -22,7 +22,7 @@ the same report contract.
 
 `relevance:lexical` writes a local copy of the report and should match the
 checked-in `reports/lexical-v1.{json,txt}` baseline. The first baseline passes
-16 of 17 queries, has Recall@10 0.9412, MRR 0.8941, nDCG@10 0.9041, exact and
+16 of 17 queries, has Recall@10 0.9412, MRR 0.8971, nDCG@10 0.9067, exact and
 phrase success 1.0, and zero forbidden hits. The remaining miss is the
 misspelled concurrency query marked for combined lexical and semantic
 retrieval; later ranking work can improve it without disguising the initial
