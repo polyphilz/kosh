@@ -341,16 +341,21 @@ fn startup_reconciles_preexisting_revisions_and_retains_old_builder_versions() {
              ) VALUES(
                 '019f547b-6200-7000-8000-000000002202',
                 '019f547b-6200-7000-8000-000000002201',
-                1, 10, 'Content authored before passage construction.', zeroblob(32)
+                1, 10,
+                'Earlier {{kosh:attachment:019f547b-6200-7000-8000-000000002204;caption=Useful%20appendix}}',
+                zeroblob(32)
              );
              INSERT INTO passage(
                 id, tidbit_revision_id, owner_kind, ordinal, content,
-                content_hash, locator_kind, locator_json, created_at
+                content_hash, locator_kind, locator_json, created_at,
+                construction_version, heading_context_json
              ) VALUES(
                 '019f547b-6200-7000-8000-000000002203',
                 '019f547b-6200-7000-8000-000000002202',
-                'AUTHOR', 0, 'Legacy passage', zeroblob(32),
-                'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10
+                'AUTHOR', 0,
+                'Earlier {{kosh:attachment:019f547b-6200-7000-8000-000000002204;caption=Useful%20appendix}}',
+                zeroblob(32), 'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10,
+                'markdown-blocks-v1', '[]'
              );
              COMMIT;",
         )
@@ -388,14 +393,12 @@ fn startup_reconciles_preexisting_revisions_and_retains_old_builder_versions() {
         )
         .expect("passage version count");
     assert_eq!(passage_count, 2);
-    assert_eq!(
-        upgraded
-            .client()
-            .resolve_citation(active_ids[0].clone())
-            .expect("reconciled citation")
-            .state,
-        CitationState::Current
-    );
+    let reconciled = upgraded
+        .client()
+        .resolve_citation(active_ids[0].clone())
+        .expect("reconciled citation");
+    assert_eq!(reconciled.state, CitationState::Current);
+    assert_eq!(reconciled.excerpt, "Earlier Useful appendix");
     let legacy = upgraded
         .client()
         .resolve_citation("019f547b-6200-7000-8000-000000002203".into())
@@ -558,7 +561,7 @@ fn passage_backfill_is_bounded_and_resumable_between_batches() {
             "SELECT count(*)
              FROM passage
              WHERE owner_kind = 'AUTHOR'
-               AND construction_version = 'markdown-blocks-v1'",
+               AND construction_version = 'markdown-blocks-v2'",
             [],
             |row| row.get(0),
         )
@@ -580,7 +583,7 @@ fn passage_backfill_is_bounded_and_resumable_between_batches() {
             "SELECT count(*)
              FROM passage
              WHERE owner_kind = 'AUTHOR'
-               AND construction_version = 'markdown-blocks-v1'",
+               AND construction_version = 'markdown-blocks-v2'",
             [],
             |row| row.get(0),
         )
@@ -588,20 +591,32 @@ fn passage_backfill_is_bounded_and_resumable_between_batches() {
     assert_eq!(second_count, 14);
 
     while super::reconcile_author_passage_batch(&mut connection, 7).expect("remaining batch") {}
-    let final_state: (i64, i64, String, Option<String>) = connection
+    let final_state: (i64, i64, String, String, Option<String>) = connection
         .query_row(
             "SELECT
                 (SELECT count(*) FROM passage
                  WHERE owner_kind = 'AUTHOR'
-                   AND construction_version = 'markdown-blocks-v1'),
+                   AND construction_version = 'markdown-blocks-v2'),
                 (SELECT count(*) FROM active_passage),
+                version,
                 status,
                 cursor
              FROM index_state
              WHERE name = 'PASSAGE_BUILD'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .expect("final batch state");
-    assert_eq!(final_state, (30, 30, "IDLE".into(), None));
+    assert_eq!(
+        final_state,
+        (30, 30, "markdown-blocks-v2".into(), "IDLE".into(), None)
+    );
 }

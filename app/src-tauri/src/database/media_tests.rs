@@ -368,6 +368,20 @@ fn text_attachments_create_exact_line_evidence_with_revision_bound_sources() {
         results[0].citation.sources[0].url.as_deref(),
         Some("https://example.com/text")
     );
+    let mime_results = client
+        .search_passages(SearchPassagesInput {
+            query: "text/markdown".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search text attachment MIME");
+    assert!(mime_results.iter().any(|result| {
+        result
+            .citation
+            .attachment
+            .as_ref()
+            .is_some_and(|candidate| candidate.id == attachment.attachment.id)
+    }));
     let status = client
         .load_generic_attachment_status(attachment.attachment.id)
         .expect("text attachment status");

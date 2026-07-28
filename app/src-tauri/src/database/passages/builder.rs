@@ -2,7 +2,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v1";
+pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v2";
 
 const TARGET_PASSAGE_CHARS: usize = 700;
 const MAX_PROSE_SEGMENT_CHARS: usize = 1_000;
@@ -261,17 +261,25 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
         finish_capture(active, markdown.len(), &mut headings, &mut blocks);
     }
     if blocks.is_empty() {
-        let content = markdown.trim();
-        if !content.is_empty() {
+        let source = markdown.trim();
+        if !source.is_empty() {
+            let normalized = authored_text(source);
+            let content = if normalized.trim().is_empty() {
+                // A media node is authored structure, but its opaque storage ID is
+                // not authored evidence. Keep a non-tokenizing object marker so
+                // media-only revisions still have a stable citation substrate.
+                "\u{fffc}"
+            } else {
+                normalized.trim()
+            };
+            let source_start_byte = markdown.find(source).unwrap_or(0);
             blocks.push(SourceBlock {
                 ordinal: 0,
                 kind: BlockKind::Prose,
                 content: content.into(),
                 heading_context: Vec::new(),
-                source_start_byte: markdown.find(content).unwrap_or(0),
-                source_end_byte: markdown
-                    .find(content)
-                    .map_or(markdown.len(), |start| start + content.len()),
+                source_start_byte,
+                source_end_byte: source_start_byte + source.len(),
             });
         }
     }
@@ -805,7 +813,7 @@ mod tests {
         let second = build_markdown_passages(&markdown);
 
         assert_eq!(first, second);
-        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v1");
+        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v2");
         assert_eq!(first.len(), 5);
         assert_eq!(first[0].content, "Thermodynamics");
         assert_eq!(
@@ -1083,6 +1091,26 @@ mod tests {
         assert!(content.contains("Nearby context Useful appendix and Diagram Chapter 2."));
         assert!(!content.contains(attachment_id));
         assert!(!content.contains(image_id));
+    }
+
+    #[test]
+    fn media_only_blocks_keep_structure_without_indexing_opaque_ids() {
+        let attachment_id = "019f547b-6200-7000-8000-000000000773";
+        let markdown = format!("{{{{kosh:attachment:{attachment_id}}}}}");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].content, "\u{fffc}");
+        assert!(!passages[0].content.contains(attachment_id));
+        assert_eq!(
+            passages[0].locator.source_start_byte,
+            Some(0),
+            "the object marker still cites the original media node"
+        );
+        assert_eq!(
+            passages[0].locator.source_end_byte,
+            Some(markdown.len() as u64)
+        );
     }
 
     fn assert_valid_source_ranges<'a>(
