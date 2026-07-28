@@ -1045,7 +1045,7 @@ fn verify_golden_fixtures(
         if cosine < fixtures.tolerance.minimum_cosine_similarity
             || maximum_difference > fixtures.tolerance.maximum_absolute_difference
         {
-            return Err(SemanticRuntimeError::Runtime(format!(
+            return Err(SemanticRuntimeError::InvalidArtifact(format!(
                 "golden fixture {} failed (cosine {cosine}, max difference {maximum_difference})",
                 case.name
             )));
@@ -2512,7 +2512,7 @@ mod tests {
 
         assert!(matches!(
             runtime.prepare(),
-            Err(SemanticRuntimeError::Runtime(_))
+            Err(SemanticRuntimeError::InvalidArtifact(_))
         ));
         server.join().expect("embedding fixture server");
         assert_eq!(transcript.recv().expect("embedding transcript").len(), 1);
@@ -2528,6 +2528,74 @@ mod tests {
         assert_eq!(transcript.recv().expect("retry transcript").len(), 2);
         assert_eq!(retried.phase, SemanticRuntimePhase::Ready);
         assert!(retried.verified);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_golden_retry_invalidates_verification_across_restart() {
+        let directory = tempfile::tempdir().expect("retry invalidation runtime directory");
+        let model_path = directory.path().join("model.gguf");
+        let sidecar_path = directory.path().join("llama-server");
+        fs::write(&model_path, b"0123456789").expect("model fixture");
+        fs::write(&sidecar_path, b"sidecar").expect("sidecar fixture");
+        let contract = || test_contract(b"0123456789", "http://127.0.0.1:1/model".into());
+        let (endpoint, transcript, server) = start_embedding_server(false, 2);
+        let runtime = EmbeddingRuntime::start(test_configuration(
+            directory.path(),
+            Some(sidecar_path.clone()),
+            Some(model_path.clone()),
+            contract(),
+            Duration::from_secs(60),
+        ));
+        install_running_fixture(&runtime, endpoint, &model_path);
+
+        runtime.prepare().expect("initial golden verification");
+        server.join().expect("initial embedding fixture server");
+        assert_eq!(
+            transcript
+                .recv()
+                .expect("initial embedding transcript")
+                .len(),
+            2
+        );
+        assert!(read_verification_receipt(directory.path())
+            .expect("initial verification receipt")
+            .is_some());
+
+        stop_sidecar(&runtime.inner);
+        let (endpoint, transcript, server) = start_embedding_server(true, 1);
+        install_running_fixture(&runtime, endpoint, &model_path);
+        assert!(matches!(
+            runtime.retry(),
+            Err(SemanticRuntimeError::InvalidArtifact(_))
+        ));
+        server
+            .join()
+            .expect("incompatible embedding fixture server");
+        assert_eq!(
+            transcript
+                .recv()
+                .expect("incompatible embedding transcript")
+                .len(),
+            1
+        );
+        assert!(read_verification_receipt(directory.path())
+            .expect("invalidated verification receipt")
+            .is_none());
+
+        runtime.shutdown();
+        drop(runtime);
+        let restarted = EmbeddingRuntime::start(test_configuration(
+            directory.path(),
+            Some(sidecar_path),
+            Some(model_path),
+            contract(),
+            Duration::from_secs(60),
+        ));
+        let status = restarted.status();
+        assert_eq!(status.phase, SemanticRuntimePhase::VerificationRequired);
+        assert!(!status.verified);
+        assert!(!status.runtime_running);
     }
 
     #[cfg(unix)]
