@@ -262,6 +262,40 @@ fn ingestion_canonicalizes_mime_case_before_classification() {
     );
 }
 
+struct UnexpectedRead;
+
+impl Read for UnexpectedRead {
+    fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+        panic!("invalid limits must be rejected before reading attachment bytes");
+    }
+}
+
+#[test]
+fn public_ingestion_validates_limits_before_staging() {
+    let library = TestLibrary::new();
+    let invalid_limits = MediaLimits {
+        max_attachment_bytes: u64::MAX,
+        ..MediaLimits::default()
+    };
+
+    let error = library
+        .database
+        .ingest_attachment(
+            AttachmentIngestInput {
+                draft_id: CAPTURE_DRAFT_ID.into(),
+                display_filename: "unbounded.bin".into(),
+                media_type: "application/octet-stream".into(),
+                now_ms: 11,
+                limits: invalid_limits,
+            },
+            UnexpectedRead,
+        )
+        .expect_err("reject invalid limits before staging");
+
+    assert!(matches!(error, DatabaseError::InvalidInput(_)));
+    assert!(!library.paths.root().join("media-staging").exists());
+}
+
 struct InterruptedReader {
     emitted: bool,
 }
@@ -468,6 +502,84 @@ fn revision_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
             .load_media_payload(second.id, 30, None, 64),
         Err(DatabaseError::NotFound { .. })
     ));
+}
+
+#[test]
+fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
+    let library = TestLibrary::new();
+    let attachment = library.ingest(
+        (0x748, 0x749, 0x74a),
+        "inherited.png",
+        "image/png",
+        b"inherited",
+        11,
+        MediaLimits::default(),
+    );
+    let body = format!(
+        "existing image {{{{kosh:image:{};width=80%}}}}",
+        attachment.id
+    );
+    let capture = library.save_capture(&body, 12);
+    let tidbit = library
+        .database
+        .client()
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: Some("Illustrated note".into()),
+                body_markdown: body.clone(),
+                sources: Vec::new(),
+            },
+            now_ms: 13,
+            tidbit_id: id(0x74b),
+            revision_id: id(0x74c),
+            source_ids: Vec::new(),
+        })
+        .expect("create revision with media");
+    assert!(library
+        .database
+        .client()
+        .clear_draft_at(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: capture.updated_at_ms,
+            },
+            14,
+        )
+        .expect("clear capture lease"));
+
+    let edit_context = format!("edit:{}", tidbit.id);
+    let edit_draft = library
+        .database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: edit_context,
+                tidbit_id: Some(tidbit.id),
+                base_revision_id: Some(tidbit.current_revision_id),
+                title: Some("Illustrated note".into()),
+                body_markdown: body,
+                sources: Vec::new(),
+            },
+            now_ms: 15,
+            draft_id: id(0x74d),
+            media_lease_duration_ms: MediaLimits::default().draft_lease_duration_ms,
+        })
+        .expect("save edit draft with base-revision media");
+
+    assert_eq!(edit_draft.id, id(0x74d));
+    assert_eq!(
+        library
+            .database
+            .open_main_read_only()
+            .expect("main reader")
+            .query_row(
+                "SELECT count(*) FROM draft_media_lease WHERE draft_id = ?1",
+                params![edit_draft.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("edit draft lease count"),
+        0
+    );
 }
 
 #[test]

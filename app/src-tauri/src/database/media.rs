@@ -822,22 +822,41 @@ pub(crate) fn sync_draft_media_leases(
                 params![draft_id, &reference.id, now_ms],
                 |row| row.get::<_, String>(0),
             )
+            .optional()?;
+        if let Some(lease_id) = lease_id {
+            transaction.execute(
+                "UPDATE media_ingest_lease
+                 SET expires_at = max(expires_at, ?1)
+                 WHERE id = ?2",
+                params![
+                    checked_timestamp_add(now_ms, lease_duration_ms, "draft media lease renewal")?,
+                    lease_id
+                ],
+            )?;
+            continue;
+        }
+        let inherited_from_base_revision = transaction
+            .query_row(
+                "SELECT 1
+                 FROM draft_context AS context
+                 JOIN tidbit_revision_attachment AS membership
+                   ON membership.tidbit_revision_id = context.base_revision_id
+                 JOIN attachment
+                   ON attachment.id = membership.attachment_id
+                 WHERE context.draft_id = ?1
+                   AND membership.attachment_id = ?2
+                   AND attachment.deleted_at IS NULL",
+                params![draft_id, &reference.id],
+                |_| Ok(()),
+            )
             .optional()?
-            .ok_or_else(|| {
-                DatabaseError::InvalidInput(format!(
-                    "attachment {} is not leased to this draft",
-                    reference.id
-                ))
-            })?;
-        transaction.execute(
-            "UPDATE media_ingest_lease
-             SET expires_at = max(expires_at, ?1)
-             WHERE id = ?2",
-            params![
-                checked_timestamp_add(now_ms, lease_duration_ms, "draft media lease renewal")?,
-                lease_id
-            ],
-        )?;
+            .is_some();
+        if !inherited_from_base_revision {
+            return Err(DatabaseError::InvalidInput(format!(
+                "attachment {} is not authorized for this draft",
+                reference.id
+            )));
+        }
     }
     Ok(())
 }

@@ -172,6 +172,7 @@ impl Database {
         input: AttachmentIngestInput,
         reader: impl Read,
     ) -> Result<AttachmentRecord> {
+        let limits = input.limits.validate()?;
         let attachment_id = uuid::Uuid::now_v7().to_string();
         let ingest_lease_id = uuid::Uuid::now_v7().to_string();
         let stage_id = uuid::Uuid::now_v7().to_string();
@@ -179,7 +180,7 @@ impl Database {
             reader,
             &self.paths.root.join("media-staging"),
             &stage_id,
-            input.limits.max_attachment_bytes,
+            limits.max_attachment_bytes,
         )?;
         self.client
             .ingest_attachment(staged.write(media::IngestAttachmentMetadata {
@@ -189,7 +190,7 @@ impl Database {
                 display_filename: input.display_filename,
                 media_type: input.media_type,
                 now_ms: input.now_ms,
-                limits: input.limits,
+                limits,
             }))
     }
 
