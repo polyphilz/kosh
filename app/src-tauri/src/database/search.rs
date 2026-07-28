@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
 };
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
@@ -200,12 +200,7 @@ pub(super) fn search_passages(
         return Ok(Vec::new());
     }
 
-    let mut documents = Vec::with_capacity(ranks.len());
-    for (passage_id, ranks) in ranks {
-        if let Some(document) = load_search_document(connection, &passage_id, ranks)? {
-            documents.push(document);
-        }
-    }
+    let documents = load_search_documents(connection, ranks)?;
     let ranked = rank_lexical_documents(&query, documents, input.limit as usize);
     ranked
         .into_iter()
@@ -489,37 +484,7 @@ fn query_fts_index(
          FROM {index}
          JOIN passage_search_document AS document
            ON document.rowid = {index}.rowid
-         JOIN passage ON passage.id = document.passage_id
          WHERE {index} MATCH ?1
-           AND (
-               (
-                   passage.owner_kind = 'AUTHOR'
-                   AND EXISTS (
-                       SELECT 1
-                       FROM active_passage AS active
-                       JOIN tidbit
-                         ON tidbit.id = active.tidbit_id
-                        AND tidbit.deleted_at IS NULL
-                        AND tidbit.current_revision_id = passage.tidbit_revision_id
-                       JOIN tidbit_revision AS revision
-                         ON revision.id = tidbit.current_revision_id
-                        AND revision.tidbit_id = tidbit.id
-                        AND revision.content_hash = document.owner_content_hash
-                       WHERE active.passage_id = passage.id
-                         AND active.tidbit_id = document.tidbit_id
-                   )
-               )
-               OR (
-                   passage.owner_kind = 'ATTACHMENT'
-                   AND document.tidbit_id IS NULL
-                   AND document.owner_content_hash = passage.content_hash
-                   AND EXISTS (
-                       SELECT 1
-                       FROM current_attachment_passage AS current
-                       WHERE current.passage_id = passage.id
-                   )
-               )
-           )
          ORDER BY bm25({index}, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5),
                   document.updated_at DESC,
                   document.passage_id
@@ -530,148 +495,153 @@ fn query_fts_index(
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-fn load_search_document(
+fn load_search_documents(
     connection: &Connection,
-    passage_id: &str,
-    ranks: CandidateRanks,
-) -> Result<Option<LexicalDocument>> {
-    let authored = connection
-        .query_row(
-            "SELECT
-                tidbit.updated_at,
-                coalesce(revision.title, ''),
-                coalesce(
-                    (
-                        SELECT group_concat(value, char(10))
-                        FROM json_each(passage.heading_context_json)
-                    ),
-                    ''
-                ),
-                passage.content,
-                coalesce(
-                    (
-                        SELECT group_concat(coalesce(source.label, ''), char(10))
-                        FROM tidbit_revision_source AS membership
-                        JOIN source ON source.id = membership.source_id
-                        WHERE membership.tidbit_revision_id = revision.id
-                        ORDER BY membership.sort_order
-                    ),
-                    ''
-                ),
-                coalesce(
-                    (
-                        SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
-                        FROM tidbit_revision_source AS membership
-                        JOIN source ON source.id = membership.source_id
-                        WHERE membership.tidbit_revision_id = revision.id
-                        ORDER BY membership.sort_order
-                    ),
-                    ''
-                ),
-                coalesce(
-                    (
-                        SELECT group_concat(attachment.display_filename, char(10))
-                        FROM tidbit_revision_attachment AS membership
-                        JOIN attachment ON attachment.id = membership.attachment_id
-                        WHERE membership.tidbit_revision_id = revision.id
-                          AND attachment.deleted_at IS NULL
-                        ORDER BY membership.sort_order
-                    ),
-                    ''
+    ranks: HashMap<String, CandidateRanks>,
+) -> Result<Vec<LexicalDocument>> {
+    let candidates = ranks
+        .into_iter()
+        .map(|(passage_id, ranks)| {
+            serde_json::json!({
+                "passageId": passage_id,
+                "wordRank": ranks.word,
+                "trigramRank": ranks.trigram,
+            })
+        })
+        .collect::<Vec<_>>();
+    let candidates_json =
+        serde_json::to_string(&candidates).map_err(|error| DatabaseError::Validation {
+            kind: "main",
+            reason: format!("could not serialize lexical candidates: {error}"),
+        })?;
+    let mut statement = connection.prepare(
+        "WITH candidate AS (
+            SELECT
+                json_extract(value, '$.passageId') AS passage_id,
+                json_extract(value, '$.wordRank') AS word_rank,
+                json_extract(value, '$.trigramRank') AS trigram_rank
+            FROM json_each(?1)
+         )
+         SELECT
+            candidate.passage_id,
+            tidbit.updated_at,
+            coalesce(revision.title, ''),
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
                 ),
                 ''
-             FROM passage_search_document AS document
-             JOIN passage ON passage.id = document.passage_id
-             JOIN active_passage AS active
-               ON active.passage_id = passage.id
-              AND active.tidbit_id = document.tidbit_id
-             JOIN tidbit
-               ON tidbit.id = active.tidbit_id
-              AND tidbit.deleted_at IS NULL
-              AND tidbit.current_revision_id = passage.tidbit_revision_id
-             JOIN tidbit_revision AS revision
-               ON revision.id = tidbit.current_revision_id
-              AND revision.tidbit_id = tidbit.id
-              AND revision.content_hash = document.owner_content_hash
-             WHERE document.passage_id = ?1",
-            params![passage_id],
-            |row| {
-                let fields = [
-                    (SearchField::Title, row.get::<_, String>(1)?),
-                    (SearchField::HeadingContext, row.get::<_, String>(2)?),
-                    (SearchField::Body, row.get::<_, String>(3)?),
-                    (SearchField::SourceLabel, row.get::<_, String>(4)?),
-                    (SearchField::SourceDomain, row.get::<_, String>(5)?),
-                    (SearchField::AttachmentName, row.get::<_, String>(6)?),
-                    (SearchField::ExtractedText, row.get::<_, String>(7)?),
-                ]
-                .into_iter()
-                .collect();
-                Ok(LexicalDocument {
-                    passage_id: passage_id.to_owned(),
-                    updated_at_ms: row.get(0)?,
-                    fields,
-                    word_rank: ranks.word,
-                    trigram_rank: ranks.trigram,
-                })
-            },
-        )
-        .optional()?;
-    if authored.is_some() {
-        return Ok(authored);
-    }
-
-    connection
-        .query_row(
-            "SELECT
-                attachment.updated_at,
-                '',
-                coalesce(
-                    (
-                        SELECT group_concat(value, char(10))
-                        FROM json_each(passage.heading_context_json)
-                    ),
-                    ''
+            ),
+            passage.content,
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.label, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
                 ),
-                '',
-                '',
-                '',
-                attachment.display_filename,
-                passage.content
-             FROM passage_search_document AS document
-             JOIN passage
-               ON passage.id = document.passage_id
-              AND passage.owner_kind = 'ATTACHMENT'
-              AND passage.content_hash = document.owner_content_hash
-             JOIN current_attachment_passage AS current
-               ON current.passage_id = passage.id
-             JOIN attachment ON attachment.id = current.attachment_id
-             WHERE document.passage_id = ?1
-               AND document.tidbit_id IS NULL",
-            params![passage_id],
-            |row| {
-                let fields = [
-                    (SearchField::Title, row.get::<_, String>(1)?),
-                    (SearchField::HeadingContext, row.get::<_, String>(2)?),
-                    (SearchField::Body, row.get::<_, String>(3)?),
-                    (SearchField::SourceLabel, row.get::<_, String>(4)?),
-                    (SearchField::SourceDomain, row.get::<_, String>(5)?),
-                    (SearchField::AttachmentName, row.get::<_, String>(6)?),
-                    (SearchField::ExtractedText, row.get::<_, String>(7)?),
-                ]
-                .into_iter()
-                .collect();
-                Ok(LexicalDocument {
-                    passage_id: passage_id.to_owned(),
-                    updated_at_ms: row.get(0)?,
-                    fields,
-                    word_rank: ranks.word,
-                    trigram_rank: ranks.trigram,
-                })
-            },
-        )
-        .optional()
-        .map_err(Into::into)
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(attachment.display_filename, char(10))
+                    FROM tidbit_revision_attachment AS membership
+                    JOIN attachment ON attachment.id = membership.attachment_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                      AND attachment.deleted_at IS NULL
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            '',
+            candidate.word_rank,
+            candidate.trigram_rank
+         FROM candidate
+         JOIN passage_search_document AS document
+           ON document.passage_id = candidate.passage_id
+         JOIN passage
+           ON passage.id = document.passage_id
+          AND passage.owner_kind = 'AUTHOR'
+         JOIN active_passage AS active
+           ON active.passage_id = passage.id
+          AND active.tidbit_id = document.tidbit_id
+         JOIN tidbit
+           ON tidbit.id = active.tidbit_id
+          AND tidbit.deleted_at IS NULL
+          AND tidbit.current_revision_id = passage.tidbit_revision_id
+         JOIN tidbit_revision AS revision
+           ON revision.id = tidbit.current_revision_id
+          AND revision.tidbit_id = tidbit.id
+          AND revision.content_hash = document.owner_content_hash
+         UNION ALL
+         SELECT
+            candidate.passage_id,
+            attachment.updated_at,
+            '',
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            '',
+            '',
+            '',
+            attachment.display_filename,
+            passage.content,
+            candidate.word_rank,
+            candidate.trigram_rank
+         FROM candidate
+         JOIN passage_search_document AS document
+           ON document.passage_id = candidate.passage_id
+          AND document.tidbit_id IS NULL
+         JOIN passage
+           ON passage.id = document.passage_id
+          AND passage.owner_kind = 'ATTACHMENT'
+          AND passage.content_hash = document.owner_content_hash
+         JOIN current_attachment_passage AS current
+           ON current.passage_id = passage.id
+         JOIN attachment ON attachment.id = current.attachment_id",
+    )?;
+    let rows = statement.query_map(params![candidates_json], |row| {
+        let word_rank = row
+            .get::<_, Option<i64>>(9)?
+            .and_then(|rank| usize::try_from(rank).ok());
+        let trigram_rank = row
+            .get::<_, Option<i64>>(10)?
+            .and_then(|rank| usize::try_from(rank).ok());
+        Ok(LexicalDocument {
+            passage_id: row.get(0)?,
+            updated_at_ms: row.get(1)?,
+            fields: [
+                (SearchField::Title, row.get::<_, String>(2)?),
+                (SearchField::HeadingContext, row.get::<_, String>(3)?),
+                (SearchField::Body, row.get::<_, String>(4)?),
+                (SearchField::SourceLabel, row.get::<_, String>(5)?),
+                (SearchField::SourceDomain, row.get::<_, String>(6)?),
+                (SearchField::AttachmentName, row.get::<_, String>(7)?),
+                (SearchField::ExtractedText, row.get::<_, String>(8)?),
+            ]
+            .into_iter()
+            .collect(),
+            word_rank,
+            trigram_rank,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 pub(crate) fn parse_lexical_query(
@@ -1253,8 +1223,28 @@ mod tests {
                     '019f547b-6200-7000-8000-000000009512',
                     '019f547b-6200-7000-8000-000000009501',
                     0, 'ATTACHMENT'
-                 );
-                 INSERT INTO attachment_extraction(
+                 );",
+            )
+            .expect("associate attachment with current revision");
+        let membership_results = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "calibration-plate.pdf".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search newly associated attachment filename");
+        assert_eq!(membership_results.len(), 1);
+        assert!(membership_results[0].citation.tidbit.is_some());
+        assert!(membership_results[0].citation.attachment.is_none());
+        assert!(membership_results[0]
+            .matched_fields
+            .contains(&SearchField::AttachmentName));
+
+        connection
+            .execute_batch(
+                "INSERT INTO attachment_extraction(
                     id, attachment_id, extractor, extractor_version, content_hash,
                     status, created_at, started_at, completed_at
                  ) VALUES(

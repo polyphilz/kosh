@@ -244,6 +244,24 @@ CREATE TRIGGER passage_attachment_search_after_insert
 AFTER INSERT ON passage
 WHEN new.owner_kind = 'ATTACHMENT'
 BEGIN
+    DELETE FROM passage_search_document
+    WHERE passage_id IN (
+        SELECT candidate.id
+        FROM passage AS candidate
+        JOIN attachment_segment AS candidate_segment
+          ON candidate_segment.id = candidate.attachment_segment_id
+        JOIN attachment_extraction AS candidate_extraction
+          ON candidate_extraction.id = candidate_segment.extraction_id
+        WHERE candidate.owner_kind = 'ATTACHMENT'
+          AND candidate_extraction.attachment_id = (
+              SELECT extraction.attachment_id
+              FROM attachment_segment AS segment
+              JOIN attachment_extraction AS extraction
+                ON extraction.id = segment.extraction_id
+              WHERE segment.id = new.attachment_segment_id
+          )
+    );
+
     INSERT INTO passage_search_document(
         rowid,
         passage_id,
@@ -259,14 +277,14 @@ BEGIN
         updated_at
     )
     SELECT
-        new.rowid,
-        new.id,
+        passage.rowid,
+        passage.id,
         NULL,
         '',
         coalesce(
             (
                 SELECT group_concat(value, char(10))
-                FROM json_each(new.heading_context_json)
+                FROM json_each(passage.heading_context_json)
             ),
             ''
         ),
@@ -274,12 +292,48 @@ BEGIN
         '',
         '',
         attachment.display_filename,
-        new.content,
-        new.content_hash,
+        passage.content,
+        passage.content_hash,
         attachment.updated_at
     FROM current_attachment_passage AS current
+    JOIN passage ON passage.id = current.passage_id
     JOIN attachment ON attachment.id = current.attachment_id
-    WHERE current.passage_id = new.id;
+    WHERE current.attachment_id = (
+        SELECT extraction.attachment_id
+        FROM attachment_segment AS segment
+        JOIN attachment_extraction AS extraction
+          ON extraction.id = segment.extraction_id
+        WHERE segment.id = new.attachment_segment_id
+    );
+END;
+
+CREATE TRIGGER tidbit_revision_attachment_search_after_insert
+AFTER INSERT ON tidbit_revision_attachment
+BEGIN
+    UPDATE passage_search_document
+    SET attachment_names = coalesce(
+        (
+            SELECT group_concat(attachment.display_filename, char(10))
+            FROM tidbit_revision_attachment AS membership
+            JOIN attachment ON attachment.id = membership.attachment_id
+            WHERE membership.tidbit_revision_id = new.tidbit_revision_id
+              AND attachment.deleted_at IS NULL
+            ORDER BY membership.sort_order
+        ),
+        ''
+    )
+    WHERE tidbit_id = (
+        SELECT tidbit.id
+        FROM tidbit
+        WHERE tidbit.current_revision_id = new.tidbit_revision_id
+          AND tidbit.deleted_at IS NULL
+    )
+      AND passage_id IN (
+          SELECT passage.id
+          FROM passage
+          WHERE passage.tidbit_revision_id = new.tidbit_revision_id
+            AND passage.owner_kind = 'AUTHOR'
+      );
 END;
 
 CREATE TRIGGER attachment_search_refresh_after_update

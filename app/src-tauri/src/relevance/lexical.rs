@@ -1,19 +1,23 @@
-use std::{collections::BTreeMap, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
-use crate::database::passages::builder::build_markdown_passages;
 use crate::database::search::{
     candidate_limit, normalize_for_search, parse_lexical_query, rank_lexical_documents,
     LexicalDocument, LexicalSearchMode, SearchField,
 };
-use rusqlite::{params, Connection, Statement};
+use crate::database::{
+    Database, DatabaseClient, DatabasePaths, LexicalBenchmarkAttachmentWrite, SearchPassagesInput,
+    SourceDraft, TidbitDraft,
+};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{
     EvaluationLocator, EvaluationPassage, RelevanceError, RetrievalHit, RetrievalRequest,
     Retriever, RuntimeMetadata, ScaleCorpus, SearchMode,
 };
 
-pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 2;
+pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 3;
 pub const INTERACTIVE_LEXICAL_P95_BUDGET_MS: f64 = 100.0;
 const BENCHMARK_RESULT_LIMIT: u32 = 20;
 
@@ -288,134 +292,80 @@ pub fn benchmark_scale_lexical(
         ));
     }
 
-    let mut connection =
-        Connection::open_in_memory().map_err(|error| benchmark_error("open index", error))?;
-    connection
-        .execute_batch(
-            "CREATE TABLE benchmark_document(
-                rowid INTEGER PRIMARY KEY,
-                title TEXT NOT NULL,
-                heading_context TEXT NOT NULL,
-                body TEXT NOT NULL,
-                source_labels TEXT NOT NULL,
-                source_domains TEXT NOT NULL,
-                attachment_names TEXT NOT NULL,
-                extracted_text TEXT NOT NULL
-             ) STRICT;
-             CREATE VIRTUAL TABLE benchmark_word USING fts5(
-                title,
-                heading_context,
-                body,
-                source_labels,
-                source_domains,
-                attachment_names,
-                extracted_text,
-                tokenize = 'unicode61 remove_diacritics 2 tokenchars ''_'''
-             );
-             CREATE VIRTUAL TABLE benchmark_trigram USING fts5(
-                title,
-                heading_context,
-                body,
-                source_labels,
-                source_domains,
-                attachment_names,
-                extracted_text,
-                tokenize = 'trigram'
-             );",
-        )
-        .map_err(|error| benchmark_error("create indexes", error))?;
-
+    let library = TemporaryBenchmarkLibrary::create()?;
+    let database = Database::initialize(DatabasePaths::new(&library.root))
+        .map_err(|error| benchmark_error("initialize production database", error))?;
+    let client = database.client();
     let indexing_started = Instant::now();
-    let transaction = connection
-        .transaction()
-        .map_err(|error| benchmark_error("start index transaction", error))?;
-    let mut passage_count = 0_u32;
-    {
-        let mut insert_document = transaction
-            .prepare(
-                "INSERT INTO benchmark_document(
-                    rowid, title, heading_context, body, source_labels,
-                    source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )
-            .map_err(|error| benchmark_error("prepare document insert", error))?;
-        let mut insert_word = transaction
-            .prepare(
-                "INSERT INTO benchmark_word(
-                    rowid, title, heading_context, body, source_labels,
-                    source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )
-            .map_err(|error| benchmark_error("prepare word insert", error))?;
-        let mut insert_trigram = transaction
-            .prepare(
-                "INSERT INTO benchmark_trigram(
-                    rowid, title, heading_context, body, source_labels,
-                    source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )
-            .map_err(|error| benchmark_error("prepare trigram insert", error))?;
-        for tidbit in &corpus.tidbits {
-            let source_labels = tidbit
+    for tidbit in &corpus.tidbits {
+        let now_ms = i64::try_from(tidbit.created_at_ms)
+            .map_err(|error| benchmark_error("convert tidbit timestamp", error))?;
+        let input = TidbitDraft {
+            title: tidbit.title.clone(),
+            body_markdown: tidbit.body_markdown.clone(),
+            sources: tidbit
                 .sources
                 .iter()
-                .map(|source| source.label.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let source_domains = tidbit
-                .sources
-                .iter()
-                .map(|source| source.url.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let attachment_names = tidbit
-                .attachments
-                .iter()
-                .map(|attachment| attachment.filename.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-            for passage in build_markdown_passages(&tidbit.body_markdown) {
-                passage_count = passage_count.checked_add(1).ok_or_else(|| {
-                    RelevanceError::LexicalBenchmark("passage count overflow".into())
-                })?;
-                let rowid = i64::from(passage_count);
-                let heading_context = passage.heading_context.join("\n");
-                let document_values = params![
-                    rowid,
-                    tidbit.title.as_deref().unwrap_or_default(),
-                    heading_context,
-                    passage.content,
-                    source_labels,
-                    source_domains,
-                    attachment_names,
-                    ""
-                ];
-                insert_document
-                    .execute(document_values)
-                    .map_err(|error| benchmark_error("insert source document", error))?;
-                let index_values = params![
-                    rowid,
-                    normalize_for_search(tidbit.title.as_deref().unwrap_or_default()),
-                    normalize_for_search(&heading_context),
-                    normalize_for_search(&passage.content),
-                    normalize_for_search(&source_labels),
-                    normalize_for_search(&source_domains),
-                    normalize_for_search(&attachment_names),
-                    ""
-                ];
-                insert_word
-                    .execute(index_values)
-                    .map_err(|error| benchmark_error("insert word document", error))?;
-                insert_trigram
-                    .execute(index_values)
-                    .map_err(|error| benchmark_error("insert trigram document", error))?;
-            }
-        }
+                .map(|source| SourceDraft {
+                    label: Some(source.label.clone()),
+                    url: Some(source.url.clone()),
+                })
+                .collect(),
+        };
+        let source_ids = input
+            .sources
+            .iter()
+            .map(|_| Uuid::now_v7().to_string())
+            .collect();
+        client
+            .create_tidbit_with_ids(
+                input,
+                now_ms,
+                tidbit.id.clone(),
+                tidbit.revision_id.clone(),
+                source_ids,
+            )
+            .map_err(|error| benchmark_error("index production tidbit", error))?;
     }
-    transaction
-        .commit()
-        .map_err(|error| benchmark_error("commit indexes", error))?;
+    let attachment_writes = corpus
+        .tidbits
+        .iter()
+        .flat_map(|tidbit| {
+            tidbit.attachments.iter().map(|attachment| {
+                Ok(LexicalBenchmarkAttachmentWrite {
+                    revision_id: tidbit.revision_id.clone(),
+                    attachment_id: attachment.id.clone(),
+                    created_at_ms: i64::try_from(tidbit.created_at_ms)
+                        .map_err(|error| benchmark_error("convert attachment timestamp", error))?,
+                    display_filename: attachment.filename.clone(),
+                    media_type: attachment.media_type.clone(),
+                    byte_length: i64::try_from(attachment.byte_length)
+                        .map_err(|error| benchmark_error("convert attachment length", error))?,
+                })
+            })
+        })
+        .collect::<super::Result<Vec<_>>>()?;
+    client
+        .install_lexical_benchmark_attachments(attachment_writes)
+        .map_err(|error| benchmark_error("index production attachment metadata", error))?;
     let indexing_duration_ms = indexing_started.elapsed().as_secs_f64() * 1_000.0;
+    let passage_count = u32::try_from(
+        database
+            .open_main_read_only()
+            .and_then(|connection| {
+                connection
+                    .query_row(
+                        "SELECT count(*)
+                         FROM passage_search_document
+                         WHERE tidbit_id IS NOT NULL",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(Into::into)
+            })
+            .map_err(|error| benchmark_error("count production passages", error))?,
+    )
+    .map_err(|error| benchmark_error("convert production passage count", error))?;
 
     const BROAD_QUERIES: [&str; 8] = [
         "retrieval",
@@ -438,65 +388,22 @@ pub fn benchmark_scale_lexical(
             }
         })
         .collect::<Vec<_>>();
-    let mut word_statement = connection
-        .prepare(
-            "SELECT rowid
-             FROM benchmark_word
-             WHERE benchmark_word MATCH ?1
-             ORDER BY bm25(benchmark_word, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5)
-             LIMIT ?2",
-        )
-        .map_err(|error| benchmark_error("prepare word query", error))?;
-    let mut trigram_statement = connection
-        .prepare(
-            "SELECT rowid
-             FROM benchmark_trigram
-             WHERE benchmark_trigram MATCH ?1
-             ORDER BY bm25(benchmark_trigram, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5)
-             LIMIT ?2",
-        )
-        .map_err(|error| benchmark_error("prepare trigram query", error))?;
-    let mut document_statement = connection
-        .prepare(
-            "SELECT
-                title, heading_context, body, source_labels, source_domains,
-                attachment_names, extracted_text
-             FROM benchmark_document
-             WHERE rowid = ?1",
-        )
-        .map_err(|error| benchmark_error("prepare document hydration", error))?;
-    let mut citation_statement = connection
-        .prepare(
-            "SELECT rowid, title, body
-             FROM benchmark_document
-             WHERE rowid = ?1",
-        )
-        .map_err(|error| benchmark_error("prepare citation resolution", error))?;
     for query in queries.iter().take(10) {
-        run_benchmark_query(
-            query,
-            &mut word_statement,
-            &mut trigram_statement,
-            &mut document_statement,
-            &mut citation_statement,
-        )?;
+        run_benchmark_query(&client, query)?;
     }
     let mut durations_ms = Vec::with_capacity(queries.len());
     for query in &queries {
         let started = Instant::now();
-        run_benchmark_query(
-            query,
-            &mut word_statement,
-            &mut trigram_statement,
-            &mut document_statement,
-            &mut citation_statement,
-        )?;
+        run_benchmark_query(&client, query)?;
         durations_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
     durations_ms.sort_by(|left, right| left.total_cmp(right));
     let query_p50_ms = percentile(&durations_ms, 0.50);
     let query_p95_ms = percentile(&durations_ms, 0.95);
     let query_max_ms = durations_ms.last().copied().unwrap_or_default();
+    database
+        .shutdown()
+        .map_err(|error| benchmark_error("shut down production database", error))?;
 
     Ok(LexicalPerformanceReport {
         schema_version: LEXICAL_PERFORMANCE_SCHEMA_VERSION,
@@ -517,90 +424,15 @@ pub fn benchmark_scale_lexical(
     })
 }
 
-fn run_benchmark_query(
-    query: &str,
-    word_statement: &mut Statement<'_>,
-    trigram_statement: &mut Statement<'_>,
-    document_statement: &mut Statement<'_>,
-    citation_statement: &mut Statement<'_>,
-) -> super::Result<()> {
-    let parsed = parse_lexical_query(query, LexicalSearchMode::Default)
-        .map_err(|error| RelevanceError::LexicalBenchmark(error.to_string()))?
-        .ok_or_else(|| RelevanceError::LexicalBenchmark("generated empty query".into()))?;
-    let mut candidates = BTreeMap::<i64, (Option<usize>, Option<usize>)>::new();
-    let candidate_limit = candidate_limit(BENCHMARK_RESULT_LIMIT);
-    if let Some(word_query) = parsed.word_match_query() {
-        for (position, rowid) in query_benchmark_rows(word_statement, &word_query, candidate_limit)?
-            .into_iter()
-            .enumerate()
-        {
-            candidates.entry(rowid).or_default().0 = Some(position + 1);
-        }
-    }
-    if let Some(trigram_query) = parsed.trigram_match_query() {
-        for (position, rowid) in
-            query_benchmark_rows(trigram_statement, &trigram_query, candidate_limit)?
-                .into_iter()
-                .enumerate()
-        {
-            candidates.entry(rowid).or_default().1 = Some(position + 1);
-        }
-    }
-    let documents = candidates
-        .into_iter()
-        .map(|(rowid, (word_rank, trigram_rank))| {
-            document_statement
-                .query_row(params![rowid], |row| {
-                    Ok(LexicalDocument {
-                        passage_id: rowid.to_string(),
-                        updated_at_ms: 0,
-                        fields: [
-                            (SearchField::Title, row.get::<_, String>(0)?),
-                            (SearchField::HeadingContext, row.get::<_, String>(1)?),
-                            (SearchField::Body, row.get::<_, String>(2)?),
-                            (SearchField::SourceLabel, row.get::<_, String>(3)?),
-                            (SearchField::SourceDomain, row.get::<_, String>(4)?),
-                            (SearchField::AttachmentName, row.get::<_, String>(5)?),
-                            (SearchField::ExtractedText, row.get::<_, String>(6)?),
-                        ]
-                        .into_iter()
-                        .collect(),
-                        word_rank,
-                        trigram_rank,
-                    })
-                })
-                .map_err(|error| benchmark_error("hydrate query candidate", error))
+fn run_benchmark_query(client: &DatabaseClient, query: &str) -> super::Result<()> {
+    client
+        .search_passages(SearchPassagesInput {
+            query: query.into(),
+            mode: LexicalSearchMode::Default,
+            limit: BENCHMARK_RESULT_LIMIT,
         })
-        .collect::<super::Result<Vec<_>>>()?;
-    let ranked = rank_lexical_documents(&parsed, documents, BENCHMARK_RESULT_LIMIT as usize);
-    for result in ranked {
-        let rowid = result
-            .passage_id
-            .parse::<i64>()
-            .map_err(|error| benchmark_error("parse citation rowid", error))?;
-        citation_statement
-            .query_row(params![rowid], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|error| benchmark_error("resolve citation candidate", error))?;
-    }
-    Ok(())
-}
-
-fn query_benchmark_rows(
-    statement: &mut Statement<'_>,
-    query: &str,
-    limit: u32,
-) -> super::Result<Vec<i64>> {
-    let rows = statement
-        .query_map(params![query, limit], |row| row.get::<_, i64>(0))
-        .map_err(|error| benchmark_error("run query", error))?;
-    rows.map(|row| row.map_err(|error| benchmark_error("read query result", error)))
-        .collect()
+        .map(|_| ())
+        .map_err(|error| benchmark_error("run production search", error))
 }
 
 fn percentile(sorted: &[f64], percentile: f64) -> f64 {
@@ -612,6 +444,28 @@ fn percentile(sorted: &[f64], percentile: f64) -> f64 {
 
 fn benchmark_error(context: &str, error: impl std::fmt::Display) -> RelevanceError {
     RelevanceError::LexicalBenchmark(format!("{context}: {error}"))
+}
+
+struct TemporaryBenchmarkLibrary {
+    root: PathBuf,
+}
+
+impl TemporaryBenchmarkLibrary {
+    fn create() -> super::Result<Self> {
+        let root = std::env::temp_dir().join(format!(
+            "kosh-lexical-benchmark-{}",
+            Uuid::now_v7().as_simple()
+        ));
+        std::fs::create_dir(&root)
+            .map_err(|error| benchmark_error("create temporary production library", error))?;
+        Ok(Self { root })
+    }
+}
+
+impl Drop for TemporaryBenchmarkLibrary {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
 }
 
 #[cfg(test)]

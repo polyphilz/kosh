@@ -41,6 +41,7 @@ pub use tidbits::{
     DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
     TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
 };
+pub(crate) use writer::LexicalBenchmarkAttachmentWrite;
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
@@ -252,6 +253,11 @@ fn writer_loop(
             }
             WriterMessage::SearchPassages { input, reply } => {
                 let _ = reply.send(search::search_passages(&main, input));
+            }
+            WriterMessage::InstallLexicalBenchmarkAttachments { writes, reply } => {
+                let _ = reply.send(writer::install_lexical_benchmark_attachments(
+                    &mut main, writes,
+                ));
             }
             WriterMessage::SaveDraft { write, reply } => {
                 let _ = reply.send(drafts::save_draft(&mut main, write));

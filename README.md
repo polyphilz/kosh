@@ -49,6 +49,8 @@ The relevance commands validate the checked-in search corpus, emit the
 intentionally failing empty-retrieval baseline, record the current lexical
 baseline, and generate the deterministic 10,000-tidbit performance workload
 under ignored `app/.data/relevance/`. The release-mode lexical benchmark uses a
+real migrated, WAL-backed Kosh library and the production write, FTS,
+authoritative hydration, ranking, and citation-resolution paths. It enforces a
 100 ms p95 interactive budget and writes machine/runtime metadata beside its
 ignored report.
 

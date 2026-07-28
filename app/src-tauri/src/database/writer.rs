@@ -1,6 +1,7 @@
 use std::sync::mpsc::{self, Sender, SyncSender};
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use sha2::{Digest, Sha256};
 
 use super::{
     drafts::{ClearDraftInput, Draft, SaveDraftWrite},
@@ -22,6 +23,15 @@ pub struct DatabaseDiagnostics {
     pub media_journal_mode: String,
     pub main_foreign_keys: bool,
     pub media_foreign_keys: bool,
+}
+
+pub(crate) struct LexicalBenchmarkAttachmentWrite {
+    pub revision_id: String,
+    pub attachment_id: String,
+    pub created_at_ms: i64,
+    pub display_filename: String,
+    pub media_type: String,
+    pub byte_length: i64,
 }
 
 pub(super) enum WriterMessage {
@@ -77,6 +87,10 @@ pub(super) enum WriterMessage {
     SearchPassages {
         input: SearchPassagesInput,
         reply: SyncSender<Result<Vec<PassageSearchResult>>>,
+    },
+    InstallLexicalBenchmarkAttachments {
+        writes: Vec<LexicalBenchmarkAttachmentWrite>,
+        reply: SyncSender<Result<()>>,
     },
     SaveDraft {
         write: SaveDraftWrite,
@@ -174,6 +188,23 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
+    pub(crate) fn create_tidbit_with_ids(
+        &self,
+        input: super::TidbitDraft,
+        now_ms: i64,
+        tidbit_id: String,
+        revision_id: String,
+        source_ids: Vec<String>,
+    ) -> Result<Tidbit> {
+        self.create_tidbit(CreateTidbitWrite {
+            input,
+            now_ms,
+            tidbit_id,
+            revision_id,
+            source_ids,
+        })
+    }
+
     pub(crate) fn load_tidbit(&self, id: String) -> Result<Tidbit> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
@@ -249,6 +280,19 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::SearchPassages { input, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn install_lexical_benchmark_attachments(
+        &self,
+        writes: Vec<LexicalBenchmarkAttachmentWrite>,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::InstallLexicalBenchmarkAttachments { writes, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
@@ -381,4 +425,52 @@ pub(super) fn reap_media_blob(
     transaction.commit()?;
     main_transaction.commit()?;
     Ok(deleted == 1)
+}
+
+pub(super) fn install_lexical_benchmark_attachments(
+    main: &mut Connection,
+    writes: Vec<LexicalBenchmarkAttachmentWrite>,
+) -> Result<()> {
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for write in writes {
+        let kind = if write.media_type.starts_with("image/") {
+            "IMAGE"
+        } else if write.media_type == "application/pdf" {
+            "PDF"
+        } else if write.media_type.starts_with("text/") {
+            "TEXT"
+        } else {
+            "BINARY"
+        };
+        let extraction_state = if kind == "BINARY" {
+            "NOT_APPLICABLE"
+        } else {
+            "PENDING"
+        };
+        let content_hash = Sha256::digest(write.attachment_id.as_bytes());
+        transaction.execute(
+            "INSERT OR IGNORE INTO attachment(
+                id, created_at, updated_at, sha256, display_filename,
+                media_type, byte_length, kind, extraction_state
+             ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                write.attachment_id,
+                write.created_at_ms,
+                content_hash.as_slice(),
+                write.display_filename,
+                write.media_type,
+                write.byte_length,
+                kind,
+                extraction_state,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO tidbit_revision_attachment(
+                tidbit_revision_id, attachment_id, sort_order, display_role
+             ) VALUES(?1, ?2, 0, 'ATTACHMENT')",
+            params![write.revision_id, write.attachment_id],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
 }
