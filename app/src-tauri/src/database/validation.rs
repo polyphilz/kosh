@@ -13,6 +13,7 @@ const MAIN_TABLES: &[&str] = &[
     "app_settings",
     "attachment",
     "attachment_extraction",
+    "attachment_extractor_config",
     "attachment_segment",
     "draft",
     "draft_context",
@@ -23,8 +24,10 @@ const MAIN_TABLES: &[&str] = &[
     "media_ingest_lease",
     "passage",
     "passage_embedding",
+    "passage_fts_short",
     "passage_fts_trigram",
     "passage_fts_word",
+    "passage_search_document",
     "research_citation",
     "research_event",
     "research_run",
@@ -211,8 +214,12 @@ fn recover_interrupted_derived_work(connection: &mut Connection) -> Result<()> {
 }
 
 pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
-    const INDEXES: &[&str] = &["passage_fts_word", "passage_fts_trigram"];
-    const VERSION: &str = "1";
+    const INDEXES: &[&str] = &[
+        "passage_fts_word",
+        "passage_fts_trigram",
+        "passage_fts_short",
+    ];
+    const VERSION: &str = "lexical-v1";
     let existing_version = connection
         .query_row(
             "SELECT version FROM index_state WHERE name = 'PASSAGE_FTS'",
@@ -239,12 +246,13 @@ pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
     let mut failed = Vec::new();
 
     for index in INDEXES {
-        let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 1)");
-        if force_rebuild || transaction.execute(&integrity, []).is_err() {
-            let rebuild = format!("INSERT INTO {index}({index}) VALUES('rebuild')");
-            if transaction.execute(&rebuild, []).is_err() {
-                failed.push(*index);
-            }
+        let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 0)");
+        let needs_rebuild = force_rebuild || transaction.execute(&integrity, []).is_err();
+        if needs_rebuild
+            && (rebuild_normalized_fts(&transaction, index).is_err()
+                || transaction.execute(&integrity, []).is_err())
+        {
+            failed.push(*index);
         }
     }
 
@@ -274,6 +282,42 @@ pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
     )?;
     transaction.commit()?;
     Ok(failed.is_empty())
+}
+
+fn rebuild_normalized_fts(
+    transaction: &rusqlite::Transaction<'_>,
+    index: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        &format!("INSERT INTO {index}({index}) VALUES('delete-all')"),
+        [],
+    )?;
+    let projection = if index == "passage_fts_short" {
+        "kosh_search_short_grams"
+    } else {
+        "kosh_search_normalize"
+    };
+    transaction.execute(
+        &format!(
+            "INSERT INTO {index}(
+                rowid, title, heading_context, body, source_labels,
+                source_domains, attachment_names, extracted_text
+             )
+             SELECT
+                rowid,
+                {projection}(title),
+                {projection}(heading_context),
+                {projection}(body),
+                {projection}(source_labels),
+                {projection}(source_domains),
+                {projection}(attachment_names),
+                {projection}(extracted_text)
+             FROM passage_search_document
+             ORDER BY rowid"
+        ),
+        [],
+    )?;
+    Ok(())
 }
 
 fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<()> {

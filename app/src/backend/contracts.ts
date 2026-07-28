@@ -88,6 +88,37 @@ export interface CitationResolution {
   sources: TidbitSource[];
 }
 
+export type LexicalSearchMode = "DEFAULT" | "EXACT";
+
+export type SearchField =
+  | "TITLE"
+  | "HEADING_CONTEXT"
+  | "BODY"
+  | "SOURCE_LABEL"
+  | "SOURCE_DOMAIN"
+  | "ATTACHMENT_NAME"
+  | "EXTRACTED_TEXT";
+
+export interface SearchPassagesInput {
+  query: string;
+  mode: LexicalSearchMode;
+  limit: number;
+}
+
+export interface SearchHighlight {
+  field: SearchField;
+  startChar: number;
+  endChar: number;
+}
+
+export interface PassageSearchResult {
+  passageId: string;
+  score: number;
+  matchedFields: SearchField[];
+  highlights: SearchHighlight[];
+  citation: CitationResolution;
+}
+
 export interface SaveDraftInput extends TidbitDraft {
   contextKey: string;
   tidbitId: string | null;
@@ -158,6 +189,7 @@ export interface Backend {
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
   restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord>;
   resolveCitation(passageId: string): Promise<CitationResolution>;
+  searchPassages(input: SearchPassagesInput): Promise<PassageSearchResult[]>;
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;

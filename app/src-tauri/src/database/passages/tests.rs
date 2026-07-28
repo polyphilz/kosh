@@ -80,17 +80,17 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             deterministic_passage_id(first_revision_id, 1).expect("second deterministic ID"),
         ]
     );
-    let fts_status: String = library
+    let fts_status: (String, String) = library
         .database
         .open_main_read_only()
         .expect("read FTS state")
         .query_row(
-            "SELECT status FROM index_state WHERE name = 'PASSAGE_FTS'",
+            "SELECT status, version FROM index_state WHERE name = 'PASSAGE_FTS'",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("FTS status");
-    assert_eq!(fts_status, "DIRTY");
+    assert_eq!(fts_status, ("IDLE".into(), "lexical-v1".into()));
 
     let heading = library
         .database

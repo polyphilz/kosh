@@ -1,11 +1,12 @@
 use std::sync::{Arc, Barrier};
 
+use refinery::Target;
 use rusqlite::{params, Connection};
 use tempfile::TempDir;
 
 use super::{
     connection::{self, DatabaseKind, FileState},
-    migrations, Database, DatabaseError, DatabasePaths,
+    migrations, Database, DatabaseError, DatabasePaths, LexicalSearchMode, SearchPassagesInput,
 };
 
 struct TestPair {
@@ -136,6 +137,85 @@ fn pending_migrations_apply_to_an_identified_empty_pair() {
             .expect("diagnostics")
             .migration_heads,
         migrations::expected_heads()
+    );
+}
+
+#[test]
+fn lexical_upgrade_defers_backfill_until_post_start_reconciliation() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(3))
+        .run(&mut main)
+        .expect("main schema through passage provenance");
+    let mut media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
+            .expect("fresh media writer");
+    migrations::run_media(&mut media).expect("media schema");
+    main.execute_batch(
+        "BEGIN;
+         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000121',
+            10, 10, '019f547b-6200-7000-8000-000000000122'
+         );
+         INSERT INTO tidbit_revision(
+            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000122',
+            '019f547b-6200-7000-8000-000000000121',
+            1, 10, 'deferred lexical upgrade evidence', zeroblob(32)
+         );
+         COMMIT;",
+    )
+    .expect("pre-lexical authored data");
+
+    migrations::run_main(&mut main).expect("lexical schema migration");
+    assert_eq!(
+        main.query_row("SELECT count(*) FROM passage_search_document", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("empty derived projection"),
+        0
+    );
+    assert_eq!(
+        main.query_row(
+            "SELECT status, error FROM index_state WHERE name = 'PASSAGE_FTS'",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .expect("deferred lexical state"),
+        (
+            "DIRTY".into(),
+            Some("initial lexical backfill pending".into())
+        )
+    );
+    drop(main);
+    drop(media);
+
+    let database = Database::initialize(pair.paths.clone()).expect("authored library opens");
+    database
+        .client()
+        .reconcile_author_passages()
+        .expect("post-start passage and search reconciliation");
+    let results = database
+        .client()
+        .search_passages(SearchPassagesInput {
+            query: "deferred lexical upgrade".into(),
+            mode: LexicalSearchMode::Default,
+            limit: 10,
+        })
+        .expect("search after deferred backfill");
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0]
+            .citation
+            .tidbit
+            .as_ref()
+            .expect("authored citation")
+            .id,
+        "019f547b-6200-7000-8000-000000000121"
     );
 }
 
@@ -870,13 +950,35 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
          );
          INSERT INTO passage(
             id, tidbit_revision_id, owner_kind, ordinal, content,
-            content_hash, locator_kind, locator_json, created_at
+            content_hash, locator_kind, locator_json, created_at,
+            construction_version, heading_context_json
          ) VALUES(
             '019f547b-6200-7000-8000-000000000503',
             '019f547b-6200-7000-8000-000000000502',
-            'AUTHOR', 0, 'recoverable lexical evidence', zeroblob(32),
-            'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10
+            'AUTHOR', 0, 'recoverable ﬁle evidence', zeroblob(32),
+            'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10,
+            'markdown-blocks-v1', '[]'
          );
+         INSERT INTO active_passage(passage_id, tidbit_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000503',
+            '019f547b-6200-7000-8000-000000000501'
+         );
+         INSERT INTO passage_search_document(
+            rowid, passage_id, tidbit_id, title, heading_context, body,
+            source_labels, source_domains, attachment_names, extracted_text,
+            owner_content_hash, updated_at
+         )
+         SELECT
+            passage.rowid,
+            passage.id,
+            '019f547b-6200-7000-8000-000000000501',
+            '', '', passage.content, '', '', '', '',
+            zeroblob(32), 10
+         FROM passage
+         WHERE passage.id = '019f547b-6200-7000-8000-000000000503';
+         INSERT INTO passage_fts_word(passage_fts_word) VALUES('delete-all');
+         INSERT INTO passage_fts_trigram(passage_fts_trigram) VALUES('delete-all');
          UPDATE index_state
          SET version = 'legacy', status = 'RUNNING', updated_at = 10
          WHERE name = 'PASSAGE_FTS';
@@ -899,7 +1001,7 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
         .query_row(
             "SELECT count(*)
              FROM passage_fts_word
-             WHERE passage_fts_word MATCH 'lexical'",
+             WHERE passage_fts_word MATCH 'file'",
             [],
             |row| row.get(0),
         )
@@ -914,12 +1016,26 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
         .query_row(
             "SELECT count(*)
              FROM passage_fts_word
-             WHERE passage_fts_word MATCH 'lexical'",
+             WHERE passage_fts_word MATCH 'file'",
             [],
             |row| row.get(0),
         )
         .expect("rebuilt search");
     assert_eq!(matches, 1);
+    assert!(database
+        .client()
+        .reconcile_fts()
+        .expect("normalized integrity maintenance"));
+    let matches_after_integrity: i64 = read_only
+        .query_row(
+            "SELECT count(*)
+             FROM passage_fts_word
+             WHERE passage_fts_word MATCH 'file'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("normalized search after integrity check");
+    assert_eq!(matches_after_integrity, 1);
     let state: (String, String) = read_only
         .query_row(
             "SELECT status, version FROM index_state WHERE name = 'PASSAGE_FTS'",
@@ -927,7 +1043,7 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("maintained index state");
-    assert_eq!(state, ("IDLE".into(), "1".into()));
+    assert_eq!(state, ("IDLE".into(), "lexical-v1".into()));
 }
 
 #[test]

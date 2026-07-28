@@ -1,4 +1,4 @@
-mod builder;
+pub(crate) mod builder;
 #[cfg(test)]
 mod tests;
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{tidbits, DatabaseError, Result, TidbitSource};
+use super::{search, tidbits, DatabaseError, Result, TidbitSource};
 use builder::{build_markdown_passages, MarkdownLocator, CONSTRUCTION_VERSION};
 
 pub(super) const BACKGROUND_RECONCILE_BATCH_SIZE: u32 = 25;
@@ -90,6 +90,7 @@ struct StoredPassage {
     tidbit_revision_id: Option<String>,
     attachment_segment_id: Option<String>,
     content: String,
+    content_hash: Vec<u8>,
     locator_kind: String,
     locator_json: String,
     construction_version: String,
@@ -149,21 +150,6 @@ pub(super) fn insert_author_passages(
                 heading_context_json,
             ],
         )?;
-    }
-    let state_updated = transaction.execute(
-        "UPDATE index_state
-         SET status = 'DIRTY',
-             cursor = NULL,
-             updated_at = max(updated_at, ?1),
-             error = NULL
-         WHERE name = 'PASSAGE_FTS'",
-        params![created_at_ms],
-    )?;
-    if state_updated != 1 {
-        return Err(DatabaseError::Validation {
-            kind: "main",
-            reason: "PASSAGE_FTS index state is missing".into(),
-        });
     }
     Ok(passages.len())
 }
@@ -306,6 +292,14 @@ fn reconcile_author_passage_batch_transaction(
             params![CONSTRUCTION_VERSION],
             |row| row.get::<_, bool>(0),
         )?;
+    let search_index_needs_rebuild = !has_more
+        && transaction.query_row(
+            "SELECT version != ?1 OR status != 'IDLE'
+             FROM index_state
+             WHERE name = 'PASSAGE_FTS'",
+            params![search::FTS_VERSION],
+            |row| row.get::<_, bool>(0),
+        )?;
     if active_set_differs {
         transaction.execute("DELETE FROM active_passage", [])?;
         transaction.execute(
@@ -320,6 +314,9 @@ fn reconcile_author_passage_batch_transaction(
              ORDER BY tidbit.id, passage.ordinal",
             params![CONSTRUCTION_VERSION],
         )?;
+    }
+    if active_set_differs || search_index_needs_rebuild {
+        search::rebuild_documents(&transaction)?;
     }
     let status = if has_more { "DIRTY" } else { "IDLE" };
     let cursor = if has_more {
@@ -374,6 +371,7 @@ pub(super) fn replace_active_author_passages(
             "current revision has no authored passages".into(),
         ));
     }
+    search::replace_tidbit_documents(transaction, tidbit_id)?;
     Ok(())
 }
 
@@ -421,6 +419,7 @@ pub(super) fn deactivate_tidbit(transaction: &Transaction<'_>, tidbit_id: &str) 
         "DELETE FROM active_passage WHERE tidbit_id = ?1",
         params![tidbit_id],
     )?;
+    search::replace_tidbit_documents(transaction, tidbit_id)?;
     Ok(())
 }
 
@@ -437,6 +436,7 @@ pub(super) fn resolve_citation(
                 tidbit_revision_id,
                 attachment_segment_id,
                 content,
+                content_hash,
                 locator_kind,
                 locator_json,
                 construction_version,
@@ -451,10 +451,11 @@ pub(super) fn resolve_citation(
                     tidbit_revision_id: row.get(2)?,
                     attachment_segment_id: row.get(3)?,
                     content: row.get(4)?,
-                    locator_kind: row.get(5)?,
-                    locator_json: row.get(6)?,
-                    construction_version: row.get(7)?,
-                    heading_context_json: row.get(8)?,
+                    content_hash: row.get(5)?,
+                    locator_kind: row.get(6)?,
+                    locator_json: row.get(7)?,
+                    construction_version: row.get(8)?,
+                    heading_context_json: row.get(9)?,
                 })
             },
         )
@@ -576,21 +577,38 @@ fn resolve_attachment_citation(
         .attachment_segment_id
         .as_deref()
         .ok_or_else(|| invalid_passage_error(&passage.id, "attachment passage has no segment"))?;
-    let (attachment_id, extraction_id, display_filename, media_type, deleted, ready) = connection
-        .query_row(
+    let (
+        attachment_id,
+        extraction_id,
+        display_filename,
+        media_type,
+        deleted,
+        evidence_matches,
+        current,
+    ) = connection.query_row(
         "SELECT
                 attachment.id,
                 extraction.id,
                 attachment.display_filename,
                 attachment.media_type,
                 attachment.deleted_at IS NOT NULL,
-                extraction.status = 'READY'
+                segment.content = ?2 AND segment.content_hash = ?3,
+                EXISTS(
+                    SELECT 1
+                    FROM current_attachment_passage AS current
+                    WHERE current.passage_id = ?4
+                )
              FROM attachment_segment AS segment
              JOIN attachment_extraction AS extraction
                ON extraction.id = segment.extraction_id
              JOIN attachment ON attachment.id = extraction.attachment_id
              WHERE segment.id = ?1",
-        params![segment_id],
+        params![
+            segment_id,
+            passage.content,
+            passage.content_hash,
+            passage.id
+        ],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -599,16 +617,23 @@ fn resolve_attachment_citation(
                 row.get::<_, String>(3)?,
                 row.get::<_, bool>(4)?,
                 row.get::<_, bool>(5)?,
+                row.get::<_, bool>(6)?,
             ))
         },
     )?;
+    if !evidence_matches {
+        return Err(invalid_passage_error(
+            &passage.id,
+            "attachment passage content does not match its immutable segment",
+        ));
+    }
     let locator = attachment_locator(&passage)?;
     Ok(CitationResolution {
         passage_id: passage.id,
         excerpt: passage.content,
         heading_context,
         construction_version: passage.construction_version,
-        state: if !deleted && ready {
+        state: if current {
             CitationState::Current
         } else {
             CitationState::Historical

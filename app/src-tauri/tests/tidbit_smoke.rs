@@ -2,7 +2,7 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    Draft, Tidbit,
+    Draft, PassageSearchResult, Tidbit,
 };
 
 fn invoke(
@@ -72,6 +72,29 @@ fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
     .deserialize::<Tidbit>()
     .expect("loaded tidbit payload");
     assert_eq!(loaded, created);
+
+    let search_results = invoke(
+        &window,
+        "search_passages",
+        serde_json::json!({
+            "input": {
+                "query": "\"Exact body\"",
+                "mode": "DEFAULT",
+                "limit": 10
+            }
+        }),
+    )
+    .deserialize::<Vec<PassageSearchResult>>()
+    .expect("search result payload");
+    assert_eq!(search_results.len(), 1);
+    assert_eq!(
+        search_results[0]
+            .citation
+            .tidbit
+            .as_ref()
+            .map(|tidbit| tidbit.id.as_str()),
+        Some(created.id.as_str())
+    );
 
     let draft = invoke(
         &window,

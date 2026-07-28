@@ -32,7 +32,7 @@ pub struct MarkdownLocator {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct BuiltPassage {
+pub(crate) struct BuiltPassage {
     pub ordinal: u32,
     pub content: String,
     pub content_hash: [u8; 32],
@@ -74,7 +74,7 @@ struct SuspendedCapture {
     nested_depth: usize,
 }
 
-pub(super) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
+pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
     let blocks = parse_source_blocks(markdown);
     let mut pending = Vec::new();
     let mut passages = Vec::new();

@@ -3,8 +3,9 @@ mod connection;
 mod drafts;
 mod error;
 mod migrations;
-mod passages;
+pub(crate) mod passages;
 mod paths;
+pub(crate) mod search;
 mod tidbits;
 mod validation;
 mod writer;
@@ -33,10 +34,14 @@ pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
 };
 pub use paths::DatabasePaths;
+pub use search::{
+    LexicalSearchMode, PassageSearchResult, SearchField, SearchHighlight, SearchPassagesInput,
+};
 pub use tidbits::{
     DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
     TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
 };
+pub(crate) use writer::LexicalBenchmarkAttachmentWrite;
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
@@ -245,6 +250,23 @@ fn writer_loop(
             }
             WriterMessage::ResolveCitation { passage_id, reply } => {
                 let _ = reply.send(passages::resolve_citation(&main, &passage_id));
+            }
+            WriterMessage::SearchPassages { input, reply } => {
+                let _ = reply.send(search::search_passages(&main, input));
+            }
+            WriterMessage::RefreshAttachmentSearchDocuments {
+                attachment_id,
+                reply,
+            } => {
+                let _ = reply.send(search::replace_attachment_documents(
+                    &mut main,
+                    &attachment_id,
+                ));
+            }
+            WriterMessage::InstallLexicalBenchmarkAttachments { writes, reply } => {
+                let _ = reply.send(writer::install_lexical_benchmark_attachments(
+                    &mut main, writes,
+                ));
             }
             WriterMessage::SaveDraft { write, reply } => {
                 let _ = reply.send(drafts::save_draft(&mut main, write));

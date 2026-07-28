@@ -1,8 +1,11 @@
 use std::{fs, path::Path, time::Duration};
 
-use rusqlite::{limits::Limit, Connection, OpenFlags};
+use rusqlite::{functions::FunctionFlags, limits::Limit, Connection, OpenFlags};
 
-use super::error::{DatabaseError, Result};
+use super::{
+    error::{DatabaseError, Result},
+    search,
+};
 
 pub const MAIN_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KOSH");
 pub const MEDIA_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KMED");
@@ -116,6 +119,30 @@ pub fn verify_application_id(
 
 fn configure_writer(connection: &Connection, kind: DatabaseKind) -> Result<()> {
     configure_length_limit(connection, kind)?;
+    if kind == DatabaseKind::Main {
+        connection.create_scalar_function(
+            "kosh_search_normalize",
+            1,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
+            |context| {
+                let value = context.get::<String>(0)?;
+                Ok(search::normalize_for_search(&value))
+            },
+        )?;
+        connection.create_scalar_function(
+            "kosh_search_short_grams",
+            1,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
+            |context| {
+                let value = context.get::<String>(0)?;
+                Ok(search::short_grams_for_search(&value))
+            },
+        )?;
+    }
     connection.busy_timeout(Duration::from_millis(5_000))?;
     let journal_mode: String =
         connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;

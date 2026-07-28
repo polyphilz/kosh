@@ -7,6 +7,7 @@ import type {
   ListTidbitsInput,
   RestoreTidbitInput,
   SaveDraftInput,
+  SearchPassagesInput,
   TidbitDraft,
 } from "../../src/backend/contracts";
 import { tauriBackend } from "../../src/backend/tauriBackend";
@@ -51,6 +52,11 @@ describe("tauriBackend tidbit gateway", () => {
       contextKey: "capture",
       expectedUpdatedAtMs: 42,
     };
+    const search: SearchPassagesInput = {
+      query: '"exact phrase"',
+      mode: "EXACT",
+      limit: 20,
+    };
 
     await tauriBackend.createTidbit(draft);
     await tauriBackend.loadTidbit("tidbit-1");
@@ -59,6 +65,7 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.deleteTidbit(deletion);
     await tauriBackend.restoreTidbit(restoration);
     await tauriBackend.resolveCitation("passage-1");
+    await tauriBackend.searchPassages(search);
     await tauriBackend.saveDraft(savedDraft);
     await tauriBackend.loadDraft("capture");
     await tauriBackend.clearDraft(clearDraft);
@@ -71,6 +78,7 @@ describe("tauriBackend tidbit gateway", () => {
       ["delete_tidbit", { input: deletion }],
       ["restore_tidbit", { input: restoration }],
       ["resolve_citation", { passageId: "passage-1" }],
+      ["search_passages", { input: search }],
       ["save_draft", { input: savedDraft }],
       ["load_draft", { contextKey: "capture" }],
       ["clear_draft", { input: clearDraft }],

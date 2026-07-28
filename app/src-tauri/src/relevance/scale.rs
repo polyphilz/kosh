@@ -242,7 +242,7 @@ pub fn measure_scale_generation(
 }
 
 impl RuntimeMetadata {
-    fn capture() -> Self {
+    pub(crate) fn capture() -> Self {
         Self {
             operating_system: std::env::consts::OS.into(),
             architecture: std::env::consts::ARCH.into(),

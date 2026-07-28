@@ -7,7 +7,8 @@ use super::{
     drafts::SaveDraftWrite,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     CitationResolution, ClearDraftInput, DatabaseError, DeleteTidbitInput, Draft, EditTidbitInput,
-    ListTidbitsInput, RestoreTidbitInput, SaveDraftInput, Tidbit, TidbitDraft, TidbitListPage,
+    ListTidbitsInput, PassageSearchResult, RestoreTidbitInput, SaveDraftInput, SearchPassagesInput,
+    Tidbit, TidbitDraft, TidbitListPage,
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -129,6 +130,15 @@ pub(crate) async fn resolve_citation(
 ) -> CommandResult<CitationResolution> {
     let client = state.database_client();
     run_writer(move || client.resolve_citation(passage_id)).await
+}
+
+#[tauri::command]
+pub(crate) async fn search_passages(
+    state: State<'_, RuntimeState>,
+    input: SearchPassagesInput,
+) -> CommandResult<Vec<PassageSearchResult>> {
+    let client = state.database_client();
+    run_writer(move || client.search_passages(input)).await
 }
 
 #[tauri::command]

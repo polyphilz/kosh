@@ -1,0 +1,1919 @@
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet, HashMap},
+};
+
+use rusqlite::{params, Connection, Transaction};
+use serde::{Deserialize, Serialize};
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+
+use super::{passages, CitationResolution, DatabaseError, Result};
+
+const MAX_QUERY_CHARACTERS: usize = 512;
+const MAX_SEARCH_LIMIT: u32 = 100;
+const MAX_HIGHLIGHTS_PER_RESULT: usize = 32;
+const MIN_CANDIDATE_LIMIT: u32 = 64;
+const MAX_CANDIDATE_LIMIT: u32 = 512;
+const RRF_RANK_CONSTANT: f64 = 60.0;
+pub(super) const FTS_VERSION: &str = "lexical-v1";
+
+pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
+    result_limit
+        .saturating_mul(16)
+        .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum LexicalSearchMode {
+    Default,
+    Exact,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchPassagesInput {
+    pub query: String,
+    pub mode: LexicalSearchMode,
+    pub limit: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SearchField {
+    Title,
+    HeadingContext,
+    Body,
+    SourceLabel,
+    SourceDomain,
+    AttachmentName,
+    ExtractedText,
+}
+
+impl SearchField {
+    const fn weight(self) -> f64 {
+        match self {
+            Self::Title => 8.0,
+            Self::HeadingContext => 6.0,
+            Self::Body => 3.0,
+            Self::SourceLabel => 4.5,
+            Self::SourceDomain => 5.0,
+            Self::AttachmentName => 5.0,
+            Self::ExtractedText => 2.5,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::HeadingContext => "headingContext",
+            Self::Body => "body",
+            Self::SourceLabel => "sourceLabel",
+            Self::SourceDomain => "sourceDomain",
+            Self::AttachmentName => "attachmentName",
+            Self::ExtractedText => "extractedText",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchHighlight {
+    pub field: SearchField,
+    pub start_char: u32,
+    pub end_char: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PassageSearchResult {
+    pub passage_id: String,
+    pub score: f64,
+    pub matched_fields: Vec<SearchField>,
+    pub highlights: Vec<SearchHighlight>,
+    pub citation: CitationResolution,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LexicalDocument {
+    pub passage_id: String,
+    pub updated_at_ms: i64,
+    pub fields: BTreeMap<SearchField, String>,
+    pub word_rank: Option<usize>,
+    pub trigram_rank: Option<usize>,
+    pub short_rank: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RankedLexicalDocument {
+    pub passage_id: String,
+    pub score: f64,
+    pub matched_fields: Vec<SearchField>,
+    pub highlights: Vec<SearchHighlight>,
+}
+
+#[derive(Clone, Debug)]
+struct QueryAtom {
+    text: String,
+    quoted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ParsedLexicalQuery {
+    atoms: Vec<QueryAtom>,
+    mode: LexicalSearchMode,
+}
+
+impl ParsedLexicalQuery {
+    fn parse(query: &str, mode: LexicalSearchMode) -> Result<Option<Self>> {
+        if query.chars().count() > MAX_QUERY_CHARACTERS {
+            return Err(DatabaseError::InvalidInput(format!(
+                "query must contain at most {MAX_QUERY_CHARACTERS} characters"
+            )));
+        }
+        let atoms = parse_atoms(query);
+        Ok((!atoms.is_empty()).then_some(Self { atoms, mode }))
+    }
+
+    pub(crate) fn word_match_query(&self) -> Option<String> {
+        let mut clauses = Vec::new();
+        for atom in &self.atoms {
+            let tokens = word_tokens(&atom.text);
+            if tokens.is_empty() {
+                continue;
+            }
+            if atom.quoted && tokens.len() > 1 {
+                clauses.push(format!("\"{}\"", tokens.join(" ")));
+            } else {
+                clauses.extend(tokens.into_iter().map(|token| format!("\"{token}\"")));
+            }
+        }
+        join_fts_clauses(clauses, self.mode)
+    }
+
+    pub(crate) fn trigram_match_query(&self) -> Option<String> {
+        let clauses = self
+            .atoms
+            .iter()
+            .filter_map(|atom| {
+                let text = normalize_for_search(atom.text.trim());
+                (text.chars().count() >= 3).then(|| format!("\"{}\"", text.replace('"', "\"\"")))
+            })
+            .collect::<Vec<_>>();
+        join_fts_clauses(clauses, self.mode)
+    }
+
+    pub(crate) fn short_match_query(&self) -> Option<String> {
+        if self
+            .atoms
+            .iter()
+            .any(|atom| normalize_for_search(atom.text.trim()).chars().count() > 2)
+        {
+            return None;
+        }
+        let clauses = self
+            .atoms
+            .iter()
+            .filter_map(|atom| {
+                let characters = normalize_for_search(atom.text.trim())
+                    .chars()
+                    .collect::<Vec<_>>();
+                ((1..=2).contains(&characters.len())
+                    && characters
+                        .iter()
+                        .any(|character| character.is_alphanumeric() || *character == '_'))
+                .then(|| format!("\"{}\"", short_gram_token(&characters)))
+            })
+            .collect::<Vec<_>>();
+        join_fts_clauses(clauses, self.mode)
+    }
+}
+
+pub(super) fn search_passages(
+    connection: &Connection,
+    input: SearchPassagesInput,
+) -> Result<Vec<PassageSearchResult>> {
+    if input.limit == 0 || input.limit > MAX_SEARCH_LIMIT {
+        return Err(DatabaseError::InvalidInput(format!(
+            "limit must be between 1 and {MAX_SEARCH_LIMIT}"
+        )));
+    }
+    let Some(query) = ParsedLexicalQuery::parse(&input.query, input.mode)? else {
+        return Ok(Vec::new());
+    };
+    let candidate_limit = candidate_limit(input.limit);
+    let mut ranks = HashMap::<String, CandidateRanks>::new();
+    if let Some(word_query) = query.word_match_query() {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(connection, "passage_fts_word", &word_query, candidate_limit)?,
+            CandidateIndex::Word,
+        );
+    }
+    if let Some(trigram_query) = query.trigram_match_query() {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(
+                connection,
+                "passage_fts_trigram",
+                &trigram_query,
+                candidate_limit,
+            )?,
+            CandidateIndex::Trigram,
+        );
+    }
+    if let Some(short_query) = query.short_match_query() {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(
+                connection,
+                "passage_fts_short",
+                &short_query,
+                candidate_limit,
+            )?,
+            CandidateIndex::Short,
+        );
+    }
+    if ranks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let documents = load_search_documents(connection, ranks)?;
+    let ranked = rank_lexical_documents(&query, documents, input.limit as usize);
+    ranked
+        .into_iter()
+        .map(|ranked| {
+            let citation = passages::resolve_citation(connection, &ranked.passage_id)?;
+            if citation.state != super::CitationState::Current {
+                return Err(DatabaseError::Validation {
+                    kind: "main",
+                    reason: format!("search returned non-current passage {}", ranked.passage_id),
+                });
+            }
+            Ok(PassageSearchResult {
+                passage_id: ranked.passage_id,
+                score: ranked.score,
+                matched_fields: ranked.matched_fields,
+                highlights: ranked.highlights,
+                citation,
+            })
+        })
+        .collect()
+}
+
+pub(super) fn replace_tidbit_documents(
+    transaction: &Transaction<'_>,
+    tidbit_id: &str,
+) -> Result<()> {
+    transaction.execute(
+        "DELETE FROM passage_search_document WHERE tidbit_id = ?1",
+        params![tidbit_id],
+    )?;
+    transaction.execute(
+        "INSERT INTO passage_search_document(
+            rowid,
+            passage_id,
+            tidbit_id,
+            title,
+            heading_context,
+            body,
+            source_labels,
+            source_domains,
+            attachment_names,
+            extracted_text,
+            owner_content_hash,
+            updated_at
+         )
+         SELECT
+            passage.rowid,
+            passage.id,
+            active.tidbit_id,
+            coalesce(revision.title, ''),
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            passage.content,
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.label, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(attachment.display_filename, char(10))
+                    FROM tidbit_revision_attachment AS membership
+                    JOIN attachment ON attachment.id = membership.attachment_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                      AND attachment.deleted_at IS NULL
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            '',
+            revision.content_hash,
+            tidbit.updated_at
+         FROM active_passage AS active
+         JOIN passage ON passage.id = active.passage_id
+         JOIN tidbit ON tidbit.id = active.tidbit_id
+         JOIN tidbit_revision AS revision
+           ON revision.id = passage.tidbit_revision_id
+          AND revision.id = tidbit.current_revision_id
+          AND revision.tidbit_id = tidbit.id
+         WHERE active.tidbit_id = ?1
+           AND tidbit.deleted_at IS NULL
+           AND passage.owner_kind = 'AUTHOR'
+         ORDER BY passage.ordinal",
+        params![tidbit_id],
+    )?;
+    Ok(())
+}
+
+pub(super) fn replace_attachment_documents(
+    connection: &mut Connection,
+    attachment_id: &str,
+) -> Result<()> {
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    replace_attachment_documents_in_transaction(&transaction, attachment_id)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(super) fn replace_attachment_documents_in_transaction(
+    transaction: &Transaction<'_>,
+    attachment_id: &str,
+) -> Result<()> {
+    transaction.execute(
+        "DELETE FROM passage_search_document
+         WHERE passage_id IN (
+            SELECT passage.id
+            FROM passage
+            JOIN attachment_segment AS segment
+              ON segment.id = passage.attachment_segment_id
+            JOIN attachment_extraction AS extraction
+              ON extraction.id = segment.extraction_id
+            WHERE passage.owner_kind = 'ATTACHMENT'
+              AND extraction.attachment_id = ?1
+         )",
+        params![attachment_id],
+    )?;
+    transaction.execute(
+        "INSERT INTO passage_search_document(
+            rowid,
+            passage_id,
+            tidbit_id,
+            title,
+            heading_context,
+            body,
+            source_labels,
+            source_domains,
+            attachment_names,
+            extracted_text,
+            owner_content_hash,
+            updated_at
+         )
+         SELECT
+            passage.rowid,
+            passage.id,
+            NULL,
+            '',
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            '',
+            '',
+            '',
+            attachment.display_filename,
+            passage.content,
+            passage.content_hash,
+            attachment.updated_at
+         FROM current_attachment_passage AS current
+         JOIN passage ON passage.id = current.passage_id
+         JOIN attachment ON attachment.id = current.attachment_id
+         WHERE current.attachment_id = ?1
+         ORDER BY passage.ordinal",
+        params![attachment_id],
+    )?;
+    Ok(())
+}
+
+pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
+    transaction.execute("DELETE FROM passage_search_document", [])?;
+    transaction.execute(
+        "INSERT INTO passage_search_document(
+            rowid,
+            passage_id,
+            tidbit_id,
+            title,
+            heading_context,
+            body,
+            source_labels,
+            source_domains,
+            attachment_names,
+            extracted_text,
+            owner_content_hash,
+            updated_at
+         )
+         SELECT
+            passage.rowid,
+            passage.id,
+            active.tidbit_id,
+            coalesce(revision.title, ''),
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            passage.content,
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.label, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(attachment.display_filename, char(10))
+                    FROM tidbit_revision_attachment AS membership
+                    JOIN attachment ON attachment.id = membership.attachment_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                      AND attachment.deleted_at IS NULL
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            '',
+            revision.content_hash,
+            tidbit.updated_at
+         FROM active_passage AS active
+         JOIN passage ON passage.id = active.passage_id
+         JOIN tidbit ON tidbit.id = active.tidbit_id
+         JOIN tidbit_revision AS revision
+           ON revision.id = passage.tidbit_revision_id
+          AND revision.id = tidbit.current_revision_id
+          AND revision.tidbit_id = tidbit.id
+         WHERE tidbit.deleted_at IS NULL
+           AND passage.owner_kind = 'AUTHOR'
+         ORDER BY active.tidbit_id, passage.ordinal",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT INTO passage_search_document(
+            rowid,
+            passage_id,
+            tidbit_id,
+            title,
+            heading_context,
+            body,
+            source_labels,
+            source_domains,
+            attachment_names,
+            extracted_text,
+            owner_content_hash,
+            updated_at
+         )
+         SELECT
+            passage.rowid,
+            passage.id,
+            NULL,
+            '',
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            '',
+            '',
+            '',
+            attachment.display_filename,
+            passage.content,
+            passage.content_hash,
+            attachment.updated_at
+         FROM current_attachment_passage AS current
+         JOIN passage ON passage.id = current.passage_id
+         JOIN attachment ON attachment.id = current.attachment_id
+         ORDER BY attachment.id, passage.ordinal",
+        [],
+    )?;
+    mark_fts_current(transaction)
+}
+
+fn mark_fts_current(transaction: &Transaction<'_>) -> Result<()> {
+    let changed = transaction.execute(
+        "UPDATE index_state
+         SET version = ?1,
+             status = 'IDLE',
+             cursor = NULL,
+             error = NULL
+         WHERE name = 'PASSAGE_FTS'",
+        params![FTS_VERSION],
+    )?;
+    if changed != 1 {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: "PASSAGE_FTS index state is missing".into(),
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CandidateRanks {
+    word: Option<usize>,
+    trigram: Option<usize>,
+    short: Option<usize>,
+}
+
+enum CandidateIndex {
+    Word,
+    Trigram,
+    Short,
+}
+
+fn install_ranks(
+    ranks: &mut HashMap<String, CandidateRanks>,
+    passage_ids: Vec<String>,
+    index: CandidateIndex,
+) {
+    for (position, passage_id) in passage_ids.into_iter().enumerate() {
+        let rank = position + 1;
+        let candidate = ranks.entry(passage_id).or_default();
+        match index {
+            CandidateIndex::Word => candidate.word = Some(rank),
+            CandidateIndex::Trigram => candidate.trigram = Some(rank),
+            CandidateIndex::Short => candidate.short = Some(rank),
+        }
+    }
+}
+
+fn query_fts_index(
+    connection: &Connection,
+    index: &'static str,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<String>> {
+    let sql = format!(
+        "SELECT document.passage_id
+         FROM {index}
+         JOIN passage_search_document AS document
+           ON document.rowid = {index}.rowid
+         WHERE {index} MATCH ?1
+         ORDER BY bm25({index}, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5),
+                  document.updated_at DESC,
+                  document.passage_id
+         LIMIT ?2"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params![query, limit], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn load_search_documents(
+    connection: &Connection,
+    ranks: HashMap<String, CandidateRanks>,
+) -> Result<Vec<LexicalDocument>> {
+    let candidates = ranks
+        .into_iter()
+        .map(|(passage_id, ranks)| {
+            serde_json::json!({
+                "passageId": passage_id,
+                "wordRank": ranks.word,
+                "trigramRank": ranks.trigram,
+                "shortRank": ranks.short,
+            })
+        })
+        .collect::<Vec<_>>();
+    let candidates_json =
+        serde_json::to_string(&candidates).map_err(|error| DatabaseError::Validation {
+            kind: "main",
+            reason: format!("could not serialize lexical candidates: {error}"),
+        })?;
+    let mut statement = connection.prepare(
+        "WITH candidate AS (
+            SELECT
+                json_extract(value, '$.passageId') AS passage_id,
+                json_extract(value, '$.wordRank') AS word_rank,
+                json_extract(value, '$.trigramRank') AS trigram_rank,
+                json_extract(value, '$.shortRank') AS short_rank
+            FROM json_each(?1)
+         )
+         SELECT
+            candidate.passage_id,
+            tidbit.updated_at,
+            coalesce(revision.title, ''),
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            passage.content,
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.label, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
+                    FROM tidbit_revision_source AS membership
+                    JOIN source ON source.id = membership.source_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            coalesce(
+                (
+                    SELECT group_concat(attachment.display_filename, char(10))
+                    FROM tidbit_revision_attachment AS membership
+                    JOIN attachment ON attachment.id = membership.attachment_id
+                    WHERE membership.tidbit_revision_id = revision.id
+                      AND attachment.deleted_at IS NULL
+                    ORDER BY membership.sort_order
+                ),
+                ''
+            ),
+            '',
+            candidate.word_rank,
+            candidate.trigram_rank,
+            candidate.short_rank
+         FROM candidate
+         JOIN passage_search_document AS document
+           ON document.passage_id = candidate.passage_id
+         JOIN passage
+           ON passage.id = document.passage_id
+          AND passage.owner_kind = 'AUTHOR'
+         JOIN active_passage AS active
+           ON active.passage_id = passage.id
+          AND active.tidbit_id = document.tidbit_id
+         JOIN tidbit
+           ON tidbit.id = active.tidbit_id
+          AND tidbit.deleted_at IS NULL
+          AND tidbit.current_revision_id = passage.tidbit_revision_id
+         JOIN tidbit_revision AS revision
+           ON revision.id = tidbit.current_revision_id
+          AND revision.tidbit_id = tidbit.id
+          AND revision.content_hash = document.owner_content_hash
+         UNION ALL
+         SELECT
+            candidate.passage_id,
+            attachment.updated_at,
+            '',
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            '',
+            '',
+            '',
+            attachment.display_filename,
+            passage.content,
+            candidate.word_rank,
+            candidate.trigram_rank,
+            candidate.short_rank
+         FROM candidate
+         JOIN passage_search_document AS document
+           ON document.passage_id = candidate.passage_id
+          AND document.tidbit_id IS NULL
+         JOIN passage
+           ON passage.id = document.passage_id
+          AND passage.owner_kind = 'ATTACHMENT'
+          AND passage.content_hash = document.owner_content_hash
+         JOIN current_attachment_passage AS current
+           ON current.passage_id = passage.id
+         JOIN attachment ON attachment.id = current.attachment_id",
+    )?;
+    let rows = statement.query_map(params![candidates_json], |row| {
+        let word_rank = row
+            .get::<_, Option<i64>>(9)?
+            .and_then(|rank| usize::try_from(rank).ok());
+        let trigram_rank = row
+            .get::<_, Option<i64>>(10)?
+            .and_then(|rank| usize::try_from(rank).ok());
+        let short_rank = row
+            .get::<_, Option<i64>>(11)?
+            .and_then(|rank| usize::try_from(rank).ok());
+        Ok(LexicalDocument {
+            passage_id: row.get(0)?,
+            updated_at_ms: row.get(1)?,
+            fields: [
+                (SearchField::Title, row.get::<_, String>(2)?),
+                (SearchField::HeadingContext, row.get::<_, String>(3)?),
+                (SearchField::Body, row.get::<_, String>(4)?),
+                (SearchField::SourceLabel, row.get::<_, String>(5)?),
+                (SearchField::SourceDomain, row.get::<_, String>(6)?),
+                (SearchField::AttachmentName, row.get::<_, String>(7)?),
+                (SearchField::ExtractedText, row.get::<_, String>(8)?),
+            ]
+            .into_iter()
+            .collect(),
+            word_rank,
+            trigram_rank,
+            short_rank,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+pub(crate) fn parse_lexical_query(
+    query: &str,
+    mode: LexicalSearchMode,
+) -> Result<Option<ParsedLexicalQuery>> {
+    ParsedLexicalQuery::parse(query, mode)
+}
+
+pub(crate) fn rank_lexical_documents(
+    query: &ParsedLexicalQuery,
+    documents: Vec<LexicalDocument>,
+    limit: usize,
+) -> Vec<RankedLexicalDocument> {
+    let mut ranked = documents
+        .into_iter()
+        .filter_map(|document| score_document(query, document))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
+            .then_with(|| left.passage_id.cmp(&right.passage_id))
+    });
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|scored| RankedLexicalDocument {
+            passage_id: scored.passage_id,
+            score: scored.score,
+            matched_fields: scored.matched_fields,
+            highlights: scored.highlights,
+        })
+        .collect()
+}
+
+struct ScoredDocument {
+    passage_id: String,
+    updated_at_ms: i64,
+    score: f64,
+    matched_fields: Vec<SearchField>,
+    highlights: Vec<SearchHighlight>,
+}
+
+fn score_document(query: &ParsedLexicalQuery, document: LexicalDocument) -> Option<ScoredDocument> {
+    let mut matched_atoms = vec![false; query.atoms.len()];
+    let mut matched_fields = BTreeSet::new();
+    let mut highlight_spans = BTreeSet::new();
+    let mut field_score = 0.0;
+
+    for (field, value) in &document.fields {
+        if value.is_empty() {
+            continue;
+        }
+        for (atom_index, atom) in query.atoms.iter().enumerate() {
+            let spans = find_normalized_spans(value, &atom.text);
+            if spans.is_empty() {
+                continue;
+            }
+            matched_atoms[atom_index] = true;
+            matched_fields.insert(*field);
+            let phrase_multiplier = if atom.quoted { 2.0 } else { 1.0 };
+            field_score += field.weight() * phrase_multiplier;
+            for (start_char, end_char) in spans {
+                highlight_spans.insert((*field, start_char, end_char));
+            }
+        }
+    }
+
+    let matched_atom_count = matched_atoms.iter().filter(|matched| **matched).count();
+    let qualifies = match query.mode {
+        LexicalSearchMode::Default => {
+            let required = query.atoms.len().min(2);
+            matched_atom_count >= required
+        }
+        LexicalSearchMode::Exact => matched_atoms.iter().all(|matched| *matched),
+    };
+    if !qualifies {
+        return None;
+    }
+
+    let coverage = matched_atom_count as f64 / query.atoms.len() as f64;
+    let rank_score = document
+        .word_rank
+        .into_iter()
+        .chain(document.trigram_rank)
+        .chain(document.short_rank)
+        .map(|rank| 1.0 / (RRF_RANK_CONSTANT + rank as f64))
+        .sum::<f64>();
+    let exact_mode_bonus = if query.mode == LexicalSearchMode::Exact {
+        12.0
+    } else {
+        0.0
+    };
+    let score = field_score + coverage * 10.0 + rank_score + exact_mode_bonus;
+    let highlights = highlight_spans
+        .into_iter()
+        .take(MAX_HIGHLIGHTS_PER_RESULT)
+        .map(|(field, start_char, end_char)| SearchHighlight {
+            field,
+            start_char,
+            end_char,
+        })
+        .collect();
+
+    Some(ScoredDocument {
+        passage_id: document.passage_id,
+        updated_at_ms: document.updated_at_ms,
+        score,
+        matched_fields: matched_fields.into_iter().collect(),
+        highlights,
+    })
+}
+
+fn parse_atoms(query: &str) -> Vec<QueryAtom> {
+    let mut atoms = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut current_quoted = false;
+    for character in query.trim().chars() {
+        match character {
+            '"' => {
+                if quoted {
+                    push_atom(&mut atoms, &mut current, true);
+                    quoted = false;
+                    current_quoted = false;
+                } else {
+                    push_atom(&mut atoms, &mut current, current_quoted);
+                    quoted = true;
+                    current_quoted = true;
+                }
+            }
+            character if character.is_whitespace() && !quoted => {
+                push_atom(&mut atoms, &mut current, current_quoted);
+                current_quoted = false;
+            }
+            _ => current.push(character),
+        }
+    }
+    push_atom(&mut atoms, &mut current, current_quoted || quoted);
+    atoms
+}
+
+fn push_atom(atoms: &mut Vec<QueryAtom>, current: &mut String, quoted: bool) {
+    let text = current.trim();
+    if !text.is_empty() {
+        atoms.push(QueryAtom {
+            text: text.to_owned(),
+            quoted,
+        });
+    }
+    current.clear();
+}
+
+fn word_tokens(value: &str) -> Vec<String> {
+    normalize_for_search(value)
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn join_fts_clauses(clauses: Vec<String>, mode: LexicalSearchMode) -> Option<String> {
+    (!clauses.is_empty()).then(|| {
+        clauses.join(match mode {
+            LexicalSearchMode::Default => " OR ",
+            LexicalSearchMode::Exact => " AND ",
+        })
+    })
+}
+
+pub(crate) fn normalize_for_search(value: &str) -> String {
+    normalize_with_mapping(value).0.into_iter().collect()
+}
+
+pub(crate) fn short_grams_for_search(value: &str) -> String {
+    let characters = normalize_for_search(value).chars().collect::<Vec<_>>();
+    let mut tokens = BTreeSet::new();
+    for start in 0..characters.len() {
+        tokens.insert(short_gram_token(&characters[start..=start]));
+        if let Some(end) = start.checked_add(2).filter(|end| *end <= characters.len()) {
+            tokens.insert(short_gram_token(&characters[start..end]));
+        }
+    }
+    tokens.into_iter().collect::<Vec<_>>().join(" ")
+}
+
+fn short_gram_token(characters: &[char]) -> String {
+    let prefix = if characters.len() == 1 { 'a' } else { 'b' };
+    let encoded = characters
+        .iter()
+        .map(|character| format!("{:06x}", u32::from(*character)))
+        .collect::<String>();
+    format!("{prefix}{encoded}")
+}
+
+fn normalize_with_mapping(value: &str) -> (Vec<char>, Vec<usize>) {
+    let mut normalized = Vec::new();
+    let mut original_indices = Vec::new();
+    for (original_index, character) in value.chars().enumerate() {
+        for decomposed in std::iter::once(character).nfkd() {
+            if is_combining_mark(decomposed) {
+                continue;
+            }
+            for lowercase in decomposed.to_lowercase() {
+                normalized.push(lowercase);
+                original_indices.push(original_index);
+            }
+        }
+    }
+    (normalized, original_indices)
+}
+
+fn find_normalized_spans(value: &str, needle: &str) -> Vec<(u32, u32)> {
+    let (haystack, original_indices) = normalize_with_mapping(value);
+    let needle = normalize_for_search(needle).chars().collect::<Vec<_>>();
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return Vec::new();
+    }
+    haystack
+        .windows(needle.len())
+        .enumerate()
+        .filter(|(_, window)| *window == needle.as_slice())
+        .map(|(start, _)| {
+            let original_start = original_indices[start];
+            let original_end = original_indices[start + needle.len() - 1] + 1;
+            (
+                u32::try_from(original_start).unwrap_or(u32::MAX),
+                u32::try_from(original_end).unwrap_or(u32::MAX),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use rusqlite::params;
+
+    use super::{
+        parse_lexical_query, rank_lexical_documents, LexicalDocument, LexicalSearchMode,
+        SearchField, SearchPassagesInput,
+    };
+    use crate::database::{
+        connection::{self, DatabaseKind, FileState},
+        tidbits::{CreateTidbitWrite, EditTidbitWrite},
+        Database, DatabasePaths, DeleteTidbitInput, EditTidbitInput, RestoreTidbitInput,
+        SourceDraft, TidbitDraft,
+    };
+
+    fn document(
+        id: &str,
+        fields: impl IntoIterator<Item = (SearchField, &'static str)>,
+    ) -> LexicalDocument {
+        LexicalDocument {
+            passage_id: id.into(),
+            updated_at_ms: 0,
+            fields: fields
+                .into_iter()
+                .map(|(field, value)| (field, value.into()))
+                .collect::<BTreeMap<_, _>>(),
+            word_rank: None,
+            trigram_rank: None,
+            short_rank: None,
+        }
+    }
+
+    #[test]
+    fn parser_never_forwards_raw_fts_syntax() {
+        let parsed = parse_lexical_query(
+            "title:secret OR \"unfinished phrase * NEAR(foo)",
+            LexicalSearchMode::Default,
+        )
+        .expect("safe query")
+        .expect("nonempty query");
+
+        let word = parsed.word_match_query().expect("word query");
+        assert!(!word.contains("title:"));
+        assert!(!word.contains(" NEAR("));
+        assert!(word.contains("\"title\""));
+        assert!(word.contains("\"secret\""));
+        assert!(word.contains("\"or\""));
+    }
+
+    #[test]
+    fn diacritic_highlights_map_back_to_original_character_offsets() {
+        let parsed = parse_lexical_query("naive cafe resume", LexicalSearchMode::Exact)
+            .expect("valid query")
+            .expect("nonempty query");
+        let ranked = rank_lexical_documents(
+            &parsed,
+            vec![document(
+                "unicode",
+                [(
+                    SearchField::Body,
+                    "A naïve résumé draft mentioned the café project.",
+                )],
+            )],
+            10,
+        );
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].matched_fields, vec![SearchField::Body]);
+        assert_eq!(
+            ranked[0]
+                .highlights
+                .iter()
+                .map(|highlight| (highlight.start_char, highlight.end_char))
+                .collect::<Vec<_>>(),
+            vec![(2, 7), (8, 14), (35, 39)]
+        );
+    }
+
+    #[test]
+    fn exact_mode_requires_every_literal_atom_across_weighted_fields() {
+        let parsed = parse_lexical_query(
+            "jina-embeddings-v5-small.onnx tokenizer digest",
+            LexicalSearchMode::Exact,
+        )
+        .expect("valid query")
+        .expect("nonempty query");
+        let ranked = rank_lexical_documents(
+            &parsed,
+            vec![
+                document(
+                    "complete",
+                    [
+                        (SearchField::AttachmentName, "jina-embeddings-v5-small.onnx"),
+                        (SearchField::Body, "Tokenizer revision and SHA digest."),
+                    ],
+                ),
+                document(
+                    "partial",
+                    [(SearchField::Body, "Tokenizer revision and SHA digest.")],
+                ),
+            ],
+            10,
+        );
+
+        assert_eq!(
+            ranked
+                .iter()
+                .map(|result| result.passage_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["complete"]
+        );
+    }
+
+    #[test]
+    fn quoted_phrase_outranks_documents_with_only_separate_words() {
+        let parsed = parse_lexical_query("\"impatient motion\"", LexicalSearchMode::Default)
+            .expect("valid query")
+            .expect("nonempty query");
+        let ranked = rank_lexical_documents(
+            &parsed,
+            vec![
+                document(
+                    "separate",
+                    [(SearchField::Body, "Motion can make a learner impatient.")],
+                ),
+                document(
+                    "phrase",
+                    [(
+                        SearchField::Body,
+                        "Heat is the ceaseless and impatient motion of particles.",
+                    )],
+                ),
+            ],
+            10,
+        );
+
+        assert_eq!(ranked[0].passage_id, "phrase");
+        assert_eq!(ranked.len(), 1);
+    }
+
+    #[test]
+    fn field_relevance_outranks_recency() {
+        let parsed = parse_lexical_query("sentinel", LexicalSearchMode::Default)
+            .expect("valid query")
+            .expect("nonempty query");
+        let mut title_match = document(
+            "older-title",
+            [(SearchField::Title, "Sentinel architecture")],
+        );
+        title_match.updated_at_ms = 1;
+        let mut body_match = document(
+            "newer-body",
+            [(SearchField::Body, "A sentinel appears in recent prose.")],
+        );
+        body_match.updated_at_ms = 1_000_000;
+
+        let ranked = rank_lexical_documents(&parsed, vec![body_match, title_match], 10);
+
+        assert_eq!(ranked[0].passage_id, "older-title");
+    }
+
+    #[test]
+    fn empty_and_punctuation_only_queries_have_no_executable_plan() {
+        assert!(parse_lexical_query("  ", LexicalSearchMode::Default)
+            .expect("empty query")
+            .is_none());
+        let punctuation = parse_lexical_query("*", LexicalSearchMode::Default)
+            .expect("punctuation query")
+            .expect("literal punctuation atom");
+        assert!(punctuation.word_match_query().is_none());
+        assert!(punctuation.trigram_match_query().is_none());
+        assert!(punctuation.short_match_query().is_none());
+    }
+
+    #[test]
+    fn database_search_tracks_active_revisions_and_trusted_citations() {
+        let root = tempfile::tempdir().expect("temporary search library");
+        let database =
+            Database::initialize(DatabasePaths::new(root.path())).expect("search database");
+        let client = database.client();
+        let created = client
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: Some("FTS tokenizer reminder".into()),
+                    body_markdown:
+                        "# SQLite\n\nThe first lexical sentinel uses `resolveCitationTarget`."
+                            .into(),
+                    sources: vec![SourceDraft {
+                        label: Some("SQLite FTS5 documentation".into()),
+                        url: Some("https://sqlite.org/fts5.html".into()),
+                    }],
+                },
+                now_ms: 10,
+                tidbit_id: "019f547b-6200-7000-8000-000000009001".into(),
+                revision_id: "019f547b-6200-7000-8000-000000009002".into(),
+                source_ids: vec!["019f547b-6200-7000-8000-000000009003".into()],
+            })
+            .expect("create searchable tidbit");
+
+        let initial = client
+            .search_passages(SearchPassagesInput {
+                query: "sqlite.org FTS5 resolveCitationTarget".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("initial exact search");
+        assert_eq!(initial.len(), 1);
+        assert_eq!(
+            initial[0]
+                .citation
+                .tidbit
+                .as_ref()
+                .map(|tidbit| tidbit.revision_id.as_str()),
+            Some(created.current_revision_id.as_str())
+        );
+        assert!(initial[0]
+            .matched_fields
+            .contains(&SearchField::SourceDomain));
+        assert!(initial[0].matched_fields.contains(&SearchField::Body));
+        assert!(initial[0]
+            .highlights
+            .iter()
+            .all(|highlight| highlight.start_char < highlight.end_char));
+        assert_eq!(
+            client
+                .search_passages(SearchPassagesInput {
+                    query: "resolveCitationTar".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                })
+                .expect("trigram substring search")
+                .len(),
+            1
+        );
+
+        let edited = client
+            .edit_tidbit(EditTidbitWrite {
+                input: EditTidbitInput {
+                    id: created.id.clone(),
+                    expected_revision_id: created.current_revision_id.clone(),
+                    title: Some("Updated lexical note".into()),
+                    body_markdown:
+                        "# Search\n\nThe replacement carries café, a ﬁle, OpenAI, C, R2, and $$E=mc^2$$."
+                            .into(),
+                    sources: Vec::new(),
+                },
+                now_ms: 20,
+                revision_id: "019f547b-6200-7000-8000-000000009004".into(),
+                source_ids: Vec::new(),
+            })
+            .expect("edit searchable tidbit");
+        assert!(client
+            .search_passages(SearchPassagesInput {
+                query: "first lexical sentinel".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("old revision search")
+            .is_empty());
+        for query in ["cafe", "file", "AI", "R2", "E=mc^2"] {
+            let results = client
+                .search_passages(SearchPassagesInput {
+                    query: query.into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                })
+                .expect("literal search");
+            assert_eq!(results.len(), 1, "query {query}");
+            assert_eq!(
+                results[0]
+                    .citation
+                    .tidbit
+                    .as_ref()
+                    .map(|tidbit| tidbit.revision_id.as_str()),
+                Some(edited.current_revision_id.as_str())
+            );
+        }
+        let single_character = client
+            .search_passages(SearchPassagesInput {
+                query: "C".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            })
+            .expect("single-character substring search");
+        assert!(!single_character.is_empty());
+        assert!(single_character.iter().all(|result| {
+            result
+                .citation
+                .tidbit
+                .as_ref()
+                .is_some_and(|tidbit| tidbit.revision_id == edited.current_revision_id)
+        }));
+
+        client
+            .delete_tidbit(
+                DeleteTidbitInput {
+                    id: edited.id.clone(),
+                    expected_revision_id: edited.current_revision_id.clone(),
+                },
+                30,
+            )
+            .expect("delete indexed tidbit");
+        assert!(client
+            .search_passages(SearchPassagesInput {
+                query: "replacement".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            })
+            .expect("deleted search")
+            .is_empty());
+        assert_eq!(
+            client
+                .resolve_citation(initial[0].passage_id.clone())
+                .expect("historical citation remains")
+                .state,
+            crate::database::CitationState::Historical
+        );
+
+        client
+            .restore_tidbit(
+                RestoreTidbitInput {
+                    id: edited.id,
+                    expected_revision_id: edited.current_revision_id,
+                },
+                40,
+            )
+            .expect("restore indexed tidbit");
+        assert_eq!(
+            client
+                .search_passages(SearchPassagesInput {
+                    query: "\"replacement carries\"".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                })
+                .expect("restored search")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn database_search_indexes_ready_attachment_passages_and_tracks_deletion() {
+        let root = tempfile::tempdir().expect("temporary attachment search library");
+        let paths = DatabasePaths::new(root.path());
+        let database = Database::initialize(paths.clone()).expect("attachment search database");
+        database
+            .client()
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: Some("Attachment metadata host".into()),
+                    body_markdown: "Authored passage linked to a file.".into(),
+                    sources: Vec::new(),
+                },
+                now_ms: 5,
+                tidbit_id: "019f547b-6200-7000-8000-000000009511".into(),
+                revision_id: "019f547b-6200-7000-8000-000000009512".into(),
+                source_ids: Vec::new(),
+            })
+            .expect("create authored attachment host");
+        database
+            .shutdown()
+            .expect("close attachment search database");
+        drop(database);
+        let mut connection =
+            connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+                .expect("attachment fixture writer");
+        connection
+            .execute_batch(
+                "INSERT INTO attachment(
+                    id, created_at, updated_at, sha256, display_filename,
+                    media_type, byte_length, kind, extraction_state
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009501',
+                    10, 10, zeroblob(32), 'calibration-plate.pdf',
+                    'application/pdf', 128, 'PDF', 'READY'
+                 );
+                 INSERT INTO tidbit_revision_attachment(
+                    tidbit_revision_id, attachment_id, sort_order, display_role
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009512',
+                    '019f547b-6200-7000-8000-000000009501',
+                    0, 'ATTACHMENT'
+                 );",
+            )
+            .expect("associate attachment with current revision");
+        let membership_results = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "calibration-plate.pdf".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search newly associated attachment filename");
+        assert_eq!(membership_results.len(), 1);
+        assert!(membership_results[0].citation.tidbit.is_some());
+        assert!(membership_results[0].citation.attachment.is_none());
+        assert!(membership_results[0]
+            .matched_fields
+            .contains(&SearchField::AttachmentName));
+
+        connection
+            .execute_batch(
+                "INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, created_at, started_at, completed_at
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009502',
+                    '019f547b-6200-7000-8000-000000009501',
+                    'pdf-text', '1', zeroblob(32), 'READY', 10, 10, 10
+                 );
+                 INSERT INTO attachment_segment(
+                    id, extraction_id, ordinal, locator_kind, page_number,
+                    content, content_hash
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009503',
+                    '019f547b-6200-7000-8000-000000009502',
+                    0, 'PDF_PAGE', 7, 'The quasar_needle calibration is authoritative.',
+                    zeroblob(32)
+                 ), (
+                    '019f547b-6200-7000-8000-000000009516',
+                    '019f547b-6200-7000-8000-000000009502',
+                    1, 'PDF_PAGE', 8, 'A second page is installed in the same batch.',
+                    zeroblob(32)
+                 );
+                 INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009504',
+                    '019f547b-6200-7000-8000-000000009503',
+                    'ATTACHMENT', 0,
+                    'The quasar_needle calibration is authoritative.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":7}', 10, 'pdf-page-v1', '[]'
+                 ), (
+                    '019f547b-6200-7000-8000-000000009517',
+                    '019f547b-6200-7000-8000-000000009516',
+                    'ATTACHMENT', 0,
+                    'A second page is installed in the same batch.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 10, 'pdf-page-v1', '[]'
+                 );",
+            )
+            .expect("ready attachment passage");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM passage_search_document
+                     WHERE passage_id IN (
+                        '019f547b-6200-7000-8000-000000009504',
+                        '019f547b-6200-7000-8000-000000009517'
+                     )",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("unrefreshed attachment document count"),
+            0
+        );
+        super::replace_attachment_documents(
+            &mut connection,
+            "019f547b-6200-7000-8000-000000009501",
+        )
+        .expect("refresh completed attachment passage batch");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM passage_search_document
+                     WHERE passage_id IN (
+                        '019f547b-6200-7000-8000-000000009504',
+                        '019f547b-6200-7000-8000-000000009517'
+                     )",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("batched attachment document count"),
+            2
+        );
+        let results = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "quasar_needle calibration-plate.pdf".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            },
+        )
+        .expect("search extracted attachment text");
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .matched_fields
+            .contains(&SearchField::AttachmentName));
+        assert!(results[0]
+            .matched_fields
+            .contains(&SearchField::ExtractedText));
+        assert!(results[0].citation.tidbit.is_none());
+        assert_eq!(
+            results[0]
+                .citation
+                .attachment
+                .as_ref()
+                .map(|attachment| attachment.display_filename.as_str()),
+            Some("calibration-plate.pdf")
+        );
+        connection
+            .execute(
+                "UPDATE attachment
+                 SET updated_at = 15, display_filename = 'renamed-calibration.pdf'
+                 WHERE id = ?1",
+                params!["019f547b-6200-7000-8000-000000009501"],
+            )
+            .expect("rename attachment");
+        let renamed = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "renamed-calibration.pdf".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search renamed attachment metadata");
+        assert!(renamed
+            .iter()
+            .any(|result| result.citation.tidbit.is_some()));
+        assert!(renamed
+            .iter()
+            .any(|result| result.citation.attachment.is_some()));
+        connection
+            .execute(
+                "UPDATE attachment SET updated_at = 20, deleted_at = 20 WHERE id = ?1",
+                params!["019f547b-6200-7000-8000-000000009501"],
+            )
+            .expect("soft delete attachment");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM passage_search_document WHERE passage_id = ?1",
+                    params!["019f547b-6200-7000-8000-000000009504"],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("deleted document count"),
+            0
+        );
+        connection
+            .execute(
+                "UPDATE attachment SET updated_at = 30, deleted_at = NULL WHERE id = ?1",
+                params!["019f547b-6200-7000-8000-000000009501"],
+            )
+            .expect("restore attachment");
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "quasar_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search restored attachment")
+            .len(),
+            1
+        );
+        let mismatched = connection
+            .execute(
+                "INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009508',
+                    '019f547b-6200-7000-8000-000000009503',
+                    'ATTACHMENT', 0, 'fabricated attachment text', randomblob(32),
+                    'PDF_PAGE', '{\"page\":7}', 35, 'pdf-page-bad', '[]'
+                 )",
+                [],
+            )
+            .expect_err("mismatched attachment passage must be rejected");
+        assert!(mismatched
+            .to_string()
+            .contains("does not match its immutable segment"));
+
+        connection
+            .execute_batch(
+                "UPDATE attachment_extractor_config
+                 SET version = '2',
+                     passage_construction_version = 'pdf-page-v2',
+                     updated_at = 40
+                 WHERE extractor = 'pdf-text';
+                 INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, created_at, started_at, completed_at
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009505',
+                    '019f547b-6200-7000-8000-000000009501',
+                    'pdf-text', '2', zeroblob(32), 'READY', 40, 40, 40
+                 );
+                 INSERT INTO attachment_segment(
+                    id, extraction_id, ordinal, locator_kind, page_number,
+                    content, content_hash
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009506',
+                    '019f547b-6200-7000-8000-000000009505',
+                    0, 'PDF_PAGE', 8,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32)
+                 );
+                 INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009507',
+                    '019f547b-6200-7000-8000-000000009506',
+                    'ATTACHMENT', 0,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 40, 'pdf-page-v2', '[]'
+                 );",
+            )
+            .expect("new extraction version");
+        super::replace_attachment_documents(
+            &mut connection,
+            "019f547b-6200-7000-8000-000000009501",
+        )
+        .expect("refresh upgraded extraction passage batch");
+        assert!(super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "quasar_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search stale extraction")
+        .is_empty());
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "nova_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search current extraction")
+            .len(),
+            1
+        );
+        connection
+            .execute_batch(
+                "UPDATE attachment_extractor_config
+                 SET passage_construction_version = 'pdf-page-v3',
+                     updated_at = 50
+                 WHERE extractor = 'pdf-text';
+                 INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009509',
+                    '019f547b-6200-7000-8000-000000009506',
+                    'ATTACHMENT', 0,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 50, 'pdf-page-v3', '[]'
+                 )",
+            )
+            .expect("new attachment passage construction");
+        super::replace_attachment_documents(
+            &mut connection,
+            "019f547b-6200-7000-8000-000000009501",
+        )
+        .expect("refresh upgraded passage construction batch");
+        let rebuilt = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "nova_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search current attachment passage construction");
+        assert_eq!(
+            rebuilt
+                .iter()
+                .map(|result| result.passage_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["019f547b-6200-7000-8000-000000009509"]
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009507",
+            )
+            .expect("resolve stale construction citation")
+            .state,
+            crate::database::CitationState::Historical
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009504",
+            )
+            .expect("resolve stale extraction citation")
+            .state,
+            crate::database::CitationState::Historical
+        );
+
+        connection
+            .execute(
+                "INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009515',
+                    '019f547b-6200-7000-8000-000000009506',
+                    'ATTACHMENT', 0,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 60, 'pdf-page-v1', '[]'
+                 )",
+                [],
+            )
+            .expect("late stale passage builder retry");
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "nova_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search configured passage construction after stale retry")
+            .iter()
+            .map(|result| result.passage_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["019f547b-6200-7000-8000-000000009509"]
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009515",
+            )
+            .expect("resolve stale configured construction citation")
+            .state,
+            crate::database::CitationState::Historical
+        );
+
+        connection
+            .execute_batch(
+                "INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, created_at, started_at, completed_at
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009510',
+                    '019f547b-6200-7000-8000-000000009501',
+                    'pdf-text', '0', zeroblob(32), 'READY', 70, 70, 70
+                 );
+                 INSERT INTO attachment_segment(
+                    id, extraction_id, ordinal, locator_kind, page_number,
+                    content, content_hash
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009513',
+                    '019f547b-6200-7000-8000-000000009510',
+                    0, 'PDF_PAGE', 9,
+                    'The legacy_needle retry must stay historical.', zeroblob(32)
+                 );
+                 INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009514',
+                    '019f547b-6200-7000-8000-000000009513',
+                    'ATTACHMENT', 0,
+                    'The legacy_needle retry must stay historical.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":9}', 70, 'pdf-page-v0', '[]'
+                 );",
+            )
+            .expect("late stale extractor retry");
+        assert!(super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "legacy_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search stale configured extractor version")
+        .is_empty());
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "nova_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search configured extractor version after stale retry")
+            .iter()
+            .map(|result| result.passage_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["019f547b-6200-7000-8000-000000009509"]
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009514",
+            )
+            .expect("resolve stale configured extractor citation")
+            .state,
+            crate::database::CitationState::Historical
+        );
+    }
+
+    #[test]
+    fn database_parser_bounds_empty_and_injection_like_queries() {
+        let root = tempfile::tempdir().expect("temporary safe-query library");
+        let database =
+            Database::initialize(DatabasePaths::new(root.path())).expect("search database");
+        let client = database.client();
+        client
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: None,
+                    body_markdown: "Literal OR NEAR syntax stays authored text.".into(),
+                    sources: Vec::new(),
+                },
+                now_ms: 10,
+                tidbit_id: "019f547b-6200-7000-8000-000000009101".into(),
+                revision_id: "019f547b-6200-7000-8000-000000009102".into(),
+                source_ids: Vec::new(),
+            })
+            .expect("create safe-query fixture");
+
+        assert!(client
+            .search_passages(SearchPassagesInput {
+                query: String::new(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            })
+            .expect("empty search")
+            .is_empty());
+        client
+            .search_passages(SearchPassagesInput {
+                query: "title:secret OR \"unfinished * NEAR(foo)".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            })
+            .expect("injection-like query remains data");
+        assert!(client
+            .search_passages(SearchPassagesInput {
+                query: "x".repeat(513),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn derived_index_text_cannot_fabricate_result_provenance() {
+        let root = tempfile::tempdir().expect("temporary provenance library");
+        let paths = DatabasePaths::new(root.path());
+        let database = Database::initialize(paths.clone()).expect("search database");
+        database
+            .client()
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: Some("Trusted title".into()),
+                    body_markdown: "Immutable authored evidence.".into(),
+                    sources: Vec::new(),
+                },
+                now_ms: 10,
+                tidbit_id: "019f547b-6200-7000-8000-000000009201".into(),
+                revision_id: "019f547b-6200-7000-8000-000000009202".into(),
+                source_ids: Vec::new(),
+            })
+            .expect("create provenance fixture");
+        database.shutdown().expect("close search database");
+        drop(database);
+
+        let connection =
+            connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+                .expect("maintenance writer");
+        connection
+            .execute(
+                "UPDATE passage_search_document
+                 SET title = 'fabricated_needle'
+                 WHERE tidbit_id = '019f547b-6200-7000-8000-000000009201'",
+                [],
+            )
+            .expect("tamper derived text");
+        drop(connection);
+
+        let reopened = Database::initialize(paths).expect("reopen provenance library");
+        assert!(reopened
+            .client()
+            .search_passages(SearchPassagesInput {
+                query: "fabricated_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            })
+            .expect("search tampered candidate")
+            .is_empty());
+        assert_eq!(
+            reopened
+                .client()
+                .search_passages(SearchPassagesInput {
+                    query: "authored evidence".into(),
+                    mode: LexicalSearchMode::Exact,
+                    limit: 10,
+                })
+                .expect("search authoritative evidence")
+                .len(),
+            1
+        );
+    }
+}

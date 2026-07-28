@@ -189,6 +189,62 @@ describe("FakeBackend tidbits", () => {
       state: "HISTORICAL",
     });
   });
+
+  it("returns current citation-owned lexical results and safe highlights", async () => {
+    const backend = new FakeBackend();
+    const created = await backend.createTidbit({
+      title: "Résumé review",
+      bodyMarkdown: "A naïve draft mentioned the café outcome.",
+      sources: [{ label: "Writing guide", url: "https://example.com/cafe" }],
+    });
+
+    const results = await backend.searchPassages({
+      query: "resume cafe",
+      mode: "EXACT",
+      limit: 10,
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      passageId: `fake-passage:${created.currentRevisionId}`,
+      matchedFields: expect.arrayContaining(["TITLE", "BODY"]),
+      citation: {
+        state: "CURRENT",
+        tidbit: { revisionId: created.currentRevisionId },
+      },
+    });
+    expect(
+      results[0]?.highlights.every(
+        (highlight) =>
+          Number.isSafeInteger(highlight.startChar) &&
+          Number.isSafeInteger(highlight.endChar) &&
+          highlight.startChar < highlight.endChar,
+      ),
+    ).toBe(true);
+
+    const ligature = await backend.createTidbit({
+      title: "ﬁle note",
+      bodyMarkdown: "Compatibility characters keep original offsets.",
+      sources: [],
+    });
+    const ligatureResults = await backend.searchPassages({
+      query: "file",
+      mode: "DEFAULT",
+      limit: 10,
+    });
+    expect(ligatureResults).toHaveLength(1);
+    expect(ligatureResults[0]).toMatchObject({
+      passageId: `fake-passage:${ligature.currentRevisionId}`,
+      highlights: expect.arrayContaining([{ field: "TITLE", startChar: 0, endChar: 3 }]),
+    });
+
+    await backend.deleteTidbit({
+      id: created.id,
+      expectedRevisionId: created.currentRevisionId,
+    });
+    await expect(
+      backend.searchPassages({ query: "cafe", mode: "DEFAULT", limit: 10 }),
+    ).resolves.toEqual([]);
+  });
 });
 
 describe("FakeBackend drafts", () => {
