@@ -198,11 +198,16 @@ describe("FakeBackend tidbits", () => {
       sources: [{ label: "Writing guide", url: "https://example.com/cafe" }],
     });
 
-    const results = await backend.searchPassages({
+    const response = await backend.searchPassages({
       query: "resume cafe",
       mode: "EXACT",
       limit: 10,
     });
+    expect(response).toMatchObject({
+      executionMode: "EXACT",
+      semanticReadiness: "NOT_REQUESTED",
+    });
+    const { results } = response;
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({
       passageId: `fake-passage:${created.currentRevisionId}`,
@@ -226,11 +231,12 @@ describe("FakeBackend tidbits", () => {
       bodyMarkdown: "Compatibility characters keep original offsets.",
       sources: [],
     });
-    const ligatureResults = await backend.searchPassages({
+    const ligatureResponse = await backend.searchPassages({
       query: "file",
       mode: "DEFAULT",
       limit: 10,
     });
+    const ligatureResults = ligatureResponse.results;
     expect(ligatureResults).toHaveLength(1);
     expect(ligatureResults[0]).toMatchObject({
       passageId: `fake-passage:${ligature.currentRevisionId}`,
@@ -243,7 +249,7 @@ describe("FakeBackend tidbits", () => {
     });
     await expect(
       backend.searchPassages({ query: "cafe", mode: "DEFAULT", limit: 10 }),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ results: [], executionMode: "LEXICAL_ONLY" });
   });
 });
 

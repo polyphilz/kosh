@@ -1,4 +1,5 @@
 mod fixture;
+mod hybrid;
 mod lexical;
 mod report;
 mod scale;
@@ -9,6 +10,10 @@ pub use fixture::{
     EvaluationAttachment, EvaluationLocator, EvaluationPassage, EvaluationQuery, EvaluationRegion,
     EvaluationSource, ExpectedCitation, QueryCategory, RelevanceFixture, RelevanceJudgment,
     RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
+};
+pub use hybrid::{
+    generate_hybrid_vector_fixture, validate_hybrid_vector_fixture, HybridFixtureRetriever,
+    HybridVectorFixture, HYBRID_VECTOR_SCHEMA_VERSION,
 };
 pub use lexical::{
     benchmark_scale_lexical, LexicalFixtureRetriever, LexicalPerformanceReport,
@@ -50,6 +55,8 @@ pub enum RelevanceError {
     Retrieval { query_id: String, message: String },
     #[error("lexical benchmark failed: {0}")]
     LexicalBenchmark(String),
+    #[error("hybrid vector fixture failed: {0}")]
+    HybridVectors(String),
 }
 
 pub type Result<T> = std::result::Result<T, RelevanceError>;

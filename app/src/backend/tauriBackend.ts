@@ -7,12 +7,12 @@ import type {
   DraftRecord,
   EditTidbitInput,
   ListTidbitsInput,
-  PassageSearchResult,
   PassageEmbeddingIndexStatus,
   RuntimeProbe,
   RestoreTidbitInput,
   SaveDraftInput,
   SearchPassagesInput,
+  SearchPassagesResponse,
   SemanticRuntimeLogs,
   SemanticRuntimeStatus,
   TidbitDraft,
@@ -38,7 +38,7 @@ export const tauriBackend: Backend = {
   resolveCitation: (passageId: string) =>
     invoke<CitationResolution>("resolve_citation", { passageId }),
   searchPassages: (input: SearchPassagesInput) =>
-    invoke<PassageSearchResult[]>("search_passages", { input }),
+    invoke<SearchPassagesResponse>("search_passages", { input }),
   saveDraft: (input: SaveDraftInput) => invoke<DraftRecord>("save_draft", { input }),
   loadDraft: (contextKey: string) => invoke<DraftRecord | null>("load_draft", { contextKey }),
   clearDraft: (input: ClearDraftInput) => invoke<boolean>("clear_draft", { input }),

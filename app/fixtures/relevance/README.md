@@ -13,6 +13,7 @@ Run the fixture validator and intentionally empty baseline from `app/`:
 pnpm relevance:validate
 pnpm relevance:empty
 pnpm relevance:lexical
+pnpm relevance:hybrid
 ```
 
 The empty runner writes diffable JSON and text reports under the ignored
@@ -27,6 +28,28 @@ phrase success 1.0, and zero forbidden hits. The remaining miss is the
 misspelled concurrency query marked for combined lexical and semantic
 retrieval; later ranking work can improve it without disguising the initial
 baseline.
+
+`relevance:hybrid` validates `jina-v1-vectors.json` against both the relevance
+fixture digest and the shipped Jina v1 model hash, then writes a local report
+that should match `reports/hybrid-v1.{json,txt}`. The vectors were generated
+from the pinned model through Kosh's verified llama.cpp runtime; tests only read
+the checked-in vectors and never download or start a model. The first hybrid
+report passes all 17 queries with Recall@10, MRR, and citation locator accuracy
+of 1.0, exact/phrase success of 1.0, and zero forbidden hits. Exact and code
+identifier category metrics match the lexical baseline.
+
+Maintainers with the pinned model and sidecar can regenerate the vector fixture
+before intentionally updating the reports:
+
+```bash
+KOSH_EMBEDDING_MODEL_PATH=/path/to/v5-nano-retrieval-Q8_0.gguf \
+KOSH_LLAMA_SERVER_PATH=/path/to/llama-server \
+cargo run --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- \
+  hybrid-vectors
+```
+
+The generator rejects missing corpus/query coverage, non-normalized vectors,
+fixture drift, and model-contract drift.
 
 Generate the deterministic 10,000-tidbit workload and a separate runtime
 metadata report with:

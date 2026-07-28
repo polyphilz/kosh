@@ -11,7 +11,9 @@ use super::{
     error::{DatabaseError, Result},
     migrations::MigrationHeads,
     passages::CitationResolution,
-    search::{PassageSearchResult, SearchPassagesInput},
+    search::{
+        PassageSearchResult, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
+    },
     tidbits::{
         CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput,
         RestoreTidbitInput, Tidbit, TidbitListPage,
@@ -67,6 +69,9 @@ pub(super) enum WriterMessage {
     PassageEmbeddingIndexNeedsReconciliation {
         reply: SyncSender<Result<bool>>,
     },
+    PassageEmbeddingSearchReadiness {
+        reply: SyncSender<Result<SemanticSearchReadiness>>,
+    },
     ActivatePassageEmbeddingIndexIfComplete {
         activated_at_ms: i64,
         reply: SyncSender<Result<bool>>,
@@ -114,7 +119,9 @@ pub(super) enum WriterMessage {
     },
     SearchPassages {
         input: SearchPassagesInput,
-        reply: SyncSender<Result<Vec<PassageSearchResult>>>,
+        query_embedding: Option<Vec<f32>>,
+        fallback_readiness: SemanticSearchReadiness,
+        reply: SyncSender<Result<SearchPassagesResponse>>,
     },
     RefreshAttachmentSearchDocuments {
         attachment_id: String,
@@ -276,6 +283,16 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
+    pub(crate) fn passage_embedding_search_readiness(&self) -> Result<SemanticSearchReadiness> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::PassageEmbeddingSearchReadiness { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
     pub(crate) fn activate_passage_embedding_index_if_complete(
         &self,
         activated_at_ms: i64,
@@ -409,9 +426,29 @@ impl DatabaseClient {
         &self,
         input: SearchPassagesInput,
     ) -> Result<Vec<PassageSearchResult>> {
+        Ok(self
+            .search_passages_with_semantics(
+                input,
+                None,
+                SemanticSearchReadiness::WaitingForRuntime,
+            )?
+            .results)
+    }
+
+    pub(crate) fn search_passages_with_semantics(
+        &self,
+        input: SearchPassagesInput,
+        query_embedding: Option<Vec<f32>>,
+        fallback_readiness: SemanticSearchReadiness,
+    ) -> Result<SearchPassagesResponse> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::SearchPassages { input, reply })
+            .send(WriterMessage::SearchPassages {
+                input,
+                query_embedding,
+                fallback_readiness,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

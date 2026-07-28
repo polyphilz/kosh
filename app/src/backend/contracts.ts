@@ -156,6 +156,21 @@ export interface PassageSearchResult {
   citation: CitationResolution;
 }
 
+export type SearchExecutionMode = "EXACT" | "HYBRID" | "LEXICAL_ONLY";
+
+export type SemanticSearchReadiness =
+  | "READY"
+  | "INDEXING"
+  | "WAITING_FOR_RUNTIME"
+  | "FAILED"
+  | "NOT_REQUESTED";
+
+export interface SearchPassagesResponse {
+  results: PassageSearchResult[];
+  executionMode: SearchExecutionMode;
+  semanticReadiness: SemanticSearchReadiness;
+}
+
 export interface SaveDraftInput extends TidbitDraft {
   contextKey: string;
   tidbitId: string | null;
@@ -232,7 +247,7 @@ export interface Backend {
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
   restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord>;
   resolveCitation(passageId: string): Promise<CitationResolution>;
-  searchPassages(input: SearchPassagesInput): Promise<PassageSearchResult[]>;
+  searchPassages(input: SearchPassagesInput): Promise<SearchPassagesResponse>;
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;

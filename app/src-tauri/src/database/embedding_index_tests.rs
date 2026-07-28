@@ -7,7 +7,8 @@ use super::{
     embedding_index::{
         self, InstallEmbeddingDisposition, PassageEmbeddingIndexState, JINA_V1_VEC_TABLE,
     },
-    migrations, Database, DatabasePaths, EditTidbitInput, Tidbit, TidbitDraft,
+    migrations, Database, DatabasePaths, EditTidbitInput, LexicalSearchMode, SearchExecutionMode,
+    SearchPassagesInput, SemanticSearchReadiness, Tidbit, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -65,6 +66,250 @@ fn current_passages_are_indexed_newest_first_and_activated_atomically() {
     assert!(!client
         .passage_embedding_index_needs_reconciliation()
         .expect("complete state check"));
+}
+
+#[test]
+fn semantic_retrieval_falls_back_when_fresh_content_invalidates_the_active_index() {
+    let library = TestLibrary::new();
+    let database = Database::initialize(library.paths.clone()).expect("database");
+    let client = database.client();
+    let semantic_tidbit = create_tidbit(&client, "Automobile service intervals", 10);
+    create_tidbit(&client, "Sourdough fermentation notes", 20);
+    let pending = client
+        .load_embedding_reconciliation_batch(32)
+        .expect("pending passages");
+    for passage in pending {
+        let axis = usize::from(passage.content.contains("Sourdough"));
+        client
+            .install_passage_embedding(passage, axis_vector(axis), 30)
+            .expect("install embedding");
+    }
+    assert!(client
+        .activate_passage_embedding_index_if_complete(31)
+        .expect("activate complete index"));
+    assert_eq!(
+        client
+            .passage_embedding_search_readiness()
+            .expect("ready search state"),
+        SemanticSearchReadiness::Ready
+    );
+
+    let input = SearchPassagesInput {
+        query: "car upkeep schedule".into(),
+        mode: LexicalSearchMode::Default,
+        limit: 10,
+    };
+    let hybrid = client
+        .search_passages_with_semantics(
+            input.clone(),
+            Some(axis_vector(0)),
+            SemanticSearchReadiness::Ready,
+        )
+        .expect("hybrid search");
+    assert_eq!(hybrid.execution_mode, SearchExecutionMode::Hybrid);
+    assert_eq!(hybrid.semantic_readiness, SemanticSearchReadiness::Ready);
+    assert_eq!(
+        hybrid.results[0]
+            .citation
+            .tidbit
+            .as_ref()
+            .map(|tidbit| tidbit.id.as_str()),
+        Some(semantic_tidbit.id.as_str())
+    );
+    let punctuation = client
+        .search_passages_with_semantics(
+            SearchPassagesInput {
+                query: "*".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+            Some(axis_vector(0)),
+            SemanticSearchReadiness::Ready,
+        )
+        .expect("punctuation-only search");
+    assert_eq!(punctuation.execution_mode, SearchExecutionMode::LexicalOnly);
+    assert!(punctuation.results.is_empty());
+
+    client
+        .edit_tidbit(super::tidbits::EditTidbitWrite {
+            input: EditTidbitInput {
+                id: semantic_tidbit.id,
+                expected_revision_id: semantic_tidbit.current_revision_id,
+                title: None,
+                body_markdown: "Updated automobile service intervals".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 40,
+            revision_id: uuid_v7(),
+            source_ids: Vec::new(),
+        })
+        .expect("edit invalidates active vectors");
+    assert_eq!(
+        client
+            .passage_embedding_search_readiness()
+            .expect("fresh search state"),
+        SemanticSearchReadiness::Indexing
+    );
+    let fallback = client
+        .search_passages_with_semantics(input, Some(axis_vector(0)), SemanticSearchReadiness::Ready)
+        .expect("freshness fallback");
+    assert_eq!(fallback.execution_mode, SearchExecutionMode::LexicalOnly);
+    assert_eq!(
+        fallback.semantic_readiness,
+        SemanticSearchReadiness::Indexing
+    );
+    assert!(fallback.results.is_empty());
+}
+
+#[test]
+fn structural_semantic_query_failure_is_quarantined_after_lexical_fallback() {
+    let library = TestLibrary::new();
+    let database = Database::initialize(library.paths.clone()).expect("database");
+    let client = database.client();
+    create_tidbit(&client, "Automobile service intervals", 10);
+    install_all(&client, 20);
+    assert!(client
+        .activate_passage_embedding_index_if_complete(21)
+        .expect("activate complete index"));
+    database.shutdown().expect("shutdown database");
+
+    let main =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("main writer");
+    main.execute("DROP TABLE passage_embedding_vec_jina_v1", [])
+        .expect("drop vector table");
+    main.execute_batch(
+        "CREATE TABLE passage_embedding_vec_jina_v1(
+            rowid INTEGER PRIMARY KEY,
+            embedding BLOB NOT NULL
+         ) STRICT;",
+    )
+    .expect("install incompatible derived table");
+    let response = super::search::search_passages_with_semantics(
+        &main,
+        SearchPassagesInput {
+            query: "automobile".into(),
+            mode: LexicalSearchMode::Default,
+            limit: 10,
+        },
+        Some(&axis_vector(0)),
+        SemanticSearchReadiness::Ready,
+    )
+    .expect("lexical fallback survives vector query failure");
+    assert_eq!(response.execution_mode, SearchExecutionMode::LexicalOnly);
+    assert_eq!(response.semantic_readiness, SemanticSearchReadiness::Failed);
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(
+        main.query_row(
+            "SELECT status FROM index_state WHERE name = 'PASSAGE_EMBEDDING'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("quarantined state"),
+        "FAILED"
+    );
+}
+
+#[test]
+fn hybrid_results_collapse_overlapping_windows_but_preserve_distinct_tidbit_sections() {
+    let library = TestLibrary::new();
+    let database = Database::initialize(library.paths.clone()).expect("database");
+    let client = database.client();
+    let long_prose = (0..120)
+        .map(|ordinal| {
+            format!(
+                "Passage sentence {ordinal} explains a bounded semantic window with stable context."
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let overlapping = create_tidbit(&client, &format!("# Long note\n\n{long_prose}"), 10);
+    let distinct = create_tidbit(
+        &client,
+        "# First\n\nThis first distinct passage belongs to its own section.\n\n# Second\n\nThis second distinct passage belongs to another section.",
+        20,
+    );
+    let other = create_tidbit(&client, "A separate semantic passage candidate", 30);
+    let pending = client
+        .load_embedding_reconciliation_batch(32)
+        .expect("pending passages");
+    assert!(
+        pending
+            .iter()
+            .filter(|passage| passage.content.contains("Passage sentence"))
+            .count()
+            >= 2
+    );
+    assert!(
+        pending
+            .iter()
+            .filter(|passage| passage.content.contains("distinct passage"))
+            .count()
+            >= 2
+    );
+    for passage in pending {
+        client
+            .install_passage_embedding(passage, axis_vector(0), 40)
+            .expect("install tied embedding");
+    }
+    assert!(client
+        .activate_passage_embedding_index_if_complete(41)
+        .expect("activate tied index"));
+    let input = SearchPassagesInput {
+        query: "passage".into(),
+        mode: LexicalSearchMode::Default,
+        limit: 10,
+    };
+    let first = client
+        .search_passages_with_semantics(
+            input.clone(),
+            Some(axis_vector(0)),
+            SemanticSearchReadiness::Ready,
+        )
+        .expect("first hybrid search");
+    let second = client
+        .search_passages_with_semantics(input, Some(axis_vector(0)), SemanticSearchReadiness::Ready)
+        .expect("second hybrid search");
+    assert_eq!(
+        first
+            .results
+            .iter()
+            .map(|result| result.passage_id.as_str())
+            .collect::<Vec<_>>(),
+        second
+            .results
+            .iter()
+            .map(|result| result.passage_id.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(first.results.len(), 4);
+    assert_eq!(
+        first
+            .results
+            .iter()
+            .filter_map(|result| result.citation.tidbit.as_ref())
+            .filter(|tidbit| tidbit.id == overlapping.id)
+            .count(),
+        1
+    );
+    assert_eq!(
+        first
+            .results
+            .iter()
+            .filter_map(|result| result.citation.tidbit.as_ref())
+            .filter(|tidbit| tidbit.id == distinct.id)
+            .count(),
+        2
+    );
+    assert!(first.results.iter().any(|result| result
+        .citation
+        .tidbit
+        .as_ref()
+        .is_some_and(|tidbit| tidbit.id == other.id)));
+    assert!(first
+        .results
+        .iter()
+        .all(|result| result.passage_id == result.citation.passage_id));
 }
 
 #[test]
@@ -375,6 +620,13 @@ fn invalid_optional_vector_table_is_quarantined_without_blocking_capture() {
     assert_eq!(progress.state, PassageEmbeddingIndexState::Failed);
     assert_eq!(progress.error.as_deref(), Some(quarantine_error.as_str()));
     assert_eq!(progress.indexed_passages, 0);
+    assert_eq!(
+        reopened
+            .client()
+            .passage_embedding_search_readiness()
+            .expect("failed search state"),
+        SemanticSearchReadiness::Failed
+    );
     assert!(!reopened
         .client()
         .passage_embedding_index_needs_reconciliation()
@@ -528,8 +780,12 @@ fn install_all(client: &super::DatabaseClient, created_at_ms: i64) {
 }
 
 fn unit_vector() -> Vec<f32> {
+    axis_vector(0)
+}
+
+fn axis_vector(axis: usize) -> Vec<f32> {
     let mut vector = vec![0.0; 768];
-    vector[0] = 1.0;
+    vector[axis] = 1.0;
     vector
 }
 

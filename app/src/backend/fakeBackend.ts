@@ -6,13 +6,13 @@ import type {
   DraftRecord,
   EditTidbitInput,
   ListTidbitsInput,
-  PassageSearchResult,
   PassageEmbeddingIndexStatus,
   RuntimeProbe,
   RestoreTidbitInput,
   SaveDraftInput,
   SearchField,
   SearchPassagesInput,
+  SearchPassagesResponse,
   SemanticRuntimeLogs,
   SemanticRuntimeStatus,
   SourceDraft,
@@ -293,7 +293,7 @@ export class FakeBackend implements Backend {
     };
   }
 
-  async searchPassages(input: SearchPassagesInput): Promise<PassageSearchResult[]> {
+  async searchPassages(input: SearchPassagesInput): Promise<SearchPassagesResponse> {
     if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
       throw new Error("limit must be between 1 and 100");
     }
@@ -301,8 +301,13 @@ export class FakeBackend implements Backend {
       throw new Error("query must contain at most 512 characters");
     }
     const atoms = parseSearchAtoms(input.query);
+    const semanticReady = this.semanticStatus.phase === "READY";
+    const executionMode =
+      input.mode === "EXACT" ? "EXACT" : semanticReady ? "HYBRID" : "LEXICAL_ONLY";
+    const semanticReadiness =
+      input.mode === "EXACT" ? "NOT_REQUESTED" : semanticReady ? "READY" : "WAITING_FOR_RUNTIME";
     if (atoms.length === 0) {
-      return [];
+      return { results: [], executionMode, semanticReadiness };
     }
     const matches = [...this.tidbits.values()]
       .filter((tidbit) => tidbit.deletedAtMs === null)
@@ -351,7 +356,7 @@ export class FakeBackend implements Backend {
       )
       .slice(0, input.limit);
 
-    return Promise.all(
+    const results = await Promise.all(
       matches.map(async ({ tidbit, matchedFields, highlights, score }) => {
         const passageId = `fake-passage:${tidbit.currentRevisionId}`;
         return {
@@ -363,6 +368,7 @@ export class FakeBackend implements Backend {
         };
       }),
     );
+    return { results, executionMode, semanticReadiness };
   }
 
   async saveDraft(input: SaveDraftInput): Promise<DraftRecord> {

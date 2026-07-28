@@ -7,7 +7,9 @@ use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
-use super::{passages, CitationResolution, DatabaseError, Result};
+use super::{
+    embedding_index, passages, CitationLocator, CitationResolution, DatabaseError, Result,
+};
 
 const MAX_QUERY_CHARACTERS: usize = 512;
 const MAX_SEARCH_LIMIT: u32 = 100;
@@ -15,6 +17,12 @@ const MAX_HIGHLIGHTS_PER_RESULT: usize = 32;
 const MIN_CANDIDATE_LIMIT: u32 = 64;
 const MAX_CANDIDATE_LIMIT: u32 = 512;
 const RRF_RANK_CONSTANT: f64 = 60.0;
+const LEXICAL_RRF_WEIGHT: f64 = 1.0;
+const SEMANTIC_RRF_WEIGHT: f64 = 0.85;
+const AGREEMENT_RRF_WEIGHT: f64 = 0.20;
+const PHRASE_RRF_WEIGHT: f64 = 0.15;
+const TITLE_HEADING_RRF_WEIGHT: f64 = 0.10;
+const SEMANTIC_EXPANSION_RANK_LIMIT: usize = 1;
 pub(super) const FTS_VERSION: &str = "lexical-v1";
 
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
@@ -92,6 +100,32 @@ pub struct PassageSearchResult {
     pub matched_fields: Vec<SearchField>,
     pub highlights: Vec<SearchHighlight>,
     pub citation: CitationResolution,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SearchExecutionMode {
+    Exact,
+    Hybrid,
+    LexicalOnly,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SemanticSearchReadiness {
+    Ready,
+    Indexing,
+    WaitingForRuntime,
+    Failed,
+    NotRequested,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchPassagesResponse {
+    pub results: Vec<PassageSearchResult>,
+    pub execution_mode: SearchExecutionMode,
+    pub semantic_readiness: SemanticSearchReadiness,
 }
 
 #[derive(Clone, Debug)]
@@ -187,50 +221,148 @@ impl ParsedLexicalQuery {
             .collect::<Vec<_>>();
         join_fts_clauses(clauses, self.mode)
     }
+
+    fn has_quoted_phrase(&self) -> bool {
+        self.atoms
+            .iter()
+            .any(|atom| atom.quoted && word_tokens(&atom.text).len() > 1)
+    }
+
+    fn has_searchable_content(&self) -> bool {
+        self.atoms.iter().any(|atom| {
+            atom.text
+                .chars()
+                .any(|character| character.is_alphanumeric() || character == '_')
+        })
+    }
 }
 
+#[cfg(test)]
 pub(super) fn search_passages(
     connection: &Connection,
     input: SearchPassagesInput,
 ) -> Result<Vec<PassageSearchResult>> {
+    Ok(search_passages_with_semantics(
+        connection,
+        input,
+        None,
+        SemanticSearchReadiness::WaitingForRuntime,
+    )?
+    .results)
+}
+
+pub(super) fn search_passages_with_semantics(
+    connection: &Connection,
+    input: SearchPassagesInput,
+    query_embedding: Option<&[f32]>,
+    fallback_readiness: SemanticSearchReadiness,
+) -> Result<SearchPassagesResponse> {
     if input.limit == 0 || input.limit > MAX_SEARCH_LIMIT {
         return Err(DatabaseError::InvalidInput(format!(
             "limit must be between 1 and {MAX_SEARCH_LIMIT}"
         )));
     }
-    let Some(query) = ParsedLexicalQuery::parse(&input.query, input.mode)? else {
-        return Ok(Vec::new());
+    let Some(query) = ParsedLexicalQuery::parse(&input.query, input.mode)?
+        .filter(ParsedLexicalQuery::has_searchable_content)
+    else {
+        return Ok(SearchPassagesResponse {
+            results: Vec::new(),
+            execution_mode: match input.mode {
+                LexicalSearchMode::Default => SearchExecutionMode::LexicalOnly,
+                LexicalSearchMode::Exact => SearchExecutionMode::Exact,
+            },
+            semantic_readiness: match input.mode {
+                LexicalSearchMode::Default => fallback_readiness,
+                LexicalSearchMode::Exact => SemanticSearchReadiness::NotRequested,
+            },
+        });
     };
     let candidate_limit = candidate_limit(input.limit);
+    let lexical = lexical_ranked_candidates(connection, &query, candidate_limit)?;
+    if input.mode == LexicalSearchMode::Exact {
+        return Ok(SearchPassagesResponse {
+            results: hydrate_ranked_passages(connection, lexical, input.limit as usize, false)?,
+            execution_mode: SearchExecutionMode::Exact,
+            semantic_readiness: SemanticSearchReadiness::NotRequested,
+        });
+    }
+
+    let index_readiness = semantic_index_readiness(connection)?;
+    let semantic_ready =
+        query_embedding.is_some() && index_readiness == SemanticSearchReadiness::Ready;
+    if !semantic_ready {
+        return Ok(SearchPassagesResponse {
+            results: hydrate_ranked_passages(connection, lexical, input.limit as usize, false)?,
+            execution_mode: SearchExecutionMode::LexicalOnly,
+            semantic_readiness: if query_embedding.is_some() {
+                index_readiness
+            } else {
+                fallback_readiness
+            },
+        });
+    }
+
+    let query_embedding = query_embedding.expect("semantic readiness requires an embedding");
+    let manifest = embedding_index::manifest();
+    embedding_index::validate_embedding(query_embedding, manifest.dimension as usize)?;
+    let semantic = match semantic_ranked_passages(connection, query_embedding, candidate_limit) {
+        Ok(semantic) => semantic,
+        Err(error) => {
+            log::warn!("semantic passage retrieval failed; using lexical search: {error}");
+            let _ = embedding_index::quarantine(
+                connection,
+                "semantic passage search is unavailable; repair is required",
+                0,
+            );
+            return Ok(SearchPassagesResponse {
+                results: hydrate_ranked_passages(connection, lexical, input.limit as usize, false)?,
+                execution_mode: SearchExecutionMode::LexicalOnly,
+                semantic_readiness: SemanticSearchReadiness::Failed,
+            });
+        }
+    };
+    let fused = fuse_ranked_passages(&query, lexical, semantic);
+    Ok(SearchPassagesResponse {
+        results: hydrate_ranked_passages(connection, fused, input.limit as usize, true)?,
+        execution_mode: SearchExecutionMode::Hybrid,
+        semantic_readiness: SemanticSearchReadiness::Ready,
+    })
+}
+
+pub(crate) fn validate_search_input(input: &SearchPassagesInput) -> Result<bool> {
+    if input.limit == 0 || input.limit > MAX_SEARCH_LIMIT {
+        return Err(DatabaseError::InvalidInput(format!(
+            "limit must be between 1 and {MAX_SEARCH_LIMIT}"
+        )));
+    }
+    Ok(ParsedLexicalQuery::parse(&input.query, input.mode)?
+        .is_some_and(|query| query.has_searchable_content()))
+}
+
+fn lexical_ranked_candidates(
+    connection: &Connection,
+    query: &ParsedLexicalQuery,
+    limit: u32,
+) -> Result<Vec<RankedLexicalDocument>> {
     let mut ranks = HashMap::<String, CandidateRanks>::new();
     if let Some(word_query) = query.word_match_query() {
         install_ranks(
             &mut ranks,
-            query_fts_index(connection, "passage_fts_word", &word_query, candidate_limit)?,
+            query_fts_index(connection, "passage_fts_word", &word_query, limit)?,
             CandidateIndex::Word,
         );
     }
     if let Some(trigram_query) = query.trigram_match_query() {
         install_ranks(
             &mut ranks,
-            query_fts_index(
-                connection,
-                "passage_fts_trigram",
-                &trigram_query,
-                candidate_limit,
-            )?,
+            query_fts_index(connection, "passage_fts_trigram", &trigram_query, limit)?,
             CandidateIndex::Trigram,
         );
     }
     if let Some(short_query) = query.short_match_query() {
         install_ranks(
             &mut ranks,
-            query_fts_index(
-                connection,
-                "passage_fts_short",
-                &short_query,
-                candidate_limit,
-            )?,
+            query_fts_index(connection, "passage_fts_short", &short_query, limit)?,
             CandidateIndex::Short,
         );
     }
@@ -239,26 +371,300 @@ pub(super) fn search_passages(
     }
 
     let documents = load_search_documents(connection, ranks)?;
-    let ranked = rank_lexical_documents(&query, documents, input.limit as usize);
-    ranked
-        .into_iter()
-        .map(|ranked| {
-            let citation = passages::resolve_citation(connection, &ranked.passage_id)?;
-            if citation.state != super::CitationState::Current {
-                return Err(DatabaseError::Validation {
-                    kind: "main",
-                    reason: format!("search returned non-current passage {}", ranked.passage_id),
-                });
-            }
-            Ok(PassageSearchResult {
-                passage_id: ranked.passage_id,
-                score: ranked.score,
-                matched_fields: ranked.matched_fields,
-                highlights: ranked.highlights,
-                citation,
+    Ok(rank_lexical_documents(query, documents, limit as usize))
+}
+
+pub(crate) fn semantic_index_readiness(connection: &Connection) -> Result<SemanticSearchReadiness> {
+    let manifest = embedding_index::manifest();
+    let (version, status, active_index_id, has_reap_work) = connection.query_row(
+        "SELECT
+            state.version,
+            state.status,
+            settings.active_embedding_index_id,
+            EXISTS(SELECT 1 FROM passage_embedding_reap_queue)
+         FROM index_state AS state
+         JOIN passage_embedding_settings AS settings
+           ON settings.singleton_id = 1
+         WHERE state.name = 'PASSAGE_EMBEDDING'",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        },
+    )?;
+    if version != manifest.index_key || status == "FAILED" {
+        return Ok(SemanticSearchReadiness::Failed);
+    }
+    if !matches!(status.as_str(), "IDLE" | "DIRTY" | "RUNNING") {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: format!("PASSAGE_EMBEDDING has unknown status {status}"),
+        });
+    }
+    Ok(
+        if status == "IDLE"
+            && active_index_id.as_deref() == Some(manifest.id.as_str())
+            && !has_reap_work
+        {
+            SemanticSearchReadiness::Ready
+        } else {
+            SemanticSearchReadiness::Indexing
+        },
+    )
+}
+
+fn semantic_ranked_passages(
+    connection: &Connection,
+    embedding: &[f32],
+    limit: u32,
+) -> Result<Vec<String>> {
+    let manifest = embedding_index::manifest();
+    let vector_json = serde_json::to_string(embedding)?;
+    let mut statement = connection.prepare(
+        "SELECT document.passage_id
+         FROM (
+             SELECT rowid, distance
+             FROM passage_embedding_vec_jina_v1
+             WHERE embedding MATCH ?1 AND k = ?2
+             ORDER BY distance, rowid
+         ) AS nearest
+         JOIN passage_search_document AS document
+           ON document.rowid = nearest.rowid
+         JOIN passage
+           ON passage.rowid = document.rowid
+          AND passage.id = document.passage_id
+         JOIN passage_embedding AS metadata
+           ON metadata.passage_id = passage.id
+          AND metadata.embedding_index_id = ?3
+          AND metadata.passage_content_hash = passage.content_hash
+         JOIN passage_embedding_settings AS settings
+           ON settings.singleton_id = 1
+          AND settings.active_embedding_index_id = metadata.embedding_index_id
+         JOIN index_state AS state
+           ON state.name = 'PASSAGE_EMBEDDING'
+          AND state.version = ?4
+          AND state.status = 'IDLE'
+         WHERE NOT EXISTS (
+             SELECT 1 FROM passage_embedding_reap_queue
+         )
+         ORDER BY nearest.distance, document.updated_at DESC, document.passage_id",
+    )?;
+    let rows = statement
+        .query_map(
+            params![vector_json, limit, manifest.id, manifest.index_key],
+            |row| row.get(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+pub(crate) fn fuse_ranked_passages(
+    query: &ParsedLexicalQuery,
+    lexical: Vec<RankedLexicalDocument>,
+    semantic: Vec<String>,
+) -> Vec<RankedLexicalDocument> {
+    struct FusedCandidate {
+        passage_id: String,
+        score: f64,
+        best_rank: usize,
+        lexical_rank: Option<usize>,
+        semantic_rank: Option<usize>,
+        matched_fields: Vec<SearchField>,
+        highlights: Vec<SearchHighlight>,
+    }
+
+    let mut candidates = HashMap::<String, FusedCandidate>::new();
+    for (index, candidate) in lexical.into_iter().enumerate() {
+        let rank = index + 1;
+        let title_or_heading = candidate
+            .matched_fields
+            .iter()
+            .any(|field| matches!(field, SearchField::Title | SearchField::HeadingContext));
+        let mut score = LEXICAL_RRF_WEIGHT / (RRF_RANK_CONSTANT + rank as f64);
+        if query.has_quoted_phrase() {
+            score += PHRASE_RRF_WEIGHT / (RRF_RANK_CONSTANT + rank as f64);
+        }
+        if title_or_heading {
+            score += TITLE_HEADING_RRF_WEIGHT / (RRF_RANK_CONSTANT + rank as f64);
+        }
+        candidates.insert(
+            candidate.passage_id.clone(),
+            FusedCandidate {
+                passage_id: candidate.passage_id,
+                score,
+                best_rank: rank,
+                lexical_rank: Some(rank),
+                semantic_rank: None,
+                matched_fields: candidate.matched_fields,
+                highlights: candidate.highlights,
+            },
+        );
+    }
+    for (index, passage_id) in semantic.into_iter().enumerate() {
+        let rank = index + 1;
+        if !candidates.contains_key(&passage_id) && rank > SEMANTIC_EXPANSION_RANK_LIMIT {
+            continue;
+        }
+        let candidate = candidates
+            .entry(passage_id.clone())
+            .or_insert_with(|| FusedCandidate {
+                passage_id,
+                score: 0.0,
+                best_rank: rank,
+                lexical_rank: None,
+                semantic_rank: None,
+                matched_fields: Vec::new(),
+                highlights: Vec::new(),
+            });
+        candidate.score += SEMANTIC_RRF_WEIGHT / (RRF_RANK_CONSTANT + rank as f64);
+        candidate.best_rank = candidate.best_rank.min(rank);
+        candidate.semantic_rank = Some(rank);
+        if let Some(lexical_rank) = candidate.lexical_rank {
+            candidate.score +=
+                AGREEMENT_RRF_WEIGHT / (RRF_RANK_CONSTANT + lexical_rank.min(rank) as f64);
+        }
+    }
+    let mut candidates = candidates.into_values().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.best_rank.cmp(&right.best_rank))
+            .then_with(|| {
+                left.lexical_rank
+                    .is_none()
+                    .cmp(&right.lexical_rank.is_none())
             })
+            .then_with(|| left.lexical_rank.cmp(&right.lexical_rank))
+            .then_with(|| left.semantic_rank.cmp(&right.semantic_rank))
+            .then_with(|| left.passage_id.cmp(&right.passage_id))
+    });
+    candidates
+        .into_iter()
+        .map(|candidate| RankedLexicalDocument {
+            passage_id: candidate.passage_id,
+            score: candidate.score,
+            matched_fields: candidate.matched_fields,
+            highlights: candidate.highlights,
         })
         .collect()
+}
+
+fn hydrate_ranked_passages(
+    connection: &Connection,
+    ranked: Vec<RankedLexicalDocument>,
+    limit: usize,
+    collapse_tidbits: bool,
+) -> Result<Vec<PassageSearchResult>> {
+    let mut results = Vec::with_capacity(limit);
+    let mut seen_tidbit_locators = BTreeMap::<String, Vec<CitationLocator>>::new();
+    for ranked in ranked {
+        let citation = passages::resolve_citation(connection, &ranked.passage_id)?;
+        if citation.state != super::CitationState::Current {
+            return Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("search returned non-current passage {}", ranked.passage_id),
+            });
+        }
+        if collapse_tidbits {
+            if let Some(tidbit) = citation.tidbit.as_ref() {
+                let locators = seen_tidbit_locators.entry(tidbit.id.clone()).or_default();
+                let overlaps = locators
+                    .iter()
+                    .any(|locator| citation_locators_overlap(locator, &citation.locator));
+                locators.push(citation.locator.clone());
+                if overlaps {
+                    continue;
+                }
+            }
+        }
+        results.push(PassageSearchResult {
+            passage_id: ranked.passage_id,
+            score: ranked.score,
+            matched_fields: ranked.matched_fields,
+            highlights: ranked.highlights,
+            citation,
+        });
+        if results.len() == limit {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+fn citation_locators_overlap(left: &CitationLocator, right: &CitationLocator) -> bool {
+    let (
+        CitationLocator::MarkdownBlocks {
+            start_block: left_start_block,
+            end_block: left_end_block,
+            source_start_byte: left_start_byte,
+            source_end_byte: left_end_byte,
+            start_char: left_start_char,
+            end_char: left_end_char,
+            start_line: left_start_line,
+            end_line: left_end_line,
+        },
+        CitationLocator::MarkdownBlocks {
+            start_block: right_start_block,
+            end_block: right_end_block,
+            source_start_byte: right_start_byte,
+            source_end_byte: right_end_byte,
+            start_char: right_start_char,
+            end_char: right_end_char,
+            start_line: right_start_line,
+            end_line: right_end_line,
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
+        left_start_byte,
+        left_end_byte,
+        right_start_byte,
+        right_end_byte,
+    ) {
+        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
+    }
+    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
+        left_start_char,
+        left_end_char,
+        right_start_char,
+        right_end_char,
+    ) {
+        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
+    }
+    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
+        left_start_line,
+        left_end_line,
+        right_start_line,
+        right_end_line,
+    ) {
+        return ranges_overlap(*left_start, *left_end, *right_start, *right_end);
+    }
+    ranges_overlap(
+        *left_start_block,
+        *left_end_block,
+        *right_start_block,
+        *right_end_block,
+    )
+}
+
+fn ranges_overlap<T: Ord>(left_start: T, left_end: T, right_start: T, right_end: T) -> bool {
+    left_start <= right_end && right_start <= left_end
+}
+
+fn half_open_ranges_overlap<T: Ord>(
+    left_start: T,
+    left_end: T,
+    right_start: T,
+    right_end: T,
+) -> bool {
+    left_start < right_end && right_start < left_end
 }
 
 pub(super) fn replace_tidbit_documents(

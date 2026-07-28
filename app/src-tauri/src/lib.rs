@@ -74,9 +74,10 @@ pub use database::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
     ClearDraftInput, Database, DatabaseDiagnostics, DatabaseError, DatabasePaths,
     DeleteTidbitInput, Draft, EditTidbitInput, LexicalSearchMode, ListTidbitsInput,
-    PassageSearchResult, RestoreTidbitInput, SaveDraftInput, SearchField, SearchHighlight,
-    SearchPassagesInput, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem,
-    TidbitListPage, TidbitSource,
+    PassageSearchResult, RestoreTidbitInput, SaveDraftInput, SearchExecutionMode, SearchField,
+    SearchHighlight, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
+    SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage,
+    TidbitSource,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
 pub use embedding_runtime::{
