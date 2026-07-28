@@ -533,15 +533,9 @@ pub(crate) fn load_media_payload(
                         JOIN draft ON draft.id = draft_lease.draft_id
                         WHERE lease.attachment_id = attachment.id
                           AND lease.state = 'COMMITTED'
-                          AND (
-                               instr(
-                                   draft.body_markdown,
-                                   '{{kosh:attachment:' || attachment.id || '}}'
-                               ) > 0
-                               OR instr(
-                                   draft.body_markdown,
-                                   '{{kosh:image:' || attachment.id || ';width='
-                               ) > 0
+                          AND kosh_markdown_references_attachment(
+                              draft.body_markdown,
+                              attachment.id
                           )
                     )
                )",
@@ -842,11 +836,26 @@ fn load_integrity_attachment_batch(
                 SELECT 1 FROM tidbit_revision_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
             ),
-            EXISTS(
-                SELECT 1 FROM media_ingest_lease AS lease
-                WHERE lease.attachment_id = attachment.id
-                  AND lease.state = 'COMMITTED'
-                  AND lease.expires_at > ?1
+            (
+                EXISTS(
+                    SELECT 1 FROM media_ingest_lease AS lease
+                    WHERE lease.attachment_id = attachment.id
+                      AND lease.state = 'COMMITTED'
+                      AND lease.expires_at > ?1
+                )
+                OR EXISTS(
+                    SELECT 1
+                    FROM media_ingest_lease AS lease
+                    JOIN draft_media_lease AS draft_lease
+                      ON draft_lease.media_ingest_lease_id = lease.id
+                    JOIN draft ON draft.id = draft_lease.draft_id
+                    WHERE lease.attachment_id = attachment.id
+                      AND lease.state = 'COMMITTED'
+                      AND kosh_markdown_references_attachment(
+                          draft.body_markdown,
+                          attachment.id
+                      )
+                )
             )
          FROM attachment
          WHERE attachment.rowid > ?2 AND attachment.rowid <= ?3
@@ -991,6 +1000,12 @@ pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference>
         cursor = payload_start + end + TOKEN_SUFFIX.len();
     }
     references
+}
+
+pub(crate) fn markdown_references_attachment(markdown: &str, attachment_id: &str) -> bool {
+    referenced_attachments(markdown)
+        .iter()
+        .any(|reference| reference.id == attachment_id)
 }
 
 fn parse_token_payload(payload: &str, role: AttachmentDisplayRole) -> Option<&str> {
@@ -1357,15 +1372,9 @@ fn reconcile_and_reap_from(
                     FROM draft_media_lease AS draft_lease
                     JOIN draft ON draft.id = draft_lease.draft_id
                     WHERE draft_lease.media_ingest_lease_id = media_ingest_lease.id
-                      AND (
-                           instr(
-                               draft.body_markdown,
-                               '{{kosh:attachment:' || media_ingest_lease.attachment_id || '}}'
-                           ) > 0
-                           OR instr(
-                               draft.body_markdown,
-                               '{{kosh:image:' || media_ingest_lease.attachment_id || ';width='
-                           ) > 0
+                      AND kosh_markdown_references_attachment(
+                          draft.body_markdown,
+                          media_ingest_lease.attachment_id
                       )
                )",
             params![renewed_expiry, now_ms],

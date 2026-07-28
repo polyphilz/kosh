@@ -545,6 +545,12 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
     };
     save(12).expect("save short-lived media draft");
 
+    let integrity = library
+        .database
+        .client()
+        .media_integrity_report(23)
+        .expect("expired saved draft integrity report");
+    assert!(integrity.orphaned_attachment_ids.is_empty());
     assert_eq!(
         library
             .database
@@ -570,6 +576,74 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
             .expect("renewed media expiry"),
         33
     );
+}
+
+#[test]
+fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 10,
+        orphan_grace_period_ms: 5,
+        ..MediaLimits::default()
+    };
+    let attachment = library.ingest(
+        (0x733, 0x734, 0x735),
+        "malformed.png",
+        "image/png",
+        b"malformed image",
+        11,
+        limits,
+    );
+    let canonical = format!("{{{{kosh:image:{};width=80%}}}}", attachment.id);
+    library
+        .database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: canonical,
+                sources: Vec::new(),
+            },
+            now_ms: 12,
+            draft_id: CAPTURE_DRAFT_ID.into(),
+            media_limits: limits,
+        })
+        .expect("save canonical media token");
+    let malformed = format!("{{{{kosh:image:{};width=garbage", attachment.id);
+    library
+        .database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: malformed,
+                sources: Vec::new(),
+            },
+            now_ms: 13,
+            draft_id: CAPTURE_DRAFT_ID.into(),
+            media_limits: limits,
+        })
+        .expect("save malformed media text");
+
+    let maintenance = library
+        .database
+        .client()
+        .maintain_media(22, limits)
+        .expect("expire malformed media lease");
+    assert_eq!(maintenance.cleanup.retired_attachment_count, 1);
+    assert!(matches!(
+        library
+            .database
+            .client()
+            .load_media_payload(attachment.id, 22, None, 64),
+        Err(DatabaseError::NotFound { .. })
+    ));
 }
 
 #[test]

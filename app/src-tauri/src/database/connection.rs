@@ -4,7 +4,7 @@ use rusqlite::{functions::FunctionFlags, limits::Limit, Connection, OpenFlags};
 
 use super::{
     error::{DatabaseError, Result},
-    search,
+    media, search,
 };
 
 pub const MAIN_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KOSH");
@@ -174,6 +174,21 @@ fn configure_writer(connection: &Connection, kind: DatabaseKind) -> Result<()> {
             |context| {
                 let value = context.get::<String>(0)?;
                 Ok(search::short_grams_for_search(&value))
+            },
+        )?;
+        connection.create_scalar_function(
+            "kosh_markdown_references_attachment",
+            2,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
+            |context| {
+                let markdown = context.get::<String>(0)?;
+                let attachment_id = context.get::<String>(1)?;
+                Ok(media::markdown_references_attachment(
+                    &markdown,
+                    &attachment_id,
+                ))
             },
         )?;
     }
