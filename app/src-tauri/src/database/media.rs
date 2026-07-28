@@ -190,6 +190,7 @@ pub struct ImageStatusRecord {
     pub natural_height: u32,
     pub ocr_status: ImageOcrStatus,
     pub ocr_error: Option<String>,
+    pub next_attempt_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -903,7 +904,8 @@ pub(crate) fn load_image_status(
             image.natural_width,
             image.natural_height,
             queue.state,
-            queue.last_error
+            queue.last_error,
+            queue.next_attempt_at
          FROM attachment_image AS image
          JOIN attachment ON attachment.id = image.attachment_id
          JOIN attachment_extraction AS extraction
@@ -925,6 +927,7 @@ pub(crate) fn load_image_status(
                 row.get::<_, u32>(2)?,
                 state,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
             ))
         },
     )
@@ -934,13 +937,14 @@ pub(crate) fn load_image_status(
         id: attachment_id.into(),
     })
     .and_then(
-        |(attachment_id, natural_width, natural_height, state, ocr_error)| {
+        |(attachment_id, natural_width, natural_height, state, ocr_error, next_attempt_at_ms)| {
             Ok(ImageStatusRecord {
                 attachment_id,
                 natural_width,
                 natural_height,
                 ocr_status: ImageOcrStatus::from_db(&state)?,
                 ocr_error,
+                next_attempt_at_ms,
             })
         },
     )
@@ -2023,7 +2027,10 @@ fn parse_token_payload(payload: &str, role: AttachmentDisplayRole) -> Option<&st
 }
 
 fn valid_encoded_token_field(value: &str, max_characters: usize) -> bool {
-    if value.is_empty() || value.len() > 6_000 {
+    let Some(max_encoded_bytes) = max_characters.checked_mul(12) else {
+        return false;
+    };
+    if value.is_empty() || value.len() > max_encoded_bytes {
         return false;
     }
     let encoded = value.as_bytes();

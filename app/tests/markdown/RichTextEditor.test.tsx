@@ -7,6 +7,7 @@ import { expect, it, vi } from "vitest";
 import type { ImageRecord } from "../../src/backend/contracts";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
+import { statusPollDelay } from "../../src/markdown/ImageNodeView";
 import { parseKoshMarkdown, serializeKoshMarkdown } from "../../src/markdown/markdownConversion";
 import { RichTextEditor, type RichTextEditorHandle } from "../../src/markdown/RichTextEditor";
 
@@ -450,6 +451,7 @@ it("round-trips image metadata, resizes from the keyboard, and removes the image
         attachmentId: imageId,
         naturalHeight: 800,
         naturalWidth: 1_200,
+        nextAttemptAtMs: null,
         ocrError: null,
         ocrStatus: "READY",
       })}
@@ -546,6 +548,7 @@ it("removes failed image placeholders and supports explicit OCR retry", async ()
     attachmentId: imageId,
     naturalHeight: 800,
     naturalWidth: 1_200,
+    nextAttemptAtMs: 100,
     ocrError: null,
     ocrStatus: "PENDING" as const,
   }));
@@ -556,6 +559,7 @@ it("removes failed image placeholders and supports explicit OCR retry", async ()
         attachmentId: imageId,
         naturalHeight: 800,
         naturalWidth: 1_200,
+        nextAttemptAtMs: null,
         ocrError: "Vision unavailable",
         ocrStatus: "FAILED",
       })}
@@ -581,6 +585,17 @@ it("removes failed image placeholders and supports explicit OCR retry", async ()
   expect(queryByRole("status", { name: "Processing pasted image" })).toBeNull();
   expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
   expect(serializeKoshMarkdown(editorView(textbox).state.doc)).toBe("");
+});
+
+it("backs off OCR status polling until a retry is eligible", () => {
+  expect(statusPollDelay({ nextAttemptAtMs: 121_000, ocrStatus: "RETRY_WAIT" }, 1_000)).toBe(
+    120_000,
+  );
+  expect(statusPollDelay({ nextAttemptAtMs: 3_601_000, ocrStatus: "RETRY_WAIT" }, 1_000)).toBe(
+    300_000,
+  );
+  expect(statusPollDelay({ nextAttemptAtMs: null, ocrStatus: "RETRY_WAIT" }, 1_000)).toBe(300_000);
+  expect(statusPollDelay({ nextAttemptAtMs: 1_000, ocrStatus: "PENDING" }, 1_000)).toBe(1_500);
 });
 
 it("does not duplicate transactions in React Strict Mode", () => {

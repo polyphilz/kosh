@@ -7,6 +7,7 @@ import type { EditorView, NodeView } from "prosemirror-view";
 export const MIN_IMAGE_WIDTH_PERCENT = 10;
 export const MAX_IMAGE_WIDTH_PERCENT = 100;
 const STATUS_POLL_MS = 1_500;
+const RETRY_STATUS_MAX_POLL_MS = 5 * 60_000;
 
 export interface ImageNodeViewActions {
   loadStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
@@ -180,7 +181,7 @@ export function imageNodeView(
       }
       renderStatus(record);
       if (["PENDING", "RUNNING", "RETRY_WAIT"].includes(record.ocrStatus)) {
-        pollTimer = window.setTimeout(() => void loadStatus(), STATUS_POLL_MS);
+        pollTimer = window.setTimeout(() => void loadStatus(), statusPollDelay(record));
       }
     } catch {
       if (active && request === statusRequest) {
@@ -292,6 +293,18 @@ export function imageNodeView(
       resizeHandle.removeEventListener("pointerdown", beginResize);
     },
   };
+}
+
+export function statusPollDelay(
+  record: Pick<ImageStatusRecord, "nextAttemptAtMs" | "ocrStatus">,
+  nowMs = Date.now(),
+): number {
+  if (record.ocrStatus !== "RETRY_WAIT") {
+    return STATUS_POLL_MS;
+  }
+  const untilRetry =
+    record.nextAttemptAtMs === null ? RETRY_STATUS_MAX_POLL_MS : record.nextAttemptAtMs - nowMs;
+  return Math.max(STATUS_POLL_MS, Math.min(RETRY_STATUS_MAX_POLL_MS, untilRetry));
 }
 
 export function pendingImageNodeView(initialNode: ProseMirrorNode): NodeView {

@@ -209,6 +209,7 @@ export interface ImageStatusRecord {
   naturalHeight: number;
   ocrStatus: ImageOcrStatus;
   ocrError: string | null;
+  nextAttemptAtMs: number | null;
 }
 
 export interface ImageDropIngestResult {

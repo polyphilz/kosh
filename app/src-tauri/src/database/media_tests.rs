@@ -172,6 +172,22 @@ fn media_tokens_require_canonical_syntax_and_preserve_authored_order() {
     assert_eq!(references[0].display_role, AttachmentDisplayRole::Inline);
     assert_eq!(references[1].id, second);
     assert_eq!(references[1].display_role, AttachmentDisplayRole::Inline);
+
+    let unicode_caption = "%C3%A9".repeat(2_000);
+    let unicode_markdown =
+        format!("{{{{kosh:image:{second};width=70%;caption={unicode_caption}}}}}");
+    assert_eq!(
+        referenced_attachments(&unicode_markdown)
+            .into_iter()
+            .map(|reference| reference.id)
+            .collect::<Vec<_>>(),
+        [second]
+    );
+    let oversized_caption = format!("{unicode_caption}%C3%A9");
+    assert!(referenced_attachments(&format!(
+        "{{{{kosh:image:{first};width=70%;caption={oversized_caption}}}}}"
+    ))
+    .is_empty());
 }
 
 #[test]
