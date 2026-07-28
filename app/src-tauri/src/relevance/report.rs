@@ -237,10 +237,19 @@ fn validate_hits(
                 message: format!("passage {} has a non-finite score", hit.passage_id),
             });
         }
-        if !known_passages.contains_key(hit.passage_id.as_str()) {
+        let Some(passage) = known_passages.get(hit.passage_id.as_str()) else {
             return Err(RelevanceError::Retrieval {
                 query_id: query.id.clone(),
                 message: format!("unknown passage {}", hit.passage_id),
+            });
+        };
+        if hit.locator != passage.locator {
+            return Err(RelevanceError::Retrieval {
+                query_id: query.id.clone(),
+                message: format!(
+                    "passage {} locator does not match fixture provenance",
+                    hit.passage_id
+                ),
             });
         }
         if !seen.insert(hit.passage_id.as_str()) {
@@ -432,25 +441,41 @@ mod tests {
         }
     }
 
-    struct FabricatedLocatorRetriever;
+    struct MixedFabricatedLocatorRetriever;
 
-    impl Retriever for FabricatedLocatorRetriever {
+    impl Retriever for MixedFabricatedLocatorRetriever {
         fn name(&self) -> &str {
-            "fabricated-locator-test"
+            "mixed-fabricated-locator-test"
         }
 
         fn retrieve(
             &mut self,
             query: &EvaluationQuery,
-            _corpus: &[EvaluationPassage],
+            corpus: &[EvaluationPassage],
             _limit: usize,
         ) -> std::result::Result<Vec<RetrievalHit>, String> {
-            Ok(vec![RetrievalHit {
-                passage_id: query.expected_citation.passage_id.clone(),
-                score: 1.0,
-                locator: crate::relevance::EvaluationLocator::PdfPage { page: 999 },
-                matched_fields: vec!["fabricated".into()],
-            }])
+            let expected = corpus
+                .iter()
+                .find(|passage| passage.id == query.expected_citation.passage_id)
+                .expect("expected passage");
+            let other = corpus
+                .iter()
+                .find(|passage| passage.id != query.expected_citation.passage_id)
+                .expect("second passage");
+            Ok(vec![
+                RetrievalHit {
+                    passage_id: expected.id.clone(),
+                    score: 1.0,
+                    locator: expected.locator.clone(),
+                    matched_fields: vec!["trusted".into()],
+                },
+                RetrievalHit {
+                    passage_id: other.id.clone(),
+                    score: 0.5,
+                    locator: crate::relevance::EvaluationLocator::PdfPage { page: 999 },
+                    matched_fields: vec!["fabricated".into()],
+                },
+            ])
         }
     }
 
@@ -489,17 +514,13 @@ mod tests {
     }
 
     #[test]
-    fn a_relevant_passage_with_fabricated_provenance_fails_the_report() {
+    fn any_fabricated_hit_locator_is_rejected_before_scoring() {
         let fixture = fixture();
-        let report = run_relevance_suite(&fixture, &mut FabricatedLocatorRetriever)
-            .expect("fabricated locator report");
+        let error = run_relevance_suite(&fixture, &mut MixedFabricatedLocatorRetriever)
+            .expect_err("fabricated locator must abort the report");
 
-        assert!(!report.passed);
-        assert!(report.summary.recall_at_10 > 0.9);
-        assert_eq!(report.summary.citation_locator_accuracy, 0.0);
-        assert!(report
-            .queries
-            .iter()
-            .all(|query| !query.metrics.citation_locator_correct));
+        assert!(error
+            .to_string()
+            .contains("locator does not match fixture provenance"));
     }
 }
