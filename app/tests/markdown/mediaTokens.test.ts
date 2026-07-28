@@ -13,14 +13,20 @@ describe("reserved Kosh media tokens", () => {
     const image = serializeKoshImageToken({
       attachmentId: imageId,
       widthPercent: 70,
+      altText: "Architecture diagram",
+      caption: "Chapter 2 / overview",
     });
     const attachment = serializeKoshAttachmentToken(attachmentId);
 
-    expect(image).toBe(`{{kosh:image:${imageId};width=70%}}`);
+    expect(image).toBe(
+      `{{kosh:image:${imageId};width=70%;alt=Architecture%20diagram;caption=Chapter%202%20%2F%20overview}}`,
+    );
     expect(parseKoshMediaToken(image)).toEqual({
       attachmentId: imageId,
       kind: "image",
       widthPercent: 70,
+      altText: "Architecture diagram",
+      caption: "Chapter 2 / overview",
     });
     expect(parseKoshMediaToken(attachment)).toEqual({
       attachmentId,
@@ -33,6 +39,11 @@ describe("reserved Kosh media tokens", () => {
     expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=010%}}`)).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=070%}}`)).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:image:${imageId.toUpperCase()};width=70%}}`)).toBeNull();
+    expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=70%;alt=%ZZ}}`)).toBeNull();
+    expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=70%;alt=}}`)).toBeNull();
+    expect(
+      parseKoshMediaToken(`{{kosh:image:${imageId};width=70%;caption=Caption;alt=Alt}}`),
+    ).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:attachment:${attachmentId}}} extra`)).toBeNull();
     expect(() =>
       serializeKoshImageToken({

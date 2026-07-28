@@ -1,7 +1,7 @@
 import { Children, Component, useMemo, type ErrorInfo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { rehypePlugins, remarkPlugins } from "./rendererConfig";
-import { externalHttpUrl, markdownUrlTransform } from "./urlPolicy";
+import { externalHttpUrl, localMediaAttachmentId, markdownUrlTransform } from "./urlPolicy";
 
 interface MarkdownRendererProps {
   onOpenExternalUrl?: (url: string) => Promise<void> | void;
@@ -53,7 +53,17 @@ function rendererComponents(
         </button>
       );
     },
-    img({ alt }) {
+    img({ alt, src, title }) {
+      const attachmentId = localMediaAttachmentId(src);
+      const metadata = parseImageTitle(title);
+      if (attachmentId && metadata) {
+        return (
+          <figure className="kosh-markdown__image" style={{ width: `${metadata.widthPercent}%` }}>
+            <img alt={alt ?? ""} src={src} />
+            {metadata.caption && <figcaption>{metadata.caption}</figcaption>}
+          </figure>
+        );
+      }
       return (
         <span className="kosh-markdown__inert-image">
           {alt ? `Image: ${alt}` : "External image unavailable"}
@@ -72,6 +82,24 @@ function rendererComponents(
       );
     },
   };
+}
+
+function parseImageTitle(
+  value: string | undefined,
+): { caption: string; widthPercent: number } | null {
+  const match = /^kosh-image:(100|[1-9][0-9]):(.*)$/u.exec(value ?? "");
+  if (!match) {
+    return null;
+  }
+  const widthPercent = Number(match[1]);
+  if (widthPercent < 10) {
+    return null;
+  }
+  try {
+    return { caption: decodeURIComponent(match[2]!), widthPercent };
+  } catch {
+    return null;
+  }
 }
 
 interface ErrorBoundaryProps {

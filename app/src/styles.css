@@ -707,6 +707,42 @@ button {
   white-space: pre-wrap;
 }
 
+.search-citation-detail__image {
+  margin: 0;
+}
+
+.search-citation-detail__image > div {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.search-citation-detail__image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 420px;
+  object-fit: contain;
+}
+
+.search-citation-detail__image-region {
+  position: absolute;
+  min-width: 3px;
+  min-height: 3px;
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, white 70%, transparent);
+  pointer-events: none;
+}
+
+.search-citation-detail__image figcaption {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .search-citation-detail__sources {
   margin-top: 18px;
 }

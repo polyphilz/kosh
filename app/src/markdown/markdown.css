@@ -267,6 +267,118 @@
   outline-offset: 2px;
 }
 
+.kosh-editor-image {
+  position: relative;
+  display: grid;
+  gap: 7px;
+  max-width: 100%;
+  margin: 0.8em 0;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+
+.kosh-editor-image--selected,
+.kosh-editor-image:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  box-shadow: var(--focus-ring);
+}
+
+.kosh-editor-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 520px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.kosh-editor-image__resize-handle {
+  position: absolute;
+  right: -5px;
+  bottom: 70px;
+  width: 11px;
+  height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-sm);
+  cursor: ew-resize;
+}
+
+.kosh-editor-image__fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 7px;
+}
+
+.kosh-editor-image__fields label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.kosh-editor-image__fields input {
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+  color: var(--ink);
+  background: var(--surface-solid);
+  font: 12px/1.4 var(--font-family-app);
+}
+
+.kosh-editor-image__fields input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.kosh-editor-image__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.kosh-editor-image__status {
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kosh-editor-image__action {
+  padding: 2px 0;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.kosh-editor-image__action:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.kosh-editor-image-pending {
+  margin: 0.8em 0;
+  padding: 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 9px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  text-align: center;
+}
+
 .kosh-editor-dialog {
   display: grid;
   gap: 10px;
@@ -362,6 +474,28 @@
 
 .kosh-markdown li + li {
   margin-top: 0.25em;
+}
+
+.kosh-markdown__image {
+  max-width: 100%;
+  margin: 1em 0;
+}
+
+.kosh-markdown__image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(70vh, 680px);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  object-fit: contain;
+}
+
+.kosh-markdown__image figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.84em;
 }
 
 .kosh-markdown blockquote {

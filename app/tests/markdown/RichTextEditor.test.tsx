@@ -2,8 +2,9 @@ import { EditorView as CodeMirrorView } from "@codemirror/view";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, createRef } from "react";
-import { TextSelection } from "prosemirror-state";
+import { NodeSelection, TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
+import type { ImageRecord } from "../../src/backend/contracts";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { parseKoshMarkdown, serializeKoshMarkdown } from "../../src/markdown/markdownConversion";
@@ -438,6 +439,150 @@ it("sanitizes pasted HTML through the Kosh schema", () => {
   expect(view.state.doc.textContent).toContain("unsafe");
 });
 
+it("round-trips image metadata, resizes from the keyboard, and removes the image", () => {
+  const imageId = "01980c8e-6c00-7000-8000-000000000231";
+  const onChange = vi.fn();
+  const source = `{{kosh:image:${imageId};width=70%;alt=System%20diagram;caption=Chapter%20overview}}`;
+  const { getByLabelText, getByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      imageStatus={async () => ({
+        attachmentId: imageId,
+        naturalHeight: 800,
+        naturalWidth: 1_200,
+        ocrError: null,
+        ocrStatus: "READY",
+      })}
+      onChange={onChange}
+      value={source}
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+  const view = editorView(textbox);
+
+  expect(getByRole("img", { name: "System diagram" })).toHaveAttribute(
+    "src",
+    `kosh-media://localhost/attachment/${imageId}`,
+  );
+  expect(getByLabelText("Alt text")).toHaveValue("System diagram");
+  expect(getByLabelText("Caption")).toHaveValue("Chapter overview");
+
+  fireEvent.change(getByLabelText("Alt text"), { target: { value: "Updated diagram" } });
+  fireEvent.change(getByLabelText("Caption"), { target: { value: "Updated caption" } });
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 0)));
+  });
+  fireEvent.keyDown(textbox, { altKey: true, key: "ArrowLeft" });
+
+  expect(serializeKoshMarkdown(view.state.doc)).toBe(
+    `{{kosh:image:${imageId};width=65%;alt=Updated%20diagram;caption=Updated%20caption}}`,
+  );
+  fireEvent.click(getByRole("button", { name: "Remove" }));
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("");
+});
+
+it("shows a durable pending node while pasted image ingestion completes", async () => {
+  let resolveImage!: (record: ImageRecord) => void;
+  const imagePromise = new Promise<ImageRecord>((resolve) => {
+    resolveImage = resolve;
+  });
+  const onPendingImagesChange = vi.fn();
+  const onChange = vi.fn();
+  const image = imageRecord("01980c8e-6c00-7000-8000-000000000232");
+  const { container, getByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      onChange={onChange}
+      onPendingImagesChange={onPendingImagesChange}
+      pasteImage={() => imagePromise}
+      value=""
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+
+  fireEvent.paste(textbox, {
+    clipboardData: { items: [{ type: "image/png" }] },
+  });
+  expect(getByRole("status", { name: "Processing pasted image" })).toHaveTextContent(
+    "Processing pasted image",
+  );
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(true);
+
+  await act(async () => resolveImage(image));
+  await waitFor(() => {
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      `kosh-media://localhost/attachment/${image.id}`,
+    );
+  });
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:image:${image.id};width=100%}}`);
+});
+
+it("inserts images selected through the native picker action", async () => {
+  const image = imageRecord("01980c8e-6c00-7000-8000-000000000235");
+  const pickImage = vi.fn(async () => image);
+  const { container, getByRole } = render(
+    <RichTextEditor ariaLabel="Body" onChange={() => undefined} pickImage={pickImage} value="" />,
+  );
+
+  fireEvent.click(getByRole("button", { name: "Add image" }));
+
+  expect(pickImage).toHaveBeenCalledOnce();
+  await waitFor(() =>
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      `kosh-media://localhost/attachment/${image.id}`,
+    ),
+  );
+});
+
+it("removes failed image placeholders and supports explicit OCR retry", async () => {
+  const imageId = "01980c8e-6c00-7000-8000-000000000233";
+  const ingestError = new Error("invalid image");
+  const onImageError = vi.fn();
+  const onPendingImagesChange = vi.fn();
+  const retryImageOcr = vi.fn(async () => ({
+    attachmentId: imageId,
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    ocrError: null,
+    ocrStatus: "PENDING" as const,
+  }));
+  const { getByRole, queryByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      imageStatus={async () => ({
+        attachmentId: imageId,
+        naturalHeight: 800,
+        naturalWidth: 1_200,
+        ocrError: "Vision unavailable",
+        ocrStatus: "FAILED",
+      })}
+      onChange={() => undefined}
+      onImageError={onImageError}
+      onPendingImagesChange={onPendingImagesChange}
+      pasteImage={() => Promise.reject(ingestError)}
+      retryImageOcr={retryImageOcr}
+      value={`{{kosh:image:${imageId};width=70%}}`}
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+  await waitFor(() =>
+    expect(getByRole("button", { name: "Retry text recognition" })).toBeVisible(),
+  );
+  fireEvent.click(getByRole("button", { name: "Retry text recognition" }));
+  await waitFor(() => expect(retryImageOcr).toHaveBeenCalledWith(imageId));
+
+  fireEvent.paste(textbox, {
+    clipboardData: { items: [{ type: "image/png" }] },
+  });
+  await waitFor(() => expect(onImageError).toHaveBeenCalledWith(ingestError));
+  expect(queryByRole("status", { name: "Processing pasted image" })).toBeNull();
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
+  expect(serializeKoshMarkdown(editorView(textbox).state.doc)).toBe("");
+});
+
 it("does not duplicate transactions in React Strict Mode", () => {
   const onChange = vi.fn();
   const { getByRole } = render(
@@ -459,6 +604,21 @@ function controlledEditor(value: string) {
     ...result,
     textbox,
     view: editorView(textbox),
+  };
+}
+
+function imageRecord(id: string): ImageRecord {
+  return {
+    byteLength: 12_000,
+    displayFilename: "knowledge.png",
+    id,
+    ingestLeaseId: "01980c8e-6c00-7000-8000-000000000234",
+    kind: "IMAGE",
+    mediaType: "image/png",
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    ocrError: null,
+    ocrStatus: "PENDING",
   };
 }
 

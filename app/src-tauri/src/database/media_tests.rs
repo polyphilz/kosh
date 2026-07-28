@@ -14,12 +14,14 @@ use super::{
     drafts::SaveDraftWrite,
     media::{
         recover_media_lifecycle_batch, referenced_attachments, AttachmentDisplayRole,
-        IngestAttachmentMetadata, IngestAttachmentWrite, MediaByteRange, StagedAttachment,
+        CanonicalImage, ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata,
+        IngestAttachmentWrite, IngestImageWrite, MediaByteRange, StagedAttachment,
         MEDIA_RECONCILE_BATCH_SIZE,
     },
     tidbits::CreateTidbitWrite,
-    AttachmentIngestInput, AttachmentKind, ClearDraftInput, Database, DatabaseError, DatabasePaths,
-    MediaLimits, SaveDraftInput, TidbitDraft,
+    AttachmentIngestInput, AttachmentKind, CitationLocator, ClearDraftInput, Database,
+    DatabaseError, DatabasePaths, LexicalSearchMode, MediaLimits, SaveDraftInput,
+    SearchPassagesInput, TidbitDraft,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -95,6 +97,42 @@ impl TestLibrary {
             }))
             .expect("ingest attachment")
     }
+
+    fn ingest_image(
+        &self,
+        suffixes: (u64, u64, u64, u64),
+        original: &[u8],
+        preview: &[u8],
+        now_ms: i64,
+    ) -> super::ImageRecord {
+        let staged = StagedAttachment::from_reader(
+            Cursor::new(original),
+            &self.staging,
+            &id(suffixes.2),
+            MediaLimits::default().max_attachment_bytes,
+        )
+        .expect("stage image");
+        self.database
+            .client()
+            .ingest_image(IngestImageWrite {
+                attachment: staged.write(IngestAttachmentMetadata {
+                    attachment_id: id(suffixes.0),
+                    ingest_lease_id: id(suffixes.1),
+                    draft_id: CAPTURE_DRAFT_ID.into(),
+                    display_filename: "knowledge.png".into(),
+                    media_type: "image/png".into(),
+                    now_ms,
+                    limits: MediaLimits::default(),
+                }),
+                extraction_id: id(suffixes.3),
+                preview: CanonicalImage {
+                    bytes: preview.to_vec(),
+                    natural_width: 1_200,
+                    natural_height: 800,
+                },
+            })
+            .expect("ingest image")
+    }
 }
 
 fn id(suffix: u64) -> String {
@@ -119,10 +157,14 @@ fn media_tokens_require_canonical_syntax_and_preserve_authored_order() {
     let second = id(0x706);
     let markdown = format!(
         "{{{{kosh:attachment:{first}}}}}\n\
-         {{{{kosh:image:{second};width=70%}}}}\n\
+         {{{{kosh:image:{second};width=70%;alt=Architecture%20diagram;caption=Chapter%202}}}}\n\
          {{{{kosh:image:{first};width=100%}}}}\n\
-         {{{{kosh:image:{};width=070%}}}}",
-        id(0x707)
+         {{{{kosh:image:{};width=070%}}}}\n\
+         {{{{kosh:image:{};width=70%;alt=%41}}}}\n\
+         {{{{kosh:image:{};width=70%;alt=%ff}}}}",
+        id(0x707),
+        id(0x708),
+        id(0x709)
     );
     let references = referenced_attachments(&markdown);
     assert_eq!(references.len(), 2);
@@ -130,6 +172,191 @@ fn media_tokens_require_canonical_syntax_and_preserve_authored_order() {
     assert_eq!(references[0].display_role, AttachmentDisplayRole::Inline);
     assert_eq!(references[1].id, second);
     assert_eq!(references[1].display_role, AttachmentDisplayRole::Inline);
+}
+
+#[test]
+fn image_ingestion_preserves_originals_deduplicates_previews_and_serves_only_previews() {
+    let library = TestLibrary::new();
+    let original = b"immutable original image";
+    let preview = b"bounded canonical webp";
+    let first = library.ingest_image((0x708, 0x709, 0x70a, 0x70b), original, preview, 11);
+    let second = library.ingest_image((0x70c, 0x70d, 0x70e, 0x70f), original, preview, 12);
+
+    assert_ne!(first.attachment.id, second.attachment.id);
+    assert_eq!(first.ocr_status, ImageOcrStatus::Pending);
+    assert_eq!(blob_count(&library.database), 2);
+    let payload = library
+        .database
+        .client()
+        .load_media_payload(first.attachment.id, 13, None, 64)
+        .expect("bounded image preview");
+    assert_eq!(payload.bytes, preview);
+    assert_eq!(payload.media_type, "image/webp");
+    assert_ne!(payload.bytes, original);
+    library
+        .database
+        .client()
+        .full_integrity_check()
+        .expect("image originals and previews pass integrity");
+}
+
+#[test]
+fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revision() {
+    let library = TestLibrary::new();
+    let image = library.ingest_image(
+        (0x780, 0x781, 0x782, 0x783),
+        b"original image evidence",
+        b"canonical searchable preview",
+        11,
+    );
+    let body = format!(
+        "A photographed whiteboard.\n\n\
+         {{{{kosh:image:{};width=70%;alt=Architecture%20diagram;caption=Searchable%20evidence}}}}",
+        image.attachment.id
+    );
+    library.save_capture(&body, 12);
+    let tidbit = library
+        .database
+        .client()
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: Some("Image knowledge".into()),
+                body_markdown: body,
+                sources: Vec::new(),
+            },
+            now_ms: 13,
+            tidbit_id: id(0x784),
+            revision_id: id(0x785),
+            source_ids: Vec::new(),
+        })
+        .expect("create image-backed tidbit");
+    let original_revision_id = tidbit.current_revision_id.clone();
+
+    let client = library.database.client();
+    let job = client
+        .claim_next_image_ocr(14)
+        .expect("claim OCR")
+        .expect("queued OCR job");
+    assert_eq!(job.preview_bytes, b"canonical searchable preview");
+    client
+        .complete_image_ocr(
+            job,
+            Ok(vec![ImageOcrRegion {
+                text: "Event sourcing preserves exact image evidence".into(),
+                x: 0.125,
+                y: 0.25,
+                width: 0.5,
+                height: 0.375,
+            }]),
+            15,
+        )
+        .expect("complete OCR");
+
+    let loaded = client
+        .load_tidbit(tidbit.id.clone())
+        .expect("load unchanged tidbit");
+    assert_eq!(loaded.current_revision_id, original_revision_id);
+    let results = client
+        .search_passages(SearchPassagesInput {
+            query: "exact image evidence".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search OCR text");
+    assert_eq!(results.len(), 1);
+    let citation = &results[0].citation;
+    let attachment = citation.attachment.as_ref().expect("attachment citation");
+    assert_eq!(attachment.id, image.attachment.id);
+    assert_eq!(attachment.extraction_id, id(0x783));
+    assert!(citation.tidbit.is_none());
+    match &citation.locator {
+        CitationLocator::OcrRegion { page, region } => {
+            assert_eq!(*page, None);
+            assert_eq!(region["coordinateSystem"], "vision-normalized-bottom-left");
+            assert_eq!(region["x"], 0.125);
+            assert_eq!(region["y"], 0.25);
+            assert_eq!(region["width"], 0.5);
+            assert_eq!(region["height"], 0.375);
+        }
+        locator => panic!("expected an OCR region locator, got {locator:?}"),
+    }
+    assert_eq!(
+        client
+            .load_image_status(image.attachment.id)
+            .expect("ready image status")
+            .ocr_status,
+        ImageOcrStatus::Ready
+    );
+}
+
+#[test]
+fn image_ocr_recovers_interrupted_work_and_bounds_terminal_retries() {
+    let library = TestLibrary::new();
+    let image = library.ingest_image(
+        (0x786, 0x787, 0x788, 0x789),
+        b"retry original image",
+        b"retry canonical preview",
+        11,
+    );
+    let client = library.database.client();
+    let interrupted = client
+        .claim_next_image_ocr(12)
+        .expect("initial OCR claim")
+        .expect("initial OCR job");
+    assert_eq!(interrupted.attempt_count, 1);
+    let recovery = client
+        .recover_interrupted_image_ocr(12, 13)
+        .expect("recover interrupted OCR");
+    assert_eq!(recovery.requeued, 1);
+    assert_eq!(recovery.terminally_failed, 0);
+
+    for (expected_attempt, claim_at) in [(2, 13), (3, 2_000_000), (4, 10_000_000)] {
+        let job = client
+            .claim_next_image_ocr(claim_at)
+            .expect("retry OCR claim")
+            .expect("eligible retry job");
+        assert_eq!(job.attempt_count, expected_attempt);
+        let failure = if expected_attempt == 2 {
+            Ok(vec![ImageOcrRegion {
+                text: "invalid geometry".into(),
+                x: 2.0,
+                y: 0.0,
+                width: 0.5,
+                height: 0.5,
+            }])
+        } else {
+            Err("recognizer failed ".repeat(2_000))
+        };
+        client
+            .complete_image_ocr(job, failure, claim_at + 1)
+            .expect("record bounded OCR failure");
+    }
+
+    let failed = client
+        .load_image_status(image.attachment.id.clone())
+        .expect("failed image status");
+    assert_eq!(failed.ocr_status, ImageOcrStatus::Failed);
+    assert!(
+        failed.ocr_error.as_deref().unwrap_or_default().len() <= 2_048,
+        "OCR errors must remain bounded"
+    );
+    let diagnostics = client.image_ocr_diagnostics().expect("OCR diagnostics");
+    assert_eq!(diagnostics.failed, 1);
+    assert_eq!(diagnostics.running, 0);
+    assert!(diagnostics.last_error.is_some());
+
+    let retried = client
+        .retry_image_ocr(image.attachment.id, 10_000_002)
+        .expect("manual retry");
+    assert_eq!(retried.ocr_status, ImageOcrStatus::Pending);
+    assert_eq!(
+        client
+            .claim_next_image_ocr(10_000_002)
+            .expect("claim manual retry")
+            .expect("manual retry job")
+            .attempt_count,
+        1
+    );
 }
 
 #[test]

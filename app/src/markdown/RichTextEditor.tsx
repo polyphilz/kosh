@@ -43,6 +43,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
+import type { ImageRecord, ImageStatusRecord } from "../backend/contracts";
 import { Button } from "../components/Button";
 import { Input } from "../components/Input";
 import { Select, type SelectOption } from "../components/Select";
@@ -54,14 +55,27 @@ import { parseKoshMarkdown, serializeKoshMarkdown } from "./markdownConversion";
 import { externalHttpUrl } from "./urlPolicy";
 import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
 import { taskListItemNodeView } from "./TaskListItemNodeView";
+import {
+  imageNodeView,
+  initialImageWidth,
+  pendingImageNodeView,
+  resizeSelectedImage,
+} from "./ImageNodeView";
 
 export interface RichTextEditorHandle {
   focus: () => void;
+  insertImages: (images: ImageRecord[]) => void;
 }
 
 interface RichTextEditorProps {
   ariaLabel: string;
   disabled?: boolean;
+  imageStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
+  onImageError?: (error: unknown) => void;
+  onPendingImagesChange?: (pending: boolean) => void;
+  pickImage?: () => Promise<ImageRecord | null>;
+  pasteImage?: () => Promise<ImageRecord>;
+  retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
   onChange: (value: string) => void;
   placeholder?: string;
   value: string;
@@ -80,11 +94,32 @@ interface LinkDialogState {
 let codeBlockNodeViewPromise: Promise<NodeViewConstructor> | null = null;
 
 export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(
-  function RichTextEditor({ ariaLabel, disabled = false, onChange, placeholder, value }, ref) {
+  function RichTextEditor(
+    {
+      ariaLabel,
+      disabled = false,
+      imageStatus,
+      onChange,
+      onImageError,
+      onPendingImagesChange,
+      pasteImage,
+      pickImage,
+      placeholder,
+      retryImageOcr,
+      value,
+    },
+    ref,
+  ) {
     const hostRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const onChangeRef = useRef(onChange);
     const disabledRef = useRef(disabled);
+    const imageStatusRef = useRef(imageStatus);
+    const onImageErrorRef = useRef(onImageError);
+    const onPendingImagesChangeRef = useRef(onPendingImagesChange);
+    const pasteImageRef = useRef(pasteImage);
+    const pickImageRef = useRef(pickImage);
+    const retryImageOcrRef = useRef(retryImageOcr);
     const openMathDialogRef = useRef(
       (_display: boolean, _formula: string, _position?: number) => undefined,
     );
@@ -98,6 +133,12 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
 
     onChangeRef.current = onChange;
     disabledRef.current = disabled;
+    imageStatusRef.current = imageStatus;
+    onImageErrorRef.current = onImageError;
+    onPendingImagesChangeRef.current = onPendingImagesChange;
+    pasteImageRef.current = pasteImage;
+    pickImageRef.current = pickImage;
+    retryImageOcrRef.current = retryImageOcr;
     openMathDialogRef.current = (display, formula, position) => {
       if (disabledRef.current) {
         return;
@@ -110,7 +151,19 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       setLinkDialog({ href: activeLinkHref(editorView) ?? "https://" });
     };
 
-    useImperativeHandle(ref, () => ({ focus: () => viewRef.current?.focus() }), []);
+    useImperativeHandle(
+      ref,
+      () => ({
+        focus: () => viewRef.current?.focus(),
+        insertImages: (images) => {
+          const view = viewRef.current;
+          if (view && !disabledRef.current) {
+            insertImageRecords(view, images);
+          }
+        },
+      }),
+      [],
+    );
 
     useLayoutEffect(() => {
       const host = hostRef.current;
@@ -151,7 +204,37 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           }
         },
         editable: () => !disabledRef.current,
+        handleDOMEvents: {
+          paste(editorView, event) {
+            const hasImage = [...(event.clipboardData?.items ?? [])].some((item) =>
+              item.type.startsWith("image/"),
+            );
+            const ingest = pasteImageRef.current;
+            if (!hasImage || !ingest || disabledRef.current) {
+              return false;
+            }
+            event.preventDefault();
+            beginImageIngest(
+              editorView,
+              "Processing pasted image",
+              ingest,
+              onImageErrorRef,
+              onPendingImagesChangeRef,
+            );
+            return true;
+          },
+        },
         nodeViews: {
+          kosh_image: (node, editorView, getPos) =>
+            imageNodeView(node, editorView, getPos, {
+              loadStatus: imageStatusRef.current
+                ? (attachmentId) => imageStatusRef.current!(attachmentId)
+                : undefined,
+              retryOcr: retryImageOcrRef.current
+                ? (attachmentId) => retryImageOcrRef.current!(attachmentId)
+                : undefined,
+            }),
+          kosh_image_pending: pendingImageNodeView,
           list_item: taskListItemNodeView,
           math_display: (node, editorView, getPos) =>
             mathNodeView(node, editorView, getPos, openMathDialogRef.current),
@@ -232,6 +315,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           ariaLabel={ariaLabel}
           disabled={disabled}
           onLink={() => view && openLinkDialogRef.current(view)}
+          onImage={() => {
+            const ingest = pickImageRef.current;
+            if (view && ingest) {
+              beginImageIngest(
+                view,
+                "Choosing image",
+                ingest,
+                onImageErrorRef,
+                onPendingImagesChangeRef,
+              );
+            }
+          }}
           onMath={(display) => {
             setLinkDialog(null);
             setMathDialog({ display, formula: "" });
@@ -281,6 +376,113 @@ function editorAttributes(ariaLabel: string, disabled: boolean): Record<string, 
   };
 }
 
+let pendingImageSequence = 0;
+
+function beginImageIngest(
+  view: EditorView,
+  label: string,
+  ingest: () => Promise<ImageRecord | null>,
+  onErrorRef: { current: ((error: unknown) => void) | undefined },
+  onPendingRef: { current: ((pending: boolean) => void) | undefined },
+) {
+  pendingImageSequence += 1;
+  const requestId = `kosh-image-${pendingImageSequence}`;
+  const pending = koshEditorSchema.nodes.kosh_image_pending!.create({ label, requestId });
+  view.dispatch(view.state.tr.replaceSelectionWith(pending, false).scrollIntoView());
+  notifyPendingImages(view.state.doc, onPendingRef.current);
+
+  void ingest()
+    .then((record) => {
+      if (view.isDestroyed) {
+        return;
+      }
+      const position = pendingImagePosition(view.state.doc, requestId);
+      if (position === null) {
+        return;
+      }
+      const pendingNode = view.state.doc.nodeAt(position);
+      if (!pendingNode) {
+        return;
+      }
+      if (!record) {
+        view.dispatch(view.state.tr.delete(position, position + pendingNode.nodeSize));
+        return;
+      }
+      const image = imageNode(record, view.dom.clientWidth);
+      view.dispatch(
+        view.state.tr
+          .replaceWith(position, position + pendingNode.nodeSize, image)
+          .scrollIntoView(),
+      );
+    })
+    .catch((error: unknown) => {
+      if (!view.isDestroyed) {
+        const position = pendingImagePosition(view.state.doc, requestId);
+        const pendingNode = position === null ? null : view.state.doc.nodeAt(position);
+        if (position !== null && pendingNode) {
+          view.dispatch(view.state.tr.delete(position, position + pendingNode.nodeSize));
+        }
+      }
+      onErrorRef.current?.(error);
+    })
+    .finally(() => {
+      if (!view.isDestroyed) {
+        notifyPendingImages(view.state.doc, onPendingRef.current);
+      }
+    });
+}
+
+function insertImageRecords(view: EditorView, records: ImageRecord[]) {
+  for (const record of records) {
+    const node = imageNode(record, view.dom.clientWidth);
+    view.dispatch(view.state.tr.replaceSelectionWith(node, false).scrollIntoView());
+  }
+  view.focus();
+}
+
+function imageNode(record: ImageRecord, editorWidth: number): ProseMirrorNode {
+  return koshEditorSchema.nodes.kosh_image!.create({
+    altText: "",
+    attachmentId: record.id,
+    caption: "",
+    naturalHeight: record.naturalHeight,
+    naturalWidth: record.naturalWidth,
+    ocrError: record.ocrError,
+    ocrStatus: record.ocrStatus,
+    widthPercent: initialImageWidth(record.naturalWidth, editorWidth),
+  });
+}
+
+function pendingImagePosition(document: ProseMirrorNode, requestId: string): number | null {
+  let position: number | null = null;
+  document.descendants((node, nodePosition) => {
+    if (node.type.name === "kosh_image_pending" && node.attrs.requestId === requestId) {
+      position = nodePosition;
+      return false;
+    }
+    return position === null;
+  });
+  return position;
+}
+
+function notifyPendingImages(
+  document: ProseMirrorNode,
+  callback: ((pending: boolean) => void) | undefined,
+) {
+  if (!callback) {
+    return;
+  }
+  let pending = false;
+  document.descendants((node) => {
+    if (node.type.name === "kosh_image_pending") {
+      pending = true;
+      return false;
+    }
+    return true;
+  });
+  callback(pending);
+}
+
 function editorKeyBindings(openLink: (view: EditorView) => void): Record<string, Command> {
   const listItem = koshEditorSchema.nodes.list_item!;
   const hardBreak = insertHardBreak();
@@ -300,6 +502,8 @@ function editorKeyBindings(openLink: (view: EditorView) => void): Record<string,
       return true;
     },
     "Mod-Shift-x": toggleMark(koshEditorSchema.marks.strike!),
+    "Alt-ArrowLeft": resizeSelectedImage(-5),
+    "Alt-ArrowRight": resizeSelectedImage(5),
     "Mod-z": undo,
     "Mod-y": redo,
     "Mod-Shift-z": redo,
@@ -425,12 +629,14 @@ function EditorToolbar({
   ariaLabel,
   disabled,
   onLink,
+  onImage,
   onMath,
   view,
 }: {
   ariaLabel: string;
   disabled: boolean;
   onLink: () => void;
+  onImage: () => void;
   onMath: (display: boolean) => void;
   view: EditorView | null;
 }) {
@@ -497,6 +703,9 @@ function EditorToolbar({
         shortcut="⌘K"
       >
         Link
+      </ToolbarButton>
+      <ToolbarButton disabled={disabled || !view} label="Add image" onPress={onImage}>
+        Image
       </ToolbarButton>
       <span aria-hidden="true" className="kosh-rich-text-toolbar__divider" />
       {commandButton(

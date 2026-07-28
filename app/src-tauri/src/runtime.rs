@@ -1,6 +1,7 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -50,7 +51,18 @@ pub(crate) struct RuntimeState {
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
     media_limits: MediaLimits,
+    image_ocr: crate::media::ImageOcrCoordinator,
+    pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
 }
+
+struct PendingImageDrop {
+    created_at_ms: i64,
+    paths: Vec<PathBuf>,
+}
+
+const IMAGE_DROP_TTL_MS: i64 = 5 * 60 * 1_000;
+const MAX_PENDING_IMAGE_DROPS: usize = 16;
+const MAX_FILES_PER_IMAGE_DROP: usize = 32;
 
 impl RuntimeState {
     pub(crate) fn production(
@@ -61,6 +73,7 @@ impl RuntimeState {
         let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
+        let image_ocr = crate::media::ImageOcrCoordinator::start(database.client())?;
         let media_limits = MediaLimits::default().validate()?;
         let state = Self {
             data_dir,
@@ -70,6 +83,8 @@ impl RuntimeState {
             clock: Arc::new(SystemClock),
             ids: Arc::new(UuidV7Generator),
             media_limits,
+            image_ocr,
+            pending_image_drops: Mutex::new(HashMap::new()),
         };
         if let Err(error) = state
             .database
@@ -102,6 +117,8 @@ impl RuntimeState {
             clock,
             ids,
             media_limits: MediaLimits::default(),
+            image_ocr: crate::media::ImageOcrCoordinator::disabled(),
+            pending_image_drops: Mutex::new(HashMap::new()),
         }
     }
 
@@ -137,6 +154,82 @@ impl RuntimeState {
 
     pub(crate) fn media_staging_directory(&self) -> PathBuf {
         self.data_dir.join("media-staging")
+    }
+
+    pub(crate) fn wake_image_ocr(&self) {
+        self.image_ocr.wake();
+    }
+
+    pub(crate) fn register_image_drop(
+        &self,
+        paths: &[PathBuf],
+    ) -> Option<crate::media::ImageDropNotice> {
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_image_drops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, drop| now_ms.saturating_sub(drop.created_at_ms) <= IMAGE_DROP_TTL_MS);
+        if pending.len() >= MAX_PENDING_IMAGE_DROPS {
+            return None;
+        }
+        let paths = paths
+            .iter()
+            .filter(|path| path.is_file())
+            .take(MAX_FILES_PER_IMAGE_DROP)
+            .cloned()
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return None;
+        }
+        let filenames = paths
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Dropped image")
+                    .to_owned()
+            })
+            .collect();
+        let drop_id = self
+            .next_ids(1)
+            .into_iter()
+            .next()
+            .expect("requested image drop ID");
+        pending.insert(
+            drop_id.clone(),
+            PendingImageDrop {
+                created_at_ms: now_ms,
+                paths,
+            },
+        );
+        Some(crate::media::ImageDropNotice { drop_id, filenames })
+    }
+
+    pub(crate) fn take_image_drop(&self, drop_id: &str) -> crate::database::Result<Vec<PathBuf>> {
+        uuid::Uuid::parse_str(drop_id)
+            .ok()
+            .filter(|id| {
+                id.get_version_num() == 7 && id.hyphenated().to_string().as_str() == drop_id
+            })
+            .ok_or_else(|| {
+                crate::database::DatabaseError::InvalidInput(
+                    "dropId must be a lowercase UUIDv7".into(),
+                )
+            })?;
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_image_drops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, drop| now_ms.saturating_sub(drop.created_at_ms) <= IMAGE_DROP_TTL_MS);
+        pending
+            .remove(drop_id)
+            .map(|drop| drop.paths)
+            .ok_or_else(|| crate::database::DatabaseError::NotFound {
+                entity: "image drop",
+                id: drop_id.into(),
+            })
     }
 }
 
@@ -296,6 +389,39 @@ pub(crate) mod deterministic {
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_image_drops_expose_only_opaque_single_use_capabilities() {
+        let directory = tempfile::tempdir().expect("temporary image drop directory");
+        let image = directory.path().join("private shower thought.png");
+        std::fs::write(&image, b"image bytes").expect("image drop fixture");
+        let drop_id = "019f547b-6200-7000-8000-000000000991".to_owned();
+        let state = RuntimeState::deterministic(
+            directory.path().join("data"),
+            Arc::new(deterministic::FixedClock(100)),
+            deterministic::SequenceIds::new([drop_id.clone()]),
+        );
+
+        let notice = state
+            .register_image_drop(&[image.clone(), directory.path().to_owned()])
+            .expect("registered native image drop");
+        assert_eq!(notice.drop_id, drop_id);
+        assert_eq!(notice.filenames, ["private shower thought.png"]);
+        let serialized = serde_json::to_string(&notice).expect("serialize drop notice");
+        assert!(!serialized.contains(directory.path().to_string_lossy().as_ref()));
+        assert_eq!(
+            state.take_image_drop(&drop_id).expect("consume drop"),
+            [image]
+        );
+        assert!(matches!(
+            state.take_image_drop(&drop_id),
+            Err(crate::database::DatabaseError::NotFound { .. })
+        ));
+        assert!(matches!(
+            state.take_image_drop("not-a-capability"),
+            Err(crate::database::DatabaseError::InvalidInput(_))
+        ));
+    }
 
     #[test]
     fn production_runtime_starts_without_a_resolved_resource_directory() {

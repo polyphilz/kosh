@@ -6,6 +6,10 @@ import type {
   DeleteTidbitInput,
   DraftRecord,
   EditTidbitInput,
+  ImageDropIngestResult,
+  ImageOcrDiagnostics,
+  ImageRecord,
+  ImageStatusRecord,
   ListTidbitsInput,
   PassageEmbeddingIndexStatus,
   RuntimeProbe,
@@ -42,4 +46,14 @@ export const tauriBackend: Backend = {
   saveDraft: (input: SaveDraftInput) => invoke<DraftRecord>("save_draft", { input }),
   loadDraft: (contextKey: string) => invoke<DraftRecord | null>("load_draft", { contextKey }),
   clearDraft: (input: ClearDraftInput) => invoke<boolean>("clear_draft", { input }),
+  pickImage: (draftId: string) => invoke<ImageRecord | null>("pick_image", { draftId }),
+  ingestClipboardImage: (draftId: string) =>
+    invoke<ImageRecord>("ingest_clipboard_image", { draftId }),
+  ingestDroppedImages: (dropId: string, draftId: string) =>
+    invoke<ImageDropIngestResult>("ingest_dropped_images", { dropId, draftId }),
+  imageStatus: (attachmentId: string) =>
+    invoke<ImageStatusRecord>("image_status", { attachmentId }),
+  retryImageOcr: (attachmentId: string) =>
+    invoke<ImageStatusRecord>("retry_image_ocr", { attachmentId }),
+  imageOcrDiagnostics: () => invoke<ImageOcrDiagnostics>("image_ocr_diagnostics"),
 };

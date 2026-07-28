@@ -1,4 +1,5 @@
 import { useBlocker } from "@tanstack/react-router";
+import { listen } from "@tauri-apps/api/event";
 import {
   useCallback,
   useEffect,
@@ -18,9 +19,15 @@ import type {
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { Input } from "../components/Input";
-import { RichTextEditor } from "../markdown/RichTextEditor";
+import { RichTextEditor, type RichTextEditorHandle } from "../markdown/RichTextEditor";
 
 const AUTOSAVE_DELAY_MS = 350;
+const IMAGE_DROP_EVENT = "kosh://image-drop";
+
+interface ImageDropNotice {
+  dropId: string;
+  filenames: string[];
+}
 
 interface ComposerState {
   title: string;
@@ -58,10 +65,20 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [recoveryAttempt, setRecoveryAttempt] = useState(0);
+  const [editorMediaPending, setEditorMediaPending] = useState(false);
+  const [dropMediaPending, setDropMediaPending] = useState(false);
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
+  const pendingDropCountRef = useRef(0);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const editorRef = useRef<RichTextEditorHandle>(null);
+  const stateRef = useRef(state);
+  const readyRef = useRef(ready);
+
+  stateRef.current = state;
+  readyRef.current = ready;
+  const mediaPending = editorMediaPending || dropMediaPending;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -121,6 +138,56 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
     },
     [backend, draftInput],
   );
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<ImageDropNotice>(IMAGE_DROP_EVENT, (event) => {
+      if (!active || !readyRef.current || busyRef.current) {
+        return;
+      }
+      pendingDropCountRef.current += 1;
+      setDropMediaPending(true);
+      setError(null);
+      void enqueueDraftSave(stateRef.current)
+        .then((draft) => backend.ingestDroppedImages(event.payload.dropId, draft.id))
+        .then((result) => {
+          if (!active) {
+            return;
+          }
+          editorRef.current?.insertImages(result.images);
+          if (result.failures.length > 0) {
+            setError(
+              `Could not add ${result.failures.map((failure) => failure.filename).join(", ")}: ${result.failures.map((failure) => failure.message).join("; ")}`,
+            );
+          }
+        })
+        .catch((reason: unknown) => {
+          if (active) {
+            setError(`Could not add dropped image: ${errorMessage(reason)}`);
+          }
+        })
+        .finally(() => {
+          pendingDropCountRef.current = Math.max(0, pendingDropCountRef.current - 1);
+          if (active) {
+            setDropMediaPending(pendingDropCountRef.current > 0);
+          }
+        });
+    }).then((stop) => {
+      if (active) {
+        unlisten = stop;
+      } else {
+        stop();
+      }
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [backend, enqueueDraftSave]);
 
   useEffect(() => {
     if (!ready || !dirty || busy) return;
@@ -285,8 +352,21 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
         <RichTextEditor
           ariaLabel="Tidbit"
           disabled={!ready || busy}
+          imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(bodyMarkdown) => markChanged((current) => ({ ...current, bodyMarkdown }))}
+          onImageError={(reason) => setError(`Could not add image: ${errorMessage(reason)}`)}
+          onPendingImagesChange={setEditorMediaPending}
+          pasteImage={async () => {
+            const draft = await enqueueDraftSave(stateRef.current);
+            return backend.ingestClipboardImage(draft.id);
+          }}
+          pickImage={async () => {
+            const draft = await enqueueDraftSave(stateRef.current);
+            return backend.pickImage(draft.id);
+          }}
           placeholder="Drop the knowledge here…"
+          ref={editorRef}
+          retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}
           value={state.bodyMarkdown}
         />
 
@@ -392,11 +472,17 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
           </Button>
           <Button
             aria-keyshortcuts="Meta+Enter Control+Enter"
-            disabled={!ready || busy || !state.bodyMarkdown.trim()}
+            disabled={!ready || busy || mediaPending || !state.bodyMarkdown.trim()}
             type="submit"
             variant="accent"
           >
-            {busy ? "Saving…" : tidbit ? "Save changes" : "Save tidbit"}
+            {mediaPending
+              ? "Adding image…"
+              : busy
+                ? "Saving…"
+                : tidbit
+                  ? "Save changes"
+                  : "Save tidbit"}
           </Button>
         </footer>
       </form>

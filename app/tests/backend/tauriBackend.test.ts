@@ -69,6 +69,12 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.saveDraft(savedDraft);
     await tauriBackend.loadDraft("capture");
     await tauriBackend.clearDraft(clearDraft);
+    await tauriBackend.pickImage("draft-1");
+    await tauriBackend.ingestClipboardImage("draft-1");
+    await tauriBackend.ingestDroppedImages("drop-1", "draft-1");
+    await tauriBackend.imageStatus("attachment-1");
+    await tauriBackend.retryImageOcr("attachment-1");
+    await tauriBackend.imageOcrDiagnostics();
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
       ["create_tidbit", { input: draft }],
@@ -82,6 +88,12 @@ describe("tauriBackend tidbit gateway", () => {
       ["save_draft", { input: savedDraft }],
       ["load_draft", { contextKey: "capture" }],
       ["clear_draft", { input: clearDraft }],
+      ["pick_image", { draftId: "draft-1" }],
+      ["ingest_clipboard_image", { draftId: "draft-1" }],
+      ["ingest_dropped_images", { dropId: "drop-1", draftId: "draft-1" }],
+      ["image_status", { attachmentId: "attachment-1" }],
+      ["retry_image_ocr", { attachmentId: "attachment-1" }],
+      ["image_ocr_diagnostics"],
     ]);
   });
 
