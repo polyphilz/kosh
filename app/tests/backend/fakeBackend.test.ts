@@ -322,3 +322,31 @@ describe("FakeBackend drafts", () => {
     ).rejects.toThrow("must belong");
   });
 });
+
+describe("FakeBackend semantic runtime", () => {
+  it("exposes deterministic prepare, retry, repair, and log states", async () => {
+    const backend = new FakeBackend();
+
+    await expect(backend.semanticRuntimeStatus()).resolves.toMatchObject({
+      phase: "NOT_DOWNLOADED",
+      verified: false,
+      runtimeRunning: false,
+    });
+    await expect(backend.prepareSemanticRuntime()).resolves.toMatchObject({
+      phase: "READY",
+      verified: true,
+      runtimeRunning: true,
+    });
+    await expect(backend.retrySemanticRuntime()).resolves.toMatchObject({
+      phase: "READY",
+    });
+    await expect(backend.repairSemanticRuntime()).resolves.toMatchObject({
+      phase: "READY",
+      downloadedBytes: 232_883_776,
+    });
+    await expect(backend.semanticRuntimeLogs()).resolves.toEqual({
+      text: "",
+      truncated: false,
+    });
+  });
+});

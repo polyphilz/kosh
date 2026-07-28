@@ -67,6 +67,50 @@ character-offset highlight spans. Edits, soft deletion, and restoration update
 the active search projection in the same database transaction while historical
 passages remain resolvable as citations.
 
+## Local semantic runtime
+
+Semantic search uses the pinned
+`jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF` Q8 model through a pinned
+`llama.cpp` sidecar. The 232,883,776-byte model is not bundled and is never
+downloaded merely by launching Kosh or running its tests. An explicit prepare
+request downloads it resumably beneath Kosh's data directory, verifies SHA-256
+`86b6e6279e9b9e71389f02a082764a2ac2b15a50e37482c26f98d69092f12442`,
+and checks both query and document golden vectors before semantic retrieval may
+activate. Lexical search remains available in every missing, download, verify,
+or runtime-failure state.
+
+Development can use already verified local artifacts:
+
+```bash
+cd app
+KOSH_EMBEDDING_MODEL_PATH="$PWD/../models/v5-nano-retrieval-Q8_0.gguf" \
+KOSH_LLAMA_SERVER_PATH=/opt/homebrew/bin/llama-server \
+  pnpm tauri dev
+```
+
+The versioned model, golden-vector, and sidecar contracts live under
+`app/src-tauri/resources/`. To reproduce the compatibility gate against a
+local llama.cpp build:
+
+```bash
+LLAMA_EMBEDDING=/path/to/llama-embedding \
+LLAMA_SERVER=/path/to/llama-server \
+  scripts/verify-jina-v1.sh models/v5-nano-retrieval-Q8_0.gguf
+```
+
+`scripts/build-llama-sidecar.sh` checks out the exact pinned llama.cpp
+revision, builds separate arm64 and x86_64 static binaries, combines them into
+a universal macOS sidecar, and explicitly runs both architecture slices through
+CPU and Metal golden checks. The release build therefore requires an Apple
+Silicon Mac with Rosetta installed. It also checks each slice's dynamic
+dependencies and writes only to the ignored release staging directory. Release
+packaging is intentionally separate from ordinary and test builds:
+
+```bash
+cd app
+pnpm release:build
+```
+
 Repository policy and secret checks run from the repository root:
 
 ```bash

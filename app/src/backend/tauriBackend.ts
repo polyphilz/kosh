@@ -12,6 +12,8 @@ import type {
   RestoreTidbitInput,
   SaveDraftInput,
   SearchPassagesInput,
+  SemanticRuntimeLogs,
+  SemanticRuntimeStatus,
   TidbitDraft,
   TidbitListPage,
   TidbitRecord,
@@ -19,6 +21,11 @@ import type {
 
 export const tauriBackend: Backend = {
   runtimeProbe: () => invoke<RuntimeProbe>("runtime_probe"),
+  semanticRuntimeStatus: () => invoke<SemanticRuntimeStatus>("semantic_runtime_status"),
+  prepareSemanticRuntime: () => invoke<SemanticRuntimeStatus>("prepare_semantic_runtime"),
+  retrySemanticRuntime: () => invoke<SemanticRuntimeStatus>("retry_semantic_runtime"),
+  repairSemanticRuntime: () => invoke<SemanticRuntimeStatus>("repair_semantic_runtime"),
+  semanticRuntimeLogs: () => invoke<SemanticRuntimeLogs>("semantic_runtime_logs"),
   createTidbit: (input: TidbitDraft) => invoke<TidbitRecord>("create_tidbit", { input }),
   loadTidbit: (id: string) => invoke<TidbitRecord>("load_tidbit", { id }),
   listTidbits: (input: ListTidbitsInput) => invoke<TidbitListPage>("list_tidbits", { input }),

@@ -2,7 +2,7 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    RuntimeProbe,
+    RuntimeProbe, SemanticRuntimePhase, SemanticRuntimeStatus,
 };
 
 #[test]
@@ -50,4 +50,42 @@ fn main_window_invokes_runtime_probe_with_temporary_state() {
         }
     );
     assert!(!response.data_dir.contains("Application Support"));
+}
+
+#[test]
+fn semantic_status_is_available_without_starting_or_downloading_the_model() {
+    let data_root = TestDataRoot::new();
+    let app = mock_app(&data_root, 1_785_201_600_000, std::iter::empty::<String>());
+    let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .expect("mock main window");
+
+    let response = tauri::test::get_ipc_response(
+        &window,
+        tauri::webview::InvokeRequest {
+            cmd: "semantic_runtime_status".into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .expect("test IPC URL"),
+            body: tauri::ipc::InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_owned(),
+        },
+    )
+    .expect("semantic status IPC response")
+    .deserialize::<SemanticRuntimeStatus>()
+    .expect("semantic status payload");
+
+    assert_eq!(response.phase, SemanticRuntimePhase::Unavailable);
+    assert_eq!(response.downloaded_bytes, 0);
+    assert_eq!(response.model_bytes, 232_883_776);
+    assert!(!response.runtime_running);
+    assert!(!response.verified);
+    assert!(!data_root.path().join("models").exists());
 }

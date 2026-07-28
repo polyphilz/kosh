@@ -1,0 +1,52 @@
+{
+  "manifestVersion": 1,
+  "component": "llama-server",
+  "upstream": {
+    "repository": "https://github.com/ggml-org/llama.cpp.git",
+    "revision": "fdb1db877c526ec90f668eca1b858da5dba85560",
+    "build": 9860
+  },
+  "target": {
+    "operatingSystem": "macos",
+    "architectures": ["arm64", "x86_64"],
+    "minimumSystemVersion": "14.0"
+  },
+  "cmake": {
+    "buildType": "Release",
+    "flags": [
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0",
+      "-DBUILD_SHARED_LIBS=OFF",
+      "-DGGML_STATIC=ON",
+      "-DGGML_NATIVE=OFF",
+      "-DGGML_CCACHE=OFF",
+      "-DGGML_METAL=ON",
+      "-DGGML_METAL_EMBED_LIBRARY=ON",
+      "-DLLAMA_BUILD_TESTS=OFF",
+      "-DLLAMA_BUILD_EXAMPLES=ON",
+      "-DLLAMA_BUILD_TOOLS=ON",
+      "-DLLAMA_BUILD_SERVER=ON",
+      "-DLLAMA_BUILD_APP=OFF",
+      "-DLLAMA_BUILD_UI=OFF",
+      "-DLLAMA_USE_PREBUILT_UI=OFF",
+      "-DLLAMA_OPENSSL=OFF"
+    ]
+  },
+  "resourceDestinations": {
+    "binary": "bin/llama-server",
+    "releaseManifest": "release/llama-server.json"
+  },
+  "stagingPaths": {
+    "binary": "bin/llama-server",
+    "releaseManifest": "llama-server.json",
+    "license": "licenses/llama.cpp-LICENSE"
+  },
+  "licenseNotices": [
+    {
+      "component": "llama.cpp",
+      "spdxLicense": "MIT",
+      "sourcePath": "LICENSE",
+      "bundlePath": "licenses/llama.cpp-LICENSE"
+    }
+  ]
+}

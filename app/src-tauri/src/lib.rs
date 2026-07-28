@@ -1,4 +1,6 @@
 mod database;
+mod embedding;
+mod embedding_runtime;
 pub mod relevance;
 mod runtime;
 
@@ -29,6 +31,11 @@ fn select_data_dir(
 fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        runtime::semantic_runtime_status,
+        runtime::prepare_semantic_runtime,
+        runtime::retry_semantic_runtime,
+        runtime::repair_semantic_runtime,
+        runtime::semantic_runtime_logs,
         database::commands::create_tidbit,
         database::commands::load_tidbit,
         database::commands::list_tidbits,
@@ -52,8 +59,9 @@ pub fn run() {
                 std::env::var_os(DATA_DIR_ENV).map(PathBuf::from),
                 cfg!(debug_assertions),
             );
+            let resource_dir = app.path().resource_dir().ok();
             std::fs::create_dir_all(&data_dir)?;
-            app.manage(RuntimeState::production(data_dir)?);
+            app.manage(RuntimeState::production(data_dir, resource_dir)?);
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -67,6 +75,11 @@ pub use database::{
     PassageSearchResult, RestoreTidbitInput, SaveDraftInput, SearchField, SearchHighlight,
     SearchPassagesInput, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem,
     TidbitListPage, TidbitSource,
+};
+pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
+pub use embedding_runtime::{
+    EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimePhase,
+    SemanticRuntimeStatus,
 };
 pub use runtime::RuntimeProbe;
 
