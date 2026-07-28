@@ -37,6 +37,7 @@ const MAX_OCR_REGION_CHARS: usize = 16_384;
 const MAX_OCR_TOTAL_CHARS: usize = 1_000_000;
 const INTERRUPTED_OCR_ERROR: &str = "OCR was interrupted before it completed";
 const STALE_OCR_ERROR: &str = "OCR extractor provenance is no longer current";
+const RETIRED_OCR_ERROR: &str = "Image was retired before OCR completed";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1263,6 +1264,26 @@ pub(crate) fn complete_image_ocr(
         |row| row.get(0),
     )?;
     if !current {
+        let retired: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM image_ocr_queue AS queue
+                JOIN attachment_extraction AS extraction
+                  ON extraction.id = queue.extraction_id
+                JOIN attachment
+                  ON attachment.id = extraction.attachment_id
+                WHERE queue.extraction_id = ?1
+                  AND queue.state = 'FAILED'
+                  AND queue.last_error = ?2
+                  AND extraction.attachment_id = ?3
+                  AND attachment.deleted_at IS NOT NULL
+             )",
+            params![&job.extraction_id, RETIRED_OCR_ERROR, &job.attachment_id],
+            |row| row.get(0),
+        )?;
+        if retired {
+            return Ok(());
+        }
         return Err(DatabaseError::InvalidInput(format!(
             "OCR result for image {} is stale",
             job.attachment_id
@@ -2739,6 +2760,60 @@ fn reconcile_and_reap_from(
            )",
             params![now_ms],
         )? as u64;
+        transaction.execute(
+            "UPDATE attachment_extraction
+             SET status = 'FAILED',
+                 error = ?1,
+                 completed_at = max(coalesce(started_at, created_at), ?2)
+             WHERE extractor = ?3
+               AND id IN (
+                    SELECT queue.extraction_id
+                    FROM image_ocr_queue AS queue
+                    JOIN attachment_extraction AS extraction
+                      ON extraction.id = queue.extraction_id
+                    JOIN attachment
+                      ON attachment.id = extraction.attachment_id
+                    WHERE queue.state IN ('PENDING', 'RUNNING', 'RETRY_WAIT')
+                      AND attachment.deleted_at IS NOT NULL
+               )",
+            params![RETIRED_OCR_ERROR, now_ms, IMAGE_OCR_EXTRACTOR],
+        )?;
+        transaction.execute(
+            "UPDATE image_ocr_queue
+             SET state = 'FAILED',
+                 attempt_count = max(attempt_count, 1),
+                 next_attempt_at = NULL,
+                 started_at = NULL,
+                 last_error = ?1,
+                 updated_at = max(updated_at, ?2)
+             WHERE state IN ('PENDING', 'RUNNING', 'RETRY_WAIT')
+               AND extraction_id IN (
+                    SELECT extraction.id
+                    FROM attachment_extraction AS extraction
+                    JOIN attachment
+                      ON attachment.id = extraction.attachment_id
+                    WHERE extraction.extractor = ?3
+                      AND attachment.deleted_at IS NOT NULL
+               )",
+            params![RETIRED_OCR_ERROR, now_ms, IMAGE_OCR_EXTRACTOR],
+        )?;
+        transaction.execute(
+            "UPDATE attachment
+             SET extraction_state = 'FAILED',
+                 updated_at = max(updated_at, ?1)
+             WHERE deleted_at IS NOT NULL
+               AND EXISTS (
+                    SELECT 1
+                    FROM attachment_extraction AS extraction
+                    JOIN image_ocr_queue AS queue
+                      ON queue.extraction_id = extraction.id
+                    WHERE extraction.attachment_id = attachment.id
+                      AND extraction.extractor = ?2
+                      AND queue.state = 'FAILED'
+                      AND queue.last_error = ?3
+               )",
+            params![now_ms, IMAGE_OCR_EXTRACTOR, RETIRED_OCR_ERROR],
+        )?;
         transaction.execute(
             "DELETE FROM draft_media_lease
          WHERE media_ingest_lease_id IN (

@@ -491,6 +491,63 @@ fn draft_only_image_ocr_never_enters_search_and_remains_hidden_after_discard() {
 }
 
 #[test]
+fn retiring_a_draft_only_image_terminally_fails_in_flight_ocr() {
+    let library = TestLibrary::new();
+    let image = library.ingest_image(
+        (0x7a8, 0x7a9, 0x7aa, 0x7ab),
+        b"retired original image",
+        b"retired preview",
+        11,
+    );
+    let client = library.database.client();
+    let job = client
+        .claim_next_image_ocr(12)
+        .expect("claim draft-only OCR")
+        .expect("draft-only OCR job");
+    assert_eq!(job.attachment_id, image.attachment.id);
+    assert!(client
+        .clear_draft_at(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: 10,
+            },
+            13,
+        )
+        .expect("discard blank draft"));
+
+    let maintenance = client
+        .maintain_media(13, MediaLimits::default())
+        .expect("retire draft-only image");
+    assert_eq!(maintenance.cleanup.retired_attachment_count, 1);
+    let diagnostics = client.image_ocr_diagnostics().expect("OCR diagnostics");
+    assert_eq!(diagnostics.running, 0);
+    assert_eq!(diagnostics.failed, 1);
+    let main = library.database.open_main_read_only().expect("main reader");
+    let (queue_state, extraction_status, last_error): (String, String, String) = main
+        .query_row(
+            "SELECT queue.state, extraction.status, queue.last_error
+             FROM image_ocr_queue AS queue
+             JOIN attachment_extraction AS extraction
+               ON extraction.id = queue.extraction_id
+             WHERE queue.extraction_id = ?1",
+            params![job.extraction_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("retired OCR state");
+    assert_eq!(queue_state, "FAILED");
+    assert_eq!(extraction_status, "FAILED");
+    assert_eq!(last_error, "Image was retired before OCR completed");
+
+    client
+        .complete_image_ocr(job, Ok(Vec::new()), 14)
+        .expect("late completion is ignored");
+    assert!(client
+        .claim_next_image_ocr(14)
+        .expect("inspect drained OCR queue")
+        .is_none());
+}
+
+#[test]
 fn completed_draft_image_ocr_is_indexed_when_a_revision_takes_ownership() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
