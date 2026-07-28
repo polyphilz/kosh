@@ -1,0 +1,50 @@
+[
+  {
+    "id": "commonmark-structure",
+    "canonical": "## Heading\n\nEscaped \\*asterisk\\*, *emphasis*, and **strong**.\n\n> A quotation\n\n---",
+    "selectors": ["h2", "em", "strong", "blockquote", "hr"],
+    "text": ["Heading", "Escaped *asterisk*, emphasis, and strong.", "A quotation"]
+  },
+  {
+    "id": "nested-lists",
+    "canonical": "1. first\n2. second\n   - nested\n     1. deep\n\n- another",
+    "selectors": ["ol", "ul", "li"],
+    "text": ["first", "second", "nested", "deep", "another"]
+  },
+  {
+    "id": "single-line-breaks",
+    "canonical": "line one\nline two\n\nnew paragraph",
+    "selectors": ["br", "p"],
+    "text": ["line one", "line two", "new paragraph"]
+  },
+  {
+    "id": "inline-and-fenced-code",
+    "canonical": "`**literal**`\n\n```typescript\nconst answer: number = 42\n```\n\n```madeup\nplain <tag>\n```",
+    "selectors": ["code.language-typescript", "code.language-madeup"],
+    "text": ["**literal**", "const answer: number = 42", "plain <tag>"]
+  },
+  {
+    "id": "gfm-table-tasks-and-strike",
+    "canonical": "~~old~~\n\n| Left | Right |\n| ---- | ----: |\n| a    |     2 |\n\n- [x] done\n- [ ] later",
+    "selectors": ["del", "table", "input[type=checkbox]"],
+    "text": ["old", "Left", "Right", "done", "later"]
+  },
+  {
+    "id": "math",
+    "canonical": "Inline $E = mc^2$.\n\n$$\nP(A \\mid B) = \\frac{P(B \\mid A)P(A)}{P(B)}\n$$",
+    "selectors": [".katex", ".katex-display"],
+    "text": ["Inline"]
+  },
+  {
+    "id": "unicode-and-rtl",
+    "canonical": "naïve café — 日本語 — مرحبا بالعالم",
+    "selectors": ["p"],
+    "text": ["naïve café", "日本語", "مرحبا بالعالم"]
+  },
+  {
+    "id": "reserved-media-tokens",
+    "canonical": "{{kosh:image:01980c8e-6c00-7000-8000-000000000201;width=70%}}\n\n{{kosh:attachment:01980c8e-6c00-7000-8000-000000000202}}",
+    "selectors": ["p"],
+    "text": ["{{kosh:image:", "{{kosh:attachment:"]
+  }
+]

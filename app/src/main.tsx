@@ -7,6 +7,8 @@ import { createBackend } from "./backend/createBackend";
 import { AppearanceProvider } from "./components/Appearance";
 import { router } from "./router";
 import "./components/components.css";
+import "katex/dist/katex.min.css";
+import "./markdown/markdown.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
