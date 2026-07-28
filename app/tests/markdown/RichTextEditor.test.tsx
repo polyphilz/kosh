@@ -485,6 +485,61 @@ it("round-trips image metadata, resizes from the keyboard, and removes the image
   expect(serializeKoshMarkdown(view.state.doc)).toBe("");
 });
 
+it("enables existing image controls when draft loading completes", async () => {
+  const imageId = "01980c8e-6c00-7000-8000-00000000024f";
+  const source = `{{kosh:image:${imageId};width=70%;alt=Loaded%20image;caption=Loaded%20caption}}`;
+  const imageStatus = vi.fn(async () => ({
+    attachmentId: imageId,
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    nextAttemptAtMs: null,
+    ocrError: "Vision unavailable",
+    ocrStatus: "FAILED" as const,
+  }));
+  const retryOcr = vi.fn(async () => ({
+    attachmentId: imageId,
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    nextAttemptAtMs: null,
+    ocrError: null,
+    ocrStatus: "PENDING" as const,
+  }));
+  const result = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      disabled
+      imageStatus={imageStatus}
+      onChange={() => undefined}
+      retryImageOcr={retryOcr}
+      value={source}
+    />,
+  );
+  const altInput = result.getByLabelText("Alt text");
+  const captionInput = result.getByLabelText("Caption");
+  const remove = result.getByRole("button", { name: "Remove" });
+  const retry = await result.findByRole("button", { name: "Retry text recognition" });
+  expect(altInput).toBeDisabled();
+  expect(captionInput).toBeDisabled();
+  expect(remove).toBeDisabled();
+  expect(retry).toBeDisabled();
+
+  result.rerender(
+    <RichTextEditor
+      ariaLabel="Body"
+      imageStatus={imageStatus}
+      onChange={() => undefined}
+      retryImageOcr={retryOcr}
+      value={source}
+    />,
+  );
+
+  expect(result.getByLabelText("Alt text")).toBe(altInput);
+  expect(altInput).toBeEnabled();
+  expect(captionInput).toBeEnabled();
+  expect(remove).toBeEnabled();
+  expect(retry).toBeEnabled();
+});
+
 it("shows a durable pending node while pasted image ingestion completes", async () => {
   let resolveImage!: (record: ImageRecord) => void;
   const imagePromise = new Promise<ImageRecord>((resolve) => {

@@ -3,6 +3,7 @@ import { attachmentMediaUrl } from "../media/gateway";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { NodeSelection } from "prosemirror-state";
 import type { EditorView, NodeView } from "prosemirror-view";
+import { KOSH_EDITOR_EDITABLE_EVENT } from "./editorEvents";
 
 export const MIN_IMAGE_WIDTH_PERCENT = 10;
 export const MAX_IMAGE_WIDTH_PERCENT = 100;
@@ -99,6 +100,8 @@ export function imageNodeView(
     remove.disabled = !editable;
     retry.disabled = !editable;
   };
+  const handleEditableChange = () => applyNode(node);
+  view.dom.addEventListener(KOSH_EDITOR_EDITABLE_EVENT, handleEditableChange);
   applyNode(node);
 
   const updateAttributes = (attributes: Record<string, unknown>) => {
@@ -291,6 +294,7 @@ export function imageNodeView(
       remove.removeEventListener("click", removeImage);
       retry.removeEventListener("click", retryRecognition);
       resizeHandle.removeEventListener("pointerdown", beginResize);
+      view.dom.removeEventListener(KOSH_EDITOR_EDITABLE_EVENT, handleEditableChange);
     },
   };
 }
