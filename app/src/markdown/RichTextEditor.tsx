@@ -342,6 +342,7 @@ function editorInputRules() {
         level: match[1]!.length,
       })),
       inlineCodeInputRule(),
+      taskListInputRule(),
       wrappingInputRule(/^\s*>\s$/u, blockquote),
       wrappingInputRule(/^[-*•]\s$/u, bulletList),
       wrappingInputRule(
@@ -357,15 +358,32 @@ function editorInputRules() {
 function inlineCodeInputRule(): InputRule {
   return new InputRule(
     /`([^`\n]+)`$/u,
-    (state, _match, start, end) => {
+    (state, match, start, end) => {
       const code = state.schema.marks.code;
-      if (!code) {
+      const value = match[1];
+      if (!code || !value) {
         return null;
       }
-      return state.tr.delete(start, start + 1).addMark(start, end - 1, code.create());
+      return state.tr.replaceWith(start, end, state.schema.text(value, [code.create()]));
     },
     { inCodeMark: false },
   );
+}
+
+function taskListInputRule(): InputRule {
+  return new InputRule(/^\[( |x|X)\]\s$/u, (state, match, start, end) => {
+    const $start = state.doc.resolve(start);
+    for (let depth = $start.depth; depth > 0; depth -= 1) {
+      const node = $start.node(depth);
+      if (node.type.name === "list_item") {
+        return state.tr.delete(start, end).setNodeMarkup($start.before(depth), undefined, {
+          ...node.attrs,
+          checked: match[1]!.toLowerCase() === "x",
+        });
+      }
+    }
+    return null;
+  });
 }
 
 function arrowIntoCodeBlock(direction: "down" | "left" | "right" | "up"): Command {

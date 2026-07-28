@@ -179,6 +179,15 @@ it("applies toolbar and keyboard formatting while retaining editor focus", () =>
   expect(document.activeElement).toBe(textbox);
 });
 
+it("creates inline code without retaining typed delimiters", () => {
+  const { view } = controlledEditor("");
+
+  act(() => typeWithInputRules(view, "`value`"));
+
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("`value`");
+  expect(view.state.doc.textContent).toBe("value");
+});
+
 it("activates toolbar buttons through the keyboard click path", async () => {
   const user = userEvent.setup();
   const { getByRole, view } = controlledEditor("word");
@@ -374,6 +383,15 @@ it("renders and toggles task state through accessible editor controls", () => {
   expect(serializeKoshMarkdown(view.state.doc)).toBe("- [ ] done\n- [x] later");
 });
 
+it("creates task items from typed list markers", () => {
+  const { getByRole, view } = controlledEditor("");
+
+  act(() => typeWithInputRules(view, "- [ ] capture this"));
+
+  expect(getByRole("checkbox", { name: "Mark task complete" })).not.toBeChecked();
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("- [ ] capture this");
+});
+
 it("prevents table toolbar commands from creating unserializable cell blocks", () => {
   const { getByRole, textbox, view } = controlledEditor("| Heading |\n| ------- |\n| cell    |");
 
@@ -450,6 +468,19 @@ function editorView(element: HTMLElement) {
     throw new Error("Rich text editor view was not registered");
   }
   return view;
+}
+
+function typeWithInputRules(view: ReturnType<typeof editorView>, value: string) {
+  view.focus();
+  for (const character of value) {
+    const { from, to } = view.state.selection;
+    const handled = view.someProp("handleTextInput", (handler) =>
+      handler(view, from, to, character),
+    );
+    if (!handled) {
+      view.dispatch(view.state.tr.insertText(character, from, to));
+    }
+  }
 }
 
 async function embeddedCodeView(container: HTMLElement) {
