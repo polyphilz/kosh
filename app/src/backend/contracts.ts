@@ -293,7 +293,8 @@ export interface Backend {
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;
-  pickImage(draftId: string): Promise<ImageRecord | null>;
+  selectImage(): Promise<string | null>;
+  ingestSelectedImage(selectionId: string, draftId: string): Promise<ImageRecord>;
   captureClipboardImage(): Promise<string>;
   ingestClipboardImage(captureId: string, draftId: string): Promise<ImageRecord>;
   ingestDroppedImages(dropId: string, draftId: string): Promise<ImageDropIngestResult>;

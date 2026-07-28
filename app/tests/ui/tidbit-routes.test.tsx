@@ -117,6 +117,27 @@ describe("tidbit capture and editing routes", () => {
     expect((await backend.loadTidbit(active.items[0]!.id)).deletedAtMs).not.toBeNull();
   });
 
+  it("keeps a canceled image picker out of draft and dirty state", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const selectImage = vi.spyOn(backend, "selectImage").mockResolvedValue(null);
+    const ingestSelectedImage = vi.spyOn(backend, "ingestSelectedImage");
+    const saveDraft = vi.spyOn(backend, "saveDraft");
+    renderRoute(backend, "/add");
+    await screen.findByRole("textbox", { name: "Tidbit" });
+
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    await waitFor(() => expect(selectImage).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled());
+
+    expect(saveDraft).not.toHaveBeenCalled();
+    expect(ingestSelectedImage).not.toHaveBeenCalled();
+    await expect(backend.loadDraft("capture")).resolves.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("heading", { name: "Search" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).toBeNull();
+  });
+
   it("blocks keyboard and programmatic submission while image ingestion is pending", async () => {
     const backend = new FakeBackend();
     let resolveImage!: (image: ImageRecord) => void;

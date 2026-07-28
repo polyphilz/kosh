@@ -31,6 +31,7 @@ const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
 const IMAGE_OCR_EXTRACTOR: &str = "ocr";
 const MAX_IMAGE_OCR_ATTEMPTS: u32 = 4;
 const IMAGE_OCR_RETRY_DELAYS_MS: [i64; 3] = [5 * 60 * 1_000, 30 * 60 * 1_000, 2 * 60 * 60 * 1_000];
+const IMAGE_OCR_RECOVERY_BATCH_SIZE: usize = 64;
 const MAX_OCR_REGIONS: usize = 4_096;
 const MAX_OCR_REGION_CHARS: usize = 16_384;
 const MAX_OCR_TOTAL_CHARS: usize = 1_000_000;
@@ -233,6 +234,7 @@ pub(crate) struct ImageOcrJob {
 pub struct ImageOcrRecovery {
     pub requeued: u64,
     pub terminally_failed: u64,
+    pub remaining: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -1532,6 +1534,8 @@ pub(crate) fn recover_interrupted_image_ocr(
 ) -> Result<ImageOcrRecovery> {
     validate_timestamp(stale_started_at_or_before, "staleStartedAtOrBefore")?;
     validate_timestamp(now_ms, "nowMs")?;
+    let batch_limit =
+        i64::try_from(IMAGE_OCR_RECOVERY_BATCH_SIZE).expect("OCR recovery batch size fits i64");
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let stale = transaction
         .prepare(
@@ -1559,17 +1563,24 @@ pub(crate) fn recover_interrupted_image_ocr(
                     extraction.extractor_version <> config.version
                     OR extraction.content_hash <> attachment.sha256
                )
-             ORDER BY extraction.attachment_id, queue.extraction_id",
+             ORDER BY extraction.attachment_id, queue.extraction_id
+             LIMIT ?3",
         )?
-        .query_map(params![IMAGE_OCR_EXTRACTOR, STALE_OCR_ERROR], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?
+        .query_map(
+            params![IMAGE_OCR_EXTRACTOR, STALE_OCR_ERROR, batch_limit],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let interrupted_limit = batch_limit.saturating_sub(
+        i64::try_from(stale.len()).expect("bounded stale OCR batch length fits i64"),
+    );
     let mut recovery = ImageOcrRecovery::default();
     for (extraction_id, attachment_id, current_extractor_version, attachment_hash) in stale {
         transaction.execute(
@@ -1665,10 +1676,15 @@ pub(crate) fn recover_interrupted_image_ocr(
                AND queue.started_at <= ?1
                AND extraction.extractor = ?2
                AND attachment.deleted_at IS NULL
-             ORDER BY queue.started_at, queue.extraction_id",
+             ORDER BY queue.started_at, queue.extraction_id
+             LIMIT ?3",
         )?
         .query_map(
-            params![stale_started_at_or_before, IMAGE_OCR_EXTRACTOR],
+            params![
+                stale_started_at_or_before,
+                IMAGE_OCR_EXTRACTOR,
+                interrupted_limit
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1723,6 +1739,46 @@ pub(crate) fn recover_interrupted_image_ocr(
             recovery.requeued += 1;
         }
     }
+    recovery.remaining = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM image_ocr_queue AS queue
+            JOIN attachment_extraction AS extraction
+              ON extraction.id = queue.extraction_id
+            JOIN attachment_extractor_config AS config
+              ON config.extractor = extraction.extractor
+            JOIN attachment
+              ON attachment.id = extraction.attachment_id
+            JOIN attachment_image AS image
+              ON image.attachment_id = attachment.id
+            WHERE extraction.extractor = ?1
+              AND attachment.deleted_at IS NULL
+              AND (
+                   (
+                       NOT (
+                           queue.state = 'FAILED'
+                           AND queue.last_error = ?2
+                       )
+                       AND (
+                           extraction.extractor_version <> config.version
+                           OR extraction.content_hash <> attachment.sha256
+                       )
+                   )
+                   OR (
+                       queue.state = 'RUNNING'
+                       AND queue.started_at <= ?3
+                       AND extraction.extractor_version = config.version
+                       AND extraction.content_hash = attachment.sha256
+                   )
+              )
+         )",
+        params![
+            IMAGE_OCR_EXTRACTOR,
+            STALE_OCR_ERROR,
+            stale_started_at_or_before
+        ],
+        |row| row.get(0),
+    )?;
     transaction.commit()?;
     Ok(recovery)
 }

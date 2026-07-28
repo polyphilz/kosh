@@ -476,7 +476,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn optional_ocr_failure_does_not_block_runtime_construction() {
+    fn optional_ocr_recovery_is_deferred_until_after_coordinator_construction() {
         let directory = tempfile::tempdir().expect("temporary optional OCR database");
         let database =
             Database::initialize(DatabasePaths::new(directory.path())).expect("OCR database");
@@ -485,7 +485,7 @@ mod tests {
 
         let coordinator = start_optional_image_ocr(unavailable_client);
 
-        assert!(coordinator.is_disabled());
+        assert!(!coordinator.is_disabled());
     }
 
     #[test]

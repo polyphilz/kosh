@@ -69,7 +69,8 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.saveDraft(savedDraft);
     await tauriBackend.loadDraft("capture");
     await tauriBackend.clearDraft(clearDraft);
-    await tauriBackend.pickImage("draft-1");
+    await tauriBackend.selectImage();
+    await tauriBackend.ingestSelectedImage("selection-1", "draft-1");
     await tauriBackend.captureClipboardImage();
     await tauriBackend.ingestClipboardImage("capture-1", "draft-1");
     await tauriBackend.ingestDroppedImages("drop-1", "draft-1");
@@ -89,7 +90,8 @@ describe("tauriBackend tidbit gateway", () => {
       ["save_draft", { input: savedDraft }],
       ["load_draft", { contextKey: "capture" }],
       ["clear_draft", { input: clearDraft }],
-      ["pick_image", { draftId: "draft-1" }],
+      ["select_image"],
+      ["ingest_selected_image", { selectionId: "selection-1", draftId: "draft-1" }],
       ["capture_clipboard_image"],
       ["ingest_clipboard_image", { captureId: "capture-1", draftId: "draft-1" }],
       ["ingest_dropped_images", { dropId: "drop-1", draftId: "draft-1" }],

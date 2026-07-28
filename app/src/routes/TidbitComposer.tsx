@@ -362,7 +362,11 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
           ariaLabel="Tidbit"
           disabled={!ready || busy}
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
-          onChange={(bodyMarkdown) => markChanged((current) => ({ ...current, bodyMarkdown }))}
+          onChange={(bodyMarkdown) => {
+            if (bodyMarkdown !== stateRef.current.bodyMarkdown) {
+              markChanged((current) => ({ ...current, bodyMarkdown }));
+            }
+          }}
           onImageError={(reason) => setError(`Could not add image: ${errorMessage(reason)}`)}
           onPendingImagesChange={(pending) => {
             editorMediaPendingRef.current = pending;
@@ -374,8 +378,10 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
             return backend.ingestClipboardImage(captureId, draft.id);
           }}
           pickImage={async () => {
+            const selectionId = await backend.selectImage();
+            if (!selectionId) return null;
             const draft = await enqueueDraftSave(stateRef.current);
-            return backend.pickImage(draft.id);
+            return backend.ingestSelectedImage(selectionId, draft.id);
           }}
           placeholder="Drop the knowledge here…"
           ref={editorRef}

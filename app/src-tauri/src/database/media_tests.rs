@@ -817,6 +817,71 @@ fn image_ocr_recovery_replaces_stale_extractor_provenance() {
 }
 
 #[test]
+fn image_ocr_recovery_batches_large_stale_backlogs() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        max_attachments_per_draft: 128,
+        ..MediaLimits::default()
+    };
+    let client = library.database.client();
+    for index in 0_u64..65 {
+        let suffix = 0xa00 + index * 4;
+        let staged = StagedAttachment::from_reader(
+            Cursor::new(b"shared recovery original"),
+            &library.staging,
+            &id(suffix + 2),
+            limits.max_attachment_bytes,
+        )
+        .expect("stage recovery image");
+        client
+            .ingest_image(IngestImageWrite {
+                attachment: staged.write(IngestAttachmentMetadata {
+                    attachment_id: id(suffix),
+                    ingest_lease_id: id(suffix + 1),
+                    draft_id: CAPTURE_DRAFT_ID.into(),
+                    display_filename: "recovery.png".into(),
+                    media_type: "image/png".into(),
+                    now_ms: 11 + i64::try_from(index).expect("image index fits i64"),
+                    limits,
+                }),
+                extraction_id: id(suffix + 3),
+                preview: CanonicalImage {
+                    bytes: b"shared recovery preview".to_vec(),
+                    natural_width: 640,
+                    natural_height: 480,
+                },
+            })
+            .expect("ingest recovery image");
+    }
+    super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("open extractor writer")
+    .execute(
+        "UPDATE attachment_extractor_config
+         SET version = '2', updated_at = 100
+         WHERE extractor = 'ocr'",
+        [],
+    )
+    .expect("advance extractor version");
+
+    let first = client
+        .recover_interrupted_image_ocr(100, 100)
+        .expect("first recovery batch");
+    assert_eq!(first.requeued, 64);
+    assert_eq!(first.terminally_failed, 64);
+    assert!(first.remaining);
+    let second = client
+        .recover_interrupted_image_ocr(100, 101)
+        .expect("second recovery batch");
+    assert_eq!(second.requeued, 1);
+    assert_eq!(second.terminally_failed, 1);
+    assert!(!second.remaining);
+}
+
+#[test]
 fn ingestion_deduplicates_bytes_preserves_metadata_and_bounds_reads() {
     let library = TestLibrary::new();
     let first = library.ingest(

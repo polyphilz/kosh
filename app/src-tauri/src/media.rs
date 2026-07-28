@@ -55,9 +55,6 @@ pub(crate) struct ImageOcrCoordinator {
 
 impl ImageOcrCoordinator {
     pub(crate) fn start(client: DatabaseClient) -> Result<Self, DatabaseError> {
-        let now_ms = system_now_ms()?;
-        let recovery = client.recover_interrupted_image_ocr(now_ms, now_ms)?;
-        log_ocr_recovery("launch", recovery);
         let (sender, receiver) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("kosh-image-ocr".into())
@@ -162,15 +159,40 @@ pub(crate) struct ImageDropIngestResult {
 }
 
 #[tauri::command]
-pub(crate) async fn pick_image<R: tauri::Runtime>(
+pub(crate) async fn select_image<R: tauri::Runtime>(
     app: AppHandle<R>,
     state: State<'_, RuntimeState>,
-    draft_id: String,
-) -> Result<Option<ImageRecord>, crate::database::commands::CommandError> {
+) -> Result<Option<String>, crate::database::commands::CommandError> {
     let Some(path) = select_image_file(&app).await? else {
         return Ok(None);
     };
-    ingest_image_path(&state, draft_id, path).await.map(Some)
+    state
+        .register_image_drop(&[path])
+        .map(|notice| Some(notice.drop_id))
+        .ok_or_else(|| {
+            DatabaseError::InvalidInput("too many images are awaiting ingestion".into()).into()
+        })
+}
+
+#[tauri::command]
+pub(crate) async fn ingest_selected_image(
+    state: State<'_, RuntimeState>,
+    draft_id: String,
+    selection_id: String,
+) -> Result<ImageRecord, crate::database::commands::CommandError> {
+    let mut paths = state.take_image_drop(&selection_id)?;
+    if paths.len() != 1 {
+        return Err(DatabaseError::InvalidInput(
+            "an image selection must contain exactly one file".into(),
+        )
+        .into());
+    }
+    ingest_image_path(
+        &state,
+        draft_id,
+        paths.pop().expect("validated one selected image"),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -599,7 +621,7 @@ fn read_clipboard_image_on_main_thread() -> Result<Vec<u8>, DatabaseError> {
 }
 
 fn image_ocr_worker(client: DatabaseClient, receiver: mpsc::Receiver<OcrWorkerSignal>) {
-    let mut next_reconciliation = Instant::now() + OCR_RECONCILIATION_INTERVAL;
+    let mut next_reconciliation = Instant::now();
     loop {
         let wait = next_reconciliation.saturating_duration_since(Instant::now());
         match receiver.recv_timeout(wait) {
@@ -616,15 +638,26 @@ fn image_ocr_worker(client: DatabaseClient, receiver: mpsc::Receiver<OcrWorkerSi
 }
 
 fn reconcile_image_ocr_queue(client: &DatabaseClient) {
-    let result = system_now_ms().and_then(|now_ms| {
-        let stale_age = i64::try_from(OCR_STALE_ATTEMPT_AGE.as_millis()).map_err(|_| {
-            DatabaseError::InvalidInput("OCR stale-attempt duration overflow".into())
-        })?;
-        client.recover_interrupted_image_ocr(now_ms.saturating_sub(stale_age), now_ms)
-    });
-    match result {
-        Ok(recovery) => log_ocr_recovery("periodic reconciliation", recovery),
-        Err(error) => log::error!("could not reconcile the image OCR queue: {error}"),
+    loop {
+        let result = system_now_ms().and_then(|now_ms| {
+            let stale_age = i64::try_from(OCR_STALE_ATTEMPT_AGE.as_millis()).map_err(|_| {
+                DatabaseError::InvalidInput("OCR stale-attempt duration overflow".into())
+            })?;
+            client.recover_interrupted_image_ocr(now_ms.saturating_sub(stale_age), now_ms)
+        });
+        match result {
+            Ok(recovery) => {
+                log_ocr_recovery("background reconciliation", recovery);
+                if !recovery.remaining {
+                    return;
+                }
+                thread::yield_now();
+            }
+            Err(error) => {
+                log::error!("could not reconcile the image OCR queue: {error}");
+                return;
+            }
+        }
     }
 }
 

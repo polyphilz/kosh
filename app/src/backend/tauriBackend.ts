@@ -46,7 +46,9 @@ export const tauriBackend: Backend = {
   saveDraft: (input: SaveDraftInput) => invoke<DraftRecord>("save_draft", { input }),
   loadDraft: (contextKey: string) => invoke<DraftRecord | null>("load_draft", { contextKey }),
   clearDraft: (input: ClearDraftInput) => invoke<boolean>("clear_draft", { input }),
-  pickImage: (draftId: string) => invoke<ImageRecord | null>("pick_image", { draftId }),
+  selectImage: () => invoke<string | null>("select_image"),
+  ingestSelectedImage: (selectionId: string, draftId: string) =>
+    invoke<ImageRecord>("ingest_selected_image", { selectionId, draftId }),
   captureClipboardImage: () => invoke<string>("capture_clipboard_image"),
   ingestClipboardImage: (captureId: string, draftId: string) =>
     invoke<ImageRecord>("ingest_clipboard_image", { captureId, draftId }),

@@ -130,8 +130,12 @@ export class FakeBackend implements Backend {
     };
   }
 
-  async pickImage(_draftId: string): Promise<ImageRecord | null> {
+  async selectImage(): Promise<string | null> {
     return null;
+  }
+
+  async ingestSelectedImage(_selectionId: string, _draftId: string): Promise<ImageRecord> {
+    throw new Error("Selected images are unavailable in the browser fixture");
   }
 
   async captureClipboardImage(): Promise<string> {
