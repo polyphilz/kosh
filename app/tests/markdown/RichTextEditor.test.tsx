@@ -545,10 +545,11 @@ it("restores selected content when the native image picker is canceled", async (
     resolvePick = resolve;
   });
   const value = "Keep this selected text";
+  const onChange = vi.fn();
   const { getByRole, queryByRole } = render(
     <RichTextEditor
       ariaLabel="Body"
-      onChange={() => undefined}
+      onChange={onChange}
       pickImage={() => pickPromise}
       value={value}
     />,
@@ -561,10 +562,15 @@ it("restores selected content when the native image picker is canceled", async (
 
   fireEvent.click(getByRole("button", { name: "Add image" }));
   expect(getByRole("status", { name: "Choosing image" })).toBeVisible();
+  expect(onChange).toHaveBeenLastCalledWith(value);
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)).insertText("!"));
+  });
+  expect(onChange).toHaveBeenLastCalledWith(`${value}!`);
   await act(async () => resolvePick(null));
 
   await waitFor(() => expect(queryByRole("status", { name: "Choosing image" })).toBeNull());
-  expect(serializeKoshMarkdown(view.state.doc)).toBe(value);
+  expect(serializeKoshMarkdown(view.state.doc)).toBe(`${value}!`);
 });
 
 it("removes failed image placeholders and supports explicit OCR retry", async () => {

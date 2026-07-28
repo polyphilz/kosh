@@ -20,11 +20,18 @@ import {
   wrappingInputRule,
 } from "prosemirror-inputrules";
 import { keymap } from "prosemirror-keymap";
-import type { Node as ProseMirrorNode } from "prosemirror-model";
+import type { Node as ProseMirrorNode, Slice } from "prosemirror-model";
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from "prosemirror-schema-list";
 import { EditorState, NodeSelection, Selection, type Command } from "prosemirror-state";
 import { tableEditing } from "prosemirror-tables";
-import { insertPoint, liftTarget, Mapping, StepMap } from "prosemirror-transform";
+import {
+  insertPoint,
+  liftTarget,
+  Mapping,
+  StepMap,
+  Transform,
+  type Step,
+} from "prosemirror-transform";
 import {
   EditorView,
   type DirectEditorProps,
@@ -200,7 +207,9 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           if (transaction.docChanged) {
             setMathDialog(null);
             setLinkDialog(null);
-            onChangeRef.current(serializeKoshMarkdown(nextState.doc));
+            onChangeRef.current(
+              serializeKoshMarkdown(documentWithPendingSelections(view, nextState.doc)),
+            );
           }
         },
         editable: () => !disabledRef.current,
@@ -378,6 +387,15 @@ function editorAttributes(ariaLabel: string, disabled: boolean): Record<string, 
 
 let pendingImageSequence = 0;
 
+interface PendingImageRollback {
+  initialPendingPosition: number | null;
+  replacedSelection: Slice;
+  requestId: string;
+  rollbackSteps: readonly Step[];
+}
+
+const pendingImageRollbacks = new WeakMap<EditorView, Map<string, PendingImageRollback>>();
+
 function beginImageIngest(
   view: EditorView,
   label: string,
@@ -394,29 +412,33 @@ function beginImageIngest(
     .map((step, index) => step.invert(replacement.docs[index]!))
     .reverse();
   const initialPendingPosition = pendingImagePosition(replacement.doc, requestId);
+  const rollback = {
+    initialPendingPosition,
+    replacedSelection,
+    requestId,
+    rollbackSteps,
+  };
+  registerPendingImageRollback(view, rollback);
   view.dispatch(replacement);
   notifyPendingImages(view.state.doc, onPendingRef.current);
 
   const restoreSelection = () => {
     const position = pendingImagePosition(view.state.doc, requestId);
     if (position === null) {
+      unregisterPendingImageRollback(view, requestId);
       return;
     }
     const pendingNode = view.state.doc.nodeAt(position);
     if (!pendingNode) {
+      unregisterPendingImageRollback(view, requestId);
       return;
     }
-    if (initialPendingPosition !== null) {
-      const offset = StepMap.offset(position - initialPendingPosition);
-      const transaction = view.state.tr;
-      const restored = rollbackSteps.every((step) => {
-        const mapped = step.map(new Mapping([offset]));
-        return mapped !== null && !transaction.maybeStep(mapped).failed;
-      });
-      if (restored) {
-        view.dispatch(transaction.scrollIntoView());
-        return;
-      }
+    const transaction = view.state.tr;
+    const restored = applyPendingImageRollback(transaction, rollback);
+    unregisterPendingImageRollback(view, requestId);
+    if (restored) {
+      view.dispatch(transaction.scrollIntoView());
+      return;
     }
     view.dispatch(
       view.state.tr
@@ -443,6 +465,7 @@ function beginImageIngest(
         return;
       }
       const image = imageNode(record, view.dom.clientWidth);
+      unregisterPendingImageRollback(view, requestId);
       view.dispatch(
         view.state.tr
           .replaceWith(position, position + pendingNode.nodeSize, image)
@@ -456,10 +479,62 @@ function beginImageIngest(
       onErrorRef.current?.(error);
     })
     .finally(() => {
+      unregisterPendingImageRollback(view, requestId);
       if (!view.isDestroyed) {
         notifyPendingImages(view.state.doc, onPendingRef.current);
       }
     });
+}
+
+function registerPendingImageRollback(view: EditorView, rollback: PendingImageRollback) {
+  const rollbacks = pendingImageRollbacks.get(view) ?? new Map<string, PendingImageRollback>();
+  rollbacks.set(rollback.requestId, rollback);
+  pendingImageRollbacks.set(view, rollbacks);
+}
+
+function unregisterPendingImageRollback(view: EditorView, requestId: string) {
+  const rollbacks = pendingImageRollbacks.get(view);
+  rollbacks?.delete(requestId);
+  if (rollbacks?.size === 0) {
+    pendingImageRollbacks.delete(view);
+  }
+}
+
+function documentWithPendingSelections(
+  view: EditorView,
+  document: ProseMirrorNode,
+): ProseMirrorNode {
+  const rollbacks = pendingImageRollbacks.get(view);
+  if (!rollbacks?.size) {
+    return document;
+  }
+  const transform = new Transform(document);
+  for (const rollback of rollbacks.values()) {
+    applyPendingImageRollback(transform, rollback);
+  }
+  return transform.doc;
+}
+
+function applyPendingImageRollback(transform: Transform, rollback: PendingImageRollback): boolean {
+  const position = pendingImagePosition(transform.doc, rollback.requestId);
+  if (position === null || rollback.initialPendingPosition === null) {
+    return false;
+  }
+  const offset = StepMap.offset(position - rollback.initialPendingPosition);
+  const mappedSteps = rollback.rollbackSteps
+    .map((step) => step.map(new Mapping([offset])))
+    .filter((step): step is Step => step !== null);
+  if (mappedSteps.length !== rollback.rollbackSteps.length) {
+    return false;
+  }
+  const probe = new Transform(transform.doc);
+  if (mappedSteps.some((step) => Boolean(probe.maybeStep(step).failed))) {
+    return false;
+  }
+  for (const step of mappedSteps) {
+    transform.step(step);
+  }
+  return true;
 }
 
 function insertImageRecords(view: EditorView, records: ImageRecord[]) {

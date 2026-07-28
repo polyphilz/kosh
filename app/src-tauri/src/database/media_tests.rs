@@ -217,6 +217,73 @@ fn image_ingestion_preserves_originals_deduplicates_previews_and_serves_only_pre
 }
 
 #[test]
+fn image_ingestion_rolls_back_base_attachment_when_image_setup_fails() {
+    let library = TestLibrary::new();
+    library.ingest_image(
+        (0x7a4, 0x7a5, 0x7a6, 0x7a7),
+        b"existing original image",
+        b"existing canonical preview",
+        11,
+    );
+    let failed_attachment_id = id(0x7a8);
+    let failed_lease_id = id(0x7a9);
+    let staged = StagedAttachment::from_reader(
+        Cursor::new(b"uncommitted original image"),
+        &library.staging,
+        &id(0x7aa),
+        MediaLimits::default().max_attachment_bytes,
+    )
+    .expect("stage failing image");
+    let error = library
+        .database
+        .client()
+        .ingest_image(IngestImageWrite {
+            attachment: staged.write(IngestAttachmentMetadata {
+                attachment_id: failed_attachment_id.clone(),
+                ingest_lease_id: failed_lease_id.clone(),
+                draft_id: CAPTURE_DRAFT_ID.into(),
+                display_filename: "uncommitted.png".into(),
+                media_type: "image/png".into(),
+                now_ms: 12,
+                limits: MediaLimits::default(),
+            }),
+            extraction_id: id(0x7a7),
+            preview: CanonicalImage {
+                bytes: b"uncommitted canonical preview".to_vec(),
+                natural_width: 640,
+                natural_height: 480,
+            },
+        })
+        .expect_err("duplicate OCR identity rejects image setup");
+    assert!(matches!(error, DatabaseError::Sqlite(_)));
+
+    let main = library.database.open_main_read_only().expect("main reader");
+    let leaked: bool = main
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM attachment
+                WHERE id = ?1
+                UNION ALL
+                SELECT 1
+                FROM media_ingest_lease
+                WHERE id = ?2
+                UNION ALL
+                SELECT 1
+                FROM draft_media_lease
+                WHERE media_ingest_lease_id = ?2
+             )",
+            params![failed_attachment_id, failed_lease_id],
+            |row| row.get(0),
+        )
+        .expect("failed image residue");
+    assert!(
+        !leaked,
+        "failed image setup must not consume draft capacity"
+    );
+}
+
+#[test]
 fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revision() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
@@ -561,7 +628,7 @@ fn image_ocr_recovers_interrupted_work_and_bounds_terminal_retries() {
 }
 
 #[test]
-fn image_ocr_recovery_does_not_requeue_stale_extractor_provenance() {
+fn image_ocr_recovery_replaces_stale_extractor_provenance() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
         (0x78a, 0x78b, 0x78c, 0x78d),
@@ -590,28 +657,32 @@ fn image_ocr_recovery_does_not_requeue_stale_extractor_provenance() {
 
     let recovery = client
         .recover_interrupted_image_ocr(12, 14)
-        .expect("recover only current OCR provenance");
+        .expect("replace stale OCR provenance");
 
-    assert_eq!(recovery.requeued, 0);
-    assert_eq!(recovery.terminally_failed, 0);
+    assert_eq!(recovery.requeued, 1);
+    assert_eq!(recovery.terminally_failed, 1);
     let main = library.database.open_main_read_only().expect("main reader");
     assert_eq!(
         main.query_row(
-            "SELECT queue.state, extraction.status, attachment.extraction_state
+            "SELECT queue.state, extraction.status
              FROM image_ocr_queue AS queue
              JOIN attachment_extraction AS extraction ON extraction.id = queue.extraction_id
-             JOIN attachment ON attachment.id = extraction.attachment_id
-             WHERE attachment.id = ?1",
+             WHERE extraction.attachment_id = ?1
+               AND extraction.extractor_version = '1'",
             params![image.attachment.id],
-            |row| Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?
-            )),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .expect("stale OCR state"),
-        ("RUNNING".into(), "RUNNING".into(), "PENDING".into())
+        ("FAILED".into(), "FAILED".into())
     );
+    drop(main);
+    let replacement = client
+        .claim_next_image_ocr(14)
+        .expect("claim replacement OCR")
+        .expect("replacement OCR job");
+    assert_eq!(replacement.attachment_id, image.attachment.id);
+    assert_eq!(replacement.extractor_version, "2");
+    assert_eq!(replacement.attempt_count, 1);
 }
 
 #[test]
