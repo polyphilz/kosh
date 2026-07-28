@@ -9,6 +9,7 @@ const MAX_PROSE_SEGMENT_CHARS: usize = 1_000;
 const PROSE_OVERLAP_CHARS: usize = 100;
 const MAX_ATOMIC_CODE_CHARS: usize = 1_600;
 const CODE_TARGET_CHARS: usize = 1_200;
+const CODE_OVERLAP_CHARS: usize = 100;
 const CODE_OVERLAP_LINES: usize = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -566,9 +567,17 @@ fn split_code_block(block: SourceBlock) -> Vec<BuiltPassage> {
     let mut passages = Vec::new();
     let mut start = 0;
     while start < lines.len() {
+        if char_count(lines[start]) > MAX_ATOMIC_CODE_CHARS {
+            passages.extend(split_oversized_code_line(&block, &lines, start));
+            start += 1;
+            continue;
+        }
         let mut end = start;
         let mut length = 0;
         while end < lines.len() {
+            if char_count(lines[end]) > MAX_ATOMIC_CODE_CHARS {
+                break;
+            }
             let projected = length + lines[end].chars().count() + usize::from(end > start);
             if end > start && projected > CODE_TARGET_CHARS {
                 break;
@@ -593,7 +602,50 @@ fn split_code_block(block: SourceBlock) -> Vec<BuiltPassage> {
         if end == lines.len() {
             break;
         }
-        start = end.saturating_sub(CODE_OVERLAP_LINES).max(start + 1);
+        start = if char_count(lines[end]) > MAX_ATOMIC_CODE_CHARS {
+            end
+        } else {
+            end.saturating_sub(CODE_OVERLAP_LINES).max(start + 1)
+        };
+    }
+    passages
+}
+
+fn split_oversized_code_line(
+    block: &SourceBlock,
+    lines: &[&str],
+    line_index: usize,
+) -> Vec<BuiltPassage> {
+    let line_char_offset = lines[..line_index]
+        .iter()
+        .map(|line| char_count(line) + 1)
+        .sum::<usize>();
+    let characters = lines[line_index].chars().collect::<Vec<_>>();
+    let mut passages = Vec::new();
+    let mut start = 0;
+    while start < characters.len() {
+        let end = (start + CODE_TARGET_CHARS).min(characters.len());
+        passages.push(finish_passage(
+            characters[start..end].iter().collect(),
+            block.heading_context.clone(),
+            block_locator(
+                block,
+                Some(
+                    u32::try_from(line_char_offset + start)
+                        .expect("code character offset fits in u32"),
+                ),
+                Some(
+                    u32::try_from(line_char_offset + end)
+                        .expect("code character offset fits in u32"),
+                ),
+                Some(u32::try_from(line_index + 1).expect("line offset fits in u32")),
+                Some(u32::try_from(line_index + 1).expect("line offset fits in u32")),
+            ),
+        ));
+        if end == characters.len() {
+            break;
+        }
+        start = end.saturating_sub(CODE_OVERLAP_CHARS).max(start + 1);
     }
     passages
 }
@@ -757,6 +809,42 @@ mod tests {
                 pair[1].locator.start_line.expect("next line")
                     <= pair[0].locator.end_line.expect("prior line"),
                 "large code passages overlap complete lines"
+            );
+        }
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn oversized_single_code_lines_split_on_exact_character_ranges() {
+        let code = format!(
+            "{{\"payload\":\"{}\"}}",
+            "λ".repeat(MAX_ATOMIC_CODE_CHARS + 900)
+        );
+        let markdown = format!("# Embedded data\n\n```json\n{code}\n```");
+        let passages = build_markdown_passages(&markdown);
+        let code_passages = &passages[1..];
+
+        assert!(code_passages.len() > 1);
+        for passage in code_passages {
+            assert!(char_count(&passage.content) <= MAX_ATOMIC_CODE_CHARS);
+            assert_eq!(passage.heading_context, vec!["Embedded data"]);
+            assert_eq!(passage.locator.start_line, Some(1));
+            assert_eq!(passage.locator.end_line, Some(1));
+            let start = passage.locator.start_char.expect("code start character");
+            let end = passage.locator.end_char.expect("code end character");
+            assert_eq!(
+                code.chars()
+                    .skip(start as usize)
+                    .take((end - start) as usize)
+                    .collect::<String>(),
+                passage.content
+            );
+        }
+        for pair in code_passages.windows(2) {
+            assert!(
+                pair[1].locator.start_char.expect("next start")
+                    < pair[0].locator.end_char.expect("prior end"),
+                "oversized code-line passages retain limited overlap"
             );
         }
         assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
