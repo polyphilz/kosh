@@ -235,9 +235,9 @@ async fn ingest_generic_attachment(
     let extraction_id = ids.next().expect("requested attachment extraction ID");
     let display_filename = safe_attachment_filename(filename);
     let media_type = attachment_media_type(&display_filename).to_owned();
-    let extraction = is_text_media_type(&media_type).then(|| extract_text(&raw));
 
     tauri::async_runtime::spawn_blocking(move || {
+        let extraction = is_text_media_type(&media_type).then(|| extract_text(&raw));
         let staged = StagedAttachment::from_reader(
             Cursor::new(raw),
             &staging_directory,
@@ -388,14 +388,17 @@ fn split_text_passages(text: &str) -> Vec<TextFileSegment> {
                 &mut buffered_end,
             );
             let mut chunk = String::new();
+            let mut chunk_chars = 0;
             for character in line.chars() {
                 chunk.push(character);
-                if chunk.chars().count() == MAX_TEXT_PASSAGE_CHARS {
+                chunk_chars += 1;
+                if chunk_chars == MAX_TEXT_PASSAGE_CHARS {
                     passages.push(TextFileSegment {
                         start_line: line_number,
                         end_line: line_number,
                         content: std::mem::take(&mut chunk),
                     });
+                    chunk_chars = 0;
                 }
             }
             if !chunk.is_empty() {
@@ -788,6 +791,7 @@ mod tests {
         attachment_media_type, decode_text, extract_text, looks_like_pdf,
         materialize_for_external_use, read_bounded_attachment, recover_attachment_open_directory,
         safe_attachment_filename, split_text_passages, MAX_OPEN_MATERIALIZATIONS,
+        MAX_TEXT_EXTRACTION_BYTES,
     };
 
     #[test]
@@ -815,6 +819,26 @@ mod tests {
         assert!(passages
             .iter()
             .all(|passage| passage.content.chars().count() <= 1_000));
+    }
+
+    #[test]
+    fn maximum_single_line_extraction_is_split_in_linear_bounded_chunks() {
+        let text = "é".repeat(MAX_TEXT_EXTRACTION_BYTES / 2);
+        let passages = split_text_passages(&text);
+
+        assert_eq!(
+            passages
+                .iter()
+                .map(|passage| passage.content.len())
+                .sum::<usize>(),
+            MAX_TEXT_EXTRACTION_BYTES
+        );
+        assert!(passages
+            .iter()
+            .all(|passage| passage.content.chars().count() <= 1_000));
+        assert!(passages
+            .iter()
+            .all(|passage| (passage.start_line, passage.end_line) == (1, 1)));
     }
 
     #[test]
