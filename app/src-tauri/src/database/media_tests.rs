@@ -306,6 +306,128 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
 }
 
 #[test]
+fn draft_only_image_ocr_never_enters_search_and_remains_hidden_after_discard() {
+    let library = TestLibrary::new();
+    let image = library.ingest_image(
+        (0x792, 0x793, 0x794, 0x795),
+        b"draft-only original image",
+        b"draft-only preview",
+        11,
+    );
+    let body = format!(
+        "{{{{kosh:image:{};width=100%;caption=Temporary}}}}",
+        image.attachment.id
+    );
+    let draft = library.save_capture(&body, 12);
+    let client = library.database.client();
+    let job = client
+        .claim_next_image_ocr(13)
+        .expect("claim draft OCR")
+        .expect("draft OCR job");
+    client
+        .complete_image_ocr(
+            job,
+            Ok(vec![ImageOcrRegion {
+                text: "draft_only_evidence must stay private".into(),
+                x: 0.1,
+                y: 0.2,
+                width: 0.5,
+                height: 0.25,
+            }]),
+            14,
+        )
+        .expect("complete draft OCR");
+
+    let search = || {
+        client
+            .search_passages(SearchPassagesInput {
+                query: "draft_only_evidence".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("search draft-only OCR")
+    };
+    assert!(search().is_empty());
+    assert!(client
+        .clear_draft_at(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: draft.updated_at_ms,
+            },
+            15,
+        )
+        .expect("discard draft-only image"));
+    assert!(search().is_empty());
+}
+
+#[test]
+fn completed_draft_image_ocr_is_indexed_when_a_revision_takes_ownership() {
+    let library = TestLibrary::new();
+    let image = library.ingest_image(
+        (0x796, 0x797, 0x798, 0x799),
+        b"pre-save original image",
+        b"pre-save preview",
+        11,
+    );
+    let body = format!(
+        "{{{{kosh:image:{};width=100%;caption=Promoted}}}}",
+        image.attachment.id
+    );
+    library.save_capture(&body, 12);
+    let client = library.database.client();
+    let job = client
+        .claim_next_image_ocr(13)
+        .expect("claim pre-save OCR")
+        .expect("pre-save OCR job");
+    client
+        .complete_image_ocr(
+            job,
+            Ok(vec![ImageOcrRegion {
+                text: "promoted_image_evidence becomes durable".into(),
+                x: 0.1,
+                y: 0.2,
+                width: 0.5,
+                height: 0.25,
+            }]),
+            14,
+        )
+        .expect("complete pre-save OCR");
+    assert!(client
+        .search_passages(SearchPassagesInput {
+            query: "promoted_image_evidence".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search pre-save OCR")
+        .is_empty());
+
+    client
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: Some("Promoted image".into()),
+                body_markdown: body,
+                sources: Vec::new(),
+            },
+            now_ms: 15,
+            tidbit_id: id(0x79a),
+            revision_id: id(0x79b),
+            source_ids: Vec::new(),
+        })
+        .expect("save revision-owned image");
+    assert_eq!(
+        client
+            .search_passages(SearchPassagesInput {
+                query: "promoted_image_evidence".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("search promoted OCR")
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn image_ocr_recovers_interrupted_work_and_bounds_terminal_retries() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
