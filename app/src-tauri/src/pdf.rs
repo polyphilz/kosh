@@ -177,6 +177,21 @@ pub(crate) async fn ingest_selected_pdf(
 }
 
 #[tauri::command]
+pub(crate) fn set_pdf_drop_consumer_active(state: State<'_, RuntimeState>, active: bool) {
+    state.set_pdf_drop_consumer_active(active);
+}
+
+#[tauri::command]
+pub(crate) fn discard_pdf_drop_selections(
+    state: State<'_, RuntimeState>,
+    selection_ids: Vec<String>,
+) -> Result<(), crate::database::commands::CommandError> {
+    state
+        .discard_pdf_drop_selections(&selection_ids)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub(crate) async fn pdf_status(
     state: State<'_, RuntimeState>,
     attachment_id: String,
@@ -243,6 +258,9 @@ pub(crate) fn handle_pdf_drop<R: tauri::Runtime>(
     let Some(state) = window.try_state::<RuntimeState>() else {
         return;
     };
+    if !state.pdf_drop_consumer_active() {
+        return;
+    }
     let selections = paths
         .iter()
         .filter(|path| {
@@ -252,7 +270,7 @@ pub(crate) fn handle_pdf_drop<R: tauri::Runtime>(
         })
         .take(8)
         .filter_map(|path| {
-            let selection_id = match state.register_pdf_selection(path.clone()) {
+            let selection_id = match state.register_dropped_pdf_selection(path.clone()) {
                 Ok(id) => id,
                 Err(error) => {
                     log::warn!("could not register a dropped PDF: {error}");
@@ -272,7 +290,14 @@ pub(crate) fn handle_pdf_drop<R: tauri::Runtime>(
     if selections.is_empty() {
         return;
     }
+    let selection_ids = selections
+        .iter()
+        .map(|selection| selection.selection_id.clone())
+        .collect::<Vec<_>>();
     if let Err(error) = window.emit(PDF_DROP_EVENT, PdfDropNotice { selections }) {
+        if let Err(discard_error) = state.discard_pdf_drop_selections(&selection_ids) {
+            log::warn!("could not revoke an undelivered PDF drop: {discard_error}");
+        }
         log::warn!("could not notify the editor about a native PDF drop: {error}");
     }
 }

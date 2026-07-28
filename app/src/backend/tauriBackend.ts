@@ -64,6 +64,10 @@ export const tauriBackend: Backend = {
   selectPdf: () => invoke<string | null>("select_pdf"),
   ingestSelectedPdf: (selectionId: string, draftId: string) =>
     invoke<PdfRecord>("ingest_selected_pdf", { selectionId, draftId }),
+  setPdfDropConsumerActive: (active: boolean) =>
+    invoke<void>("set_pdf_drop_consumer_active", { active }),
+  discardPdfDropSelections: (selectionIds: string[]) =>
+    invoke<void>("discard_pdf_drop_selections", { selectionIds }),
   pdfStatus: (attachmentId: string) => invoke<PdfStatusRecord>("pdf_status", { attachmentId }),
   retryPdfExtraction: (attachmentId: string) =>
     invoke<PdfStatusRecord>("retry_pdf_extraction", { attachmentId }),

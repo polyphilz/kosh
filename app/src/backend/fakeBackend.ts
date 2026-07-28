@@ -180,6 +180,10 @@ export class FakeBackend implements Backend {
     throw new Error("Selected PDFs are unavailable in the browser fixture");
   }
 
+  async setPdfDropConsumerActive(_active: boolean): Promise<void> {}
+
+  async discardPdfDropSelections(_selectionIds: string[]): Promise<void> {}
+
   async pdfStatus(attachmentId: string): Promise<PdfStatusRecord> {
     throw new Error(`PDF ${attachmentId} was not found`);
   }

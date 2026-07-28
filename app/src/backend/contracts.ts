@@ -328,6 +328,8 @@ export interface Backend {
   imageOcrDiagnostics(): Promise<ImageOcrDiagnostics>;
   selectPdf(): Promise<string | null>;
   ingestSelectedPdf(selectionId: string, draftId: string): Promise<PdfRecord>;
+  setPdfDropConsumerActive(active: boolean): Promise<void>;
+  discardPdfDropSelections(selectionIds: string[]): Promise<void>;
   pdfStatus(attachmentId: string): Promise<PdfStatusRecord>;
   retryPdfExtraction(attachmentId: string): Promise<PdfStatusRecord>;
   openPdfExternal(attachmentId: string): Promise<void>;

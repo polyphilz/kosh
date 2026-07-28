@@ -76,6 +76,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   const [editorMediaPending, setEditorMediaPending] = useState(false);
   const [dropMediaPending, setDropMediaPending] = useState(false);
+  const [pdfDropListenerReady, setPdfDropListenerReady] = useState(false);
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
   const editorMediaPendingRef = useRef(false);
@@ -207,7 +208,11 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
     let active = true;
     let unlisten: (() => void) | undefined;
     void listen<PdfDropNotice>(PDF_DROP_EVENT, (event) => {
+      const selectionIds = event.payload.selections.map((selection) => selection.selectionId);
       if (!active || !readyRef.current || busyRef.current) {
+        void backend.discardPdfDropSelections(selectionIds).catch((reason: unknown) => {
+          console.error("Could not discard an ignored PDF drop", reason);
+        });
         return;
       }
       pendingDropCountRef.current += 1;
@@ -247,15 +252,38 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
     }).then((stop) => {
       if (active) {
         unlisten = stop;
+        setPdfDropListenerReady(true);
       } else {
         stop();
       }
     });
     return () => {
       active = false;
+      setPdfDropListenerReady(false);
       unlisten?.();
+      void backend
+        .setPdfDropConsumerActive(false)
+        .catch((reason: unknown) =>
+          console.error("Could not release the PDF drop consumer", reason),
+        );
     };
   }, [backend, enqueueDraftSave]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window) || !pdfDropListenerReady) {
+      return;
+    }
+    void backend
+      .setPdfDropConsumerActive(ready && !busy)
+      .catch((reason: unknown) => console.error("Could not update the PDF drop consumer", reason));
+    return () => {
+      void backend
+        .setPdfDropConsumerActive(false)
+        .catch((reason: unknown) =>
+          console.error("Could not release the PDF drop consumer", reason),
+        );
+    };
+  }, [backend, busy, pdfDropListenerReady, ready]);
 
   useEffect(() => {
     if (!ready || !dirty || busy) return;

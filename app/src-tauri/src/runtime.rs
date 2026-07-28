@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -56,6 +59,7 @@ pub(crate) struct RuntimeState {
     pending_clipboard_images: Mutex<HashMap<String, PendingClipboardImage>>,
     pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
     pending_pdf_selections: Mutex<HashMap<String, PendingPdfSelection>>,
+    pdf_drop_consumer_active: AtomicBool,
 }
 
 struct PendingClipboardImage {
@@ -70,6 +74,7 @@ struct PendingImageDrop {
 
 struct PendingPdfSelection {
     created_at_ms: i64,
+    dropped: bool,
     path: PathBuf,
 }
 
@@ -126,6 +131,7 @@ impl RuntimeState {
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_pdf_selections: Mutex::new(HashMap::new()),
+            pdf_drop_consumer_active: AtomicBool::new(false),
         };
         if let Err(error) = state
             .database
@@ -166,6 +172,7 @@ impl RuntimeState {
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_pdf_selections: Mutex::new(HashMap::new()),
+            pdf_drop_consumer_active: AtomicBool::new(false),
         }
     }
 
@@ -339,6 +346,26 @@ impl RuntimeState {
     }
 
     pub(crate) fn register_pdf_selection(&self, path: PathBuf) -> crate::database::Result<String> {
+        self.register_pdf_selection_with_origin(path, false)
+    }
+
+    pub(crate) fn register_dropped_pdf_selection(
+        &self,
+        path: PathBuf,
+    ) -> crate::database::Result<String> {
+        if !self.pdf_drop_consumer_active() {
+            return Err(crate::database::DatabaseError::InvalidInput(
+                "no editor is accepting dropped PDFs".into(),
+            ));
+        }
+        self.register_pdf_selection_with_origin(path, true)
+    }
+
+    fn register_pdf_selection_with_origin(
+        &self,
+        path: PathBuf,
+        dropped: bool,
+    ) -> crate::database::Result<String> {
         if !path.is_file() {
             return Err(crate::database::DatabaseError::InvalidInput(
                 "the selected PDF is not a regular file".into(),
@@ -352,6 +379,11 @@ impl RuntimeState {
         pending.retain(|_, selection| {
             now_ms.saturating_sub(selection.created_at_ms) <= PDF_SELECTION_TTL_MS
         });
+        if dropped && !self.pdf_drop_consumer_active() {
+            return Err(crate::database::DatabaseError::InvalidInput(
+                "no editor is accepting dropped PDFs".into(),
+            ));
+        }
         if pending.len() >= MAX_PENDING_PDF_SELECTIONS {
             return Err(crate::database::DatabaseError::InvalidInput(
                 "too many PDFs are awaiting ingestion".into(),
@@ -366,10 +398,55 @@ impl RuntimeState {
             selection_id.clone(),
             PendingPdfSelection {
                 created_at_ms: now_ms,
+                dropped,
                 path,
             },
         );
         Ok(selection_id)
+    }
+
+    pub(crate) fn set_pdf_drop_consumer_active(&self, active: bool) {
+        self.pdf_drop_consumer_active
+            .store(active, Ordering::Release);
+        if active {
+            return;
+        }
+        let mut pending = self
+            .pending_pdf_selections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, selection| !selection.dropped);
+    }
+
+    pub(crate) fn pdf_drop_consumer_active(&self) -> bool {
+        self.pdf_drop_consumer_active.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn discard_pdf_drop_selections(
+        &self,
+        selection_ids: &[String],
+    ) -> crate::database::Result<()> {
+        if selection_ids.len() > MAX_PENDING_PDF_SELECTIONS {
+            return Err(crate::database::DatabaseError::InvalidInput(
+                "too many PDF selections were provided".into(),
+            ));
+        }
+        for selection_id in selection_ids {
+            validate_capability_id(selection_id, "selectionId")?;
+        }
+        let mut pending = self
+            .pending_pdf_selections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for selection_id in selection_ids {
+            if pending
+                .get(selection_id)
+                .is_some_and(|selection| selection.dropped)
+            {
+                pending.remove(selection_id);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn take_pdf_selection(
@@ -609,6 +686,52 @@ mod tests {
         assert!(matches!(
             state.take_image_drop("not-a-capability"),
             Err(crate::database::DatabaseError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn pdf_drop_capabilities_require_and_follow_an_active_consumer() {
+        let directory = tempfile::tempdir().expect("temporary PDF drop directory");
+        let picker_pdf = directory.path().join("picker.pdf");
+        let dropped_pdf = directory.path().join("dropped.pdf");
+        std::fs::write(&picker_pdf, b"%PDF-picker").expect("picker PDF fixture");
+        std::fs::write(&dropped_pdf, b"%PDF-drop").expect("dropped PDF fixture");
+        let picker_id = "019f547b-6200-7000-8000-000000000993".to_owned();
+        let dropped_id = "019f547b-6200-7000-8000-000000000994".to_owned();
+        let state = RuntimeState::deterministic(
+            directory.path().join("data"),
+            Arc::new(deterministic::FixedClock(100)),
+            deterministic::SequenceIds::new([picker_id.clone(), dropped_id.clone()]),
+        );
+
+        assert!(matches!(
+            state.register_dropped_pdf_selection(dropped_pdf.clone()),
+            Err(crate::database::DatabaseError::InvalidInput(_))
+        ));
+        assert_eq!(
+            state
+                .register_pdf_selection(picker_pdf.clone())
+                .expect("picker selection"),
+            picker_id
+        );
+        state.set_pdf_drop_consumer_active(true);
+        assert_eq!(
+            state
+                .register_dropped_pdf_selection(dropped_pdf)
+                .expect("dropped selection"),
+            dropped_id
+        );
+
+        state.set_pdf_drop_consumer_active(false);
+        assert_eq!(
+            state
+                .take_pdf_selection(&picker_id)
+                .expect("picker survives"),
+            picker_pdf
+        );
+        assert!(matches!(
+            state.take_pdf_selection(&dropped_id),
+            Err(crate::database::DatabaseError::NotFound { .. })
         ));
     }
 

@@ -77,6 +77,13 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.imageStatus("attachment-1");
     await tauriBackend.retryImageOcr("attachment-1");
     await tauriBackend.imageOcrDiagnostics();
+    await tauriBackend.selectPdf();
+    await tauriBackend.ingestSelectedPdf("pdf-selection-1", "draft-1");
+    await tauriBackend.setPdfDropConsumerActive(true);
+    await tauriBackend.discardPdfDropSelections(["pdf-selection-2"]);
+    await tauriBackend.pdfStatus("pdf-attachment-1");
+    await tauriBackend.retryPdfExtraction("pdf-attachment-1");
+    await tauriBackend.openPdfExternal("pdf-attachment-1");
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
       ["create_tidbit", { input: draft }],
@@ -98,6 +105,13 @@ describe("tauriBackend tidbit gateway", () => {
       ["image_status", { attachmentId: "attachment-1" }],
       ["retry_image_ocr", { attachmentId: "attachment-1" }],
       ["image_ocr_diagnostics"],
+      ["select_pdf"],
+      ["ingest_selected_pdf", { selectionId: "pdf-selection-1", draftId: "draft-1" }],
+      ["set_pdf_drop_consumer_active", { active: true }],
+      ["discard_pdf_drop_selections", { selectionIds: ["pdf-selection-2"] }],
+      ["pdf_status", { attachmentId: "pdf-attachment-1" }],
+      ["retry_pdf_extraction", { attachmentId: "pdf-attachment-1" }],
+      ["open_pdf_external", { attachmentId: "pdf-attachment-1" }],
     ]);
   });
 

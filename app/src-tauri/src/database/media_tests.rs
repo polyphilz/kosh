@@ -1398,6 +1398,21 @@ fn ingestion_deduplicates_bytes_preserves_metadata_and_bounds_reads() {
     assert_eq!(payload.media_type, "text/plain");
     assert!(!payload.revision_bound);
 
+    let clamped = client
+        .load_media_payload(
+            first.id.clone(),
+            13,
+            Some(MediaRangeRequest::Inclusive(MediaByteRange {
+                start: 5,
+                end_inclusive: 65_535,
+            })),
+            5,
+        )
+        .expect("authorized range clamped to EOF");
+    assert_eq!(clamped.bytes, b"bytes");
+    assert_eq!(clamped.range.start, 5);
+    assert_eq!(clamped.range.end_inclusive, 9);
+
     let from = client
         .load_media_payload(first.id.clone(), 13, Some(MediaRangeRequest::From(5)), 5)
         .expect("authorized open-ended read");

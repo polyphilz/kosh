@@ -1066,7 +1066,10 @@ pub(crate) fn load_media_payload(
         });
     }
     let range = match requested_range {
-        Some(MediaRangeRequest::Inclusive(range)) => range,
+        Some(MediaRangeRequest::Inclusive(range)) => MediaByteRange {
+            start: range.start,
+            end_inclusive: range.end_inclusive.min(total_byte_length - 1),
+        },
         Some(MediaRangeRequest::From(start)) => MediaByteRange {
             start,
             end_inclusive: total_byte_length - 1,

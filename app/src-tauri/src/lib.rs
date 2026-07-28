@@ -53,6 +53,8 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         media::image_ocr_diagnostics,
         pdf::select_pdf,
         pdf::ingest_selected_pdf,
+        pdf::set_pdf_drop_consumer_active,
+        pdf::discard_pdf_drop_selections,
         pdf::pdf_status,
         pdf::retry_pdf_extraction,
         pdf::open_pdf_external,
