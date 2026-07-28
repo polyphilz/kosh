@@ -555,13 +555,13 @@ fn restore_verified_status(inner: &EmbeddingRuntimeInner) {
     if !model_path.is_file() {
         return;
     }
+    sweep_stale_sidecar(&inner.data_root, sidecar_path, model_path);
     let Ok(expected) = build_verification_receipt(inner, model_path, sidecar_path) else {
         return;
     };
     if !verification_receipt_matches(&inner.data_root, &expected) {
         return;
     }
-    sweep_stale_sidecar(&inner.data_root, sidecar_path, model_path);
     update_status(inner, |status| {
         status.phase = SemanticRuntimePhase::Ready;
         status.downloaded_bytes = inner.contract.manifest.config.model_file_size;
@@ -2540,7 +2540,7 @@ mod tests {
         let model_path = directory.path().join("model.gguf");
         let sidecar_path = directory.path().join("llama-server");
         fs::write(&model_path, b"0123456789").expect("model fixture");
-        fs::write(&sidecar_path, b"#!/bin/sh\nsleep 30\n").expect("sidecar fixture");
+        fs::write(&sidecar_path, b"#!/bin/sh\nsleep 30 &\nwait\n").expect("sidecar fixture");
         let mut permissions = sidecar_path
             .metadata()
             .expect("sidecar metadata")
@@ -2581,6 +2581,52 @@ mod tests {
             Some(pid)
         );
         assert!(process_exists(pid as i32));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_sweeps_a_path_validated_orphan_without_a_receipt() {
+        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+
+        let directory = tempfile::tempdir().expect("orphaned runtime directory");
+        let model_path = directory.path().join("model.gguf");
+        let sidecar_path = directory.path().join("llama-server");
+        fs::write(&model_path, b"0123456789").expect("model fixture");
+        fs::write(&sidecar_path, b"#!/bin/sh\nsleep 30 &\nwait\n").expect("sidecar fixture");
+        let mut permissions = sidecar_path
+            .metadata()
+            .expect("sidecar metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&sidecar_path, permissions).expect("executable sidecar");
+        let mut command = Command::new(&sidecar_path);
+        command
+            .arg("--model")
+            .arg(&model_path)
+            .arg("--embedding")
+            .process_group(0);
+        let mut orphan = command.spawn().expect("orphan sidecar process");
+        let pid = orphan.id();
+        write_pidfile(directory.path(), pid, &sidecar_path, &model_path).expect("sidecar PID file");
+
+        let runtime = EmbeddingRuntime::start(test_configuration(
+            directory.path(),
+            Some(sidecar_path),
+            Some(model_path),
+            test_contract(b"0123456789", "http://127.0.0.1:1/model".into()),
+            Duration::from_secs(60),
+        ));
+        let exited = orphan.try_wait().expect("orphan process status");
+        if exited.is_none() {
+            terminate_process_group(&mut orphan);
+        }
+
+        assert!(exited.is_some());
+        assert!(!pidfile_path(directory.path()).exists());
+        assert_eq!(
+            runtime.status().phase,
+            SemanticRuntimePhase::VerificationRequired
+        );
     }
 
     #[cfg(unix)]
