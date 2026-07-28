@@ -25,6 +25,7 @@ mod tidbits_tests;
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
+    io::Read,
     sync::{
         mpsc::{self, Receiver},
         Mutex,
@@ -37,8 +38,8 @@ use rusqlite::Connection;
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use media::{
-    AttachmentKind, AttachmentRecord, MediaCleanupResult, MediaIntegrityReport, MediaLimits,
-    MediaMaintenanceReport,
+    AttachmentIngestInput, AttachmentKind, AttachmentRecord, MediaCleanupResult,
+    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
 };
 pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
@@ -164,6 +165,32 @@ impl Database {
 
     pub fn open_media_read_only(&self) -> Result<Connection> {
         connection::open_read_only(&self.paths.media, DatabaseKind::Media)
+    }
+
+    pub fn ingest_attachment(
+        &self,
+        input: AttachmentIngestInput,
+        reader: impl Read,
+    ) -> Result<AttachmentRecord> {
+        let attachment_id = uuid::Uuid::now_v7().to_string();
+        let ingest_lease_id = uuid::Uuid::now_v7().to_string();
+        let stage_id = uuid::Uuid::now_v7().to_string();
+        let staged = media::StagedAttachment::from_reader(
+            reader,
+            &self.paths.root.join("media-staging"),
+            &stage_id,
+            input.limits.max_attachment_bytes,
+        )?;
+        self.client
+            .ingest_attachment(staged.write(media::IngestAttachmentMetadata {
+                attachment_id,
+                ingest_lease_id,
+                draft_id: input.draft_id,
+                display_filename: input.display_filename,
+                media_type: input.media_type,
+                now_ms: input.now_ms,
+                limits: input.limits,
+            }))
     }
 
     pub fn shutdown(&self) -> Result<()> {

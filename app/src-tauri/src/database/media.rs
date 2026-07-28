@@ -138,6 +138,15 @@ pub struct AttachmentRecord {
 }
 
 #[derive(Clone, Debug)]
+pub struct AttachmentIngestInput {
+    pub draft_id: String,
+    pub display_filename: String,
+    pub media_type: String,
+    pub now_ms: i64,
+    pub limits: MediaLimits,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct IngestAttachmentWrite {
     pub attachment_id: String,
     pub ingest_lease_id: String,
@@ -298,7 +307,7 @@ pub(crate) struct AttachmentReference {
 pub(crate) fn ingest_attachment(
     main: &mut Connection,
     media: &mut Connection,
-    write: IngestAttachmentWrite,
+    mut write: IngestAttachmentWrite,
 ) -> Result<AttachmentRecord> {
     validate_uuid_v7(&write.attachment_id, "attachmentId")?;
     validate_uuid_v7(&write.ingest_lease_id, "ingestLeaseId")?;
@@ -307,6 +316,7 @@ pub(crate) fn ingest_attachment(
     let limits = write.limits.validate()?;
     validate_filename(&write.display_filename)?;
     validate_media_type(&write.media_type)?;
+    write.media_type.make_ascii_lowercase();
     if write.sha256.len() != 32 {
         return Err(DatabaseError::InvalidInput(
             "staged attachment digest must contain 32 bytes".into(),

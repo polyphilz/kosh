@@ -40,7 +40,6 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         runtime::repair_semantic_runtime,
         runtime::semantic_runtime_logs,
         media::media_limits,
-        media::ingest_attachment,
         media::media_integrity_scan,
         media::maintain_media,
         database::commands::create_tidbit,
@@ -80,14 +79,14 @@ pub fn run() {
 }
 
 pub use database::{
-    AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator, CitationResolution,
-    CitationState, CitationTidbit, ClearDraftInput, Database, DatabaseDiagnostics, DatabaseError,
-    DatabasePaths, DeleteTidbitInput, Draft, EditTidbitInput, LexicalSearchMode, ListTidbitsInput,
-    MediaCleanupResult, MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
-    PassageSearchResult, RestoreTidbitInput, SaveDraftInput, SearchExecutionMode, SearchField,
-    SearchHighlight, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
-    SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage,
-    TidbitSource,
+    AttachmentIngestInput, AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator,
+    CitationResolution, CitationState, CitationTidbit, ClearDraftInput, Database,
+    DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput, Draft, EditTidbitInput,
+    LexicalSearchMode, ListTidbitsInput, MediaCleanupResult, MediaIntegrityReport, MediaLimits,
+    MediaMaintenanceReport, PassageSearchResult, RestoreTidbitInput, SaveDraftInput,
+    SearchExecutionMode, SearchField, SearchHighlight, SearchPassagesInput, SearchPassagesResponse,
+    SemanticSearchReadiness, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem,
+    TidbitListPage, TidbitSource,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
 pub use embedding_runtime::{

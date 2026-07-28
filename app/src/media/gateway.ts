@@ -1,6 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-
-const UPLOAD_METADATA_LIMIT = 8 * 1024;
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export interface MediaLimits {
@@ -21,12 +19,6 @@ export interface AttachmentRecord {
   mediaType: string;
   byteLength: number;
   kind: AttachmentKind;
-}
-
-export interface AttachmentUpload {
-  draftId: string;
-  displayFilename: string;
-  mediaType: string;
 }
 
 export interface MediaIntegrityReport {
@@ -50,50 +42,6 @@ export function loadMediaLimits(): Promise<MediaLimits> {
   return invoke<MediaLimits>("media_limits");
 }
 
-export async function ingestAttachmentBytes(
-  input: AttachmentUpload,
-  bytes: ArrayBuffer | Uint8Array,
-): Promise<AttachmentRecord> {
-  const limits = await loadMediaLimits();
-  return ingestBoundedAttachmentBytes(input, bytes, limits);
-}
-
-async function ingestBoundedAttachmentBytes(
-  input: AttachmentUpload,
-  bytes: ArrayBuffer | Uint8Array,
-  limits: MediaLimits,
-): Promise<AttachmentRecord> {
-  const source = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  validateAttachmentSize(source.byteLength, limits);
-  const metadata = new TextEncoder().encode(JSON.stringify(input));
-  if (metadata.byteLength === 0 || metadata.byteLength > UPLOAD_METADATA_LIMIT) {
-    throw new Error("Attachment metadata is too large.");
-  }
-  const payloadLength = 4 + metadata.byteLength + source.byteLength;
-  if (!Number.isSafeInteger(payloadLength)) {
-    throw new Error("Attachment upload size is not representable.");
-  }
-  const payload = new Uint8Array(payloadLength);
-  new DataView(payload.buffer).setUint32(0, metadata.byteLength, false);
-  payload.set(metadata, 4);
-  payload.set(source, 4 + metadata.byteLength);
-  return invoke<AttachmentRecord>("ingest_attachment", payload);
-}
-
-export async function ingestAttachmentFile(draftId: string, file: File): Promise<AttachmentRecord> {
-  const limits = await loadMediaLimits();
-  validateAttachmentSize(file.size, limits);
-  return ingestBoundedAttachmentBytes(
-    {
-      draftId,
-      displayFilename: file.name,
-      mediaType: file.type || "application/octet-stream",
-    },
-    await file.arrayBuffer(),
-    limits,
-  );
-}
-
 export function attachmentMediaUrl(attachmentId: string): string {
   if (!UUID_V7.test(attachmentId)) {
     throw new Error("Attachment ID must be a canonical UUIDv7.");
@@ -107,13 +55,4 @@ export function scanMediaIntegrity(): Promise<MediaIntegrityReport> {
 
 export function maintainMedia(): Promise<MediaMaintenanceReport> {
   return invoke<MediaMaintenanceReport>("maintain_media");
-}
-
-function validateAttachmentSize(byteLength: number, limits: MediaLimits): void {
-  if (byteLength === 0) {
-    throw new Error("The selected attachment is empty.");
-  }
-  if (!Number.isSafeInteger(byteLength) || byteLength > limits.maxAttachmentBytes) {
-    throw new Error(`The selected attachment is larger than ${limits.maxAttachmentBytes} bytes.`);
-  }
 }

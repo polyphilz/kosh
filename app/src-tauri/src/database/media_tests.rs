@@ -14,8 +14,8 @@ use super::{
         IngestAttachmentWrite, MediaByteRange, StagedAttachment,
     },
     tidbits::CreateTidbitWrite,
-    ClearDraftInput, Database, DatabaseError, DatabasePaths, MediaLimits, SaveDraftInput,
-    TidbitDraft,
+    AttachmentIngestInput, AttachmentKind, ClearDraftInput, Database, DatabaseError, DatabasePaths,
+    MediaLimits, SaveDraftInput, TidbitDraft,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -218,6 +218,48 @@ fn ingestion_deduplicates_bytes_preserves_metadata_and_bounds_reads() {
         .expect_err("draft attachment cap");
     assert!(matches!(error, DatabaseError::InvalidInput(_)));
     assert_eq!(blob_count(&library.database), 1);
+}
+
+#[test]
+fn ingestion_canonicalizes_mime_case_before_classification() {
+    let library = TestLibrary::new();
+    let attachment = library
+        .database
+        .ingest_attachment(
+            AttachmentIngestInput {
+                draft_id: CAPTURE_DRAFT_ID.into(),
+                display_filename: "mixed.png".into(),
+                media_type: "IMAGE/PNG".into(),
+                now_ms: 11,
+                limits: MediaLimits::default(),
+            },
+            Cursor::new(b"image bytes"),
+        )
+        .expect("bounded reader ingestion");
+
+    assert_eq!(attachment.kind, AttachmentKind::Image);
+    assert_eq!(attachment.media_type, "image/png");
+    assert_eq!(
+        library
+            .database
+            .open_main_read_only()
+            .expect("main reader")
+            .query_row(
+                "SELECT media_type, kind, extraction_state
+                 FROM attachment
+                 WHERE id = ?1",
+                params![attachment.id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .expect("canonical attachment classification"),
+        ("image/png".into(), "IMAGE".into(), "PENDING".into())
+    );
 }
 
 struct InterruptedReader {

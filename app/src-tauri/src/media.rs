@@ -1,31 +1,17 @@
-use std::{fs, io::Cursor, path::Path};
+use std::{fs, path::Path};
 
-use serde::Deserialize;
-use tauri::{
-    http,
-    ipc::{InvokeBody, Request},
-    AppHandle, Manager, State,
-};
+use tauri::{http, AppHandle, Manager, State};
 
 use crate::{
     database::{
-        media::{IngestAttachmentMetadata, MediaByteRange, StagedAttachment},
-        AttachmentRecord, DatabaseError, MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
+        media::MediaByteRange, DatabaseError, MediaIntegrityReport, MediaLimits,
+        MediaMaintenanceReport,
     },
     runtime::RuntimeState,
 };
 
-const UPLOAD_METADATA_LIMIT: usize = 8 * 1024;
 const MAX_STAGING_RECOVERY_FILES: usize = 1_024;
 const MEDIA_PATH_PREFIX: &str = "/attachment/";
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AttachmentUploadMetadata {
-    draft_id: String,
-    display_filename: String,
-    media_type: String,
-}
 
 pub(crate) fn recover_staging_directory(path: &Path) -> Result<usize, DatabaseError> {
     fs::create_dir_all(path)?;
@@ -56,48 +42,6 @@ pub(crate) fn recover_staging_directory(path: &Path) -> Result<usize, DatabaseEr
 #[tauri::command]
 pub(crate) fn media_limits(state: State<'_, RuntimeState>) -> MediaLimits {
     state.media_limits()
-}
-
-#[tauri::command]
-pub(crate) async fn ingest_attachment(
-    request: Request<'_>,
-    state: State<'_, RuntimeState>,
-) -> Result<AttachmentRecord, crate::database::commands::CommandError> {
-    let payload = match request.body() {
-        InvokeBody::Raw(bytes) => bytes,
-        InvokeBody::Json(_) => {
-            return Err(DatabaseError::InvalidInput(
-                "attachment upload requires a binary payload".into(),
-            )
-            .into())
-        }
-    };
-    let limits = state.media_limits();
-    let (metadata, bytes) = parse_upload(payload, limits.max_attachment_bytes)?;
-    let mut ids = state.next_ids(3).into_iter();
-    let attachment_id = ids.next().expect("requested attachment ID");
-    let ingest_lease_id = ids.next().expect("requested ingest lease ID");
-    let stage_id = ids.next().expect("requested media stage ID");
-    let staged = StagedAttachment::from_reader(
-        Cursor::new(bytes),
-        &state.media_staging_directory(),
-        &stage_id,
-        limits.max_attachment_bytes,
-    )?;
-    let write = staged.write(IngestAttachmentMetadata {
-        attachment_id,
-        ingest_lease_id,
-        draft_id: metadata.draft_id,
-        display_filename: metadata.display_filename,
-        media_type: metadata.media_type,
-        now_ms: state.now_ms(),
-        limits,
-    });
-    let client = state.database_client();
-    tauri::async_runtime::spawn_blocking(move || client.ingest_attachment(write))
-        .await
-        .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
-        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -209,63 +153,6 @@ pub(crate) fn protocol_response<R: tauri::Runtime>(
     }
 }
 
-fn parse_upload(
-    payload: &[u8],
-    max_attachment_bytes: u64,
-) -> Result<(AttachmentUploadMetadata, &[u8]), crate::database::commands::CommandError> {
-    let maximum_payload_bytes = max_attachment_bytes
-        .checked_add(4 + UPLOAD_METADATA_LIMIT as u64)
-        .ok_or_else(|| {
-            crate::database::commands::CommandError::from(DatabaseError::InvalidInput(
-                "attachment upload size limit overflow".into(),
-            ))
-        })?;
-    if payload.len() as u64 > maximum_payload_bytes {
-        return Err(DatabaseError::InvalidInput(format!(
-            "the selected attachment is larger than {max_attachment_bytes} bytes"
-        ))
-        .into());
-    }
-    let length_bytes = payload.get(..4).ok_or_else(|| {
-        crate::database::commands::CommandError::from(DatabaseError::InvalidInput(
-            "attachment upload metadata is missing".into(),
-        ))
-    })?;
-    let metadata_length =
-        u32::from_be_bytes(length_bytes.try_into().expect("four-byte metadata prefix")) as usize;
-    if metadata_length == 0 || metadata_length > UPLOAD_METADATA_LIMIT {
-        return Err(DatabaseError::InvalidInput(
-            "attachment upload metadata length is invalid".into(),
-        )
-        .into());
-    }
-    let metadata_end = 4_usize
-        .checked_add(metadata_length)
-        .filter(|end| *end <= payload.len())
-        .ok_or_else(|| {
-            crate::database::commands::CommandError::from(DatabaseError::InvalidInput(
-                "attachment upload metadata is truncated".into(),
-            ))
-        })?;
-    let metadata = serde_json::from_slice::<AttachmentUploadMetadata>(&payload[4..metadata_end])
-        .map_err(|_| {
-            crate::database::commands::CommandError::from(DatabaseError::InvalidInput(
-                "attachment upload metadata is invalid".into(),
-            ))
-        })?;
-    let bytes = &payload[metadata_end..];
-    if bytes.is_empty() {
-        return Err(DatabaseError::InvalidInput("the selected attachment is empty".into()).into());
-    }
-    if bytes.len() as u64 > max_attachment_bytes {
-        return Err(DatabaseError::InvalidInput(format!(
-            "the selected attachment is larger than {max_attachment_bytes} bytes"
-        ))
-        .into());
-    }
-    Ok((metadata, bytes))
-}
-
 fn parse_range(value: &str) -> Option<MediaByteRange> {
     let range = value.strip_prefix("bytes=")?;
     if range.contains(',') {
@@ -316,19 +203,6 @@ mod tests {
         assert_eq!(parse_range("bytes=10-"), None);
         assert_eq!(parse_range("bytes=-10"), None);
         assert_eq!(parse_range("bytes=0-1,4-5"), None);
-    }
-
-    #[test]
-    fn upload_parser_bounds_and_decodes_metadata() {
-        let metadata =
-            br#"{"draftId":"draft","displayFilename":"note.txt","mediaType":"text/plain"}"#;
-        let mut payload = (metadata.len() as u32).to_be_bytes().to_vec();
-        payload.extend_from_slice(metadata);
-        payload.extend_from_slice(b"body");
-        let (parsed, bytes) = parse_upload(&payload, 4).expect("valid upload");
-        assert_eq!(parsed.display_filename, "note.txt");
-        assert_eq!(bytes, b"body");
-        assert!(parse_upload(&payload, 3).is_err());
     }
 
     #[test]
@@ -412,7 +286,7 @@ mod tests {
             })
             .expect("protocol draft");
         let staged = StagedAttachment::from_reader(
-            Cursor::new(b"protocol bytes"),
+            std::io::Cursor::new(b"protocol bytes"),
             &state.media_staging_directory(),
             "019f547b-6200-7000-8000-000000000904",
             MediaLimits::default().max_attachment_bytes,
