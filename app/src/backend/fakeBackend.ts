@@ -491,24 +491,54 @@ function parseSearchAtoms(query: string): string[] {
 }
 
 function normalizeSearchText(value: string): string {
-  return value.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase();
+  return normalizeSearchTextWithMapping(value).text;
+}
+
+function normalizeSearchTextWithMapping(value: string): {
+  text: string;
+  originalIndices: number[];
+} {
+  const characters: string[] = [];
+  const originalIndices: number[] = [];
+  let originalIndex = 0;
+  for (const originalCharacter of value) {
+    for (const decomposedCharacter of originalCharacter.normalize("NFKD")) {
+      if (/\p{M}/u.test(decomposedCharacter)) {
+        continue;
+      }
+      for (const lowercaseCharacter of decomposedCharacter.toLowerCase()) {
+        characters.push(lowercaseCharacter);
+        originalIndices.push(originalIndex);
+      }
+    }
+    originalIndex += 1;
+  }
+  return { text: characters.join(""), originalIndices };
 }
 
 function searchSpans(value: string, atom: string, field: SearchField) {
-  const normalizedValue = normalizeSearchText(value);
-  const normalizedAtom = normalizeSearchText(atom);
-  if (!normalizedAtom) {
+  const normalizedValue = normalizeSearchTextWithMapping(value);
+  const haystack = [...normalizedValue.text];
+  const needle = [...normalizeSearchText(atom)];
+  if (needle.length === 0 || needle.length > haystack.length) {
     return [];
   }
-  const start = normalizedValue.indexOf(normalizedAtom);
+  const start = haystack.findIndex((_, candidateStart) =>
+    needle.every((character, offset) => haystack[candidateStart + offset] === character),
+  );
   if (start < 0) {
+    return [];
+  }
+  const startChar = normalizedValue.originalIndices[start];
+  const finalOriginalIndex = normalizedValue.originalIndices[start + needle.length - 1];
+  if (startChar === undefined || finalOriginalIndex === undefined) {
     return [];
   }
   return [
     {
       field,
-      startChar: Array.from(normalizedValue.slice(0, start)).length,
-      endChar: Array.from(normalizedValue.slice(0, start + normalizedAtom.length)).length,
+      startChar,
+      endChar: finalOriginalIndex + 1,
     },
   ];
 }

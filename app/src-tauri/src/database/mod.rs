@@ -3,7 +3,7 @@ mod connection;
 mod drafts;
 mod error;
 mod migrations;
-mod passages;
+pub(crate) mod passages;
 mod paths;
 pub(crate) mod search;
 mod tidbits;

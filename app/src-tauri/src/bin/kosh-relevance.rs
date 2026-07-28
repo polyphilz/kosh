@@ -144,7 +144,8 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
                 benchmark_scale_lexical(&corpus, query_count).map_err(|error| error.to_string())?;
             write_pretty_json(&output, &report).map_err(|error| error.to_string())?;
             println!(
-                "indexed {} tidbits in {:.2} ms; {} queries p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+                "indexed {} passages from {} tidbits in {:.2} ms; {} queries p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+                report.passage_count,
                 report.tidbit_count,
                 report.indexing_duration_ms,
                 report.query_count,

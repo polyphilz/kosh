@@ -184,6 +184,36 @@ END;
 CREATE TRIGGER attachment_search_refresh_after_update
 AFTER UPDATE OF display_filename, deleted_at, updated_at ON attachment
 BEGIN
+    UPDATE passage_search_document
+    SET attachment_names = coalesce(
+        (
+            SELECT group_concat(current_attachment.display_filename, char(10))
+            FROM tidbit
+            JOIN tidbit_revision_attachment AS current_membership
+              ON current_membership.tidbit_revision_id = tidbit.current_revision_id
+            JOIN attachment AS current_attachment
+              ON current_attachment.id = current_membership.attachment_id
+             AND current_attachment.deleted_at IS NULL
+            WHERE tidbit.id = passage_search_document.tidbit_id
+              AND tidbit.deleted_at IS NULL
+            ORDER BY current_membership.sort_order
+        ),
+        ''
+    )
+    WHERE EXISTS (
+        SELECT 1
+        FROM passage
+        JOIN tidbit
+          ON tidbit.id = passage_search_document.tidbit_id
+         AND tidbit.current_revision_id = passage.tidbit_revision_id
+         AND tidbit.deleted_at IS NULL
+        JOIN tidbit_revision_attachment AS changed_membership
+          ON changed_membership.tidbit_revision_id = tidbit.current_revision_id
+         AND changed_membership.attachment_id = new.id
+        WHERE passage.id = passage_search_document.passage_id
+          AND passage.owner_kind = 'AUTHOR'
+    );
+
     DELETE FROM passage_search_document
     WHERE passage_id IN (
         SELECT passage.id

@@ -221,6 +221,22 @@ describe("FakeBackend tidbits", () => {
       ),
     ).toBe(true);
 
+    const ligature = await backend.createTidbit({
+      title: "ﬁle note",
+      bodyMarkdown: "Compatibility characters keep original offsets.",
+      sources: [],
+    });
+    const ligatureResults = await backend.searchPassages({
+      query: "file",
+      mode: "DEFAULT",
+      limit: 10,
+    });
+    expect(ligatureResults).toHaveLength(1);
+    expect(ligatureResults[0]).toMatchObject({
+      passageId: `fake-passage:${ligature.currentRevisionId}`,
+      highlights: expect.arrayContaining([{ field: "TITLE", startChar: 0, endChar: 3 }]),
+    });
+
     await backend.deleteTidbit({
       id: created.id,
       expectedRevisionId: created.currentRevisionId,

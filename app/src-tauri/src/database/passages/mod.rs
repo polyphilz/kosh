@@ -1,4 +1,4 @@
-mod builder;
+pub(crate) mod builder;
 #[cfg(test)]
 mod tests;
 

@@ -1236,7 +1236,25 @@ mod tests {
     fn database_search_indexes_ready_attachment_passages_and_tracks_deletion() {
         let root = tempfile::tempdir().expect("temporary attachment search library");
         let paths = DatabasePaths::new(root.path());
-        drop(Database::initialize(paths.clone()).expect("attachment search database"));
+        let database = Database::initialize(paths.clone()).expect("attachment search database");
+        database
+            .client()
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: Some("Attachment metadata host".into()),
+                    body_markdown: "Authored passage linked to a file.".into(),
+                    sources: Vec::new(),
+                },
+                now_ms: 5,
+                tidbit_id: "019f547b-6200-7000-8000-000000009511".into(),
+                revision_id: "019f547b-6200-7000-8000-000000009512".into(),
+                source_ids: Vec::new(),
+            })
+            .expect("create authored attachment host");
+        database
+            .shutdown()
+            .expect("close attachment search database");
+        drop(database);
         let connection =
             connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
                 .expect("attachment fixture writer");
@@ -1249,6 +1267,13 @@ mod tests {
                     '019f547b-6200-7000-8000-000000009501',
                     10, 10, zeroblob(32), 'calibration-plate.pdf',
                     'application/pdf', 128, 'PDF', 'READY'
+                 );
+                 INSERT INTO tidbit_revision_attachment(
+                    tidbit_revision_id, attachment_id, sort_order, display_role
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009512',
+                    '019f547b-6200-7000-8000-000000009501',
+                    0, 'ATTACHMENT'
                  );
                  INSERT INTO attachment_extraction(
                     id, attachment_id, extractor, extractor_version, content_hash,
@@ -1305,6 +1330,29 @@ mod tests {
                 .map(|attachment| attachment.display_filename.as_str()),
             Some("calibration-plate.pdf")
         );
+        connection
+            .execute(
+                "UPDATE attachment
+                 SET updated_at = 15, display_filename = 'renamed-calibration.pdf'
+                 WHERE id = ?1",
+                params!["019f547b-6200-7000-8000-000000009501"],
+            )
+            .expect("rename attachment");
+        let renamed = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "renamed-calibration.pdf".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search renamed attachment metadata");
+        assert!(renamed
+            .iter()
+            .any(|result| result.citation.tidbit.is_some()));
+        assert!(renamed
+            .iter()
+            .any(|result| result.citation.attachment.is_some()));
         connection
             .execute(
                 "UPDATE attachment SET updated_at = 20, deleted_at = 20 WHERE id = ?1",

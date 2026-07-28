@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, time::Instant};
 
+use crate::database::passages::builder::build_markdown_passages;
 use crate::database::search::{
     candidate_limit, parse_lexical_query, rank_lexical_documents, LexicalDocument,
     LexicalSearchMode, SearchField,
@@ -12,7 +13,7 @@ use super::{
     Retriever, RuntimeMetadata, ScaleCorpus, SearchMode,
 };
 
-pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 1;
+pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 2;
 pub const INTERACTIVE_LEXICAL_P95_BUDGET_MS: f64 = 100.0;
 const BENCHMARK_RESULT_LIMIT: u32 = 20;
 
@@ -26,6 +27,7 @@ pub struct LexicalPerformanceReport {
     pub generator_version: String,
     pub seed: String,
     pub tidbit_count: u32,
+    pub passage_count: u32,
     pub query_count: u32,
     pub result_limit: u32,
     pub indexing_duration_ms: f64,
@@ -208,6 +210,7 @@ pub fn benchmark_scale_lexical(
     let transaction = connection
         .transaction()
         .map_err(|error| benchmark_error("start index transaction", error))?;
+    let mut passage_count = 0_u32;
     {
         let mut insert_document = transaction
             .prepare(
@@ -233,9 +236,7 @@ pub fn benchmark_scale_lexical(
                  ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|error| benchmark_error("prepare trigram insert", error))?;
-        for (index, tidbit) in corpus.tidbits.iter().enumerate() {
-            let rowid = i64::try_from(index + 1)
-                .map_err(|_| RelevanceError::LexicalBenchmark("rowid overflow".into()))?;
+        for tidbit in &corpus.tidbits {
             let source_labels = tidbit
                 .sources
                 .iter()
@@ -254,42 +255,32 @@ pub fn benchmark_scale_lexical(
                 .map(|attachment| attachment.filename.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            insert_document
-                .execute(params![
+            for passage in build_markdown_passages(&tidbit.body_markdown) {
+                passage_count = passage_count.checked_add(1).ok_or_else(|| {
+                    RelevanceError::LexicalBenchmark("passage count overflow".into())
+                })?;
+                let rowid = i64::from(passage_count);
+                let heading_context = passage.heading_context.join("\n");
+                let values = params![
                     rowid,
                     tidbit.title.as_deref().unwrap_or_default(),
-                    "",
-                    tidbit.body_markdown,
+                    heading_context,
+                    passage.content,
                     source_labels,
                     source_domains,
                     attachment_names,
                     ""
-                ])
-                .map_err(|error| benchmark_error("insert source document", error))?;
-            insert_word
-                .execute(params![
-                    rowid,
-                    tidbit.title.as_deref().unwrap_or_default(),
-                    "",
-                    tidbit.body_markdown,
-                    source_labels,
-                    source_domains,
-                    attachment_names,
-                    ""
-                ])
-                .map_err(|error| benchmark_error("insert word document", error))?;
-            insert_trigram
-                .execute(params![
-                    rowid,
-                    tidbit.title.as_deref().unwrap_or_default(),
-                    "",
-                    tidbit.body_markdown,
-                    source_labels,
-                    source_domains,
-                    attachment_names,
-                    ""
-                ])
-                .map_err(|error| benchmark_error("insert trigram document", error))?;
+                ];
+                insert_document
+                    .execute(values)
+                    .map_err(|error| benchmark_error("insert source document", error))?;
+                insert_word
+                    .execute(values)
+                    .map_err(|error| benchmark_error("insert word document", error))?;
+                insert_trigram
+                    .execute(values)
+                    .map_err(|error| benchmark_error("insert trigram document", error))?;
+            }
         }
     }
     transaction
@@ -384,6 +375,7 @@ pub fn benchmark_scale_lexical(
         generator_version: corpus.generator_version.clone(),
         seed: corpus.seed.clone(),
         tidbit_count: corpus.stats.tidbit_count,
+        passage_count,
         query_count: u32::try_from(query_count).expect("validated query count"),
         result_limit: BENCHMARK_RESULT_LIMIT,
         indexing_duration_ms,
@@ -538,6 +530,7 @@ mod tests {
         let report = benchmark_scale_lexical(&corpus, 20).expect("lexical benchmark");
 
         assert_eq!(report.tidbit_count, 256);
+        assert!(report.passage_count >= report.tidbit_count);
         assert_eq!(report.query_count, 20);
         assert!(report.indexing_duration_ms >= 0.0);
         assert!(report.query_p50_ms >= 0.0);
