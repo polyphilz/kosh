@@ -18,6 +18,7 @@ export function TidbitPage() {
   const citationRef = useRef<HTMLElement>(null);
   const [tidbit, setTidbit] = useState<TidbitRecord | null>(null);
   const [citation, setCitation] = useState<CitationResolution | null>(null);
+  const [citationRefresh, setCitationRefresh] = useState(0);
   const [citationLoading, setCitationLoading] = useState(false);
   const [citationError, setCitationError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +61,7 @@ export function TidbitPage() {
       .resolveCitation(passage)
       .then((resolved) => {
         if (!active) return;
-        if (resolved.tidbit && resolved.tidbit.id !== tidbitId) {
+        if (resolved.tidbit?.id !== tidbitId) {
           throw new Error("The citation does not belong to this tidbit.");
         }
         setCitation(resolved);
@@ -75,7 +76,7 @@ export function TidbitPage() {
     return () => {
       active = false;
     };
-  }, [backend, passage, tidbitId]);
+  }, [backend, citationRefresh, passage, tidbitId]);
 
   if (loading) {
     return (
@@ -124,6 +125,7 @@ export function TidbitPage() {
           onCancel={() => setEditing(false)}
           onSaved={(saved) => {
             setTidbit(saved);
+            setCitationRefresh((value) => value + 1);
             setEditing(false);
           }}
           tidbit={tidbit}

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
+import type { CitationResolution } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { createAppRouter } from "../../src/router";
@@ -114,6 +115,61 @@ describe("tidbit capture and editing routes", () => {
     expect(await screen.findByRole("heading", { name: "Search" })).toBeInTheDocument();
     expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toEqual([]);
     expect((await backend.loadTidbit(active.items[0]!.id)).deletedAtMs).not.toBeNull();
+  });
+
+  it("re-resolves an opened citation after saving a new tidbit revision", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const original = await backend.createTidbit({
+      title: "Citation lifecycle",
+      bodyMarkdown: "Original cited evidence.",
+      sources: [],
+    });
+    const passageId = `fake-passage:${original.currentRevisionId}`;
+    renderRoute(backend, `/tidbits/${original.id}?passage=${encodeURIComponent(passageId)}`);
+
+    expect(await screen.findByText("Current revision", { exact: true })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    appendEditorText(" Updated.");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("Historical revision", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Original cited evidence.", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText(/Original cited evidence\. Updated\./u)).toBeInTheDocument();
+  });
+
+  it("rejects attachment passages supplied to a tidbit deep link", async () => {
+    const backend = new FakeBackend();
+    const tidbit = await backend.createTidbit({
+      title: "Unrelated tidbit",
+      bodyMarkdown: "Authored note.",
+      sources: [],
+    });
+    const attachmentCitation: CitationResolution = {
+      passageId: "attachment-passage",
+      excerpt: "Unrelated attachment evidence.",
+      headingContext: [],
+      constructionVersion: "attachment-v1",
+      state: "CURRENT",
+      locator: { kind: "PDF_PAGE", page: 4 },
+      tidbit: null,
+      attachment: {
+        id: "attachment-1",
+        extractionId: "extraction-1",
+        displayFilename: "unrelated.pdf",
+        mediaType: "application/pdf",
+        deleted: false,
+      },
+      sources: [],
+    };
+    vi.spyOn(backend, "resolveCitation").mockResolvedValue(attachmentCitation);
+
+    renderRoute(backend, `/tidbits/${tidbit.id}?passage=attachment-passage`);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The citation does not belong to this tidbit.",
+    );
+    expect(screen.queryByText("Unrelated attachment evidence.")).not.toBeInTheDocument();
   });
 
   it("keeps a recovery draft when an edit loses its optimistic revision race", async () => {
