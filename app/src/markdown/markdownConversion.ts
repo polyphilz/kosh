@@ -403,8 +403,8 @@ function inlineToMarkdown(node: ProseMirrorNode): PhrasingContent[] {
     }
 
     const nonCodeMarks = child.marks.filter((mark) => mark.type.name !== "code");
-    for (const mark of nonCodeMarks.toReversed()) {
-      value = wrapMark(value, mark);
+    for (let index = nonCodeMarks.length - 1; index >= 0; index -= 1) {
+      value = wrapMark(value, nonCodeMarks[index]!);
     }
     appendMerged(output, value);
   });
@@ -432,7 +432,7 @@ function wrapMark(child: PhrasingContent, mark: Mark): PhrasingContent {
 }
 
 function appendMerged(output: PhrasingContent[], value: PhrasingContent): void {
-  const previous = output.at(-1);
+  const previous = output[output.length - 1];
   if (!previous || previous.type !== value.type) {
     output.push(value);
     return;

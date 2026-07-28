@@ -30,6 +30,8 @@ describe("reserved Kosh media tokens", () => {
 
   it("rejects ambiguous IDs, casing, widths, and trailing content", () => {
     expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=9%}}`)).toBeNull();
+    expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=010%}}`)).toBeNull();
+    expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=070%}}`)).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:image:${imageId.toUpperCase()};width=70%}}`)).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:attachment:${attachmentId}}} extra`)).toBeNull();
     expect(() =>

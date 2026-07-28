@@ -1,5 +1,8 @@
 const UUID_V7 = "[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const imagePattern = new RegExp(`^\\{\\{kosh:image:(${UUID_V7});width=(\\d{1,3})%\\}\\}$`, "u");
+const imagePattern = new RegExp(
+  `^\\{\\{kosh:image:(${UUID_V7});width=(100|[1-9][0-9])%\\}\\}$`,
+  "u",
+);
 const attachmentPattern = new RegExp(`^\\{\\{kosh:attachment:(${UUID_V7})\\}\\}$`, "u");
 
 export interface KoshImageToken {
