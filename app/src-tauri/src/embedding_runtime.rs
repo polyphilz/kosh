@@ -42,6 +42,7 @@ const LLAMA_EMBEDDING_NORMALIZATION: &str = "2";
 const LLAMA_PARALLEL_SLOTS: &str = "1";
 const SIDECAR_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const SIDECAR_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_POLL_DELAY: Duration = Duration::from_millis(100);
 const IDLE_REAPER_POLL_DELAY: Duration = Duration::from_secs(1);
 const EMBEDDING_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -283,10 +284,7 @@ impl EmbeddingRuntime {
         let model_file = contract.manifest.config.model_file.clone();
         let model_bytes = contract.manifest.config.model_file_size;
         let model_path = data_root.join("models").join(model_file);
-        let http = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let http = build_http_client(Duration::from_secs(10), HTTP_READ_IDLE_TIMEOUT);
         let lifecycle_lock = acquire_lifecycle_lock(&data_root, Duration::ZERO);
         let model_candidate = model_override.as_deref().unwrap_or(&model_path);
         let downloaded_bytes = file_size_if_present(model_candidate).unwrap_or_default();
@@ -531,6 +529,16 @@ fn file_size_if_present(path: &Path) -> std::io::Result<u64> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(error),
     }
+}
+
+fn build_http_client(connect_timeout: Duration, read_idle_timeout: Duration) -> Client {
+    // Reqwest's blocking timeout applies while awaiting the response and afresh
+    // to every Response::read, bounding idle reads without limiting total bytes.
+    Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(read_idle_timeout)
+        .build()
+        .unwrap_or_else(|_| Client::new())
 }
 
 fn restore_verified_status(inner: &EmbeddingRuntimeInner) {
@@ -2333,6 +2341,22 @@ mod tests {
         (format!("http://{address}/model.gguf"), worker)
     }
 
+    fn start_stalled_download_server(delay: Duration) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("stalled fixture listener");
+        let address = listener.local_addr().expect("stalled fixture address");
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("stalled fixture request");
+            let mut request = [0_u8; 4096];
+            let _read = stream.read(&mut request).expect("stalled fixture headers");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n")
+                .expect("stalled fixture response headers");
+            stream.flush().expect("stalled fixture header flush");
+            thread::sleep(delay);
+        });
+        (format!("http://{address}/model.gguf"), worker)
+    }
+
     #[cfg(unix)]
     fn install_running_fixture(runtime: &EmbeddingRuntime, endpoint: String, model_path: &Path) {
         use std::os::unix::process::CommandExt;
@@ -2416,6 +2440,20 @@ mod tests {
         assert_eq!(artifact, model_directory.join("test-model.gguf"));
         assert_eq!(fs::read(&artifact).expect("installed model"), b"0123456789");
         assert!(!model_directory.join("test-model.gguf.part").exists());
+    }
+
+    #[test]
+    fn blocking_http_client_bounds_each_stalled_response_read() {
+        let (url, server) = start_stalled_download_server(Duration::from_millis(250));
+        let client = build_http_client(Duration::from_secs(1), Duration::from_millis(50));
+        let mut response = client.get(url).send().expect("stalled fixture response");
+        let started = Instant::now();
+        response
+            .read(&mut [0_u8; 1])
+            .expect_err("stalled body read must time out");
+
+        assert!(started.elapsed() < Duration::from_millis(200));
+        server.join().expect("stalled fixture server");
     }
 
     #[test]
