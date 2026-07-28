@@ -255,12 +255,17 @@ fn append_event_content(capture: &mut Capture, event: Event<'_>) {
 }
 
 fn append_end_separator(capture: &mut Capture, tag: TagEnd) {
-    if capture.kind != BlockKind::Table {
-        return;
-    }
-    match tag {
-        TagEnd::TableCell => capture.content.push('\t'),
-        TagEnd::TableHead | TagEnd::TableRow => capture.content.push('\n'),
+    match capture.kind {
+        BlockKind::Table => match tag {
+            TagEnd::TableCell => capture.content.push('\t'),
+            TagEnd::TableHead | TagEnd::TableRow => capture.content.push('\n'),
+            _ => {}
+        },
+        BlockKind::Prose => match tag {
+            TagEnd::Paragraph => capture.content.push_str("\n\n"),
+            TagEnd::Item => capture.content.push('\n'),
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -700,6 +705,31 @@ mod tests {
             assert_eq!(decoded, passage.locator);
         }
         assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn loose_and_nested_list_items_preserve_prose_boundaries() {
+        let markdown = [
+            "- First paragraph.",
+            "",
+            "  Second paragraph.",
+            "",
+            "  - Nested alpha.",
+            "  - Nested beta.",
+        ]
+        .join("\n");
+
+        let passages = build_markdown_passages(&markdown);
+        let content = passages
+            .iter()
+            .map(|passage| passage.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(content.contains("First paragraph.\n\nSecond paragraph."));
+        assert!(content.contains("Nested alpha.\nNested beta."));
+        assert!(!content.contains("paragraph.Second"));
+        assert!(!content.contains("alpha.Nested"));
     }
 
     fn assert_valid_source_ranges<'a>(

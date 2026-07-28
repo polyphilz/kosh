@@ -114,10 +114,10 @@ impl Database {
         validation::validate_migrated_pair(&mut main, &mut media, &paths.main, &paths.media)?;
 
         let (sender, receiver) = mpsc::channel();
-        let client = DatabaseClient::new(sender);
+        let client = DatabaseClient::new(sender.clone());
         let writer_thread = thread::Builder::new()
             .name("kosh-database-writer".into())
-            .spawn(move || writer_loop(main, media, receiver))?;
+            .spawn(move || writer_loop(main, media, receiver, sender))?;
 
         let database = Self {
             paths,
@@ -176,7 +176,12 @@ impl Drop for Database {
     }
 }
 
-fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<WriterMessage>) {
+fn writer_loop(
+    mut main: Connection,
+    mut media: Connection,
+    receiver: Receiver<WriterMessage>,
+    sender: mpsc::Sender<WriterMessage>,
+) {
     while let Ok(message) = receiver.recv() {
         match message {
             WriterMessage::Diagnostics { reply } => {
@@ -190,8 +195,16 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
             }
             WriterMessage::ReconcileAuthorPassages { reply } => {
                 let result = passages::reconcile_author_passages(&mut main);
-                if let Some(reply) = reply {
-                    let _ = reply.send(result);
+                let _ = reply.send(result);
+            }
+            WriterMessage::ReconcileAuthorPassageBatch => {
+                if passages::reconcile_author_passage_batch(
+                    &mut main,
+                    passages::BACKGROUND_RECONCILE_BATCH_SIZE,
+                )
+                .is_ok_and(|has_more| has_more)
+                {
+                    let _ = sender.send(WriterMessage::ReconcileAuthorPassageBatch);
                 }
             }
             WriterMessage::ReapMediaBlob {

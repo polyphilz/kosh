@@ -431,3 +431,94 @@ fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
     assert_eq!(status, "FAILED");
     assert!(error.is_some_and(|message| message.contains("did not produce")));
 }
+
+#[test]
+fn passage_backfill_is_bounded_and_resumable_between_batches() {
+    let root = tempfile::tempdir().expect("temporary batched library");
+    let paths = DatabasePaths::new(root.path());
+    drop(Database::initialize(paths.clone()).expect("initial schema"));
+    let mut connection =
+        connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("batch writer");
+    let transaction = connection
+        .transaction()
+        .expect("legacy fixture transaction");
+    for index in 0..30_u64 {
+        let tidbit_id = format!("019f547b-6200-7000-8000-{:012x}", 0x2_400 + index * 2);
+        let revision_id = format!("019f547b-6200-7000-8000-{:012x}", 0x2_401 + index * 2);
+        transaction
+            .execute(
+                "INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+                 VALUES(?1, ?2, ?2, ?3)",
+                params![tidbit_id, index as i64 + 1, revision_id],
+            )
+            .expect("legacy tidbit");
+        transaction
+            .execute(
+                "INSERT INTO tidbit_revision(
+                    id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+                 ) VALUES(?1, ?2, 1, ?3, ?4, zeroblob(32))",
+                params![
+                    revision_id,
+                    tidbit_id,
+                    index as i64 + 1,
+                    format!("Legacy evidence {index}.")
+                ],
+            )
+            .expect("legacy revision");
+    }
+    transaction.commit().expect("legacy fixtures");
+
+    assert!(super::reconcile_author_passage_batch(&mut connection, 7).expect("first batch"));
+    let first_count: i64 = connection
+        .query_row(
+            "SELECT count(*)
+             FROM passage
+             WHERE owner_kind = 'AUTHOR'
+               AND construction_version = 'markdown-blocks-v1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("first batch count");
+    assert_eq!(first_count, 7);
+    let first_status: (String, Option<String>) = connection
+        .query_row(
+            "SELECT status, cursor FROM index_state WHERE name = 'PASSAGE_BUILD'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("first batch status");
+    assert_eq!(first_status.0, "DIRTY");
+    assert!(first_status.1.is_some());
+
+    assert!(super::reconcile_author_passage_batch(&mut connection, 7).expect("second batch"));
+    let second_count: i64 = connection
+        .query_row(
+            "SELECT count(*)
+             FROM passage
+             WHERE owner_kind = 'AUTHOR'
+               AND construction_version = 'markdown-blocks-v1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("second batch count");
+    assert_eq!(second_count, 14);
+
+    while super::reconcile_author_passage_batch(&mut connection, 7).expect("remaining batch") {}
+    let final_state: (i64, i64, String, Option<String>) = connection
+        .query_row(
+            "SELECT
+                (SELECT count(*) FROM passage
+                 WHERE owner_kind = 'AUTHOR'
+                   AND construction_version = 'markdown-blocks-v1'),
+                (SELECT count(*) FROM active_passage),
+                status,
+                cursor
+             FROM index_state
+             WHERE name = 'PASSAGE_BUILD'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("final batch state");
+    assert_eq!(final_state, (30, 30, "IDLE".into(), None));
+}

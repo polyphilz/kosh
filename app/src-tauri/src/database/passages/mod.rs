@@ -10,6 +10,8 @@ use uuid::Uuid;
 use super::{tidbits, DatabaseError, Result, TidbitSource};
 use builder::{build_markdown_passages, MarkdownLocator, CONSTRUCTION_VERSION};
 
+pub(super) const BACKGROUND_RECONCILE_BATCH_SIZE: u32 = 25;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CitationState {
@@ -167,6 +169,19 @@ pub(super) fn insert_author_passages(
 }
 
 pub(super) fn reconcile_author_passages(connection: &mut Connection) -> Result<()> {
+    while reconcile_author_passage_batch(connection, BACKGROUND_RECONCILE_BATCH_SIZE)? {}
+    Ok(())
+}
+
+pub(super) fn reconcile_author_passage_batch(
+    connection: &mut Connection,
+    limit: u32,
+) -> Result<bool> {
+    if limit == 0 {
+        return Err(DatabaseError::InvalidInput(
+            "passage reconciliation limit must be positive".into(),
+        ));
+    }
     let state_updated = connection.execute(
         "UPDATE index_state
          SET status = 'RUNNING', cursor = NULL, error = NULL
@@ -179,8 +194,8 @@ pub(super) fn reconcile_author_passages(connection: &mut Connection) -> Result<(
             reason: "PASSAGE_BUILD index state is missing".into(),
         });
     }
-    match reconcile_author_passages_transaction(connection) {
-        Ok(()) => Ok(()),
+    match reconcile_author_passage_batch_transaction(connection, limit) {
+        Ok(has_more) => Ok(has_more),
         Err(error) => {
             let message = error.to_string();
             let _ = connection.execute(
@@ -194,7 +209,10 @@ pub(super) fn reconcile_author_passages(connection: &mut Connection) -> Result<(
     }
 }
 
-fn reconcile_author_passages_transaction(connection: &mut Connection) -> Result<()> {
+fn reconcile_author_passage_batch_transaction(
+    connection: &mut Connection,
+    limit: u32,
+) -> Result<bool> {
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let missing = {
@@ -208,9 +226,10 @@ fn reconcile_author_passages_transaction(connection: &mut Connection) -> Result<
                    AND passage.owner_kind = 'AUTHOR'
                    AND passage.construction_version = ?1
              )
-             ORDER BY revision.created_at, revision.id",
+             ORDER BY revision.created_at, revision.id
+             LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![CONSTRUCTION_VERSION], |row| {
+        let rows = statement.query_map(params![CONSTRUCTION_VERSION, limit], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -221,10 +240,39 @@ fn reconcile_author_passages_transaction(connection: &mut Connection) -> Result<
     };
     for (revision_id, body_markdown, created_at_ms) in &missing {
         insert_author_passages(&transaction, revision_id, body_markdown, *created_at_ms)?;
+        let current_tidbit_id = transaction
+            .query_row(
+                "SELECT id
+                 FROM tidbit
+                 WHERE current_revision_id = ?1
+                   AND deleted_at IS NULL",
+                params![revision_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(tidbit_id) = current_tidbit_id {
+            replace_active_author_passages(&transaction, &tidbit_id, revision_id)?;
+        }
     }
 
-    let active_set_differs = transaction.query_row(
-        "SELECT
+    let has_more = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM tidbit_revision AS revision
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM passage
+                WHERE passage.tidbit_revision_id = revision.id
+                  AND passage.owner_kind = 'AUTHOR'
+                  AND passage.construction_version = ?1
+            )
+         )",
+        params![CONSTRUCTION_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let active_set_differs = !has_more
+        && transaction.query_row(
+            "SELECT
             EXISTS(
                 SELECT 1
                 FROM tidbit
@@ -255,9 +303,9 @@ fn reconcile_author_passages_transaction(connection: &mut Connection) -> Result<
                       AND passage.id = active_passage.passage_id
                 )
             )",
-        params![CONSTRUCTION_VERSION],
-        |row| row.get::<_, bool>(0),
-    )?;
+            params![CONSTRUCTION_VERSION],
+            |row| row.get::<_, bool>(0),
+        )?;
     if active_set_differs {
         transaction.execute("DELETE FROM active_passage", [])?;
         transaction.execute(
@@ -273,20 +321,33 @@ fn reconcile_author_passages_transaction(connection: &mut Connection) -> Result<
             params![CONSTRUCTION_VERSION],
         )?;
     }
+    let status = if has_more { "DIRTY" } else { "IDLE" };
+    let cursor = if has_more {
+        missing
+            .last()
+            .map(|(revision_id, _, _)| revision_id.as_str())
+    } else {
+        None
+    };
+    let batch_updated_at = missing
+        .iter()
+        .map(|(_, _, created_at_ms)| *created_at_ms)
+        .max()
+        .unwrap_or_default();
     transaction.execute(
         "UPDATE index_state
-         SET status = 'IDLE',
-             cursor = NULL,
+         SET status = ?1,
+             cursor = ?2,
              updated_at = max(
                  updated_at,
-                 coalesce((SELECT max(created_at) FROM tidbit_revision), 0)
+                 ?3
              ),
              error = NULL
          WHERE name = 'PASSAGE_BUILD'",
-        [],
+        params![status, cursor, batch_updated_at],
     )?;
     transaction.commit()?;
-    Ok(())
+    Ok(has_more)
 }
 
 pub(super) fn replace_active_author_passages(

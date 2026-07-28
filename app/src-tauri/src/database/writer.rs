@@ -34,8 +34,9 @@ pub(super) enum WriterMessage {
         reply: SyncSender<Result<bool>>,
     },
     ReconcileAuthorPassages {
-        reply: Option<SyncSender<Result<()>>>,
+        reply: SyncSender<Result<()>>,
     },
+    ReconcileAuthorPassageBatch,
     ReapMediaBlob {
         sha256: Vec<u8>,
         now: i64,
@@ -145,7 +146,7 @@ impl DatabaseClient {
     pub fn reconcile_author_passages(&self) -> Result<()> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::ReconcileAuthorPassages { reply: Some(reply) })
+            .send(WriterMessage::ReconcileAuthorPassages { reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
@@ -154,7 +155,7 @@ impl DatabaseClient {
 
     pub(super) fn schedule_author_passage_reconciliation(&self) -> Result<()> {
         self.sender
-            .send(WriterMessage::ReconcileAuthorPassages { reply: None })
+            .send(WriterMessage::ReconcileAuthorPassageBatch)
             .map_err(|_| DatabaseError::WriterUnavailable)
     }
 
