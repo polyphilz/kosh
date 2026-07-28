@@ -1,5 +1,5 @@
 import { forwardRef, type KeyboardEvent } from "react";
-import type { PassageSearchResult } from "../backend/contracts";
+import type { PassageSearchResult, SearchField } from "../backend/contracts";
 import { classNames } from "../lib/classNames";
 import { HighlightedText } from "./HighlightedText";
 import { citationLocation, citationRevision, resultTitle, sourceDisplay } from "./presentation";
@@ -14,6 +14,9 @@ interface SearchResultCardProps {
 export const SearchResultCard = forwardRef<HTMLButtonElement, SearchResultCardProps>(
   function SearchResultCard({ active, onKeyDown, onSelect, result }, ref) {
     const sources = result.citation.sources.slice(0, 2);
+    const titleHighlightFields: SearchField[] = result.citation.tidbit
+      ? ["TITLE"]
+      : ["ATTACHMENT_NAME"];
     return (
       <button
         aria-controls="search-citation-detail"
@@ -28,7 +31,7 @@ export const SearchResultCard = forwardRef<HTMLButtonElement, SearchResultCardPr
         <span className="search-result-card__topline">
           <strong>
             <HighlightedText
-              fields={["TITLE", "ATTACHMENT_NAME"]}
+              fields={titleHighlightFields}
               highlights={result.highlights}
               text={resultTitle(result)}
             />
