@@ -1533,15 +1533,12 @@ pub(crate) fn recover_interrupted_image_ocr(
     validate_timestamp(stale_started_at_or_before, "staleStartedAtOrBefore")?;
     validate_timestamp(now_ms, "nowMs")?;
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let interrupted = transaction
+    let stale = transaction
         .prepare(
             "SELECT
                 queue.extraction_id,
                 extraction.attachment_id,
-                queue.attempt_count,
-                extraction.extractor_version,
                 config.version,
-                extraction.content_hash,
                 attachment.sha256
              FROM image_ocr_queue AS queue
              JOIN attachment_extraction AS extraction
@@ -1550,6 +1547,118 @@ pub(crate) fn recover_interrupted_image_ocr(
                ON config.extractor = extraction.extractor
              JOIN attachment
                ON attachment.id = extraction.attachment_id
+             JOIN attachment_image AS image
+               ON image.attachment_id = attachment.id
+             WHERE extraction.extractor = ?1
+               AND attachment.deleted_at IS NULL
+               AND NOT (
+                    queue.state = 'FAILED'
+                    AND queue.last_error = ?2
+               )
+               AND (
+                    extraction.extractor_version <> config.version
+                    OR extraction.content_hash <> attachment.sha256
+               )
+             ORDER BY extraction.attachment_id, queue.extraction_id",
+        )?
+        .query_map(params![IMAGE_OCR_EXTRACTOR, STALE_OCR_ERROR], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut recovery = ImageOcrRecovery::default();
+    for (extraction_id, attachment_id, current_extractor_version, attachment_hash) in stale {
+        transaction.execute(
+            "UPDATE attachment_extraction
+             SET status = 'FAILED', error = ?1, completed_at = ?2
+             WHERE id = ?3
+               AND status <> 'READY'",
+            params![STALE_OCR_ERROR, now_ms, &extraction_id],
+        )?;
+        transaction.execute(
+            "UPDATE image_ocr_queue
+             SET state = 'FAILED',
+                 attempt_count = max(attempt_count, 1),
+                 next_attempt_at = NULL,
+                 started_at = NULL,
+                 last_error = ?1,
+                 updated_at = ?2
+             WHERE extraction_id = ?3",
+            params![STALE_OCR_ERROR, now_ms, &extraction_id],
+        )?;
+        let current_exists: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM attachment_extraction AS extraction
+                JOIN image_ocr_queue AS queue
+                  ON queue.extraction_id = extraction.id
+                WHERE extraction.attachment_id = ?1
+                  AND extraction.extractor = ?2
+                  AND extraction.extractor_version = ?3
+                  AND extraction.content_hash = ?4
+             )",
+            params![
+                &attachment_id,
+                IMAGE_OCR_EXTRACTOR,
+                &current_extractor_version,
+                &attachment_hash
+            ],
+            |row| row.get(0),
+        )?;
+        if !current_exists {
+            let replacement_extraction_id = Uuid::now_v7().to_string();
+            transaction.execute(
+                "INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, error, created_at, started_at, completed_at
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, ?6, NULL, NULL)",
+                params![
+                    &replacement_extraction_id,
+                    &attachment_id,
+                    IMAGE_OCR_EXTRACTOR,
+                    &current_extractor_version,
+                    &attachment_hash,
+                    now_ms
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO image_ocr_queue(
+                    extraction_id, state, attempt_count, next_attempt_at,
+                    started_at, last_error, updated_at
+                 ) VALUES(?1, 'PENDING', 0, ?2, NULL, NULL, ?2)",
+                params![&replacement_extraction_id, now_ms],
+            )?;
+            transaction.execute(
+                "UPDATE attachment
+                 SET extraction_state = 'PENDING',
+                     updated_at = max(updated_at, ?1)
+                 WHERE id = ?2",
+                params![now_ms, &attachment_id],
+            )?;
+            recovery.requeued += 1;
+        }
+        recovery.terminally_failed += 1;
+    }
+
+    let interrupted = transaction
+        .prepare(
+            "SELECT
+                queue.extraction_id,
+                extraction.attachment_id,
+                queue.attempt_count
+             FROM image_ocr_queue AS queue
+             JOIN attachment_extraction AS extraction
+               ON extraction.id = queue.extraction_id
+             JOIN attachment_extractor_config AS config
+               ON config.extractor = extraction.extractor
+              AND config.version = extraction.extractor_version
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
              JOIN attachment_image AS image
                ON image.attachment_id = attachment.id
              WHERE queue.state = 'RUNNING'
@@ -1565,97 +1674,11 @@ pub(crate) fn recover_interrupted_image_ocr(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, u32>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
-                    row.get::<_, Vec<u8>>(6)?,
                 ))
             },
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut recovery = ImageOcrRecovery::default();
-    for (
-        extraction_id,
-        attachment_id,
-        attempt_count,
-        extractor_version,
-        current_extractor_version,
-        content_hash,
-        attachment_hash,
-    ) in interrupted
-    {
-        if extractor_version != current_extractor_version || content_hash != attachment_hash {
-            transaction.execute(
-                "UPDATE attachment_extraction
-                 SET status = 'FAILED', error = ?1, completed_at = ?2
-                 WHERE id = ?3",
-                params![STALE_OCR_ERROR, now_ms, &extraction_id],
-            )?;
-            transaction.execute(
-                "UPDATE image_ocr_queue
-                 SET state = 'FAILED',
-                     attempt_count = max(attempt_count, 1),
-                     next_attempt_at = NULL,
-                     started_at = NULL,
-                     last_error = ?1,
-                     updated_at = ?2
-                 WHERE extraction_id = ?3",
-                params![STALE_OCR_ERROR, now_ms, &extraction_id],
-            )?;
-            let current_exists: bool = transaction.query_row(
-                "SELECT EXISTS(
-                    SELECT 1
-                    FROM attachment_extraction AS extraction
-                    JOIN image_ocr_queue AS queue
-                      ON queue.extraction_id = extraction.id
-                    WHERE extraction.attachment_id = ?1
-                      AND extraction.extractor = ?2
-                      AND extraction.extractor_version = ?3
-                      AND extraction.content_hash = ?4
-                 )",
-                params![
-                    &attachment_id,
-                    IMAGE_OCR_EXTRACTOR,
-                    &current_extractor_version,
-                    &attachment_hash
-                ],
-                |row| row.get(0),
-            )?;
-            if !current_exists {
-                let replacement_extraction_id = Uuid::now_v7().to_string();
-                transaction.execute(
-                    "INSERT INTO attachment_extraction(
-                        id, attachment_id, extractor, extractor_version, content_hash,
-                        status, error, created_at, started_at, completed_at
-                     ) VALUES(?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, ?6, NULL, NULL)",
-                    params![
-                        &replacement_extraction_id,
-                        &attachment_id,
-                        IMAGE_OCR_EXTRACTOR,
-                        &current_extractor_version,
-                        &attachment_hash,
-                        now_ms
-                    ],
-                )?;
-                transaction.execute(
-                    "INSERT INTO image_ocr_queue(
-                        extraction_id, state, attempt_count, next_attempt_at,
-                        started_at, last_error, updated_at
-                     ) VALUES(?1, 'PENDING', 0, ?2, NULL, NULL, ?2)",
-                    params![&replacement_extraction_id, now_ms],
-                )?;
-                transaction.execute(
-                    "UPDATE attachment
-                     SET extraction_state = 'PENDING',
-                         updated_at = max(updated_at, ?1)
-                     WHERE id = ?2",
-                    params![now_ms, &attachment_id],
-                )?;
-                recovery.requeued += 1;
-            }
-            recovery.terminally_failed += 1;
-            continue;
-        }
+    for (extraction_id, attachment_id, attempt_count) in interrupted {
         if attempt_count >= MAX_IMAGE_OCR_ATTEMPTS {
             transaction.execute(
                 "UPDATE attachment_extraction

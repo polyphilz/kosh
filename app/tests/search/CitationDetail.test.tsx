@@ -39,7 +39,13 @@ describe("image citation detail", () => {
   });
 
   it("falls back to citing the whole image when region metadata is unavailable", () => {
-    const citation = imageCitation({ height: 2, width: 1, x: 0, y: 0 });
+    const citation = imageCitation({
+      coordinateSystem: "vision-normalized-top-left",
+      height: 0.25,
+      width: 0.5,
+      x: 0.1,
+      y: 0.2,
+    });
     const { getByText, queryByLabelText } = render(
       <CitationDetail
         citation={citation}

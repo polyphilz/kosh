@@ -630,59 +630,190 @@ fn image_ocr_recovers_interrupted_work_and_bounds_terminal_retries() {
 #[test]
 fn image_ocr_recovery_replaces_stale_extractor_provenance() {
     let library = TestLibrary::new();
-    let image = library.ingest_image(
-        (0x78a, 0x78b, 0x78c, 0x78d),
-        b"stale original image",
-        b"stale canonical preview",
-        11,
-    );
-    let client = library.database.client();
-    client
-        .claim_next_image_ocr(12)
-        .expect("claim stale OCR")
-        .expect("stale OCR job");
-    super::connection::open_writer(
+    let cases = [
+        ("PENDING", (0x78a, 0x78b, 0x78c, 0x78d)),
+        ("RUNNING", (0x7ab, 0x7ac, 0x7ad, 0x7ae)),
+        ("RETRY_WAIT", (0x7af, 0x7b0, 0x7b1, 0x7b2)),
+        ("READY", (0x7b3, 0x7b4, 0x7b5, 0x7b6)),
+        ("FAILED", (0x7b7, 0x7b8, 0x7b9, 0x7ba)),
+    ];
+    let images = cases
+        .iter()
+        .enumerate()
+        .map(|(index, (state, suffixes))| {
+            (
+                *state,
+                library.ingest_image(
+                    *suffixes,
+                    format!("{state} original image").as_bytes(),
+                    format!("{state} canonical preview").as_bytes(),
+                    11 + i64::try_from(index).expect("case index fits i64"),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut writer = super::connection::open_writer(
         &library.paths.main,
         super::connection::DatabaseKind::Main,
         super::connection::FileState::Existing,
     )
-    .expect("open configured extractor writer")
-    .execute(
-        "UPDATE attachment_extractor_config
+    .expect("open configured extractor writer");
+    let transaction = writer.transaction().expect("state setup transaction");
+    for (state, image) in &images {
+        let extraction_id = transaction
+            .query_row(
+                "SELECT id
+                 FROM attachment_extraction
+                 WHERE attachment_id = ?1 AND extractor = 'ocr'",
+                params![image.attachment.id],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("image extraction id");
+        match *state {
+            "PENDING" => {}
+            "RUNNING" => {
+                transaction
+                    .execute(
+                        "UPDATE attachment_extraction
+                         SET status = 'RUNNING', started_at = 20
+                         WHERE id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("running extraction");
+                transaction
+                    .execute(
+                        "UPDATE image_ocr_queue
+                         SET state = 'RUNNING', attempt_count = 1,
+                             next_attempt_at = NULL, started_at = 20, updated_at = 20
+                         WHERE extraction_id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("running queue");
+            }
+            "RETRY_WAIT" => {
+                transaction
+                    .execute(
+                        "UPDATE attachment_extraction
+                         SET error = 'retry later'
+                         WHERE id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("retry extraction");
+                transaction
+                    .execute(
+                        "UPDATE image_ocr_queue
+                         SET state = 'RETRY_WAIT', attempt_count = 1,
+                             next_attempt_at = 100, last_error = 'retry later', updated_at = 20
+                         WHERE extraction_id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("retry queue");
+            }
+            "READY" => {
+                transaction
+                    .execute(
+                        "UPDATE attachment_extraction
+                         SET status = 'READY', completed_at = 20
+                         WHERE id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("ready extraction");
+                transaction
+                    .execute(
+                        "UPDATE image_ocr_queue
+                         SET state = 'READY', attempt_count = 1,
+                             next_attempt_at = NULL, updated_at = 20
+                         WHERE extraction_id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("ready queue");
+            }
+            "FAILED" => {
+                transaction
+                    .execute(
+                        "UPDATE attachment_extraction
+                         SET status = 'FAILED', error = 'terminal', completed_at = 20
+                         WHERE id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("failed extraction");
+                transaction
+                    .execute(
+                        "UPDATE image_ocr_queue
+                         SET state = 'FAILED', attempt_count = 1,
+                             next_attempt_at = NULL, last_error = 'terminal', updated_at = 20
+                         WHERE extraction_id = ?1",
+                        params![&extraction_id],
+                    )
+                    .expect("failed queue");
+            }
+            state => panic!("unexpected OCR state {state}"),
+        }
+    }
+    transaction
+        .execute(
+            "UPDATE attachment_extractor_config
              SET version = '2', updated_at = 13
              WHERE extractor = 'ocr'",
-        [],
-    )
-    .expect("advance OCR extractor version");
+            [],
+        )
+        .expect("advance OCR extractor version");
+    transaction.commit().expect("commit stale OCR states");
+    drop(writer);
 
+    let client = library.database.client();
     let recovery = client
-        .recover_interrupted_image_ocr(12, 14)
+        .recover_interrupted_image_ocr(20, 30)
         .expect("replace stale OCR provenance");
 
-    assert_eq!(recovery.requeued, 1);
-    assert_eq!(recovery.terminally_failed, 1);
-    let main = library.database.open_main_read_only().expect("main reader");
+    assert_eq!(recovery.requeued, 5);
+    assert_eq!(recovery.terminally_failed, 5);
     assert_eq!(
-        main.query_row(
-            "SELECT queue.state, extraction.status
-             FROM image_ocr_queue AS queue
-             JOIN attachment_extraction AS extraction ON extraction.id = queue.extraction_id
-             WHERE extraction.attachment_id = ?1
-               AND extraction.extractor_version = '1'",
-            params![image.attachment.id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .expect("stale OCR state"),
-        ("FAILED".into(), "FAILED".into())
+        client
+            .recover_interrupted_image_ocr(20, 31)
+            .expect("repeat stale OCR reconciliation"),
+        super::media::ImageOcrRecovery::default()
     );
+    let main = library.database.open_main_read_only().expect("main reader");
+    for (original_state, image) in &images {
+        let (queue_state, extraction_status) = main
+            .query_row(
+                "SELECT queue.state, extraction.status
+                 FROM image_ocr_queue AS queue
+                 JOIN attachment_extraction AS extraction ON extraction.id = queue.extraction_id
+                 WHERE extraction.attachment_id = ?1
+                   AND extraction.extractor_version = '1'",
+                params![image.attachment.id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("stale OCR state");
+        assert_eq!(queue_state, "FAILED");
+        assert_eq!(
+            extraction_status,
+            if *original_state == "READY" {
+                "READY"
+            } else {
+                "FAILED"
+            }
+        );
+    }
     drop(main);
-    let replacement = client
-        .claim_next_image_ocr(14)
+    let mut replacement_attachment_ids = Vec::new();
+    while let Some(replacement) = client
+        .claim_next_image_ocr(31)
         .expect("claim replacement OCR")
-        .expect("replacement OCR job");
-    assert_eq!(replacement.attachment_id, image.attachment.id);
-    assert_eq!(replacement.extractor_version, "2");
-    assert_eq!(replacement.attempt_count, 1);
+    {
+        assert_eq!(replacement.extractor_version, "2");
+        assert_eq!(replacement.attempt_count, 1);
+        replacement_attachment_ids.push(replacement.attachment_id);
+    }
+    replacement_attachment_ids.sort();
+    let mut expected_attachment_ids = images
+        .iter()
+        .map(|(_, image)| image.attachment.id.clone())
+        .collect::<Vec<_>>();
+    expected_attachment_ids.sort();
+    assert_eq!(replacement_attachment_ids, expected_attachment_ids);
 }
 
 #[test]

@@ -212,6 +212,9 @@ function normalizedRegion(
     return null;
   }
   const region = value as Record<string, unknown>;
+  if (region.coordinateSystem !== "vision-normalized-bottom-left") {
+    return null;
+  }
   const [x, y, width, height] = [region.x, region.y, region.width, region.height];
   if (
     ![x, y, width, height].every(
