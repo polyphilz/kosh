@@ -350,6 +350,7 @@
     {
       "id": "query-heat-phrase",
       "text": "\"impatient motion\"",
+      "searchMode": "DEFAULT",
       "category": "PHRASE",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -377,6 +378,7 @@
     {
       "id": "query-cache-identifier",
       "text": "passage_cache_key",
+      "searchMode": "DEFAULT",
       "category": "CODE_IDENTIFIER",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -404,6 +406,7 @@
     {
       "id": "query-bayes-formula",
       "text": "P(A|B) P(B|A)",
+      "searchMode": "DEFAULT",
       "category": "FORMULA",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -431,6 +434,7 @@
     {
       "id": "query-sqlite-domain",
       "text": "sqlite.org FTS5 tokenizer",
+      "searchMode": "DEFAULT",
       "category": "SOURCE_DOMAIN",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -458,6 +462,7 @@
     {
       "id": "query-ocr-invoice",
       "text": "QZ-4817 ceramic lubricant",
+      "searchMode": "DEFAULT",
       "category": "OCR",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -484,6 +489,7 @@
     {
       "id": "query-pdf-attention",
       "text": "attention heads representation subspaces page 42",
+      "searchMode": "DEFAULT",
       "category": "PDF",
       "retrievalNeed": "BOTH",
       "relevance": [
@@ -504,6 +510,7 @@
     {
       "id": "query-car-upkeep",
       "text": "car upkeep schedule",
+      "searchMode": "DEFAULT",
       "category": "SYNONYM",
       "retrievalNeed": "SEMANTIC",
       "relevance": [
@@ -531,6 +538,7 @@
     {
       "id": "query-concurrency-misspelling",
       "text": "concurency semafore worker permits",
+      "searchMode": "DEFAULT",
       "category": "MISSPELLING",
       "retrievalNeed": "BOTH",
       "relevance": [
@@ -558,6 +566,7 @@
     {
       "id": "query-obsolete-caloric",
       "text": "obsolete weightless heat fluid theory",
+      "searchMode": "DEFAULT",
       "category": "NEAR_DUPLICATE",
       "retrievalNeed": "BOTH",
       "relevance": [
@@ -585,6 +594,7 @@
     {
       "id": "query-resolve-citation-exact",
       "text": "resolveCitationTarget",
+      "searchMode": "EXACT",
       "category": "EXACT",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -612,6 +622,7 @@
     {
       "id": "query-unicode-diacritics",
       "text": "naive cafe resume outcomes",
+      "searchMode": "DEFAULT",
       "category": "UNICODE",
       "retrievalNeed": "BOTH",
       "relevance": [
@@ -639,6 +650,7 @@
     {
       "id": "query-model-filename",
       "text": "jina-embeddings-v5-small.onnx tokenizer digest",
+      "searchMode": "EXACT",
       "category": "EXACT",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -666,6 +678,7 @@
     {
       "id": "query-herb-hydration",
       "text": "when should I hydrate a wilted herb",
+      "searchMode": "DEFAULT",
       "category": "SYNONYM",
       "retrievalNeed": "SEMANTIC",
       "relevance": [
@@ -693,6 +706,7 @@
     {
       "id": "query-dough-phrase",
       "text": "\"resting dough before kneading\"",
+      "searchMode": "DEFAULT",
       "category": "PHRASE",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -720,6 +734,7 @@
     {
       "id": "query-fourier-formula",
       "text": "integral negative infinity e^{-i omega t}",
+      "searchMode": "DEFAULT",
       "category": "FORMULA",
       "retrievalNeed": "BOTH",
       "relevance": [
@@ -747,6 +762,7 @@
     {
       "id": "query-rust-domain",
       "text": "doc.rust-lang.org lazy iterator adaptor",
+      "searchMode": "DEFAULT",
       "category": "SOURCE_DOMAIN",
       "retrievalNeed": "LEXICAL",
       "relevance": [
@@ -774,6 +790,7 @@
     {
       "id": "query-heat-models",
       "text": "different models of heat and temperature",
+      "searchMode": "DEFAULT",
       "category": "PROSE",
       "retrievalNeed": "BOTH",
       "relevance": [

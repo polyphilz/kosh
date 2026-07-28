@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     EvaluationLocator, EvaluationPassage, EvaluationQuery, QueryCategory, RelevanceError,
-    RelevanceFixture, Result,
+    RelevanceFixture, Result, SearchMode,
 };
 
 pub const REPORT_SCHEMA_VERSION: u32 = 1;
@@ -20,12 +20,19 @@ pub struct RetrievalHit {
     pub matched_fields: Vec<String>,
 }
 
+/// Label-free search input exposed to the system under test.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetrievalRequest {
+    pub text: String,
+    pub search_mode: SearchMode,
+}
+
 pub trait Retriever {
     fn name(&self) -> &str;
 
     fn retrieve(
         &mut self,
-        query: &EvaluationQuery,
+        request: &RetrievalRequest,
         corpus: &[EvaluationPassage],
         limit: usize,
     ) -> std::result::Result<Vec<RetrievalHit>, String>;
@@ -41,7 +48,7 @@ impl Retriever for EmptyRetriever {
 
     fn retrieve(
         &mut self,
-        _query: &EvaluationQuery,
+        _request: &RetrievalRequest,
         _corpus: &[EvaluationPassage],
         _limit: usize,
     ) -> std::result::Result<Vec<RetrievalHit>, String> {
@@ -82,6 +89,7 @@ pub struct ReportSummary {
 pub struct QueryReport {
     pub query_id: String,
     pub text: String,
+    pub search_mode: SearchMode,
     pub category: QueryCategory,
     pub passed: bool,
     pub metrics: QueryMetrics,
@@ -113,8 +121,12 @@ pub fn run_relevance_suite(
     let mut query_reports = Vec::with_capacity(fixture.queries.len());
 
     for query in &fixture.queries {
+        let request = RetrievalRequest {
+            text: query.text.clone(),
+            search_mode: query.search_mode.clone(),
+        };
         let raw_hits = retriever
-            .retrieve(query, &fixture.corpus, REPORT_LIMIT)
+            .retrieve(&request, &fixture.corpus, REPORT_LIMIT)
             .map_err(|message| RelevanceError::Retrieval {
                 query_id: query.id.clone(),
                 message,
@@ -128,6 +140,7 @@ pub fn run_relevance_suite(
         query_reports.push(QueryReport {
             query_id: query.id.clone(),
             text: query.text.clone(),
+            search_mode: query.search_mode.clone(),
             category: query.category.clone(),
             passed,
             metrics,
@@ -397,47 +410,70 @@ fn average(values: impl Iterator<Item = f64>, count: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_relevance_suite, EmptyRetriever, RetrievalHit, Retriever};
-    use crate::relevance::{
-        EvaluationPassage, EvaluationQuery, RelevanceFixture, REPORT_SCHEMA_VERSION,
-    };
+    use std::collections::HashMap;
+
+    use super::{run_relevance_suite, EmptyRetriever, RetrievalHit, RetrievalRequest, Retriever};
+    use crate::relevance::{EvaluationPassage, RelevanceFixture, REPORT_SCHEMA_VERSION};
 
     fn fixture() -> RelevanceFixture {
         serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
             .expect("checked-in fixture")
     }
 
-    struct ExpectedCitationRetriever;
+    struct FixtureLookupRetriever {
+        hits_by_text: HashMap<String, Vec<RetrievalHit>>,
+    }
 
-    impl Retriever for ExpectedCitationRetriever {
+    impl FixtureLookupRetriever {
+        fn from_fixture(fixture: &RelevanceFixture) -> Self {
+            let passages = fixture
+                .corpus
+                .iter()
+                .map(|passage| (passage.id.as_str(), passage))
+                .collect::<HashMap<_, _>>();
+            let hits_by_text = fixture
+                .queries
+                .iter()
+                .map(|query| {
+                    let mut judgments = query.relevance.iter().collect::<Vec<_>>();
+                    judgments.sort_by_key(|judgment| std::cmp::Reverse(judgment.grade));
+                    let hits = judgments
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, judgment)| {
+                            let passage = passages
+                                .get(judgment.passage_id.as_str())
+                                .expect("judged passage");
+                            RetrievalHit {
+                                passage_id: passage.id.clone(),
+                                score: 1.0 / (index + 1) as f64,
+                                locator: passage.locator.clone(),
+                                matched_fields: vec!["test".into()],
+                            }
+                        })
+                        .collect();
+                    (query.text.clone(), hits)
+                })
+                .collect();
+            Self { hits_by_text }
+        }
+    }
+
+    impl Retriever for FixtureLookupRetriever {
         fn name(&self) -> &str {
-            "expected-citation-test"
+            "fixture-lookup-test"
         }
 
         fn retrieve(
             &mut self,
-            query: &EvaluationQuery,
-            corpus: &[EvaluationPassage],
+            request: &RetrievalRequest,
+            _corpus: &[EvaluationPassage],
             _limit: usize,
         ) -> std::result::Result<Vec<RetrievalHit>, String> {
-            let mut judgments = query.relevance.iter().collect::<Vec<_>>();
-            judgments.sort_by_key(|judgment| std::cmp::Reverse(judgment.grade));
-            Ok(judgments
-                .into_iter()
-                .enumerate()
-                .map(|(index, judgment)| {
-                    let passage = corpus
-                        .iter()
-                        .find(|passage| passage.id == judgment.passage_id)
-                        .expect("judged passage");
-                    RetrievalHit {
-                        passage_id: passage.id.clone(),
-                        score: 1.0 / (index + 1) as f64,
-                        locator: passage.locator.clone(),
-                        matched_fields: vec!["test".into()],
-                    }
-                })
-                .collect())
+            self.hits_by_text
+                .get(&request.text)
+                .cloned()
+                .ok_or_else(|| format!("unknown test query {}", request.text))
         }
     }
 
@@ -450,18 +486,12 @@ mod tests {
 
         fn retrieve(
             &mut self,
-            query: &EvaluationQuery,
+            _request: &RetrievalRequest,
             corpus: &[EvaluationPassage],
             _limit: usize,
         ) -> std::result::Result<Vec<RetrievalHit>, String> {
-            let expected = corpus
-                .iter()
-                .find(|passage| passage.id == query.expected_citation.passage_id)
-                .expect("expected passage");
-            let other = corpus
-                .iter()
-                .find(|passage| passage.id != query.expected_citation.passage_id)
-                .expect("second passage");
+            let expected = &corpus[0];
+            let other = &corpus[1];
             Ok(vec![
                 RetrievalHit {
                     passage_id: expected.id.clone(),
@@ -501,8 +531,9 @@ mod tests {
     #[test]
     fn expected_citation_results_calculate_perfect_metrics() {
         let fixture = fixture();
-        let report = run_relevance_suite(&fixture, &mut ExpectedCitationRetriever)
-            .expect("expected citation report");
+        let mut retriever = FixtureLookupRetriever::from_fixture(&fixture);
+        let report =
+            run_relevance_suite(&fixture, &mut retriever).expect("expected citation report");
 
         assert!(report.passed);
         assert_eq!(report.summary.recall_at_5, 1.0);

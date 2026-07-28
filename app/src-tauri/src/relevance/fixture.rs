@@ -112,11 +112,19 @@ pub enum RetrievalNeed {
     Semantic,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SearchMode {
+    Default,
+    Exact,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationQuery {
     pub id: String,
     pub text: String,
+    pub search_mode: SearchMode,
     pub category: QueryCategory,
     pub retrieval_need: RetrievalNeed,
     pub relevance: Vec<RelevanceJudgment>,
@@ -357,7 +365,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryCategory, RelevanceFixture, RetrievalNeed};
+    use super::{QueryCategory, RelevanceFixture, RetrievalNeed, SearchMode};
 
     fn checked_in_fixture() -> RelevanceFixture {
         serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
@@ -382,6 +390,9 @@ mod tests {
             .queries
             .iter()
             .any(|query| query.retrieval_need == RetrievalNeed::Both));
+        assert!(fixture.queries.iter().any(|query| {
+            query.category == QueryCategory::Exact && query.search_mode == SearchMode::Exact
+        }));
         for category in [
             QueryCategory::CodeIdentifier,
             QueryCategory::Formula,

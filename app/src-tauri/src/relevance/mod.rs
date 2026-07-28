@@ -7,11 +7,11 @@ use std::path::Path;
 pub use fixture::{
     EvaluationAttachment, EvaluationLocator, EvaluationPassage, EvaluationQuery, EvaluationRegion,
     EvaluationSource, ExpectedCitation, QueryCategory, RelevanceFixture, RelevanceJudgment,
-    RetrievalNeed, FIXTURE_SCHEMA_VERSION,
+    RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
 };
 pub use report::{
     run_relevance_suite, EmptyRetriever, QueryMetrics, QueryReport, RelevanceReport, ReportSummary,
-    RetrievalHit, Retriever, REPORT_SCHEMA_VERSION,
+    RetrievalHit, RetrievalRequest, Retriever, REPORT_SCHEMA_VERSION,
 };
 pub use scale::{
     generate_scale_corpus, measure_scale_generation, AttachmentExtractionPlaceholder,

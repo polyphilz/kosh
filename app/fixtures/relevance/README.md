@@ -3,6 +3,9 @@
 `v1.json` is the checked-in, versioned search-quality corpus. Each query names
 graded relevant passage IDs, passages that must not rank, the retrieval mode it
 is meant to exercise, and the exact citation locator expected from a result.
+Only `text` and `searchMode` cross into a retriever. Categories, expected
+passages, exclusions, and citation locators remain private to the scorer so the
+system under test cannot read its answer key.
 
 Run the fixture validator and intentionally empty baseline from `app/`:
 
