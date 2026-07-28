@@ -18,6 +18,7 @@ export function attachmentNodeView(
 ): NodeView {
   let node = initialNode;
   let destroyed = false;
+  let replacing = false;
   const dom = document.createElement("section");
   dom.className = "kosh-file-node";
   dom.dataset.koshFileAttachment = "true";
@@ -42,7 +43,8 @@ export function attachmentNodeView(
     void actions.revealInFinder?.(node.attrs.attachmentId).catch(reportError);
   });
   const replace = button("Replace", () => {
-    if (!view.editable || !actions.pickReplacement) return;
+    if (replacing || !view.editable || !actions.pickReplacement) return;
+    replacing = true;
     replace.disabled = true;
     void actions
       .pickReplacement()
@@ -59,6 +61,7 @@ export function attachmentNodeView(
       })
       .catch(reportError)
       .finally(() => {
+        replacing = false;
         replace.disabled = !view.editable || !actions.pickReplacement;
       });
   });
@@ -103,7 +106,7 @@ export function attachmentNodeView(
       caption.value = node.attrs.caption;
     }
     caption.disabled = !view.editable;
-    replace.disabled = !view.editable || !actions.pickReplacement;
+    replace.disabled = replacing || !view.editable || !actions.pickReplacement;
     remove.disabled = !view.editable;
     open.disabled = !actions.openExternal;
     reveal.disabled = !actions.revealInFinder;

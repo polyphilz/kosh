@@ -300,7 +300,10 @@ fn captured_block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
 
 fn append_event_content(capture: &mut Capture, event: Event<'_>) {
     match event {
-        Event::Text(value) => capture.content.push_str(&authored_text(&value)),
+        Event::Text(value) if capture.kind == BlockKind::Prose => {
+            capture.content.push_str(&authored_text(&value));
+        }
+        Event::Text(value) => capture.content.push_str(&value),
         Event::Code(value) => capture.content.push_str(&value),
         Event::InlineMath(value) => {
             capture.content.push('$');
@@ -1110,6 +1113,19 @@ mod tests {
         assert_eq!(
             passages[0].locator.source_end_byte,
             Some(markdown.len() as u64)
+        );
+    }
+
+    #[test]
+    fn fenced_code_preserves_literal_media_tokens() {
+        let attachment_id = "019f547b-6200-7000-8000-000000000774";
+        let markdown = format!("```text\n{{{{kosh:attachment:{attachment_id}}}}}\n```");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(
+            passages[0].content,
+            format!("{{{{kosh:attachment:{attachment_id}}}}}")
         );
     }
 

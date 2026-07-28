@@ -327,10 +327,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
                 : undefined,
               pickReplacement: pickAttachmentRef.current
                 ? async () => {
-                    const record = await pickAttachmentRef.current!();
-                    return record
-                      ? selectedAttachmentNode(record, editorView.dom.clientWidth)
-                      : null;
+                    const finishPending = beginDetachedMediaIngest(
+                      editorView,
+                      onPendingImagesChangeRef,
+                    );
+                    try {
+                      const record = await pickAttachmentRef.current!();
+                      return record
+                        ? selectedAttachmentNode(record, editorView.dom.clientWidth)
+                        : null;
+                    } finally {
+                      finishPending();
+                    }
                   }
                 : undefined,
               revealInFinder: revealAttachmentInFinderRef.current
@@ -512,6 +520,7 @@ interface PendingImageRollback {
 }
 
 const pendingImageRollbacks = new WeakMap<EditorView, Map<string, PendingImageRollback>>();
+const detachedMediaIngestCounts = new WeakMap<EditorView, number>();
 
 function beginImageIngest(
   view: EditorView,
@@ -582,7 +591,7 @@ function beginMediaIngest<T>(
   };
   registerPendingImageRollback(view, rollback);
   view.dispatch(replacement);
-  notifyPendingImages(view.state.doc, onPendingRef.current);
+  notifyPendingMedia(view, onPendingRef.current);
 
   const restoreSelection = () => {
     const position = pendingImagePosition(view.state.doc, requestId);
@@ -643,9 +652,31 @@ function beginMediaIngest<T>(
     .finally(() => {
       unregisterPendingImageRollback(view, requestId);
       if (!view.isDestroyed) {
-        notifyPendingImages(view.state.doc, onPendingRef.current);
+        notifyPendingMedia(view, onPendingRef.current);
       }
     });
+}
+
+function beginDetachedMediaIngest(
+  view: EditorView,
+  onPendingRef: { current: ((pending: boolean) => void) | undefined },
+): () => void {
+  detachedMediaIngestCounts.set(view, (detachedMediaIngestCounts.get(view) ?? 0) + 1);
+  notifyPendingMedia(view, onPendingRef.current);
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    const remaining = Math.max(0, (detachedMediaIngestCounts.get(view) ?? 1) - 1);
+    if (remaining === 0) {
+      detachedMediaIngestCounts.delete(view);
+    } else {
+      detachedMediaIngestCounts.set(view, remaining);
+    }
+    if (!view.isDestroyed) {
+      notifyPendingMedia(view, onPendingRef.current);
+    }
+  };
 }
 
 function registerPendingImageRollback(view: EditorView, rollback: PendingImageRollback) {
@@ -784,15 +815,12 @@ function pendingImagePosition(document: ProseMirrorNode, requestId: string): num
   return position;
 }
 
-function notifyPendingImages(
-  document: ProseMirrorNode,
-  callback: ((pending: boolean) => void) | undefined,
-) {
+function notifyPendingMedia(view: EditorView, callback: ((pending: boolean) => void) | undefined) {
   if (!callback) {
     return;
   }
-  let pending = false;
-  document.descendants((node) => {
+  let pending = (detachedMediaIngestCounts.get(view) ?? 0) > 0;
+  view.state.doc.descendants((node) => {
     if (node.type.name === "kosh_image_pending") {
       pending = true;
       return false;

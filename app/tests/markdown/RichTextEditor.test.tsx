@@ -4,7 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode, createRef } from "react";
 import { NodeSelection, TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
-import type { GenericAttachmentRecord, ImageRecord, PdfRecord } from "../../src/backend/contracts";
+import type {
+  GenericAttachmentRecord,
+  ImageRecord,
+  PdfRecord,
+  SelectedAttachmentRecord,
+} from "../../src/backend/contracts";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { statusPollDelay } from "../../src/markdown/ImageNodeView";
@@ -638,13 +643,18 @@ it("inserts, captions, opens, reveals, and replaces a generic attachment", async
     "archive.zip",
     "BINARY",
   );
+  let resolveReplacement!: (record: SelectedAttachmentRecord | null) => void;
+  const replacement = new Promise<SelectedAttachmentRecord | null>((resolve) => {
+    resolveReplacement = resolve;
+  });
   const pickAttachment = vi
     .fn()
     .mockResolvedValueOnce({ record: first, recordKind: "GENERIC" })
-    .mockResolvedValueOnce({ record: second, recordKind: "GENERIC" });
+    .mockReturnValueOnce(replacement);
   const openAttachmentExternal = vi.fn(async () => undefined);
   const revealAttachmentInFinder = vi.fn(async () => undefined);
   const onChange = vi.fn();
+  const onPendingImagesChange = vi.fn();
   const result = render(
     <RichTextEditor
       ariaLabel="Body"
@@ -662,6 +672,7 @@ it("inserts, captions, opens, reveals, and replaces a generic attachment", async
         };
       }}
       onChange={onChange}
+      onPendingImagesChange={onPendingImagesChange}
       openAttachmentExternal={openAttachmentExternal}
       pickAttachment={pickAttachment}
       revealAttachmentInFinder={revealAttachmentInFinder}
@@ -683,7 +694,13 @@ it("inserts, captions, opens, reveals, and replaces a generic attachment", async
   });
 
   fireEvent.click(result.getByRole("button", { name: "Replace" }));
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(true);
+  expect(result.getByText("notes.md")).toBeVisible();
+  await act(async () => {
+    resolveReplacement({ record: second, recordKind: "GENERIC" });
+  });
   await result.findByText("archive.zip");
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
   expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${second.id}}}`);
 });
 
