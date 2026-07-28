@@ -136,6 +136,20 @@ it("treats clearing a link at an unlinked cursor as a safe no-op", () => {
   expect(getByRole("textbox", { name: "Editor" })).toHaveFocus();
 });
 
+it("updates the complete link mark when editing at a collapsed cursor", () => {
+  const { getByRole, view } = controlledEditor("[word](https://old.example/)");
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 3)));
+  });
+  fireEvent.mouseDown(getByRole("button", { name: "Link" }));
+  const input = getByRole("textbox", { name: "Link URL" });
+  expect(input).toHaveValue("https://old.example/");
+  fireEvent.change(input, { target: { value: "https://new.example/path" } });
+  fireEvent.click(getByRole("button", { name: "Apply" }));
+
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("[word](https://new.example/path)");
+});
+
 it("inserts and renders inline math from the editor-owned dialog", () => {
   const { container, getByRole, view } = controlledEditor("formula:");
   act(() => {
@@ -153,6 +167,20 @@ it("inserts and renders inline math from the editor-owned dialog", () => {
 
   expect(serializeKoshMarkdown(view.state.doc)).toBe("formula: $E = mc^2$");
   expect(container.querySelector(".kosh-math-inline .katex")).not.toBeNull();
+});
+
+it("does not open or mutate math nodes while disabled", () => {
+  const onChange = vi.fn();
+  const { container, queryByRole } = render(
+    <RichTextEditor ariaLabel="Body" disabled onChange={onChange} value="Inline $x^2$." />,
+  );
+  const math = container.querySelector(".kosh-math-inline");
+  expect(math).not.toBeNull();
+  fireEvent.doubleClick(math!);
+  fireEvent.keyDown(math!, { key: "Enter" });
+
+  expect(queryByRole("dialog", { name: "Inline math editor" })).toBeNull();
+  expect(onChange).not.toHaveBeenCalled();
 });
 
 it("lazy-loads CodeMirror, synchronizes code, and changes fence language", async () => {
@@ -174,6 +202,46 @@ it("lazy-loads CodeMirror, synchronizes code, and changes fence language", async
     target: { value: "python" },
   });
   expect(serializeKoshMarkdown(view.state.doc)).toContain("```python");
+});
+
+it("propagates disabled changes into an existing CodeMirror node view", async () => {
+  const onChange = vi.fn();
+  const result = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      onChange={onChange}
+      value={"```typescript\nconst answer = 42\n```"}
+    />,
+  );
+  const view = editorView(result.getByRole("textbox", { name: "Body" }));
+  const codeView = await embeddedCodeView(result.container);
+
+  result.rerender(
+    <RichTextEditor
+      ariaLabel="Body"
+      disabled
+      onChange={onChange}
+      value={"```typescript\nconst answer = 42\n```"}
+    />,
+  );
+
+  expect(codeView.state.readOnly).toBe(true);
+  expect(codeView.contentDOM).toHaveAttribute("contenteditable", "false");
+  act(() => {
+    codeView.focus();
+    codeView.dispatch({
+      changes: { from: codeView.state.doc.length, insert: "\nunsafe edit" },
+    });
+  });
+  expect(serializeKoshMarkdown(view.state.doc)).not.toContain("unsafe edit");
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+it("prevents table toolbar commands from creating unserializable cell blocks", () => {
+  const { getByRole } = controlledEditor("| Heading |\n| ------- |\n| cell    |");
+
+  expect(getByRole("button", { name: "Bulleted list" })).toBeDisabled();
+  expect(getByRole("button", { name: "Block quote" })).toBeDisabled();
 });
 
 it("handles large plain-text paste, undo, and redo as editor transactions", () => {

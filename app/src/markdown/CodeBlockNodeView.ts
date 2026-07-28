@@ -14,6 +14,7 @@ import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { AllSelection, Selection, TextSelection } from "prosemirror-state";
 import type { EditorView, NodeView } from "prosemirror-view";
 import { codeLanguageDisplayName } from "./languages";
+import { KOSH_EDITOR_EDITABLE_EVENT } from "./editorEvents";
 import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
 
 const koshCodeHighlightStyle = HighlightStyle.define([
@@ -144,6 +145,7 @@ class CodeBlockView implements NodeView {
       ],
     });
     this.dom = this.cm.dom;
+    this.outerView.dom.addEventListener(KOSH_EDITOR_EDITABLE_EVENT, this.handleEditableChange);
     this.setLanguageData(node.attrs.language);
     void this.configureLanguage(node.attrs.language);
   }
@@ -189,13 +191,14 @@ class CodeBlockView implements NodeView {
 
   destroy = () => {
     this.destroyed = true;
+    this.outerView.dom.removeEventListener(KOSH_EDITOR_EDITABLE_EVENT, this.handleEditableChange);
     this.cm.destroy();
   };
 
   private forwardUpdate(
     update: Parameters<NonNullable<Parameters<typeof CodeMirrorView.updateListener.of>[0]>>[0],
   ) {
-    if (this.updating || !this.cm.hasFocus) {
+    if (this.updating || !this.cm.hasFocus || !this.outerView.editable) {
       return;
     }
     const position = this.getPos();
@@ -231,6 +234,12 @@ class CodeBlockView implements NodeView {
     transaction.setSelection(TextSelection.create(transaction.doc, selectionFrom, selectionTo));
     this.outerView.dispatch(transaction);
   }
+
+  private handleEditableChange = () => {
+    this.cm.dispatch({
+      effects: this.editable.reconfigure(editableExtensions(this.outerView.editable)),
+    });
+  };
 
   private navigationKeymap() {
     return [

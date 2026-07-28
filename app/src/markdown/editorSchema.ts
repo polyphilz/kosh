@@ -166,7 +166,7 @@ nodes = nodes.append(
         },
       },
     },
-    cellContent: "block+",
+    cellContent: "paragraph",
     tableGroup: "block",
   }),
 );

@@ -47,6 +47,7 @@ import { Button } from "../components/Button";
 import { Input } from "../components/Input";
 import { Select, type SelectOption } from "../components/Select";
 import { koshEditorSchema } from "./editorSchema";
+import { KOSH_EDITOR_EDITABLE_EVENT } from "./editorEvents";
 import { registerRichTextEditorView, unregisterRichTextEditorView } from "./editorViewRegistry";
 import { codeLanguageDefinitions, codeLanguageDisplayName } from "./languages";
 import { parseKoshMarkdown, serializeKoshMarkdown } from "./markdownConversion";
@@ -98,6 +99,9 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
     onChangeRef.current = onChange;
     disabledRef.current = disabled;
     openMathDialogRef.current = (display, formula, position) => {
+      if (disabledRef.current) {
+        return;
+      }
       setLinkDialog(null);
       setMathDialog({ display, formula, position });
     };
@@ -182,6 +186,11 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       }
       view.setProps({ editable: () => !disabled });
       view.dom.setAttribute("aria-disabled", String(disabled));
+      view.dom.dispatchEvent(new Event(KOSH_EDITOR_EDITABLE_EVENT));
+      if (disabled) {
+        setMathDialog(null);
+        setLinkDialog(null);
+      }
       renderToolbar();
     }, [disabled]);
 
@@ -797,10 +806,16 @@ function applyLink(view: EditorView, href: string | null): void {
   const link = view.state.schema.marks.link!;
   const { from, to, empty } = view.state.selection;
   if (empty) {
-    if (href) {
+    const range = activeMarkRange(view, "link");
+    if (range) {
+      let transaction = view.state.tr.removeMark(range.from, range.to, link);
+      if (href) {
+        transaction = transaction.addMark(range.from, range.to, link.create({ href, title: null }));
+      }
+      view.dispatch(transaction.scrollIntoView());
+      view.focus();
+    } else if (href) {
       runCommand(view, toggleMark(link, { href, title: null }));
-    } else if (markIsActive(view, "link")) {
-      runCommand(view, toggleMark(link));
     } else {
       view.focus();
     }
@@ -812,6 +827,52 @@ function applyLink(view: EditorView, href: string | null): void {
   }
   view.dispatch(transaction.scrollIntoView());
   view.focus();
+}
+
+function activeMarkRange(view: EditorView, markName: string): { from: number; to: number } | null {
+  const { $from } = view.state.selection;
+  const markType = view.state.schema.marks[markName];
+  const active = markType?.isInSet($from.marks());
+  if (!active) {
+    return null;
+  }
+
+  const siblings: Array<{
+    from: number;
+    node: ProseMirrorNode;
+    to: number;
+  }> = [];
+  $from.parent.forEach((node, offset) => {
+    siblings.push({
+      from: $from.start() + offset,
+      node,
+      to: $from.start() + offset + node.nodeSize,
+    });
+  });
+  const current = siblings.findIndex(
+    ({ from, node, to }) =>
+      from <= $from.pos && $from.pos <= to && Boolean(active.isInSet(node.marks)),
+  );
+  if (current < 0) {
+    return null;
+  }
+
+  const hasSameMark = (index: number) => {
+    const candidate = active.type.isInSet(siblings[index]!.node.marks);
+    return candidate ? active.eq(candidate) : false;
+  };
+  let start = current;
+  let end = current;
+  while (start > 0 && hasSameMark(start - 1)) {
+    start -= 1;
+  }
+  while (end + 1 < siblings.length && hasSameMark(end + 1)) {
+    end += 1;
+  }
+  return {
+    from: siblings[start]!.from,
+    to: siblings[end]!.to,
+  };
 }
 
 function commitMath(view: EditorView, dialog: MathDialogState, formula: string): void {
