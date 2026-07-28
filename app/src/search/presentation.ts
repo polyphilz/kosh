@@ -128,7 +128,7 @@ export function citationCopyText(citation: CitationResolution): string {
     citationRevision(citation),
     ...citation.sources.map(sourceDisplay),
     `Kosh passage: ${citation.passageId}`,
-    citation.excerpt.trim(),
+    citation.excerpt,
   ].filter(Boolean);
   return lines.join("\n");
 }

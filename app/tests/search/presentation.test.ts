@@ -86,4 +86,43 @@ describe("search presentation", () => {
     );
     expect(sourceDomain("not a URL")).toBeNull();
   });
+
+  it("preserves whitespace-sensitive excerpts in copied citations", () => {
+    const citation: CitationResolution = {
+      passageId: "passage-code",
+      excerpt: "  const answer = 42;\n",
+      headingContext: ["Example"],
+      constructionVersion: "v1",
+      state: "CURRENT",
+      locator: {
+        kind: "MARKDOWN_BLOCKS",
+        startBlock: 0,
+        endBlock: 0,
+        startChar: 0,
+        endChar: 21,
+        startLine: 1,
+        endLine: 1,
+      },
+      tidbit: {
+        id: "tidbit-code",
+        revisionId: "revision-code",
+        revisionNumber: 1,
+        title: null,
+        displayTitle: "Code sample",
+        deleted: false,
+      },
+      attachment: null,
+      sources: [],
+    };
+
+    expect(citationCopyText(citation)).toBe(
+      [
+        "Code sample",
+        "Example · line 1",
+        "Revision 1 · Current",
+        "Kosh passage: passage-code",
+        "  const answer = 42;\n",
+      ].join("\n"),
+    );
+  });
 });
