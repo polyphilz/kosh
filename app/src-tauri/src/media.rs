@@ -288,7 +288,21 @@ pub(crate) fn handle_image_drop<R: tauri::Runtime>(
     let Some(state) = window.try_state::<RuntimeState>() else {
         return;
     };
-    let Some(notice) = state.register_image_drop(paths) else {
+    let image_paths = paths
+        .iter()
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "gif" | "jpeg" | "jpg" | "png" | "tif" | "tiff" | "webp"
+                    )
+                })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let Some(notice) = state.register_image_drop(&image_paths) else {
         return;
     };
     if let Err(error) = window.emit(IMAGE_DROP_EVENT, notice) {
@@ -716,7 +730,9 @@ fn recognize_without_panicking(
 }
 
 #[cfg(target_os = "macos")]
-fn recognize_image_text(bytes: &[u8]) -> std::result::Result<Vec<ImageOcrRegion>, String> {
+pub(crate) fn recognize_image_text(
+    bytes: &[u8],
+) -> std::result::Result<Vec<ImageOcrRegion>, String> {
     use objc2::{rc::autoreleasepool, runtime::AnyObject, AnyThread};
     use objc2_foundation::{NSArray, NSData, NSDictionary};
     use objc2_vision::{
@@ -769,7 +785,9 @@ fn recognize_image_text(bytes: &[u8]) -> std::result::Result<Vec<ImageOcrRegion>
 }
 
 #[cfg(not(target_os = "macos"))]
-fn recognize_image_text(_bytes: &[u8]) -> std::result::Result<Vec<ImageOcrRegion>, String> {
+pub(crate) fn recognize_image_text(
+    _bytes: &[u8],
+) -> std::result::Result<Vec<ImageOcrRegion>, String> {
     Err("Apple Vision OCR is available only on macOS".into())
 }
 

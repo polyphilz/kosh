@@ -55,6 +55,16 @@ function rendererComponents(
     },
     img({ alt, src, title }) {
       const attachmentId = localMediaAttachmentId(src);
+      if (attachmentId && title === "kosh-pdf") {
+        return (
+          <figure className="kosh-markdown__pdf">
+            <object aria-label="PDF attachment preview" data={src} type="application/pdf">
+              <span>PDF preview unavailable</span>
+            </object>
+            <figcaption>{alt ?? "PDF attachment"}</figcaption>
+          </figure>
+        );
+      }
       const metadata = parseImageTitle(title);
       if (attachmentId && metadata) {
         return (

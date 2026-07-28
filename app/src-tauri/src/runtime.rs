@@ -52,8 +52,10 @@ pub(crate) struct RuntimeState {
     ids: Arc<dyn IdGenerator>,
     media_limits: MediaLimits,
     image_ocr: crate::media::ImageOcrCoordinator,
+    pdf_extraction: crate::pdf::PdfExtractionCoordinator,
     pending_clipboard_images: Mutex<HashMap<String, PendingClipboardImage>>,
     pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
+    pending_pdf_selections: Mutex<HashMap<String, PendingPdfSelection>>,
 }
 
 struct PendingClipboardImage {
@@ -66,11 +68,18 @@ struct PendingImageDrop {
     paths: Vec<PathBuf>,
 }
 
+struct PendingPdfSelection {
+    created_at_ms: i64,
+    path: PathBuf,
+}
+
 const CLIPBOARD_IMAGE_TTL_MS: i64 = 5 * 60 * 1_000;
 const MAX_PENDING_CLIPBOARD_IMAGES: usize = 4;
 const IMAGE_DROP_TTL_MS: i64 = 5 * 60 * 1_000;
 const MAX_PENDING_IMAGE_DROPS: usize = 16;
 const MAX_FILES_PER_IMAGE_DROP: usize = 32;
+const PDF_SELECTION_TTL_MS: i64 = 5 * 60 * 1_000;
+const MAX_PENDING_PDF_SELECTIONS: usize = 8;
 
 fn start_optional_image_ocr(client: DatabaseClient) -> crate::media::ImageOcrCoordinator {
     match crate::media::ImageOcrCoordinator::start(client) {
@@ -78,6 +87,16 @@ fn start_optional_image_ocr(client: DatabaseClient) -> crate::media::ImageOcrCoo
         Err(error) => {
             log::warn!("image OCR is unavailable; Kosh will continue without it: {error}");
             crate::media::ImageOcrCoordinator::disabled()
+        }
+    }
+}
+
+fn start_optional_pdf_extraction(client: DatabaseClient) -> crate::pdf::PdfExtractionCoordinator {
+    match crate::pdf::PdfExtractionCoordinator::start(client) {
+        Ok(coordinator) => coordinator,
+        Err(error) => {
+            log::warn!("PDF extraction is unavailable; Kosh will continue without it: {error}");
+            crate::pdf::PdfExtractionCoordinator::disabled()
         }
     }
 }
@@ -92,6 +111,7 @@ impl RuntimeState {
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
         let image_ocr = start_optional_image_ocr(database.client());
+        let pdf_extraction = start_optional_pdf_extraction(database.client());
         let media_limits = MediaLimits::default().validate()?;
         let state = Self {
             data_dir,
@@ -102,8 +122,10 @@ impl RuntimeState {
             ids: Arc::new(UuidV7Generator),
             media_limits,
             image_ocr,
+            pdf_extraction,
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
+            pending_pdf_selections: Mutex::new(HashMap::new()),
         };
         if let Err(error) = state
             .database
@@ -116,6 +138,9 @@ impl RuntimeState {
             crate::media::recover_staging_directory(&state.media_staging_directory())
         {
             log::warn!("startup media staging recovery could not complete: {error}");
+        }
+        if let Err(error) = crate::pdf::recover_pdf_open_directory(&state.pdf_open_directory()) {
+            log::warn!("startup PDF materialization recovery could not complete: {error}");
         }
         Ok(state)
     }
@@ -137,8 +162,10 @@ impl RuntimeState {
             ids,
             media_limits: MediaLimits::default(),
             image_ocr: crate::media::ImageOcrCoordinator::disabled(),
+            pdf_extraction: crate::pdf::PdfExtractionCoordinator::disabled(),
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
+            pending_pdf_selections: Mutex::new(HashMap::new()),
         }
     }
 
@@ -178,6 +205,14 @@ impl RuntimeState {
 
     pub(crate) fn wake_image_ocr(&self) {
         self.image_ocr.wake();
+    }
+
+    pub(crate) fn wake_pdf_extraction(&self) {
+        self.pdf_extraction.wake();
+    }
+
+    pub(crate) fn pdf_open_directory(&self) -> PathBuf {
+        self.data_dir.join("pdf-open")
     }
 
     pub(crate) fn register_clipboard_image(
@@ -300,6 +335,62 @@ impl RuntimeState {
             .ok_or_else(|| crate::database::DatabaseError::NotFound {
                 entity: "image drop",
                 id: drop_id.into(),
+            })
+    }
+
+    pub(crate) fn register_pdf_selection(&self, path: PathBuf) -> crate::database::Result<String> {
+        if !path.is_file() {
+            return Err(crate::database::DatabaseError::InvalidInput(
+                "the selected PDF is not a regular file".into(),
+            ));
+        }
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_pdf_selections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, selection| {
+            now_ms.saturating_sub(selection.created_at_ms) <= PDF_SELECTION_TTL_MS
+        });
+        if pending.len() >= MAX_PENDING_PDF_SELECTIONS {
+            return Err(crate::database::DatabaseError::InvalidInput(
+                "too many PDFs are awaiting ingestion".into(),
+            ));
+        }
+        let selection_id = self
+            .next_ids(1)
+            .into_iter()
+            .next()
+            .expect("requested PDF selection ID");
+        pending.insert(
+            selection_id.clone(),
+            PendingPdfSelection {
+                created_at_ms: now_ms,
+                path,
+            },
+        );
+        Ok(selection_id)
+    }
+
+    pub(crate) fn take_pdf_selection(
+        &self,
+        selection_id: &str,
+    ) -> crate::database::Result<PathBuf> {
+        validate_capability_id(selection_id, "selectionId")?;
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_pdf_selections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, selection| {
+            now_ms.saturating_sub(selection.created_at_ms) <= PDF_SELECTION_TTL_MS
+        });
+        pending
+            .remove(selection_id)
+            .map(|selection| selection.path)
+            .ok_or_else(|| crate::database::DatabaseError::NotFound {
+                entity: "PDF selection",
+                id: selection_id.into(),
             })
     }
 }

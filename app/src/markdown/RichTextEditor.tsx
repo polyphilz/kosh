@@ -50,7 +50,12 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
-import type { ImageRecord, ImageStatusRecord } from "../backend/contracts";
+import type {
+  ImageRecord,
+  ImageStatusRecord,
+  PdfRecord,
+  PdfStatusRecord,
+} from "../backend/contracts";
 import { Button } from "../components/Button";
 import { Input } from "../components/Input";
 import { Select, type SelectOption } from "../components/Select";
@@ -68,21 +73,27 @@ import {
   pendingImageNodeView,
   resizeSelectedImage,
 } from "./ImageNodeView";
+import { pdfNodeView } from "./PdfNodeView";
 
 export interface RichTextEditorHandle {
   focus: () => void;
   insertImages: (images: ImageRecord[]) => void;
+  insertPdfs: (pdfs: PdfRecord[]) => void;
 }
 
 interface RichTextEditorProps {
   ariaLabel: string;
   disabled?: boolean;
   imageStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
+  pdfStatus?: (attachmentId: string) => Promise<PdfStatusRecord>;
+  openPdfExternal?: (attachmentId: string) => Promise<void>;
   onImageError?: (error: unknown) => void;
   onPendingImagesChange?: (pending: boolean) => void;
   pickImage?: () => Promise<ImageRecord | null>;
+  pickPdf?: () => Promise<PdfRecord | null>;
   pasteImage?: () => Promise<ImageRecord>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
+  retryPdfExtraction?: (attachmentId: string) => Promise<PdfStatusRecord>;
   onChange: (value: string) => void;
   placeholder?: string;
   value: string;
@@ -106,13 +117,17 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       ariaLabel,
       disabled = false,
       imageStatus,
+      pdfStatus,
+      openPdfExternal,
       onChange,
       onImageError,
       onPendingImagesChange,
       pasteImage,
       pickImage,
+      pickPdf,
       placeholder,
       retryImageOcr,
+      retryPdfExtraction,
       value,
     },
     ref,
@@ -122,11 +137,15 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
     const onChangeRef = useRef(onChange);
     const disabledRef = useRef(disabled);
     const imageStatusRef = useRef(imageStatus);
+    const pdfStatusRef = useRef(pdfStatus);
+    const openPdfExternalRef = useRef(openPdfExternal);
     const onImageErrorRef = useRef(onImageError);
     const onPendingImagesChangeRef = useRef(onPendingImagesChange);
     const pasteImageRef = useRef(pasteImage);
     const pickImageRef = useRef(pickImage);
+    const pickPdfRef = useRef(pickPdf);
     const retryImageOcrRef = useRef(retryImageOcr);
+    const retryPdfExtractionRef = useRef(retryPdfExtraction);
     const openMathDialogRef = useRef(
       (_display: boolean, _formula: string, _position?: number) => undefined,
     );
@@ -141,11 +160,15 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
     onChangeRef.current = onChange;
     disabledRef.current = disabled;
     imageStatusRef.current = imageStatus;
+    pdfStatusRef.current = pdfStatus;
+    openPdfExternalRef.current = openPdfExternal;
     onImageErrorRef.current = onImageError;
     onPendingImagesChangeRef.current = onPendingImagesChange;
     pasteImageRef.current = pasteImage;
     pickImageRef.current = pickImage;
+    pickPdfRef.current = pickPdf;
     retryImageOcrRef.current = retryImageOcr;
+    retryPdfExtractionRef.current = retryPdfExtraction;
     openMathDialogRef.current = (display, formula, position) => {
       if (disabledRef.current) {
         return;
@@ -166,6 +189,17 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           const view = viewRef.current;
           if (view && !disabledRef.current) {
             insertImageRecords(view, images);
+          }
+        },
+        insertPdfs: (pdfs) => {
+          const view = viewRef.current;
+          if (view && !disabledRef.current) {
+            for (const pdf of pdfs) {
+              view.dispatch(
+                view.state.tr.replaceSelectionWith(pdfNode(pdf), false).scrollIntoView(),
+              );
+            }
+            view.focus();
           }
         },
       }),
@@ -244,6 +278,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
                 : undefined,
             }),
           kosh_image_pending: pendingImageNodeView,
+          kosh_attachment: (node, editorView, getPos) =>
+            pdfNodeView(node, editorView, getPos, {
+              loadStatus: pdfStatusRef.current
+                ? (attachmentId) => pdfStatusRef.current!(attachmentId)
+                : undefined,
+              openExternal: openPdfExternalRef.current
+                ? (attachmentId) => openPdfExternalRef.current!(attachmentId)
+                : undefined,
+              retryExtraction: retryPdfExtractionRef.current
+                ? (attachmentId) => retryPdfExtractionRef.current!(attachmentId)
+                : undefined,
+            }),
           list_item: taskListItemNodeView,
           math_display: (node, editorView, getPos) =>
             mathNodeView(node, editorView, getPos, openMathDialogRef.current),
@@ -336,6 +382,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
               );
             }
           }}
+          onPdf={() => {
+            const ingest = pickPdfRef.current;
+            if (view && ingest) {
+              beginPdfIngest(
+                view,
+                "Choosing PDF",
+                ingest,
+                onImageErrorRef,
+                onPendingImagesChangeRef,
+              );
+            }
+          }}
           onMath={(display) => {
             setLinkDialog(null);
             setMathDialog({ display, formula: "" });
@@ -403,6 +461,34 @@ function beginImageIngest(
   onErrorRef: { current: ((error: unknown) => void) | undefined },
   onPendingRef: { current: ((pending: boolean) => void) | undefined },
 ) {
+  beginMediaIngest(
+    view,
+    label,
+    ingest,
+    (record) => imageNode(record, view.dom.clientWidth),
+    onErrorRef,
+    onPendingRef,
+  );
+}
+
+function beginPdfIngest(
+  view: EditorView,
+  label: string,
+  ingest: () => Promise<PdfRecord | null>,
+  onErrorRef: { current: ((error: unknown) => void) | undefined },
+  onPendingRef: { current: ((pending: boolean) => void) | undefined },
+) {
+  beginMediaIngest(view, label, ingest, pdfNode, onErrorRef, onPendingRef);
+}
+
+function beginMediaIngest<T>(
+  view: EditorView,
+  label: string,
+  ingest: () => Promise<T | null>,
+  makeNode: (record: T) => ProseMirrorNode,
+  onErrorRef: { current: ((error: unknown) => void) | undefined },
+  onPendingRef: { current: ((pending: boolean) => void) | undefined },
+) {
   pendingImageSequence += 1;
   const requestId = `kosh-image-${pendingImageSequence}`;
   const pending = koshEditorSchema.nodes.kosh_image_pending!.create({ label, requestId });
@@ -464,11 +550,11 @@ function beginImageIngest(
         restoreSelection();
         return;
       }
-      const image = imageNode(record, view.dom.clientWidth);
+      const media = makeNode(record);
       unregisterPendingImageRollback(view, requestId);
       view.dispatch(
         view.state.tr
-          .replaceWith(position, position + pendingNode.nodeSize, image)
+          .replaceWith(position, position + pendingNode.nodeSize, media)
           .scrollIntoView(),
       );
     })
@@ -555,6 +641,19 @@ function imageNode(record: ImageRecord, editorWidth: number): ProseMirrorNode {
     ocrError: record.ocrError,
     ocrStatus: record.ocrStatus,
     widthPercent: initialImageWidth(record.naturalWidth, editorWidth),
+  });
+}
+
+function pdfNode(record: PdfRecord): ProseMirrorNode {
+  return koshEditorSchema.nodes.kosh_attachment!.create({
+    attachmentId: record.id,
+    displayFilename: record.displayFilename,
+    extractedPageCount: 0,
+    extractionError: record.extractionError,
+    extractionStatus: record.extractionStatus,
+    nextAttemptAtMs: null,
+    pageCount: record.pageCount,
+    unavailablePageCount: 0,
   });
 }
 
@@ -735,6 +834,7 @@ function EditorToolbar({
   disabled,
   onLink,
   onImage,
+  onPdf,
   onMath,
   view,
 }: {
@@ -742,6 +842,7 @@ function EditorToolbar({
   disabled: boolean;
   onLink: () => void;
   onImage: () => void;
+  onPdf: () => void;
   onMath: (display: boolean) => void;
   view: EditorView | null;
 }) {
@@ -811,6 +912,9 @@ function EditorToolbar({
       </ToolbarButton>
       <ToolbarButton disabled={disabled || !view} label="Add image" onPress={onImage}>
         Image
+      </ToolbarButton>
+      <ToolbarButton disabled={disabled || !view} label="Add PDF" onPress={onPdf}>
+        PDF
       </ToolbarButton>
       <span aria-hidden="true" className="kosh-rich-text-toolbar__divider" />
       {commandButton(

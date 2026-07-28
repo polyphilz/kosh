@@ -11,6 +11,8 @@ import type {
   ImageStatusRecord,
   ListTidbitsInput,
   PassageEmbeddingIndexStatus,
+  PdfRecord,
+  PdfStatusRecord,
   RuntimeProbe,
   RestoreTidbitInput,
   SaveDraftInput,
@@ -168,6 +170,26 @@ export class FakeBackend implements Backend {
       retryWait: 0,
       running: 0,
     };
+  }
+
+  async selectPdf(): Promise<string | null> {
+    return null;
+  }
+
+  async ingestSelectedPdf(_selectionId: string, _draftId: string): Promise<PdfRecord> {
+    throw new Error("Selected PDFs are unavailable in the browser fixture");
+  }
+
+  async pdfStatus(attachmentId: string): Promise<PdfStatusRecord> {
+    throw new Error(`PDF ${attachmentId} was not found`);
+  }
+
+  async retryPdfExtraction(attachmentId: string): Promise<PdfStatusRecord> {
+    throw new Error(`PDF ${attachmentId} was not found`);
+  }
+
+  async openPdfExternal(_attachmentId: string): Promise<void> {
+    throw new Error("Opening PDFs externally is unavailable in the browser fixture");
   }
 
   async createTidbit(input: TidbitDraft): Promise<TidbitRecord> {

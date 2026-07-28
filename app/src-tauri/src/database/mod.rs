@@ -40,7 +40,7 @@ pub use error::{DatabaseError, Result};
 pub use media::{
     AttachmentIngestInput, AttachmentKind, AttachmentRecord, ImageOcrDiagnostics, ImageOcrRecovery,
     ImageOcrStatus, ImageRecord, ImageStatusRecord, MediaCleanupResult, MediaIntegrityReport,
-    MediaLimits, MediaMaintenanceReport,
+    MediaLimits, MediaMaintenanceReport, PdfExtractionStatus, PdfRecord, PdfStatusRecord,
 };
 pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
@@ -310,6 +310,53 @@ fn writer_loop(
             }
             WriterMessage::IngestImage { write, reply } => {
                 let _ = reply.send(media::ingest_image(&mut main, &mut media, write));
+            }
+            WriterMessage::IngestPdf { write, reply } => {
+                let _ = reply.send(media::ingest_pdf(&mut main, &mut media, write));
+            }
+            WriterMessage::LoadPdfStatus {
+                attachment_id,
+                reply,
+            } => {
+                let _ = reply.send(media::load_pdf_status(&main, &attachment_id));
+            }
+            WriterMessage::ClaimNextPdfExtraction { now_ms, reply } => {
+                let _ = reply.send(media::claim_next_pdf_extraction(&mut main, &media, now_ms));
+            }
+            WriterMessage::CompletePdfExtraction {
+                job,
+                result,
+                completed_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(media::complete_pdf_extraction(
+                    &mut main,
+                    &job,
+                    result,
+                    completed_at_ms,
+                ));
+            }
+            WriterMessage::RetryPdfExtraction {
+                attachment_id,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(media::retry_pdf_extraction(
+                    &mut main,
+                    &attachment_id,
+                    now_ms,
+                ));
+            }
+            WriterMessage::RecoverInterruptedPdfExtraction {
+                stale_started_at_or_before,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(media::recover_interrupted_pdf_extraction(
+                    &mut main,
+                    stale_started_at_or_before,
+                    now_ms,
+                ));
             }
             WriterMessage::LoadImageStatus {
                 attachment_id,

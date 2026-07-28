@@ -747,6 +747,25 @@ button {
   font-size: 11px;
 }
 
+.search-citation-detail__pdf {
+  margin: 0;
+}
+
+.search-citation-detail__pdf object {
+  display: block;
+  width: 100%;
+  height: min(58vh, 620px);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.search-citation-detail__pdf figcaption {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .search-citation-detail__sources {
   margin-top: 18px;
 }

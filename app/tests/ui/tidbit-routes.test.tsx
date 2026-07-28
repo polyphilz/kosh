@@ -157,7 +157,7 @@ describe("tidbit capture and editing routes", () => {
       clipboardData: { items: [{ type: "image/png" }] },
     });
     expect(captureClipboardImage).toHaveBeenCalledOnce();
-    const pendingButton = await screen.findByRole("button", { name: "Adding image…" });
+    const pendingButton = await screen.findByRole("button", { name: "Adding attachment…" });
     expect(pendingButton).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
 

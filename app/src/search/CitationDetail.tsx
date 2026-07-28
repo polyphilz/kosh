@@ -107,6 +107,7 @@ export function CitationDetail({
         />
       </blockquote>
       <ImageRegionEvidence citation={citation} />
+      <PdfPageEvidence citation={citation} />
       {citation.sources.length > 0 && (
         <section aria-labelledby="citation-sources" className="search-citation-detail__sources">
           <h3 id="citation-sources">Sources</h3>
@@ -200,6 +201,30 @@ function ImageRegionEvidence({ citation }: { citation: CitationResolution }) {
       </div>
       <figcaption>
         {region ? "Highlighted OCR evidence" : "OCR evidence from the full image"}
+      </figcaption>
+    </figure>
+  );
+}
+
+function PdfPageEvidence({ citation }: { citation: CitationResolution }) {
+  if (
+    citation.locator.kind !== "PDF_PAGE" ||
+    citation.attachment?.mediaType !== "application/pdf"
+  ) {
+    return null;
+  }
+  const url = `${attachmentMediaUrl(citation.attachment.id)}#page=${citation.locator.page}`;
+  return (
+    <figure className="search-citation-detail__pdf">
+      <object
+        aria-label={`Cited PDF page ${citation.locator.page}`}
+        data={url}
+        type="application/pdf"
+      >
+        <span>Inline PDF preview unavailable</span>
+      </object>
+      <figcaption>
+        {citation.attachment.displayFilename} · page {citation.locator.page}
       </figcaption>
     </figure>
   );

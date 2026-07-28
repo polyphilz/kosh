@@ -12,6 +12,8 @@ import type {
   ImageStatusRecord,
   ListTidbitsInput,
   PassageEmbeddingIndexStatus,
+  PdfRecord,
+  PdfStatusRecord,
   RuntimeProbe,
   RestoreTidbitInput,
   SaveDraftInput,
@@ -59,4 +61,11 @@ export const tauriBackend: Backend = {
   retryImageOcr: (attachmentId: string) =>
     invoke<ImageStatusRecord>("retry_image_ocr", { attachmentId }),
   imageOcrDiagnostics: () => invoke<ImageOcrDiagnostics>("image_ocr_diagnostics"),
+  selectPdf: () => invoke<string | null>("select_pdf"),
+  ingestSelectedPdf: (selectionId: string, draftId: string) =>
+    invoke<PdfRecord>("ingest_selected_pdf", { selectionId, draftId }),
+  pdfStatus: (attachmentId: string) => invoke<PdfStatusRecord>("pdf_status", { attachmentId }),
+  retryPdfExtraction: (attachmentId: string) =>
+    invoke<PdfStatusRecord>("retry_pdf_extraction", { attachmentId }),
+  openPdfExternal: (attachmentId: string) => invoke<void>("open_pdf_external", { attachmentId }),
 };

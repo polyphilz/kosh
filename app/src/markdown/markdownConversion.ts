@@ -19,7 +19,11 @@ import remarkParse from "remark-parse";
 import remarkStringify from "remark-stringify";
 import { unified } from "unified";
 import { normalizeCodeLanguageLabel } from "./languages";
-import { parseKoshMediaToken, serializeKoshImageToken } from "./mediaTokens";
+import {
+  parseKoshMediaToken,
+  serializeKoshAttachmentToken,
+  serializeKoshImageToken,
+} from "./mediaTokens";
 import { externalHttpUrl } from "./urlPolicy";
 
 const markdownParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkBreaks);
@@ -117,6 +121,20 @@ function blockFromMarkdown(
               ocrError: null,
               ocrStatus: "PENDING",
               widthPercent: media.widthPercent,
+            }),
+          ];
+        }
+        if (media?.kind === "attachment") {
+          return [
+            schema.nodes.kosh_attachment!.create({
+              attachmentId: media.attachmentId,
+              displayFilename: "PDF attachment",
+              extractedPageCount: 0,
+              extractionError: null,
+              extractionStatus: "PENDING",
+              nextAttemptAtMs: null,
+              pageCount: 0,
+              unavailablePageCount: 0,
             }),
           ];
         }
@@ -429,6 +447,18 @@ function blockToMarkdown(node: ProseMirrorNode): Array<BlockContent | Definition
       ];
     case "kosh_image_pending":
       return [];
+    case "kosh_attachment":
+      return [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "text",
+              value: serializeKoshAttachmentToken(node.attrs.attachmentId),
+            },
+          ],
+        },
+      ];
     default:
       throw new Error(`Cannot serialize editor node ${node.type.name}`);
   }

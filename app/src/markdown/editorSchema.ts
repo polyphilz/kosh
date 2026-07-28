@@ -245,6 +245,57 @@ const pendingImage: NodeSpec = {
   },
 };
 
+const attachment: NodeSpec = {
+  atom: true,
+  attrs: {
+    attachmentId: { validate: "string" },
+    displayFilename: { default: "PDF attachment", validate: "string" },
+    extractedPageCount: { default: 0, validate: "number" },
+    extractionError: { default: null, validate: "string|null" },
+    extractionStatus: { default: "PENDING", validate: "string" },
+    nextAttemptAtMs: { default: null, validate: "number|null" },
+    pageCount: { default: 0, validate: "number" },
+    unavailablePageCount: { default: 0, validate: "number" },
+  },
+  draggable: true,
+  group: "block",
+  parseDOM: [
+    {
+      tag: "div[data-kosh-attachment]",
+      getAttrs(dom) {
+        const element = dom as HTMLElement;
+        return {
+          attachmentId: element.dataset.attachmentId ?? "",
+          displayFilename: element.dataset.displayFilename ?? "PDF attachment",
+          extractedPageCount: Number(element.dataset.extractedPageCount) || 0,
+          extractionError: element.dataset.extractionError ?? null,
+          extractionStatus: element.dataset.extractionStatus ?? "PENDING",
+          nextAttemptAtMs: Number(element.dataset.nextAttemptAtMs) || null,
+          pageCount: Number(element.dataset.pageCount) || 0,
+          unavailablePageCount: Number(element.dataset.unavailablePageCount) || 0,
+        };
+      },
+    },
+  ],
+  selectable: true,
+  toDOM(node): DOMOutputSpec {
+    return [
+      "div",
+      {
+        "data-attachment-id": node.attrs.attachmentId,
+        "data-display-filename": node.attrs.displayFilename,
+        "data-extracted-page-count": node.attrs.extractedPageCount,
+        "data-extraction-error": node.attrs.extractionError,
+        "data-extraction-status": node.attrs.extractionStatus,
+        "data-next-attempt-at-ms": node.attrs.nextAttemptAtMs,
+        "data-kosh-attachment": "true",
+        "data-page-count": node.attrs.pageCount,
+        "data-unavailable-page-count": node.attrs.unavailablePageCount,
+      },
+    ];
+  },
+};
+
 const strike: MarkSpec = {
   parseDOM: [{ tag: "del" }, { tag: "s" }, { tag: "strike" }],
   toDOM: (): DOMOutputSpec => ["del", 0],
@@ -309,6 +360,7 @@ nodes = nodes.addBefore("text", "math_inline", mathInline);
 nodes = nodes.addBefore("text", "math_display", mathDisplay);
 nodes = nodes.addBefore("text", "kosh_image", image);
 nodes = nodes.addBefore("text", "kosh_image_pending", pendingImage);
+nodes = nodes.addBefore("text", "kosh_attachment", attachment);
 nodes = nodes.addBefore("text", "markdown_definition", markdownDefinition);
 
 export const koshEditorSchema = new Schema({

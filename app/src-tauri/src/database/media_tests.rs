@@ -15,13 +15,14 @@ use super::{
     media::{
         recover_media_lifecycle_batch, referenced_attachments, AttachmentDisplayRole,
         CanonicalImage, ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata,
-        IngestAttachmentWrite, IngestImageWrite, MediaByteRange, StagedAttachment,
+        IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite, MediaByteRange,
+        PdfExtractionStatus, PdfPageExtraction, PdfPageSource, StagedAttachment,
         MEDIA_RECONCILE_BATCH_SIZE,
     },
     tidbits::CreateTidbitWrite,
     AttachmentIngestInput, AttachmentKind, CitationLocator, ClearDraftInput, Database,
     DatabaseError, DatabasePaths, LexicalSearchMode, MediaLimits, SaveDraftInput,
-    SearchPassagesInput, TidbitDraft,
+    SearchPassagesInput, SourceDraft, TidbitDraft,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -133,6 +134,38 @@ impl TestLibrary {
             })
             .expect("ingest image")
     }
+
+    fn ingest_pdf(
+        &self,
+        suffixes: (u64, u64, u64, u64),
+        bytes: &[u8],
+        page_count: u32,
+        now_ms: i64,
+    ) -> super::PdfRecord {
+        let staged = StagedAttachment::from_reader(
+            Cursor::new(bytes),
+            &self.staging,
+            &id(suffixes.2),
+            MediaLimits::default().max_attachment_bytes,
+        )
+        .expect("stage PDF");
+        self.database
+            .client()
+            .ingest_pdf(IngestPdfWrite {
+                attachment: staged.write(IngestAttachmentMetadata {
+                    attachment_id: id(suffixes.0),
+                    ingest_lease_id: id(suffixes.1),
+                    draft_id: CAPTURE_DRAFT_ID.into(),
+                    display_filename: "chapter.pdf".into(),
+                    media_type: "application/pdf".into(),
+                    now_ms,
+                    limits: MediaLimits::default(),
+                }),
+                extraction_id: id(suffixes.3),
+                page_count,
+            })
+            .expect("ingest PDF")
+    }
 }
 
 fn id(suffix: u64) -> String {
@@ -216,6 +249,241 @@ fn image_ingestion_preserves_originals_deduplicates_previews_and_serves_only_pre
         .client()
         .full_integrity_check()
         .expect("image originals and previews pass integrity");
+}
+
+#[test]
+fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
+    let library = TestLibrary::new();
+    let pdf = library.ingest_pdf(
+        (0x900, 0x901, 0x902, 0x903),
+        b"%PDF-1.7 stable fixture bytes",
+        3,
+        11,
+    );
+    assert_eq!(pdf.extraction_status, PdfExtractionStatus::Pending);
+    let body = format!(
+        "Chapter notes.\n\n{{{{kosh:attachment:{}}}}}",
+        pdf.attachment.id
+    );
+    library.save_capture(&body, 12);
+    library
+        .database
+        .client()
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: Some("PDF knowledge".into()),
+                body_markdown: body,
+                sources: vec![SourceDraft {
+                    label: Some("Course reader".into()),
+                    url: Some("https://example.com/reader".into()),
+                }],
+            },
+            now_ms: 13,
+            tidbit_id: id(0x904),
+            revision_id: id(0x905),
+            source_ids: vec![id(0x906)],
+        })
+        .expect("create PDF-backed tidbit");
+
+    let client = library.database.client();
+    let job = client
+        .claim_next_pdf_extraction(14)
+        .expect("claim PDF extraction")
+        .expect("queued PDF extraction");
+    assert_eq!(job.pdf_bytes, b"%PDF-1.7 stable fixture bytes");
+    client
+        .complete_pdf_extraction(
+            job,
+            Ok(vec![
+                PdfPageExtraction {
+                    page_number: 1,
+                    result: Ok((
+                        PdfPageSource::NativeText,
+                        "first_page_exact_evidence".into(),
+                    )),
+                },
+                PdfPageExtraction {
+                    page_number: 2,
+                    result: Ok((PdfPageSource::Ocr, "scanned_page_exact_evidence".into())),
+                },
+                PdfPageExtraction {
+                    page_number: 3,
+                    result: Err("page rendering failed".into()),
+                },
+            ]),
+            15,
+        )
+        .expect("complete mixed PDF extraction");
+
+    let status = client
+        .load_pdf_status(pdf.attachment.id.clone())
+        .expect("PDF status");
+    assert_eq!(status.extraction_status, PdfExtractionStatus::Ready);
+    assert_eq!(status.extracted_page_count, 2);
+    assert_eq!(status.unavailable_page_count, 1);
+    for (query, expected_page) in [
+        ("first_page_exact_evidence", 1),
+        ("scanned_page_exact_evidence", 2),
+    ] {
+        let results = client
+            .search_passages(SearchPassagesInput {
+                query: query.into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("search PDF page evidence");
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].citation.locator,
+            CitationLocator::PdfPage {
+                page: expected_page
+            }
+        );
+        assert_eq!(
+            results[0]
+                .citation
+                .attachment
+                .as_ref()
+                .expect("PDF citation attachment")
+                .id,
+            pdf.attachment.id
+        );
+        assert_eq!(results[0].citation.sources.len(), 1);
+        assert_eq!(
+            results[0].citation.sources[0].url.as_deref(),
+            Some("https://example.com/reader")
+        );
+    }
+    assert!(client
+        .search_passages(SearchPassagesInput {
+            query: "page rendering failed".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("unavailable page error is not evidence")
+        .is_empty());
+}
+
+#[test]
+fn pdf_recovery_rebuilds_stale_extractor_provenance() {
+    let library = TestLibrary::new();
+    let pdf = library.ingest_pdf(
+        (0x906, 0x907, 0x908, 0x909),
+        b"%PDF-1.7 versioned fixture bytes",
+        1,
+        11,
+    );
+    let writer = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("open extractor configuration writer");
+    writer
+        .execute(
+            "UPDATE attachment_extractor_config
+             SET version = '2', updated_at = 12
+             WHERE extractor = 'pdf-text'",
+            [],
+        )
+        .expect("advance PDF extractor version");
+    drop(writer);
+
+    let client = library.database.client();
+    assert_eq!(
+        client
+            .recover_interrupted_pdf_extraction(12, 13)
+            .expect("reconcile stale PDF extraction"),
+        1
+    );
+    let status = client
+        .load_pdf_status(pdf.attachment.id)
+        .expect("replacement PDF status");
+    assert_eq!(status.extraction_status, PdfExtractionStatus::Pending);
+    let job = client
+        .claim_next_pdf_extraction(13)
+        .expect("claim replacement extraction")
+        .expect("replacement PDF job");
+    assert_eq!(job.extractor_version, "2");
+    assert_eq!(job.attempt_count, 1);
+}
+
+#[test]
+fn duplicate_pdfs_share_canonical_bytes_but_keep_independent_provenance() {
+    let library = TestLibrary::new();
+    let bytes = b"%PDF-1.7 duplicate canonical fixture";
+    let first = library.ingest_pdf((0x90a, 0x90b, 0x90c, 0x90d), bytes, 1, 11);
+    let second = library.ingest_pdf((0x90e, 0x90f, 0x910, 0x911), bytes, 1, 12);
+
+    assert_ne!(first.attachment.id, second.attachment.id);
+    assert_eq!(blob_count(&library.database), 1);
+    let main = library.database.open_main_read_only().expect("main reader");
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*)
+             FROM attachment_extraction
+             WHERE extractor = 'pdf-text'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("independent PDF extractions"),
+        2
+    );
+}
+
+#[test]
+fn unextractable_pdf_remains_an_attachment_without_text_evidence() {
+    let library = TestLibrary::new();
+    let bytes = b"%PDF-1.7 attachment-only fixture";
+    let pdf = library.ingest_pdf((0x912, 0x913, 0x914, 0x915), bytes, 1, 11);
+    let client = library.database.client();
+    let job = client
+        .claim_next_pdf_extraction(12)
+        .expect("claim attachment-only PDF")
+        .expect("attachment-only job");
+    client
+        .complete_pdf_extraction(
+            job,
+            Ok(vec![PdfPageExtraction {
+                page_number: 1,
+                result: Err("no readable page text".into()),
+            }]),
+            13,
+        )
+        .expect("record unavailable PDF page");
+
+    let status = client
+        .load_pdf_status(pdf.attachment.id.clone())
+        .expect("attachment-only PDF status");
+    assert_eq!(status.extraction_status, PdfExtractionStatus::Ready);
+    assert_eq!(status.extracted_page_count, 0);
+    assert_eq!(status.unavailable_page_count, 1);
+    assert_eq!(
+        library
+            .database
+            .open_main_read_only()
+            .expect("main reader")
+            .query_row(
+                "SELECT count(*)
+                 FROM passage
+                 JOIN attachment_segment AS segment
+                   ON segment.id = passage.attachment_segment_id
+                 JOIN attachment_extraction AS extraction
+                   ON extraction.id = segment.extraction_id
+                 WHERE extraction.attachment_id = ?1",
+                params![pdf.attachment.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("attachment-only passage count"),
+        0
+    );
+    assert_eq!(
+        client
+            .load_media_payload(pdf.attachment.id, 14, None, 64)
+            .expect("original PDF remains available")
+            .bytes,
+        bytes
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode, createRef } from "react";
 import { NodeSelection, TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
-import type { ImageRecord } from "../../src/backend/contracts";
+import type { ImageRecord, PdfRecord } from "../../src/backend/contracts";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { statusPollDelay } from "../../src/markdown/ImageNodeView";
@@ -596,6 +596,41 @@ it("inserts images selected through the native picker action", async () => {
   );
 });
 
+it("inserts a PDF token and exposes extraction status and system-open controls", async () => {
+  const pdf = pdfRecord("01980c8e-6c00-7000-8000-000000000236");
+  const pickPdf = vi.fn(async () => pdf);
+  const openPdfExternal = vi.fn(async () => undefined);
+  const onChange = vi.fn();
+  const { getByRole, getByText } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      onChange={onChange}
+      openPdfExternal={openPdfExternal}
+      pdfStatus={async () => ({
+        attachmentId: pdf.id,
+        displayFilename: pdf.displayFilename,
+        extractedPageCount: 2,
+        extractionError: null,
+        extractionStatus: "READY",
+        nextAttemptAtMs: null,
+        pageCount: 3,
+        unavailablePageCount: 1,
+      })}
+      pickPdf={pickPdf}
+      value=""
+    />,
+  );
+
+  fireEvent.click(getByRole("button", { name: "Add PDF" }));
+
+  expect(pickPdf).toHaveBeenCalledOnce();
+  await waitFor(() => expect(getByText("chapter.pdf")).toBeVisible());
+  expect(getByText("3 pages · 2 searchable · 1 unavailable")).toBeVisible();
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${pdf.id}}}`);
+  fireEvent.click(getByRole("button", { name: "Open original" }));
+  await waitFor(() => expect(openPdfExternal).toHaveBeenCalledWith(pdf.id));
+});
+
 it("restores selected content when the native image picker is canceled", async () => {
   let resolvePick!: (record: ImageRecord | null) => void;
   const pickPromise = new Promise<ImageRecord | null>((resolve) => {
@@ -727,6 +762,20 @@ function imageRecord(id: string): ImageRecord {
     naturalWidth: 1_200,
     ocrError: null,
     ocrStatus: "PENDING",
+  };
+}
+
+function pdfRecord(id: string): PdfRecord {
+  return {
+    byteLength: 24_000,
+    displayFilename: "chapter.pdf",
+    extractionError: null,
+    extractionStatus: "PENDING",
+    id,
+    ingestLeaseId: "01980c8e-6c00-7000-8000-000000000237",
+    kind: "PDF",
+    mediaType: "application/pdf",
+    pageCount: 3,
   };
 }
 

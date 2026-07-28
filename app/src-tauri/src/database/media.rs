@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{DatabaseError, Result};
+use super::{search, DatabaseError, Result};
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_FILENAME_CHARS: usize = 255;
@@ -29,7 +29,9 @@ const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
 const TOKEN_SUFFIX: &str = "}}";
 const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
 const IMAGE_OCR_EXTRACTOR: &str = "ocr";
+const PDF_TEXT_EXTRACTOR: &str = "pdf-text";
 const MAX_IMAGE_OCR_ATTEMPTS: u32 = 4;
+const MAX_PDF_EXTRACTION_ATTEMPTS: u32 = 3;
 const IMAGE_OCR_RETRY_DELAYS_MS: [i64; 3] = [5 * 60 * 1_000, 30 * 60 * 1_000, 2 * 60 * 60 * 1_000];
 const IMAGE_OCR_RECOVERY_BATCH_SIZE: usize = 64;
 const MAX_OCR_REGIONS: usize = 4_096;
@@ -38,6 +40,7 @@ const MAX_OCR_TOTAL_CHARS: usize = 1_000_000;
 const INTERRUPTED_OCR_ERROR: &str = "OCR was interrupted before it completed";
 const STALE_OCR_ERROR: &str = "OCR extractor provenance is no longer current";
 const RETIRED_OCR_ERROR: &str = "Image was retired before OCR completed";
+const RETIRED_PDF_ERROR: &str = "PDF was retired before extraction completed";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -196,6 +199,55 @@ pub struct ImageStatusRecord {
     pub next_attempt_at_ms: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PdfExtractionStatus {
+    Pending,
+    Running,
+    RetryWait,
+    Ready,
+    Failed,
+}
+
+impl PdfExtractionStatus {
+    fn from_db(value: &str) -> Result<Self> {
+        match value {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "RETRY_WAIT" => Ok(Self::RetryWait),
+            "READY" => Ok(Self::Ready),
+            "FAILED" => Ok(Self::Failed),
+            _ => Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("unknown PDF extraction state {value}"),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfRecord {
+    #[serde(flatten)]
+    pub attachment: AttachmentRecord,
+    pub page_count: u32,
+    pub extraction_status: PdfExtractionStatus,
+    pub extraction_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfStatusRecord {
+    pub attachment_id: String,
+    pub display_filename: String,
+    pub page_count: u32,
+    pub extracted_page_count: u32,
+    pub unavailable_page_count: u32,
+    pub extraction_status: PdfExtractionStatus,
+    pub extraction_error: Option<String>,
+    pub next_attempt_at_ms: Option<i64>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CanonicalImage {
     pub bytes: Vec<u8>,
@@ -208,6 +260,45 @@ pub(crate) struct IngestImageWrite {
     pub attachment: IngestAttachmentWrite,
     pub extraction_id: String,
     pub preview: CanonicalImage,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IngestPdfWrite {
+    pub attachment: IngestAttachmentWrite,
+    pub extraction_id: String,
+    pub page_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PdfPageSource {
+    NativeText,
+    Ocr,
+}
+
+impl PdfPageSource {
+    fn as_db_str(self) -> &'static str {
+        match self {
+            Self::NativeText => "NATIVE_TEXT",
+            Self::Ocr => "OCR",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PdfPageExtraction {
+    pub page_number: u32,
+    pub result: std::result::Result<(PdfPageSource, String), String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PdfExtractionJob {
+    pub extraction_id: String,
+    pub attachment_id: String,
+    pub extractor_version: String,
+    pub content_hash: Vec<u8>,
+    pub attempt_count: u32,
+    pub page_count: u32,
+    pub pdf_bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -768,6 +859,82 @@ pub(crate) fn ingest_image(
     })
 }
 
+pub(crate) fn ingest_pdf(
+    main: &mut Connection,
+    media: &mut Connection,
+    mut write: IngestPdfWrite,
+) -> Result<PdfRecord> {
+    validate_uuid_v7(&write.extraction_id, "extractionId")?;
+    if write.page_count == 0 || write.page_count > 2_000 {
+        return Err(DatabaseError::InvalidInput(
+            "PDFs must contain between 1 and 2000 pages".into(),
+        ));
+    }
+    let (limits, kind, expires_at) = validate_attachment_ingest(main, &mut write.attachment)?;
+    if kind != AttachmentKind::Pdf || write.attachment.media_type != "application/pdf" {
+        return Err(DatabaseError::InvalidInput(
+            "PDF ingestion requires the application/pdf media type".into(),
+        ));
+    }
+    let attachment_id = write.attachment.attachment_id.clone();
+    let ingest_lease_id = write.attachment.ingest_lease_id.clone();
+    let now_ms = write.attachment.now_ms;
+    let media_transaction = media.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    stage_attachment_media(&media_transaction, &write.attachment, expires_at)?;
+    media_transaction.commit()?;
+
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    insert_attachment_records(&transaction, &write.attachment, limits, kind, expires_at)?;
+    let extractor_version: String = transaction.query_row(
+        "SELECT version
+         FROM attachment_extractor_config
+         WHERE extractor = ?1",
+        params![PDF_TEXT_EXTRACTOR],
+        |row| row.get(0),
+    )?;
+    transaction.execute(
+        "INSERT INTO attachment_pdf(attachment_id, page_count, created_at)
+         VALUES(?1, ?2, ?3)",
+        params![&attachment_id, write.page_count, now_ms],
+    )?;
+    transaction.execute(
+        "INSERT INTO attachment_extraction(
+            id, attachment_id, extractor, extractor_version, content_hash,
+            status, error, created_at, started_at, completed_at
+         ) VALUES(?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, ?6, NULL, NULL)",
+        params![
+            &write.extraction_id,
+            &attachment_id,
+            PDF_TEXT_EXTRACTOR,
+            &extractor_version,
+            &write.attachment.sha256,
+            now_ms
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO pdf_extraction_queue(
+            extraction_id, state, attempt_count, next_attempt_at,
+            started_at, last_error, updated_at
+         ) VALUES(?1, 'PENDING', 0, ?2, NULL, NULL, ?2)",
+        params![&write.extraction_id, now_ms],
+    )?;
+    transaction.commit()?;
+
+    clear_committed_media_lease(
+        media,
+        &ingest_lease_id,
+        &write.attachment.sha256,
+        &attachment_id,
+        "PDF",
+    );
+    Ok(PdfRecord {
+        attachment: attachment_record(write.attachment, kind),
+        page_count: write.page_count,
+        extraction_status: PdfExtractionStatus::Pending,
+        extraction_error: None,
+    })
+}
+
 fn insert_media_bytes(
     transaction: &Transaction<'_>,
     sha256: &[u8],
@@ -1000,6 +1167,671 @@ pub(crate) fn load_image_status(
             })
         },
     )
+}
+
+pub(crate) fn load_pdf_status(main: &Connection, attachment_id: &str) -> Result<PdfStatusRecord> {
+    validate_uuid_v7(attachment_id, "attachmentId")?;
+    main.query_row(
+        "SELECT
+            pdf.attachment_id,
+            attachment.display_filename,
+            pdf.page_count,
+            queue.state,
+            queue.last_error,
+            queue.next_attempt_at,
+            count(page.page_number) FILTER (
+                WHERE page.source IN ('NATIVE_TEXT', 'OCR')
+            ),
+            count(page.page_number) FILTER (
+                WHERE page.source = 'UNAVAILABLE'
+            )
+         FROM attachment_pdf AS pdf
+         JOIN attachment ON attachment.id = pdf.attachment_id
+         JOIN attachment_extraction AS extraction
+           ON extraction.attachment_id = attachment.id
+          AND extraction.content_hash = attachment.sha256
+          AND extraction.extractor = ?2
+         JOIN attachment_extractor_config AS config
+           ON config.extractor = extraction.extractor
+          AND config.version = extraction.extractor_version
+         JOIN pdf_extraction_queue AS queue ON queue.extraction_id = extraction.id
+         LEFT JOIN pdf_page_extraction AS page ON page.extraction_id = extraction.id
+         WHERE pdf.attachment_id = ?1
+           AND attachment.deleted_at IS NULL
+         GROUP BY
+            pdf.attachment_id, attachment.display_filename, pdf.page_count, queue.state,
+            queue.last_error, queue.next_attempt_at",
+        params![attachment_id, PDF_TEXT_EXTRACTOR],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, u32>(6)?,
+                row.get::<_, u32>(7)?,
+            ))
+        },
+    )
+    .optional()?
+    .ok_or_else(|| DatabaseError::NotFound {
+        entity: "PDF",
+        id: attachment_id.into(),
+    })
+    .and_then(
+        |(
+            attachment_id,
+            display_filename,
+            page_count,
+            state,
+            extraction_error,
+            next_attempt_at_ms,
+            extracted_page_count,
+            unavailable_page_count,
+        )| {
+            Ok(PdfStatusRecord {
+                attachment_id,
+                display_filename,
+                page_count,
+                extracted_page_count,
+                unavailable_page_count,
+                extraction_status: PdfExtractionStatus::from_db(&state)?,
+                extraction_error,
+                next_attempt_at_ms,
+            })
+        },
+    )
+}
+
+pub(crate) fn claim_next_pdf_extraction(
+    main: &mut Connection,
+    media: &Connection,
+    now_ms: i64,
+) -> Result<Option<PdfExtractionJob>> {
+    validate_timestamp(now_ms, "nowMs")?;
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let pending = transaction
+        .query_row(
+            "SELECT
+                extraction.id,
+                extraction.attachment_id,
+                extraction.extractor_version,
+                extraction.content_hash,
+                queue.attempt_count,
+                pdf.page_count,
+                attachment.byte_length
+             FROM pdf_extraction_queue AS queue
+             JOIN attachment_extraction AS extraction
+               ON extraction.id = queue.extraction_id
+             JOIN attachment_extractor_config AS config
+               ON config.extractor = extraction.extractor
+              AND config.version = extraction.extractor_version
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
+              AND attachment.deleted_at IS NULL
+             JOIN attachment_pdf AS pdf ON pdf.attachment_id = attachment.id
+             WHERE queue.state IN ('PENDING', 'RETRY_WAIT')
+               AND queue.next_attempt_at <= ?1
+               AND extraction.extractor = ?2
+             ORDER BY queue.next_attempt_at, extraction.created_at, extraction.id
+             LIMIT 1",
+            params![now_ms, PDF_TEXT_EXTRACTOR],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, u32>(4)?,
+                    row.get::<_, u32>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        extraction_id,
+        attachment_id,
+        extractor_version,
+        content_hash,
+        attempt_count,
+        page_count,
+        byte_length,
+    )) = pending
+    else {
+        transaction.commit()?;
+        return Ok(None);
+    };
+    let pdf_bytes = load_media_blob_bytes(media, &content_hash, byte_length, &attachment_id)?;
+    let next_attempt = attempt_count
+        .checked_add(1)
+        .ok_or_else(|| DatabaseError::Validation {
+            kind: "main",
+            reason: format!("PDF extraction attempt counter overflow for {attachment_id}"),
+        })?;
+    let updated = transaction.execute(
+        "UPDATE pdf_extraction_queue
+         SET state = 'RUNNING',
+             attempt_count = ?1,
+             next_attempt_at = NULL,
+             started_at = ?2,
+             updated_at = ?2
+         WHERE extraction_id = ?3
+           AND state IN ('PENDING', 'RETRY_WAIT')
+           AND attempt_count = ?4",
+        params![next_attempt, now_ms, &extraction_id, attempt_count],
+    )?;
+    if updated != 1 {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: format!("PDF extraction claim raced for {attachment_id}"),
+        });
+    }
+    transaction.execute(
+        "UPDATE attachment_extraction
+         SET status = 'RUNNING',
+             error = NULL,
+             started_at = coalesce(started_at, ?1),
+             completed_at = NULL
+         WHERE id = ?2",
+        params![now_ms, &extraction_id],
+    )?;
+    transaction.commit()?;
+    Ok(Some(PdfExtractionJob {
+        extraction_id,
+        attachment_id,
+        extractor_version,
+        content_hash,
+        attempt_count: next_attempt,
+        page_count,
+        pdf_bytes,
+    }))
+}
+
+pub(crate) fn complete_pdf_extraction(
+    main: &mut Connection,
+    job: &PdfExtractionJob,
+    result: std::result::Result<Vec<PdfPageExtraction>, String>,
+    completed_at_ms: i64,
+) -> Result<()> {
+    validate_timestamp(completed_at_ms, "completedAtMs")?;
+    validate_uuid_v7(&job.extraction_id, "extractionId")?;
+    validate_uuid_v7(&job.attachment_id, "attachmentId")?;
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM pdf_extraction_queue AS queue
+            JOIN attachment_extraction AS extraction
+              ON extraction.id = queue.extraction_id
+            JOIN attachment_extractor_config AS config
+              ON config.extractor = extraction.extractor
+             AND config.version = extraction.extractor_version
+            JOIN attachment
+              ON attachment.id = extraction.attachment_id
+             AND attachment.sha256 = extraction.content_hash
+             AND attachment.deleted_at IS NULL
+            JOIN attachment_pdf AS pdf ON pdf.attachment_id = attachment.id
+            WHERE queue.extraction_id = ?1
+              AND queue.state = 'RUNNING'
+              AND queue.attempt_count = ?2
+              AND extraction.attachment_id = ?3
+              AND extraction.extractor = ?4
+              AND extraction.extractor_version = ?5
+              AND extraction.content_hash = ?6
+              AND pdf.page_count = ?7
+         )",
+        params![
+            &job.extraction_id,
+            job.attempt_count,
+            &job.attachment_id,
+            PDF_TEXT_EXTRACTOR,
+            &job.extractor_version,
+            &job.content_hash,
+            job.page_count
+        ],
+        |row| row.get(0),
+    )?;
+    if !current {
+        let retired: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM pdf_extraction_queue AS queue
+                JOIN attachment_extraction AS extraction
+                  ON extraction.id = queue.extraction_id
+                JOIN attachment ON attachment.id = extraction.attachment_id
+                WHERE queue.extraction_id = ?1
+                  AND queue.state = 'FAILED'
+                  AND queue.last_error = ?2
+                  AND extraction.attachment_id = ?3
+                  AND attachment.deleted_at IS NOT NULL
+             )",
+            params![&job.extraction_id, RETIRED_PDF_ERROR, &job.attachment_id],
+            |row| row.get(0),
+        )?;
+        if retired {
+            return Ok(());
+        }
+        return Err(DatabaseError::InvalidInput(format!(
+            "PDF extraction result for {} is stale",
+            job.attachment_id
+        )));
+    }
+
+    match result.and_then(|pages| validate_pdf_pages(pages, job.page_count)) {
+        Ok(pages) => {
+            let construction_version: String = transaction.query_row(
+                "SELECT passage_construction_version
+                 FROM attachment_extractor_config
+                 WHERE extractor = ?1 AND version = ?2",
+                params![PDF_TEXT_EXTRACTOR, &job.extractor_version],
+                |row| row.get(0),
+            )?;
+            transaction.execute(
+                "UPDATE attachment_extraction
+                 SET status = 'READY', error = NULL, completed_at = ?1
+                 WHERE id = ?2",
+                params![completed_at_ms, &job.extraction_id],
+            )?;
+            for page in pages {
+                match page.result {
+                    Ok((source, text)) => {
+                        let segment_id = Uuid::now_v7().to_string();
+                        let passage_id = Uuid::now_v7().to_string();
+                        let content_hash = Sha256::digest(text.as_bytes()).to_vec();
+                        let locator_json = serde_json::to_string(&serde_json::json!({
+                            "page": page.page_number
+                        }))
+                        .expect("PDF page locator is serializable");
+                        transaction.execute(
+                            "INSERT INTO attachment_segment(
+                                id, extraction_id, ordinal, locator_kind, page_number,
+                                line_start, line_end, region_json, content, content_hash
+                             ) VALUES(?1, ?2, ?3, 'PDF_PAGE', ?4, NULL, NULL, NULL, ?5, ?6)",
+                            params![
+                                &segment_id,
+                                &job.extraction_id,
+                                i64::from(page.page_number - 1),
+                                page.page_number,
+                                &text,
+                                &content_hash
+                            ],
+                        )?;
+                        transaction.execute(
+                            "INSERT INTO passage(
+                                id, tidbit_revision_id, attachment_segment_id, owner_kind,
+                                ordinal, content, content_hash, locator_kind, locator_json,
+                                created_at, construction_version, heading_context_json
+                             ) VALUES(
+                                ?1, NULL, ?2, 'ATTACHMENT', 0, ?3, ?4, 'PDF_PAGE',
+                                ?5, ?6, ?7, '[]'
+                             )",
+                            params![
+                                &passage_id,
+                                &segment_id,
+                                &text,
+                                &content_hash,
+                                &locator_json,
+                                completed_at_ms,
+                                &construction_version
+                            ],
+                        )?;
+                        transaction.execute(
+                            "INSERT INTO pdf_page_extraction(
+                                extraction_id, page_number, source, segment_id, error
+                             ) VALUES(?1, ?2, ?3, ?4, NULL)",
+                            params![
+                                &job.extraction_id,
+                                page.page_number,
+                                source.as_db_str(),
+                                &segment_id
+                            ],
+                        )?;
+                    }
+                    Err(error) => {
+                        transaction.execute(
+                            "INSERT INTO pdf_page_extraction(
+                                extraction_id, page_number, source, segment_id, error
+                             ) VALUES(?1, ?2, 'UNAVAILABLE', NULL, ?3)",
+                            params![
+                                &job.extraction_id,
+                                page.page_number,
+                                truncate_ocr_error(&error)
+                            ],
+                        )?;
+                    }
+                }
+            }
+            transaction.execute(
+                "UPDATE pdf_extraction_queue
+                 SET state = 'READY', next_attempt_at = NULL, started_at = NULL,
+                     last_error = NULL, updated_at = ?1
+                 WHERE extraction_id = ?2",
+                params![completed_at_ms, &job.extraction_id],
+            )?;
+            transaction.execute(
+                "UPDATE attachment
+                 SET extraction_state = 'READY', updated_at = max(updated_at, ?1)
+                 WHERE id = ?2",
+                params![completed_at_ms, &job.attachment_id],
+            )?;
+            search::replace_attachment_documents_in_transaction(&transaction, &job.attachment_id)?;
+        }
+        Err(error) => {
+            let error = truncate_ocr_error(&error);
+            if job.attempt_count < MAX_PDF_EXTRACTION_ATTEMPTS {
+                let retry_at = checked_timestamp_add(
+                    completed_at_ms,
+                    5 * 60 * 1_000 * i64::from(job.attempt_count),
+                    "PDF extraction retry time",
+                )?;
+                transaction.execute(
+                    "UPDATE attachment_extraction
+                     SET status = 'PENDING', error = ?1, completed_at = NULL
+                     WHERE id = ?2",
+                    params![&error, &job.extraction_id],
+                )?;
+                transaction.execute(
+                    "UPDATE pdf_extraction_queue
+                     SET state = 'RETRY_WAIT', next_attempt_at = ?1, started_at = NULL,
+                         last_error = ?2, updated_at = ?3
+                     WHERE extraction_id = ?4",
+                    params![retry_at, &error, completed_at_ms, &job.extraction_id],
+                )?;
+            } else {
+                transaction.execute(
+                    "UPDATE attachment_extraction
+                     SET status = 'FAILED', error = ?1, completed_at = ?2
+                     WHERE id = ?3",
+                    params![&error, completed_at_ms, &job.extraction_id],
+                )?;
+                transaction.execute(
+                    "UPDATE pdf_extraction_queue
+                     SET state = 'FAILED', next_attempt_at = NULL, started_at = NULL,
+                         last_error = ?1, updated_at = ?2
+                     WHERE extraction_id = ?3",
+                    params![&error, completed_at_ms, &job.extraction_id],
+                )?;
+                transaction.execute(
+                    "UPDATE attachment
+                     SET extraction_state = 'FAILED', updated_at = max(updated_at, ?1)
+                     WHERE id = ?2",
+                    params![completed_at_ms, &job.attachment_id],
+                )?;
+            }
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn validate_pdf_pages(
+    mut pages: Vec<PdfPageExtraction>,
+    page_count: u32,
+) -> std::result::Result<Vec<PdfPageExtraction>, String> {
+    if pages.len() != page_count as usize {
+        return Err(format!(
+            "PDF extractor returned {} page outcomes for a {page_count}-page document",
+            pages.len()
+        ));
+    }
+    pages.sort_by_key(|page| page.page_number);
+    let mut total_chars = 0_usize;
+    for (index, page) in pages.iter_mut().enumerate() {
+        let expected = u32::try_from(index + 1).expect("PDF page bound fits u32");
+        if page.page_number != expected {
+            return Err("PDF extractor returned duplicate or missing page outcomes".into());
+        }
+        if let Ok((_, text)) = &mut page.result {
+            *text = text.trim().to_owned();
+            let chars = text.chars().count();
+            if chars == 0 {
+                page.result = Err("No searchable text could be extracted from this page".into());
+            } else if chars > 100_000 {
+                return Err(format!(
+                    "PDF page {expected} contains too much extracted text"
+                ));
+            } else {
+                total_chars = total_chars
+                    .checked_add(chars)
+                    .ok_or_else(|| "PDF text length overflow".to_owned())?;
+            }
+        } else if let Err(error) = &mut page.result {
+            *error = truncate_ocr_error(error);
+            if error.is_empty() {
+                *error = "No searchable text could be extracted from this page".into();
+            }
+        }
+    }
+    if total_chars > 4_000_000 {
+        return Err("PDF contains too much extracted text".into());
+    }
+    Ok(pages)
+}
+
+pub(crate) fn retry_pdf_extraction(
+    main: &mut Connection,
+    attachment_id: &str,
+    now_ms: i64,
+) -> Result<PdfStatusRecord> {
+    validate_uuid_v7(attachment_id, "attachmentId")?;
+    validate_timestamp(now_ms, "nowMs")?;
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let extraction_id = transaction
+        .query_row(
+            "SELECT extraction.id
+             FROM attachment_extraction AS extraction
+             JOIN attachment_extractor_config AS config
+               ON config.extractor = extraction.extractor
+              AND config.version = extraction.extractor_version
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
+              AND attachment.deleted_at IS NULL
+             JOIN pdf_extraction_queue AS queue ON queue.extraction_id = extraction.id
+             WHERE attachment.id = ?1
+               AND extraction.extractor = ?2
+               AND queue.state = 'FAILED'",
+            params![attachment_id, PDF_TEXT_EXTRACTOR],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            DatabaseError::InvalidInput(
+                "only a current, failed PDF extraction can be retried".into(),
+            )
+        })?;
+    transaction.execute(
+        "UPDATE attachment_extraction
+         SET status = 'PENDING', error = NULL, started_at = NULL, completed_at = NULL
+         WHERE id = ?1",
+        params![&extraction_id],
+    )?;
+    transaction.execute(
+        "UPDATE pdf_extraction_queue
+         SET state = 'PENDING', attempt_count = 0, next_attempt_at = ?1,
+             started_at = NULL, last_error = NULL, updated_at = ?1
+         WHERE extraction_id = ?2",
+        params![now_ms, &extraction_id],
+    )?;
+    transaction.execute(
+        "UPDATE attachment
+         SET extraction_state = 'PENDING', updated_at = max(updated_at, ?1)
+         WHERE id = ?2",
+        params![now_ms, attachment_id],
+    )?;
+    transaction.commit()?;
+    load_pdf_status(main, attachment_id)
+}
+
+pub(crate) fn recover_interrupted_pdf_extraction(
+    main: &mut Connection,
+    stale_started_at_or_before: i64,
+    now_ms: i64,
+) -> Result<u64> {
+    validate_timestamp(stale_started_at_or_before, "staleStartedAtOrBefore")?;
+    validate_timestamp(now_ms, "nowMs")?;
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute(
+        "UPDATE attachment_extraction
+         SET status = 'FAILED',
+             error = 'PDF extractor provenance is no longer current',
+             completed_at = max(coalesce(started_at, created_at), ?1)
+         WHERE extractor = ?2
+           AND status <> 'READY'
+           AND EXISTS (
+                SELECT 1
+                FROM attachment_extractor_config AS config
+                JOIN attachment ON attachment.id = attachment_extraction.attachment_id
+                WHERE config.extractor = attachment_extraction.extractor
+                  AND (
+                       config.version <> attachment_extraction.extractor_version
+                       OR attachment.sha256 <> attachment_extraction.content_hash
+                  )
+           )",
+        params![now_ms, PDF_TEXT_EXTRACTOR],
+    )?;
+    transaction.execute(
+        "UPDATE pdf_extraction_queue
+         SET state = 'FAILED',
+             attempt_count = max(attempt_count, 1),
+             next_attempt_at = NULL,
+             started_at = NULL,
+             last_error = 'PDF extractor provenance is no longer current',
+             updated_at = ?1
+         WHERE state IN ('PENDING', 'RUNNING', 'RETRY_WAIT')
+           AND extraction_id IN (
+                SELECT extraction.id
+                FROM attachment_extraction AS extraction
+                JOIN attachment_extractor_config AS config
+                  ON config.extractor = extraction.extractor
+                JOIN attachment ON attachment.id = extraction.attachment_id
+                WHERE extraction.extractor = ?2
+                  AND (
+                       config.version <> extraction.extractor_version
+                       OR attachment.sha256 <> extraction.content_hash
+                  )
+           )",
+        params![now_ms, PDF_TEXT_EXTRACTOR],
+    )?;
+    let replacements = transaction
+        .prepare(
+            "SELECT attachment.id, attachment.sha256, config.version
+             FROM attachment
+             JOIN attachment_pdf AS pdf ON pdf.attachment_id = attachment.id
+             JOIN attachment_extractor_config AS config ON config.extractor = ?1
+             WHERE attachment.deleted_at IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM attachment_extraction AS extraction
+                    JOIN pdf_extraction_queue AS queue
+                      ON queue.extraction_id = extraction.id
+                    WHERE extraction.attachment_id = attachment.id
+                      AND extraction.extractor = config.extractor
+                      AND extraction.extractor_version = config.version
+                      AND extraction.content_hash = attachment.sha256
+               )
+             ORDER BY attachment.id
+             LIMIT 64",
+        )?
+        .query_map(params![PDF_TEXT_EXTRACTOR], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let replacement_count = replacements.len() as u64;
+    for (attachment_id, content_hash, extractor_version) in replacements {
+        let extraction_id = Uuid::now_v7().to_string();
+        transaction.execute(
+            "INSERT INTO attachment_extraction(
+                id, attachment_id, extractor, extractor_version, content_hash,
+                status, error, created_at, started_at, completed_at
+             ) VALUES(?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, ?6, NULL, NULL)",
+            params![
+                &extraction_id,
+                &attachment_id,
+                PDF_TEXT_EXTRACTOR,
+                &extractor_version,
+                &content_hash,
+                now_ms
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO pdf_extraction_queue(
+                extraction_id, state, attempt_count, next_attempt_at,
+                started_at, last_error, updated_at
+             ) VALUES(?1, 'PENDING', 0, ?2, NULL, NULL, ?2)",
+            params![&extraction_id, now_ms],
+        )?;
+        transaction.execute(
+            "UPDATE attachment
+             SET extraction_state = 'PENDING', updated_at = max(updated_at, ?1)
+             WHERE id = ?2",
+            params![now_ms, &attachment_id],
+        )?;
+    }
+    let updated = transaction.execute(
+        "UPDATE pdf_extraction_queue
+         SET state = CASE
+                WHEN attempt_count >= ?1 THEN 'FAILED'
+                ELSE 'RETRY_WAIT'
+             END,
+             next_attempt_at = CASE
+                WHEN attempt_count >= ?1 THEN NULL
+                ELSE ?2
+             END,
+             started_at = NULL,
+             last_error = 'PDF extraction was interrupted before it completed',
+             updated_at = ?2
+         WHERE state = 'RUNNING'
+           AND started_at <= ?3
+           AND extraction_id IN (
+                SELECT extraction.id
+                FROM attachment_extraction AS extraction
+                JOIN attachment ON attachment.id = extraction.attachment_id
+                WHERE extraction.extractor = ?4
+                  AND attachment.deleted_at IS NULL
+           )",
+        params![
+            MAX_PDF_EXTRACTION_ATTEMPTS,
+            now_ms,
+            stale_started_at_or_before,
+            PDF_TEXT_EXTRACTOR
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE attachment_extraction
+         SET status = CASE
+                WHEN (
+                    SELECT state FROM pdf_extraction_queue
+                    WHERE extraction_id = attachment_extraction.id
+                ) = 'FAILED' THEN 'FAILED'
+                ELSE 'PENDING'
+             END,
+             error = 'PDF extraction was interrupted before it completed',
+             completed_at = CASE
+                WHEN (
+                    SELECT state FROM pdf_extraction_queue
+                    WHERE extraction_id = attachment_extraction.id
+                ) = 'FAILED' THEN ?1
+                ELSE NULL
+             END
+         WHERE id IN (
+            SELECT extraction_id
+            FROM pdf_extraction_queue
+            WHERE updated_at = ?1
+              AND last_error = 'PDF extraction was interrupted before it completed'
+         )",
+        params![now_ms],
+    )?;
+    transaction.commit()?;
+    Ok(updated as u64 + replacement_count)
 }
 
 pub(crate) fn claim_next_image_ocr(
@@ -2809,6 +3641,43 @@ fn reconcile_and_reap_from(
                       AND queue.last_error = ?3
                )",
             params![now_ms, IMAGE_OCR_EXTRACTOR, RETIRED_OCR_ERROR],
+        )?;
+        transaction.execute(
+            "UPDATE attachment_extraction
+             SET status = 'FAILED',
+                 error = ?1,
+                 completed_at = max(coalesce(started_at, created_at), ?2)
+             WHERE extractor = ?3
+               AND id IN (
+                    SELECT queue.extraction_id
+                    FROM pdf_extraction_queue AS queue
+                    JOIN attachment_extraction AS extraction
+                      ON extraction.id = queue.extraction_id
+                    JOIN attachment
+                      ON attachment.id = extraction.attachment_id
+                    WHERE queue.state IN ('PENDING', 'RUNNING', 'RETRY_WAIT')
+                      AND attachment.deleted_at IS NOT NULL
+               )",
+            params![RETIRED_PDF_ERROR, now_ms, PDF_TEXT_EXTRACTOR],
+        )?;
+        transaction.execute(
+            "UPDATE pdf_extraction_queue
+             SET state = 'FAILED',
+                 attempt_count = max(attempt_count, 1),
+                 next_attempt_at = NULL,
+                 started_at = NULL,
+                 last_error = ?1,
+                 updated_at = max(updated_at, ?2)
+             WHERE state IN ('PENDING', 'RUNNING', 'RETRY_WAIT')
+               AND extraction_id IN (
+                    SELECT extraction.id
+                    FROM attachment_extraction AS extraction
+                    JOIN attachment
+                      ON attachment.id = extraction.attachment_id
+                    WHERE extraction.extractor = ?3
+                      AND attachment.deleted_at IS NOT NULL
+               )",
+            params![RETIRED_PDF_ERROR, now_ms, PDF_TEXT_EXTRACTOR],
         )?;
         transaction.execute(
             "DELETE FROM draft_media_lease

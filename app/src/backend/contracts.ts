@@ -230,6 +230,31 @@ export interface ImageOcrDiagnostics {
   lastError: string | null;
 }
 
+export type PdfExtractionStatus = "PENDING" | "RUNNING" | "RETRY_WAIT" | "READY" | "FAILED";
+
+export interface PdfRecord {
+  id: string;
+  ingestLeaseId: string;
+  displayFilename: string;
+  mediaType: "application/pdf";
+  byteLength: number;
+  kind: "PDF";
+  pageCount: number;
+  extractionStatus: PdfExtractionStatus;
+  extractionError: string | null;
+}
+
+export interface PdfStatusRecord {
+  attachmentId: string;
+  displayFilename: string;
+  pageCount: number;
+  extractedPageCount: number;
+  unavailablePageCount: number;
+  extractionStatus: PdfExtractionStatus;
+  extractionError: string | null;
+  nextAttemptAtMs: number | null;
+}
+
 export interface TidbitSource {
   id: string;
   label: string | null;
@@ -301,4 +326,9 @@ export interface Backend {
   imageStatus(attachmentId: string): Promise<ImageStatusRecord>;
   retryImageOcr(attachmentId: string): Promise<ImageStatusRecord>;
   imageOcrDiagnostics(): Promise<ImageOcrDiagnostics>;
+  selectPdf(): Promise<string | null>;
+  ingestSelectedPdf(selectionId: string, draftId: string): Promise<PdfRecord>;
+  pdfStatus(attachmentId: string): Promise<PdfStatusRecord>;
+  retryPdfExtraction(attachmentId: string): Promise<PdfStatusRecord>;
+  openPdfExternal(attachmentId: string): Promise<void>;
 }

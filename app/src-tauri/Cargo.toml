@@ -51,4 +51,5 @@ libc = "=0.2.189"
 objc2 = "=0.6.4"
 objc2-app-kit = "=0.3.2"
 objc2-foundation = "=0.3.2"
+objc2-pdf-kit = { version = "=0.3.2", features = ["objc2-app-kit"] }
 objc2-vision = "=0.3.2"
