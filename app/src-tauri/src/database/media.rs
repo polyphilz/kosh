@@ -19,6 +19,7 @@ const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_FILENAME_CHARS: usize = 255;
 const MAX_MEDIA_TYPE_BYTES: usize = 127;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+pub(crate) const MEDIA_RECONCILE_BATCH_SIZE: u32 = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
 const TOKEN_SUFFIX: &str = "}}";
@@ -1145,18 +1146,6 @@ fn reconcile_and_reap(
          )",
         params![now_ms],
     )?;
-    let live_hashes = transaction
-        .prepare(
-            "SELECT DISTINCT attachment.sha256
-             FROM attachment
-             WHERE attachment.deleted_at IS NULL
-                OR EXISTS (
-                    SELECT 1 FROM tidbit_revision_attachment AS membership
-                    WHERE membership.attachment_id = attachment.id
-                )",
-        )?
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
-        .collect::<std::result::Result<HashSet<_>, _>>()?;
     transaction.execute(
         "DELETE FROM media_blob_reap_candidate
          WHERE sha256 IN (
@@ -1176,26 +1165,8 @@ fn reconcile_and_reap(
         "DELETE FROM media_blob_lease WHERE expires_at <= ?1",
         params![now_ms],
     )?;
-    let media_blobs = media
-        .prepare("SELECT sha256 FROM media_blob ORDER BY sha256")?
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let leased_hashes = media
-        .prepare("SELECT DISTINCT sha256 FROM media_blob_lease WHERE expires_at > ?1")?
-        .query_map(params![now_ms], |row| row.get::<_, Vec<u8>>(0))?
-        .collect::<std::result::Result<HashSet<_>, _>>()?;
-
+    reconcile_blob_candidates(main, media, now_ms)?;
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    for hash in media_blobs {
-        if live_hashes.contains(&hash) || leased_hashes.contains(&hash) {
-            continue;
-        }
-        transaction.execute(
-            "INSERT OR IGNORE INTO media_blob_reap_candidate(sha256, orphaned_at, reason)
-             VALUES(?1, ?2, 'unreferenced media blob')",
-            params![hash, now_ms],
-        )?;
-    }
     let cutoff = now_ms.saturating_sub(limits.orphan_grace_period_ms);
     let candidates = transaction
         .prepare(
@@ -1303,6 +1274,88 @@ fn reconcile_and_reap(
         main_transaction.commit()?;
     }
     Ok(cleanup)
+}
+
+fn reconcile_blob_candidates(main: &mut Connection, media: &Connection, now_ms: i64) -> Result<()> {
+    let mut cursor: Option<Vec<u8>> = None;
+    loop {
+        let hashes = load_media_blob_hash_batch(media, cursor.as_deref())?;
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let next_cursor = hashes.last().cloned();
+        let batch_is_complete = hashes.len()
+            < usize::try_from(MEDIA_RECONCILE_BATCH_SIZE)
+                .expect("media reconciliation batch size fits usize");
+        let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut live_statement = transaction.prepare(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM attachment
+                    WHERE sha256 = ?1
+                      AND (
+                           deleted_at IS NULL
+                           OR EXISTS (
+                               SELECT 1
+                               FROM tidbit_revision_attachment AS membership
+                               WHERE membership.attachment_id = attachment.id
+                           )
+                      )
+                 )",
+            )?;
+            let mut lease_statement = media.prepare(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM media_blob_lease
+                    WHERE sha256 = ?1 AND expires_at > ?2
+                 )",
+            )?;
+            let mut candidate_statement = transaction.prepare(
+                "INSERT OR IGNORE INTO media_blob_reap_candidate(
+                    sha256, orphaned_at, reason
+                 ) VALUES(?1, ?2, 'unreferenced media blob')",
+            )?;
+            for hash in hashes {
+                let live: bool = live_statement.query_row(params![&hash], |row| row.get(0))?;
+                let leased: bool =
+                    lease_statement.query_row(params![&hash, now_ms], |row| row.get(0))?;
+                if !live && !leased {
+                    candidate_statement.execute(params![hash, now_ms])?;
+                }
+            }
+        }
+        transaction.commit()?;
+        if batch_is_complete {
+            return Ok(());
+        }
+        cursor = next_cursor;
+    }
+}
+
+fn load_media_blob_hash_batch(
+    media: &Connection,
+    after_hash: Option<&[u8]>,
+) -> Result<Vec<Vec<u8>>> {
+    let limit = i64::from(MEDIA_RECONCILE_BATCH_SIZE);
+    if let Some(after_hash) = after_hash {
+        let mut statement = media.prepare(
+            "SELECT sha256
+             FROM media_blob
+             WHERE sha256 > ?1
+             ORDER BY sha256
+             LIMIT ?2",
+        )?;
+        let hashes = statement
+            .query_map(params![after_hash, limit], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        return Ok(hashes);
+    }
+    let mut statement = media.prepare("SELECT sha256 FROM media_blob ORDER BY sha256 LIMIT ?1")?;
+    let hashes = statement
+        .query_map(params![limit], |row| row.get(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(hashes)
 }
 
 fn validate_filename(filename: &str) -> Result<()> {

@@ -11,7 +11,7 @@ use super::{
     drafts::SaveDraftWrite,
     media::{
         referenced_attachments, AttachmentDisplayRole, IngestAttachmentMetadata,
-        IngestAttachmentWrite, MediaByteRange, StagedAttachment,
+        IngestAttachmentWrite, MediaByteRange, StagedAttachment, MEDIA_RECONCILE_BATCH_SIZE,
     },
     tidbits::CreateTidbitWrite,
     AttachmentIngestInput, AttachmentKind, ClearDraftInput, Database, DatabaseError, DatabasePaths,
@@ -426,6 +426,58 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     assert_eq!(after_grace.cleanup.deleted_blob_count, 1);
     assert_eq!(after_grace.cleanup.reclaimed_bytes, 9);
     assert_eq!(blob_count(&library.database), 0);
+}
+
+#[test]
+fn lifecycle_reconciliation_discovers_candidates_across_bounded_hash_batches() {
+    let library = TestLibrary::new();
+    let mut media = Connection::open(&library.paths.media).expect("media writer");
+    let transaction = media.transaction().expect("media transaction");
+    let blob_count = MEDIA_RECONCILE_BATCH_SIZE + 1;
+    for index in 0..blob_count {
+        let bytes = index.to_be_bytes();
+        let hash = Sha256::digest(bytes);
+        transaction
+            .execute(
+                "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+                 VALUES(?1, ?2, ?3, 11)",
+                params![
+                    hash.as_slice(),
+                    bytes.as_slice(),
+                    i64::try_from(bytes.len()).expect("test byte length")
+                ],
+            )
+            .expect("insert orphan media blob");
+    }
+    transaction.commit().expect("commit orphan media blobs");
+    drop(media);
+
+    let cleanup = library
+        .database
+        .client()
+        .recover_media_lifecycle(
+            12,
+            MediaLimits {
+                orphan_grace_period_ms: 100,
+                ..MediaLimits::default()
+            },
+        )
+        .expect("reconcile media in bounded batches");
+
+    assert_eq!(cleanup.deleted_blob_count, 0);
+    assert_eq!(
+        library
+            .database
+            .open_main_read_only()
+            .expect("main reader")
+            .query_row(
+                "SELECT count(*) FROM media_blob_reap_candidate",
+                [],
+                |row| { row.get::<_, u32>(0) }
+            )
+            .expect("reap candidate count"),
+        blob_count
+    );
 }
 
 #[test]
