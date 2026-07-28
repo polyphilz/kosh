@@ -145,6 +145,8 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           void installCodeBlockNodeView(view);
           renderToolbar();
           if (transaction.docChanged) {
+            setMathDialog(null);
+            setLinkDialog(null);
             onChangeRef.current(serializeKoshMarkdown(nextState.doc));
           }
         },
@@ -205,6 +207,8 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       if (view.state.doc.eq(replacement)) {
         return;
       }
+      setMathDialog(null);
+      setLinkDialog(null);
       view.updateState(
         EditorState.create({
           doc: replacement,

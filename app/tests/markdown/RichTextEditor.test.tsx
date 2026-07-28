@@ -242,6 +242,30 @@ it("inserts and renders inline math from the editor-owned dialog", () => {
   expect(container.querySelector(".kosh-math-inline .katex")).not.toBeNull();
 });
 
+it("closes math editors across document mutations and controlled replacements", () => {
+  const result = render(
+    <RichTextEditor ariaLabel="Body" onChange={() => undefined} value="Before $x$ after." />,
+  );
+  const view = editorView(result.getByRole("textbox", { name: "Body" }));
+
+  fireEvent.doubleClick(result.container.querySelector(".kosh-math-inline")!);
+  expect(result.getByRole("dialog", { name: "Inline math editor" })).toBeInTheDocument();
+  act(() => {
+    view.dispatch(view.state.tr.insertText("Prefix ", 1));
+  });
+  expect(result.queryByRole("dialog", { name: "Inline math editor" })).toBeNull();
+  expect(serializeKoshMarkdown(view.state.doc)).toContain("$x$");
+
+  fireEvent.doubleClick(result.container.querySelector(".kosh-math-inline")!);
+  expect(result.getByRole("dialog", { name: "Inline math editor" })).toBeInTheDocument();
+  result.rerender(
+    <RichTextEditor ariaLabel="Body" onChange={() => undefined} value="Replacement $y$." />,
+  );
+
+  expect(result.queryByRole("dialog", { name: "Inline math editor" })).toBeNull();
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("Replacement $y$.");
+});
+
 it("does not open or mutate math nodes while disabled", () => {
   const onChange = vi.fn();
   const { container, queryByRole } = render(
