@@ -1379,7 +1379,9 @@ mod tests {
         connection
             .execute_batch(
                 "UPDATE attachment_extractor_config
-                 SET version = '2', updated_at = 40
+                 SET version = '2',
+                     passage_construction_version = 'pdf-page-v2',
+                     updated_at = 40
                  WHERE extractor = 'pdf-text';
                  INSERT INTO attachment_extraction(
                     id, attachment_id, extractor, extractor_version, content_hash,
@@ -1435,8 +1437,12 @@ mod tests {
             1
         );
         connection
-            .execute(
-                "INSERT INTO passage(
+            .execute_batch(
+                "UPDATE attachment_extractor_config
+                 SET passage_construction_version = 'pdf-page-v3',
+                     updated_at = 50
+                 WHERE extractor = 'pdf-text';
+                 INSERT INTO passage(
                     id, attachment_segment_id, owner_kind, ordinal, content,
                     content_hash, locator_kind, locator_json, created_at,
                     construction_version, heading_context_json
@@ -1447,7 +1453,6 @@ mod tests {
                     'The nova_needle supersedes the old extraction.', zeroblob(32),
                     'PDF_PAGE', '{\"page\":8}', 50, 'pdf-page-v3', '[]'
                  )",
-                [],
             )
             .expect("new attachment passage construction");
         let rebuilt = super::search_passages(
@@ -1486,6 +1491,47 @@ mod tests {
         );
 
         connection
+            .execute(
+                "INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009515',
+                    '019f547b-6200-7000-8000-000000009506',
+                    'ATTACHMENT', 0,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 60, 'pdf-page-v1', '[]'
+                 )",
+                [],
+            )
+            .expect("late stale passage builder retry");
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "nova_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search configured passage construction after stale retry")
+            .iter()
+            .map(|result| result.passage_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["019f547b-6200-7000-8000-000000009509"]
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009515",
+            )
+            .expect("resolve stale configured construction citation")
+            .state,
+            crate::database::CitationState::Historical
+        );
+
+        connection
             .execute_batch(
                 "INSERT INTO attachment_extraction(
                     id, attachment_id, extractor, extractor_version, content_hash,
@@ -1493,7 +1539,7 @@ mod tests {
                  ) VALUES(
                     '019f547b-6200-7000-8000-000000009510',
                     '019f547b-6200-7000-8000-000000009501',
-                    'pdf-text', '0', zeroblob(32), 'READY', 60, 60, 60
+                    'pdf-text', '0', zeroblob(32), 'READY', 70, 70, 70
                  );
                  INSERT INTO attachment_segment(
                     id, extraction_id, ordinal, locator_kind, page_number,
@@ -1513,7 +1559,7 @@ mod tests {
                     '019f547b-6200-7000-8000-000000009513',
                     'ATTACHMENT', 0,
                     'The legacy_needle retry must stay historical.', zeroblob(32),
-                    'PDF_PAGE', '{\"page\":9}', 60, 'pdf-page-v0', '[]'
+                    'PDF_PAGE', '{\"page\":9}', 70, 'pdf-page-v0', '[]'
                  );",
             )
             .expect("late stale extractor retry");

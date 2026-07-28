@@ -4,14 +4,21 @@ DROP TABLE passage_fts_word;
 CREATE TABLE attachment_extractor_config (
     extractor TEXT PRIMARY KEY CHECK (length(extractor) > 0),
     version TEXT NOT NULL CHECK (length(version) > 0),
+    passage_construction_version TEXT NOT NULL
+        CHECK (length(passage_construction_version) > 0),
     updated_at INTEGER NOT NULL CHECK (updated_at >= 0)
 ) STRICT;
 
-INSERT INTO attachment_extractor_config(extractor, version, updated_at)
+INSERT INTO attachment_extractor_config(
+    extractor,
+    version,
+    passage_construction_version,
+    updated_at
+)
 VALUES
-    ('ocr', '1', 0),
-    ('pdf-text', '1', 0),
-    ('text', '1', 0);
+    ('ocr', '1', 'ocr-region-v1', 0),
+    ('pdf-text', '1', 'pdf-page-v1', 0),
+    ('text', '1', 'text-lines-v1', 0);
 
 CREATE TRIGGER attachment_extractor_config_identity_prevent_update
 BEFORE UPDATE OF extractor ON attachment_extractor_config
@@ -68,21 +75,8 @@ JOIN attachment
 WHERE passage.owner_kind = 'ATTACHMENT'
   AND passage.content = segment.content
   AND passage.content_hash = segment.content_hash
-  AND passage.construction_version = (
-      SELECT candidate.construction_version
-      FROM passage AS candidate
-      JOIN attachment_segment AS candidate_segment
-        ON candidate_segment.id = candidate.attachment_segment_id
-      WHERE candidate.owner_kind = 'ATTACHMENT'
-        AND candidate_segment.extraction_id = extraction.id
-        AND candidate.content = candidate_segment.content
-        AND candidate.content_hash = candidate_segment.content_hash
-      GROUP BY candidate.construction_version
-      ORDER BY
-          max(candidate.created_at) DESC,
-          candidate.construction_version DESC
-      LIMIT 1
-  );
+  AND passage.construction_version =
+      extractor_config.passage_construction_version;
 
 CREATE VIRTUAL TABLE passage_fts_word USING fts5(
     title,
@@ -320,7 +314,8 @@ BEGIN
 END;
 
 CREATE TRIGGER attachment_extractor_config_search_after_version_update
-AFTER UPDATE OF version ON attachment_extractor_config
+AFTER UPDATE OF version, passage_construction_version
+ON attachment_extractor_config
 BEGIN
     DELETE FROM passage_search_document
     WHERE passage_id IN (
