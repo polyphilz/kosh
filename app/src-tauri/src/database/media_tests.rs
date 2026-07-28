@@ -513,6 +513,70 @@ fn removed_draft_media_remains_authorized_for_undo_until_expiry() {
 }
 
 #[test]
+fn startup_recovery_renews_expired_media_still_referenced_by_a_saved_draft() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 10,
+        orphan_grace_period_ms: 5,
+        ..MediaLimits::default()
+    };
+    let attachment = library.ingest(
+        (0x72b, 0x72c, 0x72d),
+        "recovered.png",
+        "image/png",
+        b"recovered image",
+        11,
+        limits,
+    );
+    let body = format!("{{{{kosh:image:{};width=80%}}}}", attachment.id);
+    library
+        .database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: body,
+                sources: Vec::new(),
+            },
+            now_ms: 12,
+            draft_id: CAPTURE_DRAFT_ID.into(),
+            media_limits: limits,
+        })
+        .expect("save expiring media draft");
+
+    let maintenance = library
+        .database
+        .client()
+        .maintain_media(22, limits)
+        .expect("recover expired draft media");
+    assert_eq!(maintenance.cleanup.retired_attachment_count, 0);
+    assert_eq!(
+        library
+            .database
+            .client()
+            .load_media_payload(attachment.id.clone(), 22, None, 64)
+            .expect("recovered media remains readable")
+            .bytes,
+        b"recovered image"
+    );
+    let main = library.database.open_main_read_only().expect("main reader");
+    assert_eq!(
+        main.query_row(
+            "SELECT lease.state || ':' || lease.expires_at
+             FROM media_ingest_lease AS lease
+             WHERE lease.attachment_id = ?1",
+            params![attachment.id],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("renewed lease"),
+        "COMMITTED:32"
+    );
+}
+
+#[test]
 fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     let library = TestLibrary::new();
     let limits = MediaLimits {
@@ -952,10 +1016,47 @@ fn integrity_scan_reports_missing_corrupt_and_extra_blobs() {
     assert_eq!(report.corrupt_blob_sha256, vec![hex(&first_hash)]);
     assert_eq!(report.extra_blob_sha256, vec![hex(&extra_hash)]);
     assert!(report.orphaned_attachment_ids.is_empty());
+    assert!(!report.diagnostics_truncated);
     assert!(matches!(
         database.client().load_media_payload(first.id, 14, None, 64),
         Err(DatabaseError::Validation { kind: "media", .. })
     ));
+}
+
+#[test]
+fn integrity_scan_batches_work_and_caps_returned_diagnostics() {
+    let root = tempfile::tempdir().expect("bounded integrity root");
+    let paths = DatabasePaths::new(root.path());
+    let database = Database::initialize(paths.clone()).expect("bounded integrity database");
+    let mut main = Connection::open(&paths.main).expect("bounded integrity writer");
+    let transaction = main.transaction().expect("bounded integrity transaction");
+    for index in 0_u64..300 {
+        let attachment_id = id(0x800 + index);
+        let hash = Sha256::digest(index.to_be_bytes());
+        transaction
+            .execute(
+                "INSERT INTO attachment(
+                    id, created_at, updated_at, sha256, display_filename,
+                    media_type, byte_length, kind, extraction_state
+                 ) VALUES(?1, 10, 10, ?2, ?3, 'application/octet-stream', 1,
+                          'BINARY', 'NOT_APPLICABLE')",
+                params![attachment_id, hash.as_slice(), format!("{index}.bin")],
+            )
+            .expect("insert bounded integrity attachment");
+    }
+    transaction.commit().expect("commit bounded integrity rows");
+    drop(main);
+
+    let report = database
+        .client()
+        .media_integrity_report(11)
+        .expect("bounded integrity report");
+    let diagnostic_count = report.missing_blob_attachment_ids.len()
+        + report.corrupt_blob_sha256.len()
+        + report.extra_blob_sha256.len()
+        + report.orphaned_attachment_ids.len();
+    assert_eq!(diagnostic_count, 256);
+    assert!(report.diagnostics_truncated);
 }
 
 fn ingest_direct(

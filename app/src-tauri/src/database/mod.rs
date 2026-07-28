@@ -323,15 +323,43 @@ fn writer_loop(
                     max_response_bytes,
                 ));
             }
-            WriterMessage::MediaIntegrityReport { now_ms, reply } => {
-                let _ = reply.send(media::integrity_report(&main, &media, now_ms));
-            }
-            WriterMessage::MaintainMedia {
-                now_ms,
-                limits,
-                reply,
-            } => {
-                let _ = reply.send(media::maintain_media(&mut main, &mut media, now_ms, limits));
+            WriterMessage::MediaIntegrityReport { scan, reply } => match scan.step(&main, &media) {
+                Ok(media::MediaIntegrityScanStep::Continue(scan)) => {
+                    if let Err(error) =
+                        sender.send(WriterMessage::MediaIntegrityReport { scan, reply })
+                    {
+                        let WriterMessage::MediaIntegrityReport { reply, .. } = error.0 else {
+                            unreachable!("failed message retained its variant");
+                        };
+                        let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                    }
+                }
+                Ok(media::MediaIntegrityScanStep::Complete(report)) => {
+                    let _ = reply.send(Ok(report));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                }
+            },
+            WriterMessage::MaintainMedia { scan, reply } => {
+                match scan.step(&mut main, &mut media) {
+                    Ok(media::MediaMaintenanceScanStep::Continue(scan)) => {
+                        if let Err(error) =
+                            sender.send(WriterMessage::MaintainMedia { scan, reply })
+                        {
+                            let WriterMessage::MaintainMedia { reply, .. } = error.0 else {
+                                unreachable!("failed message retained its variant");
+                            };
+                            let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                        }
+                    }
+                    Ok(media::MediaMaintenanceScanStep::Complete(report)) => {
+                        let _ = reply.send(Ok(report));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
             }
             WriterMessage::RecoverMediaLifecycleBatch {
                 now_ms,

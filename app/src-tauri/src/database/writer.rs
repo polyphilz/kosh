@@ -10,8 +10,9 @@ use super::{
     },
     error::{DatabaseError, Result},
     media::{
-        AttachmentRecord, IngestAttachmentWrite, MediaByteRange, MediaIntegrityReport, MediaLimits,
-        MediaMaintenanceReport, MediaPayload,
+        AttachmentRecord, IngestAttachmentWrite, MediaByteRange, MediaIntegrityReport,
+        MediaIntegrityScan, MediaLimits, MediaMaintenanceReport, MediaMaintenanceScan,
+        MediaPayload,
     },
     migrations::MigrationHeads,
     passages::CitationResolution,
@@ -97,12 +98,11 @@ pub(super) enum WriterMessage {
         reply: SyncSender<Result<MediaPayload>>,
     },
     MediaIntegrityReport {
-        now_ms: i64,
+        scan: MediaIntegrityScan,
         reply: SyncSender<Result<MediaIntegrityReport>>,
     },
     MaintainMedia {
-        now_ms: i64,
-        limits: MediaLimits,
+        scan: MediaMaintenanceScan,
         reply: SyncSender<Result<MediaMaintenanceReport>>,
     },
     RecoverMediaLifecycleBatch {
@@ -228,7 +228,10 @@ impl DatabaseClient {
     pub fn media_integrity_report(&self, now_ms: i64) -> Result<MediaIntegrityReport> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::MediaIntegrityReport { now_ms, reply })
+            .send(WriterMessage::MediaIntegrityReport {
+                scan: MediaIntegrityScan::new(now_ms)?,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
@@ -243,8 +246,7 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::MaintainMedia {
-                now_ms,
-                limits,
+                scan: MediaMaintenanceScan::new(now_ms, limits)?,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;

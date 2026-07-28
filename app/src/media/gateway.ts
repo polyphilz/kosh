@@ -26,6 +26,7 @@ export interface MediaIntegrityReport {
   corruptBlobSha256: string[];
   extraBlobSha256: string[];
   orphanedAttachmentIds: string[];
+  diagnosticsTruncated: boolean;
 }
 
 export interface MediaMaintenanceReport {

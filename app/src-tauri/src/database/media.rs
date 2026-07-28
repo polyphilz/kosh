@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -20,6 +20,9 @@ const MAX_FILENAME_CHARS: usize = 255;
 const MAX_MEDIA_TYPE_BYTES: usize = 127;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const MAX_DIRECT_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
+const INTEGRITY_ATTACHMENT_BATCH_SIZE: u32 = 64;
+const INTEGRITY_BLOB_BATCH_SIZE: u32 = 1;
+const MAX_INTEGRITY_DIAGNOSTICS: usize = 256;
 pub(crate) const MEDIA_RECONCILE_BATCH_SIZE: u32 = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
@@ -262,6 +265,7 @@ pub struct MediaIntegrityReport {
     pub corrupt_blob_sha256: Vec<String>,
     pub extra_blob_sha256: Vec<String>,
     pub orphaned_attachment_ids: Vec<String>,
+    pub diagnostics_truncated: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -278,6 +282,50 @@ pub struct MediaMaintenanceReport {
     pub inspected_at_ms: i64,
     pub integrity: MediaIntegrityReport,
     pub cleanup: MediaCleanupResult,
+}
+
+pub(crate) struct MediaIntegrityScan {
+    now_ms: i64,
+    phase: MediaIntegrityPhase,
+    report: MediaIntegrityReport,
+}
+
+enum MediaIntegrityPhase {
+    Initialize,
+    Attachments {
+        cursor: i64,
+        max_rowid: i64,
+        max_blob_rowid: i64,
+    },
+    Blobs {
+        cursor: i64,
+        max_rowid: i64,
+    },
+}
+
+pub(crate) enum MediaIntegrityScanStep {
+    Continue(MediaIntegrityScan),
+    Complete(MediaIntegrityReport),
+}
+
+pub(crate) struct MediaMaintenanceScan {
+    now_ms: i64,
+    limits: MediaLimits,
+    phase: MediaMaintenancePhase,
+    cleanup: MediaCleanupResult,
+}
+
+enum MediaMaintenancePhase {
+    Lifecycle {
+        cursor: Option<Vec<u8>>,
+        first_batch: bool,
+    },
+    Integrity(MediaIntegrityScan),
+}
+
+pub(crate) enum MediaMaintenanceScanStep {
+    Continue(MediaMaintenanceScan),
+    Complete(MediaMaintenanceReport),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -564,127 +612,314 @@ pub(crate) fn load_media_payload(
     })
 }
 
-pub(crate) fn integrity_report(
-    main: &Connection,
-    media: &Connection,
-    now_ms: i64,
-) -> Result<MediaIntegrityReport> {
-    validate_timestamp(now_ms, "nowMs")?;
-    let attachments = main
-        .prepare(
-            "SELECT
-                attachment.id,
-                attachment.sha256,
-                attachment.deleted_at,
-                EXISTS(
-                    SELECT 1 FROM tidbit_revision_attachment AS membership
-                    WHERE membership.attachment_id = attachment.id
-                ),
-                EXISTS(
-                    SELECT 1 FROM media_ingest_lease AS lease
-                    WHERE lease.attachment_id = attachment.id
-                      AND lease.state = 'COMMITTED'
-                      AND lease.expires_at > ?1
-                )
-             FROM attachment
-             ORDER BY attachment.id",
-        )?
-        .query_map(params![now_ms], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, bool>(3)?,
-                row.get::<_, bool>(4)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let attachment_hashes = attachments
-        .iter()
-        .map(|(_, hash, _, _, _)| hash.clone())
-        .collect::<HashSet<_>>();
-    let blob_rows = media
-        .prepare("SELECT rowid, sha256, byte_length FROM media_blob ORDER BY sha256")?
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let blob_hashes = blob_rows
-        .iter()
-        .map(|(_, hash, _)| hash.clone())
-        .collect::<HashSet<_>>();
-    let leased_blob_hashes = media
-        .prepare("SELECT DISTINCT sha256 FROM media_blob_lease WHERE expires_at > ?1")?
-        .query_map(params![now_ms], |row| row.get::<_, Vec<u8>>(0))?
-        .collect::<std::result::Result<HashSet<_>, _>>()?;
+impl MediaIntegrityScan {
+    pub(crate) fn new(now_ms: i64) -> Result<Self> {
+        validate_timestamp(now_ms, "nowMs")?;
+        Ok(Self {
+            now_ms,
+            phase: MediaIntegrityPhase::Initialize,
+            report: MediaIntegrityReport::default(),
+        })
+    }
 
-    let missing_blob_attachment_ids = attachments
-        .iter()
-        .filter(|(_, hash, deleted_at, referenced, _leased)| {
-            (deleted_at.is_none() || *referenced) && !blob_hashes.contains(hash)
-        })
-        .map(|(id, _, _, _, _)| id.clone())
-        .collect();
-    let orphaned_attachment_ids = attachments
-        .iter()
-        .filter(|(_, _, deleted_at, referenced, leased)| {
-            deleted_at.is_none() && !*referenced && !*leased
-        })
-        .map(|(id, _, _, _, _)| id.clone())
-        .collect();
-    let extra_blob_sha256 = blob_rows
-        .iter()
-        .filter(|(_, hash, _)| {
-            !attachment_hashes.contains(hash) && !leased_blob_hashes.contains(hash)
-        })
-        .map(|(_, hash, _)| hex(hash))
-        .collect();
-    let mut corrupt_blob_sha256 = Vec::new();
-    for (rowid, expected, byte_length) in blob_rows {
-        let mut blob = media.blob_open(MAIN_DB, "media_blob", "bytes", rowid, true)?;
-        let actual_length = i64::try_from(blob.len()).expect("SQLite blob length fits i64");
-        let actual = digest_reader(&mut blob)?;
-        if actual.as_slice() != expected.as_slice() || actual_length != byte_length {
-            corrupt_blob_sha256.push(hex(&expected));
+    pub(crate) fn step(
+        mut self,
+        main: &Connection,
+        media: &Connection,
+    ) -> Result<MediaIntegrityScanStep> {
+        match &self.phase {
+            MediaIntegrityPhase::Initialize => {
+                let max_attachment_rowid = main.query_row(
+                    "SELECT coalesce(max(rowid), 0) FROM attachment",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let max_blob_rowid = media.query_row(
+                    "SELECT coalesce(max(rowid), 0) FROM media_blob",
+                    [],
+                    |row| row.get(0),
+                )?;
+                self.phase = MediaIntegrityPhase::Attachments {
+                    cursor: 0,
+                    max_rowid: max_attachment_rowid,
+                    max_blob_rowid,
+                };
+                Ok(MediaIntegrityScanStep::Continue(self))
+            }
+            MediaIntegrityPhase::Attachments {
+                cursor,
+                max_rowid,
+                max_blob_rowid,
+            } => {
+                let rows = load_integrity_attachment_batch(main, self.now_ms, *cursor, *max_rowid)?;
+                if rows.is_empty() {
+                    self.phase = MediaIntegrityPhase::Blobs {
+                        cursor: 0,
+                        max_rowid: *max_blob_rowid,
+                    };
+                    return Ok(MediaIntegrityScanStep::Continue(self));
+                }
+                for (_, id, hash, deleted_at, referenced, leased) in &rows {
+                    let blob_exists: bool = media.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM media_blob WHERE sha256 = ?1)",
+                        params![hash],
+                        |row| row.get(0),
+                    )?;
+                    if (deleted_at.is_none() || *referenced) && !blob_exists {
+                        record_integrity_finding(
+                            &mut self.report,
+                            IntegrityFinding::MissingBlobAttachment(id.clone()),
+                        );
+                    }
+                    if deleted_at.is_none() && !*referenced && !*leased {
+                        record_integrity_finding(
+                            &mut self.report,
+                            IntegrityFinding::OrphanedAttachment(id.clone()),
+                        );
+                    }
+                }
+                self.phase = MediaIntegrityPhase::Attachments {
+                    cursor: rows.last().expect("nonempty attachment batch").0,
+                    max_rowid: *max_rowid,
+                    max_blob_rowid: *max_blob_rowid,
+                };
+                Ok(MediaIntegrityScanStep::Continue(self))
+            }
+            MediaIntegrityPhase::Blobs { cursor, max_rowid } => {
+                let rows = load_integrity_blob_batch(media, *cursor, *max_rowid)?;
+                if rows.is_empty() {
+                    return Ok(MediaIntegrityScanStep::Complete(self.report));
+                }
+                for (rowid, expected, byte_length) in &rows {
+                    let attachment_exists: bool = main.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM attachment WHERE sha256 = ?1)",
+                        params![expected],
+                        |row| row.get(0),
+                    )?;
+                    let leased: bool = media.query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM media_blob_lease
+                            WHERE sha256 = ?1 AND expires_at > ?2
+                         )",
+                        params![expected, self.now_ms],
+                        |row| row.get(0),
+                    )?;
+                    if !attachment_exists && !leased {
+                        record_integrity_finding(
+                            &mut self.report,
+                            IntegrityFinding::ExtraBlob(hex(expected)),
+                        );
+                    }
+                    let mut blob = media.blob_open(MAIN_DB, "media_blob", "bytes", *rowid, true)?;
+                    let actual_length =
+                        i64::try_from(blob.len()).expect("SQLite blob length fits i64");
+                    let actual = digest_reader(&mut blob)?;
+                    if actual.as_slice() != expected.as_slice() || actual_length != *byte_length {
+                        record_integrity_finding(
+                            &mut self.report,
+                            IntegrityFinding::CorruptBlob(hex(expected)),
+                        );
+                    }
+                }
+                self.phase = MediaIntegrityPhase::Blobs {
+                    cursor: rows.last().expect("nonempty media blob batch").0,
+                    max_rowid: *max_rowid,
+                };
+                Ok(MediaIntegrityScanStep::Continue(self))
+            }
         }
     }
-    Ok(MediaIntegrityReport {
-        missing_blob_attachment_ids,
-        corrupt_blob_sha256,
-        extra_blob_sha256,
-        orphaned_attachment_ids,
-    })
 }
 
-pub(crate) fn maintain_media(
-    main: &mut Connection,
-    media: &mut Connection,
-    now_ms: i64,
-    limits: MediaLimits,
-) -> Result<MediaMaintenanceReport> {
-    validate_timestamp(now_ms, "nowMs")?;
-    let limits = limits.validate()?;
-    let cleanup = recover_media_lifecycle(main, media, now_ms, limits)?;
-    let integrity = integrity_report(main, media, now_ms)?;
-    Ok(MediaMaintenanceReport {
-        inspected_at_ms: now_ms,
-        integrity,
-        cleanup,
-    })
+impl MediaMaintenanceScan {
+    pub(crate) fn new(now_ms: i64, limits: MediaLimits) -> Result<Self> {
+        validate_timestamp(now_ms, "nowMs")?;
+        Ok(Self {
+            now_ms,
+            limits: limits.validate()?,
+            phase: MediaMaintenancePhase::Lifecycle {
+                cursor: None,
+                first_batch: true,
+            },
+            cleanup: MediaCleanupResult::default(),
+        })
+    }
+
+    pub(crate) fn step(
+        mut self,
+        main: &mut Connection,
+        media: &mut Connection,
+    ) -> Result<MediaMaintenanceScanStep> {
+        match &self.phase {
+            MediaMaintenancePhase::Lifecycle {
+                cursor,
+                first_batch,
+            } => {
+                let (cleanup, next_cursor) = reconcile_and_reap_from(
+                    main,
+                    media,
+                    self.now_ms,
+                    self.limits,
+                    cursor.clone(),
+                    false,
+                    *first_batch,
+                )?;
+                accumulate_cleanup(&mut self.cleanup, cleanup)?;
+                if let Some(cursor) = next_cursor {
+                    self.phase = MediaMaintenancePhase::Lifecycle {
+                        cursor: Some(cursor),
+                        first_batch: false,
+                    };
+                } else {
+                    self.phase =
+                        MediaMaintenancePhase::Integrity(MediaIntegrityScan::new(self.now_ms)?);
+                }
+                Ok(MediaMaintenanceScanStep::Continue(self))
+            }
+            MediaMaintenancePhase::Integrity(_) => {
+                let phase = std::mem::replace(
+                    &mut self.phase,
+                    MediaMaintenancePhase::Lifecycle {
+                        cursor: None,
+                        first_batch: false,
+                    },
+                );
+                let MediaMaintenancePhase::Integrity(scan) = phase else {
+                    unreachable!("maintenance phase was checked above");
+                };
+                match scan.step(main, media)? {
+                    MediaIntegrityScanStep::Continue(scan) => {
+                        self.phase = MediaMaintenancePhase::Integrity(scan);
+                        Ok(MediaMaintenanceScanStep::Continue(self))
+                    }
+                    MediaIntegrityScanStep::Complete(integrity) => {
+                        Ok(MediaMaintenanceScanStep::Complete(MediaMaintenanceReport {
+                            inspected_at_ms: self.now_ms,
+                            integrity,
+                            cleanup: self.cleanup,
+                        }))
+                    }
+                }
+            }
+        }
+    }
 }
 
-pub(crate) fn recover_media_lifecycle(
-    main: &mut Connection,
-    media: &mut Connection,
+type IntegrityAttachmentRow = (i64, String, Vec<u8>, Option<i64>, bool, bool);
+
+fn load_integrity_attachment_batch(
+    main: &Connection,
     now_ms: i64,
-    limits: MediaLimits,
-) -> Result<MediaCleanupResult> {
-    validate_timestamp(now_ms, "nowMs")?;
-    reconcile_and_reap(main, media, now_ms, limits.validate()?)
+    after_rowid: i64,
+    max_rowid: i64,
+) -> Result<Vec<IntegrityAttachmentRow>> {
+    let mut statement = main.prepare(
+        "SELECT
+            attachment.rowid,
+            attachment.id,
+            attachment.sha256,
+            attachment.deleted_at,
+            EXISTS(
+                SELECT 1 FROM tidbit_revision_attachment AS membership
+                WHERE membership.attachment_id = attachment.id
+            ),
+            EXISTS(
+                SELECT 1 FROM media_ingest_lease AS lease
+                WHERE lease.attachment_id = attachment.id
+                  AND lease.state = 'COMMITTED'
+                  AND lease.expires_at > ?1
+            )
+         FROM attachment
+         WHERE attachment.rowid > ?2 AND attachment.rowid <= ?3
+         ORDER BY attachment.rowid
+         LIMIT ?4",
+    )?;
+    let rows = statement
+        .query_map(
+            params![
+                now_ms,
+                after_rowid,
+                max_rowid,
+                i64::from(INTEGRITY_ATTACHMENT_BATCH_SIZE)
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+type IntegrityBlobRow = (i64, Vec<u8>, i64);
+
+fn load_integrity_blob_batch(
+    media: &Connection,
+    after_rowid: i64,
+    max_rowid: i64,
+) -> Result<Vec<IntegrityBlobRow>> {
+    let mut statement = media.prepare(
+        "SELECT rowid, sha256, byte_length
+         FROM media_blob
+         WHERE rowid > ?1 AND rowid <= ?2
+         ORDER BY rowid
+         LIMIT ?3",
+    )?;
+    let rows = statement
+        .query_map(
+            params![after_rowid, max_rowid, i64::from(INTEGRITY_BLOB_BATCH_SIZE)],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+enum IntegrityFinding {
+    MissingBlobAttachment(String),
+    CorruptBlob(String),
+    ExtraBlob(String),
+    OrphanedAttachment(String),
+}
+
+fn record_integrity_finding(report: &mut MediaIntegrityReport, finding: IntegrityFinding) {
+    let finding_count = report.missing_blob_attachment_ids.len()
+        + report.corrupt_blob_sha256.len()
+        + report.extra_blob_sha256.len()
+        + report.orphaned_attachment_ids.len();
+    if finding_count >= MAX_INTEGRITY_DIAGNOSTICS {
+        report.diagnostics_truncated = true;
+        return;
+    }
+    match finding {
+        IntegrityFinding::MissingBlobAttachment(id) => {
+            report.missing_blob_attachment_ids.push(id);
+        }
+        IntegrityFinding::CorruptBlob(hash) => report.corrupt_blob_sha256.push(hash),
+        IntegrityFinding::ExtraBlob(hash) => report.extra_blob_sha256.push(hash),
+        IntegrityFinding::OrphanedAttachment(id) => report.orphaned_attachment_ids.push(id),
+    }
+}
+
+fn accumulate_cleanup(total: &mut MediaCleanupResult, increment: MediaCleanupResult) -> Result<()> {
+    total.retired_attachment_count = total
+        .retired_attachment_count
+        .checked_add(increment.retired_attachment_count)
+        .ok_or_else(|| DatabaseError::InvalidInput("retired attachment count overflow".into()))?;
+    total.deleted_blob_count = total
+        .deleted_blob_count
+        .checked_add(increment.deleted_blob_count)
+        .ok_or_else(|| DatabaseError::InvalidInput("deleted media count overflow".into()))?;
+    total.reclaimed_bytes = total
+        .reclaimed_bytes
+        .checked_add(increment.reclaimed_bytes)
+        .ok_or_else(|| DatabaseError::InvalidInput("reclaimed media byte count overflow".into()))?;
+    Ok(())
 }
 
 pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference> {
@@ -1060,16 +1295,6 @@ fn validate_draft_capacity(
     Ok(())
 }
 
-fn reconcile_and_reap(
-    main: &mut Connection,
-    media: &mut Connection,
-    now_ms: i64,
-    limits: MediaLimits,
-) -> Result<MediaCleanupResult> {
-    let (cleanup, _) = reconcile_and_reap_from(main, media, now_ms, limits, None, true, true)?;
-    Ok(cleanup)
-}
-
 pub(crate) fn recover_media_lifecycle_batch(
     main: &mut Connection,
     media: &mut Connection,
@@ -1096,6 +1321,35 @@ fn reconcile_and_reap_from(
 ) -> Result<(MediaCleanupResult, Option<Vec<u8>>)> {
     let retired_attachment_count = if run_lifecycle_work {
         let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let renewed_expiry = checked_timestamp_add(
+            now_ms,
+            limits.draft_lease_duration_ms,
+            "recovered draft media lease renewal",
+        )?;
+        transaction.execute(
+            "UPDATE media_ingest_lease
+             SET expires_at = max(expires_at, ?1)
+             WHERE state = 'COMMITTED'
+               AND expires_at <= ?2
+               AND attachment_id IS NOT NULL
+               AND EXISTS (
+                    SELECT 1
+                    FROM draft_media_lease AS draft_lease
+                    JOIN draft ON draft.id = draft_lease.draft_id
+                    WHERE draft_lease.media_ingest_lease_id = media_ingest_lease.id
+                      AND (
+                           instr(
+                               draft.body_markdown,
+                               '{{kosh:attachment:' || media_ingest_lease.attachment_id || '}}'
+                           ) > 0
+                           OR instr(
+                               draft.body_markdown,
+                               '{{kosh:image:' || media_ingest_lease.attachment_id || ';width='
+                           ) > 0
+                      )
+               )",
+            params![renewed_expiry, now_ms],
+        )?;
         transaction.execute(
             "UPDATE media_ingest_lease
          SET state = 'ABANDONED', expires_at = min(expires_at, ?1)
