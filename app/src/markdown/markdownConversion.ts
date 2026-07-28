@@ -2,6 +2,7 @@ import type {
   BlockContent,
   Break,
   Content,
+  Definition,
   DefinitionContent,
   ListItem,
   PhrasingContent,
@@ -49,16 +50,32 @@ export function parseKoshMarkdownAst(source: string): Root {
 
 export function parseKoshMarkdown(source: string, schema: Schema): ProseMirrorNode {
   const tree = parseKoshMarkdownAst(source);
-  const definitions = new Map(
-    tree.children
-      .filter((node) => node.type === "definition")
-      .map((definition) => [
-        definition.identifier.toLowerCase(),
-        { title: definition.title ?? null, url: definition.url },
-      ]),
-  );
+  const definitions = new Map<string, MarkdownDefinition>();
+  for (const node of tree.children) {
+    if (node.type === "definition" && !definitions.has(node.identifier.toLowerCase())) {
+      definitions.set(node.identifier.toLowerCase(), {
+        node,
+        title: node.title ?? null,
+        url: node.url,
+      });
+    }
+  }
+  const context: MarkdownContext = {
+    consumedDefinitions: new Set(),
+    definitions,
+  };
+  const converted = new Map<RootContent, ProseMirrorNode[]>();
+  for (const node of tree.children) {
+    if (node.type !== "definition") {
+      converted.set(node, blockFromMarkdown(node, source, schema, context));
+    }
+  }
   const blocks = tree.children.flatMap((node) =>
-    node.type === "definition" ? [] : blockFromMarkdown(node, source, schema, definitions),
+    node.type === "definition"
+      ? context.consumedDefinitions.has(node)
+        ? []
+        : [definitionFromMarkdown(node, schema)]
+      : (converted.get(node) ?? []),
   );
   return schema.topNodeType.createAndFill(null, blocks.length ? blocks : null)!;
 }
@@ -75,28 +92,28 @@ function blockFromMarkdown(
   node: RootContent | DefinitionContent,
   source: string,
   schema: Schema,
-  definitions: MarkdownDefinitions,
+  context: MarkdownContext,
 ): ProseMirrorNode[] {
   switch (node.type) {
     case "paragraph":
       return [
         schema.nodes.paragraph!.create(
           null,
-          inlineFromMarkdown(node.children, source, schema, definitions),
+          inlineFromMarkdown(node.children, source, schema, context),
         ),
       ];
     case "heading":
       return [
         schema.nodes.heading!.create(
           { level: node.depth },
-          inlineFromMarkdown(node.children, source, schema, definitions),
+          inlineFromMarkdown(node.children, source, schema, context),
         ),
       ];
     case "blockquote":
       return [
         schema.nodes.blockquote!.create(
           null,
-          node.children.flatMap((child) => blockFromMarkdown(child, source, schema, definitions)),
+          node.children.flatMap((child) => blockFromMarkdown(child, source, schema, context)),
         ),
       ];
     case "thematicBreak":
@@ -115,19 +132,28 @@ function blockFromMarkdown(
       return [
         type.create(
           node.ordered ? { order: node.start ?? 1 } : null,
-          node.children.map((item) => listItemFromMarkdown(item, source, schema, definitions)),
+          node.children.map((item) => listItemFromMarkdown(item, source, schema, context)),
         ),
       ];
     }
     case "table":
-      return [tableFromMarkdown(node, source, schema, definitions)];
+      return [tableFromMarkdown(node, source, schema, context)];
     case "html":
       return [schema.nodes.paragraph!.create(null, schema.text(node.value))];
     case "definition":
-      return fallbackBlock(node, source, schema);
+      return [definitionFromMarkdown(node, schema)];
     default:
       return fallbackBlock(node, source, schema);
   }
+}
+
+function definitionFromMarkdown(definition: Definition, schema: Schema): ProseMirrorNode {
+  return schema.nodes.markdown_definition!.create({
+    identifier: definition.identifier,
+    label: definition.label ?? definition.identifier,
+    title: definition.title ?? null,
+    url: definition.url,
+  });
 }
 
 function canonicalCodeLanguage(label: string | null | undefined): string | null {
@@ -139,10 +165,10 @@ function listItemFromMarkdown(
   item: ListItem,
   source: string,
   schema: Schema,
-  definitions: MarkdownDefinitions,
+  context: MarkdownContext,
 ): ProseMirrorNode {
   const blocks = item.children.flatMap((child) =>
-    blockFromMarkdown(child, source, schema, definitions),
+    blockFromMarkdown(child, source, schema, context),
   );
   return schema.nodes.list_item!.create(
     { checked: item.checked ?? null },
@@ -154,7 +180,7 @@ function tableFromMarkdown(
   table: Table,
   source: string,
   schema: Schema,
-  definitions: MarkdownDefinitions,
+  context: MarkdownContext,
 ): ProseMirrorNode {
   return schema.nodes.table!.create(
     null,
@@ -168,7 +194,7 @@ function tableFromMarkdown(
             table.align?.[columnIndex] ?? null,
             source,
             schema,
-            definitions,
+            context,
           ),
         ),
       ),
@@ -182,14 +208,14 @@ function tableCellFromMarkdown(
   align: "center" | "left" | "right" | null,
   source: string,
   schema: Schema,
-  definitions: MarkdownDefinitions,
+  context: MarkdownContext,
 ): ProseMirrorNode {
   const type = header ? schema.nodes.table_header! : schema.nodes.table_cell!;
   return type.createAndFill(
     { align },
     schema.nodes.paragraph!.create(
       null,
-      inlineFromMarkdown(cell.children, source, schema, definitions),
+      inlineFromMarkdown(cell.children, source, schema, context),
     ),
   )!;
 }
@@ -198,7 +224,7 @@ function inlineFromMarkdown(
   children: readonly PhrasingContent[],
   source: string,
   schema: Schema,
-  definitions: MarkdownDefinitions,
+  context: MarkdownContext,
   marks: readonly Mark[] = [],
 ): ProseMirrorNode[] {
   return children.flatMap((node) => {
@@ -206,24 +232,24 @@ function inlineFromMarkdown(
       case "text":
         return node.value ? [schema.text(node.value, marks)] : [];
       case "emphasis":
-        return inlineFromMarkdown(node.children, source, schema, definitions, [
+        return inlineFromMarkdown(node.children, source, schema, context, [
           ...marks,
           schema.marks.em!.create(),
         ]);
       case "strong":
-        return inlineFromMarkdown(node.children, source, schema, definitions, [
+        return inlineFromMarkdown(node.children, source, schema, context, [
           ...marks,
           schema.marks.strong!.create(),
         ]);
       case "delete":
-        return inlineFromMarkdown(node.children, source, schema, definitions, [
+        return inlineFromMarkdown(node.children, source, schema, context, [
           ...marks,
           schema.marks.strike!.create(),
         ]);
       case "link": {
         const href = externalHttpUrl(node.url);
         return href
-          ? inlineFromMarkdown(node.children, source, schema, definitions, [
+          ? inlineFromMarkdown(node.children, source, schema, context, [
               ...marks,
               schema.marks.link!.create({ href, title: node.title ?? null }),
             ])
@@ -236,14 +262,16 @@ function inlineFromMarkdown(
       case "break":
         return [schema.nodes.hard_break!.create(null, null, marks)];
       case "linkReference": {
-        const definition = definitions.get(node.identifier.toLowerCase());
+        const definition = context.definitions.get(node.identifier.toLowerCase());
         const href = externalHttpUrl(definition?.url);
-        return definition && href
-          ? inlineFromMarkdown(node.children, source, schema, definitions, [
-              ...marks,
-              schema.marks.link!.create({ href, title: definition.title }),
-            ])
-          : literalInlineNode(node, source, schema, marks);
+        if (!definition || !href) {
+          return literalInlineNode(node, source, schema, marks);
+        }
+        context.consumedDefinitions.add(definition.node);
+        return inlineFromMarkdown(node.children, source, schema, context, [
+          ...marks,
+          schema.marks.link!.create({ href, title: definition.title }),
+        ]);
       }
       case "html":
         return node.value ? [schema.text(node.value, marks)] : [];
@@ -257,11 +285,15 @@ function inlineFromMarkdown(
 }
 
 interface MarkdownDefinition {
+  node: Definition;
   title: string | null;
   url: string;
 }
 
-type MarkdownDefinitions = ReadonlyMap<string, MarkdownDefinition>;
+interface MarkdownContext {
+  consumedDefinitions: Set<Definition>;
+  definitions: ReadonlyMap<string, MarkdownDefinition>;
+}
 
 function literalInlineNode(
   node: PhrasingContent,
@@ -331,6 +363,16 @@ function blockToMarkdown(node: ProseMirrorNode): Array<BlockContent | Definition
       ];
     case "math_display":
       return [{ type: "math", value: node.attrs.formula } as BlockContent];
+    case "markdown_definition":
+      return [
+        {
+          type: "definition",
+          identifier: node.attrs.identifier,
+          label: node.attrs.label,
+          title: node.attrs.title ?? null,
+          url: node.attrs.url,
+        },
+      ];
     case "ordered_list":
     case "bullet_list":
       return [

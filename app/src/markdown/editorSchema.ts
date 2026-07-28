@@ -55,7 +55,70 @@ const taskListItem: NodeSpec = {
     const checked = node.attrs.checked as boolean | null;
     return checked === null
       ? ["li", 0]
-      : ["li", { "data-checked": String(checked), "data-task-item": "true" }, 0];
+      : [
+          "li",
+          {
+            class: "kosh-task-list-item",
+            "data-checked": String(checked),
+            "data-task-item": "true",
+          },
+          [
+            "input",
+            {
+              "aria-label": checked ? "Mark task incomplete" : "Mark task complete",
+              checked: checked ? "checked" : undefined,
+              class: "kosh-task-list-item__checkbox",
+              contenteditable: "false",
+              type: "checkbox",
+            },
+          ],
+          ["div", { class: "kosh-task-list-item__content" }, 0],
+        ];
+  },
+};
+
+const markdownDefinition: NodeSpec = {
+  atom: true,
+  attrs: {
+    identifier: { validate: "string" },
+    label: { validate: "string" },
+    title: { default: null, validate: "string|null" },
+    url: { validate: "string" },
+  },
+  group: "block",
+  parseDOM: [
+    {
+      tag: "div[data-kosh-markdown-definition]",
+      getAttrs(dom) {
+        const element = dom as HTMLElement;
+        return {
+          identifier: element.dataset.identifier ?? "",
+          label: element.dataset.label ?? "",
+          title: element.hasAttribute("data-title") ? (element.dataset.title ?? "") : null,
+          url: element.dataset.url ?? "",
+        };
+      },
+    },
+  ],
+  selectable: true,
+  toDOM(node): DOMOutputSpec {
+    const label = node.attrs.label as string;
+    const title = node.attrs.title as string | null;
+    const url = node.attrs.url as string;
+    return [
+      "div",
+      {
+        "aria-label": `Markdown link definition ${label}`,
+        class: "kosh-markdown-definition",
+        contenteditable: "false",
+        "data-identifier": node.attrs.identifier,
+        "data-kosh-markdown-definition": "true",
+        "data-label": label,
+        "data-title": title,
+        "data-url": url,
+      },
+      `[${label}]: ${url}${title ? ` "${title}"` : ""}`,
+    ];
   },
 };
 
@@ -172,6 +235,7 @@ nodes = nodes.append(
 );
 nodes = nodes.addBefore("text", "math_inline", mathInline);
 nodes = nodes.addBefore("text", "math_display", mathDisplay);
+nodes = nodes.addBefore("text", "markdown_definition", markdownDefinition);
 
 export const koshEditorSchema = new Schema({
   marks: basicSchema.spec.marks.update("link", safeLink).append({ strike }),

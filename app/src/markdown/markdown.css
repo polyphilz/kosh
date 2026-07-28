@@ -139,6 +139,33 @@
   padding-left: 24px;
 }
 
+.kosh-rich-text-content .kosh-task-list-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  list-style: none;
+}
+
+.kosh-task-list-item__checkbox {
+  width: 15px;
+  height: 15px;
+  margin: 0.5em 0 0;
+  accent-color: var(--accent);
+}
+
+.kosh-task-list-item__content {
+  min-width: 0;
+}
+
+.kosh-task-list-item__content > :first-child {
+  margin-top: 0;
+}
+
+.kosh-task-list-item__content > :last-child {
+  margin-bottom: 0;
+}
+
 .kosh-rich-text-content code {
   border-radius: 4px;
   background: color-mix(in srgb, var(--line) 55%, transparent);
@@ -162,6 +189,16 @@
 
 .kosh-rich-text-content pre code {
   background: transparent;
+}
+
+.kosh-rich-text-content .kosh-markdown-definition {
+  margin: 0.55em 0;
+  padding: 7px 9px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  font: 12px/1.5 var(--font-family-app);
 }
 
 .kosh-rich-text-content .kosh-code-block-editor {

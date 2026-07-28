@@ -53,6 +53,7 @@ import { codeLanguageDefinitions, codeLanguageDisplayName } from "./languages";
 import { parseKoshMarkdown, serializeKoshMarkdown } from "./markdownConversion";
 import { externalHttpUrl } from "./urlPolicy";
 import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
+import { taskListItemNodeView } from "./TaskListItemNodeView";
 
 export interface RichTextEditorHandle {
   focus: () => void;
@@ -149,6 +150,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
         },
         editable: () => !disabledRef.current,
         nodeViews: {
+          list_item: taskListItemNodeView,
           math_display: (node, editorView, getPos) =>
             mathNodeView(node, editorView, getPos, openMathDialogRef.current),
           math_inline: (node, editorView, getPos) =>

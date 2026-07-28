@@ -11,7 +11,7 @@ import { tags } from "@lezer/highlight";
 import { exitCode } from "prosemirror-commands";
 import { redo, undo } from "prosemirror-history";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
-import { AllSelection, Selection, TextSelection } from "prosemirror-state";
+import { AllSelection, Selection, TextSelection, type Command } from "prosemirror-state";
 import type { EditorView, NodeView } from "prosemirror-view";
 import { codeLanguageDisplayName } from "./languages";
 import { KOSH_EDITOR_EDITABLE_EVENT } from "./editorEvents";
@@ -250,6 +250,9 @@ class CodeBlockView implements NodeView {
       {
         key: "Ctrl-Enter",
         run: () => {
+          if (!this.outerView.editable) {
+            return true;
+          }
           if (!exitCode(this.outerView.state, this.outerView.dispatch)) {
             return false;
           }
@@ -261,17 +264,23 @@ class CodeBlockView implements NodeView {
       { key: "Alt-F10", run: () => this.focusToolbar() },
       {
         key: "Mod-z",
-        run: () => undo(this.outerView.state, this.outerView.dispatch),
+        run: () => this.runOuterCommand(undo),
       },
       {
         key: "Mod-Shift-z",
-        run: () => redo(this.outerView.state, this.outerView.dispatch),
+        run: () => this.runOuterCommand(redo),
       },
       {
         key: "Mod-y",
-        run: () => redo(this.outerView.state, this.outerView.dispatch),
+        run: () => this.runOuterCommand(redo),
       },
     ];
+  }
+
+  private runOuterCommand(command: Command): boolean {
+    return this.outerView.editable
+      ? command(this.outerView.state, this.outerView.dispatch, this.outerView)
+      : true;
   }
 
   private selectAll(): boolean {

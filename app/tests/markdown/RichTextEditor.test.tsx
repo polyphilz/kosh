@@ -43,6 +43,23 @@ it("parses every supported construct and serializes one stable spelling", () => 
   expect(canonical).toContain("$$\nE = mc^2\n$$");
 });
 
+it("canonicalizes consumed link definitions without dropping unused definitions", () => {
+  const source = [
+    "Read [the docs][docs].",
+    "",
+    "[docs]: https://example.com/guide",
+    "[unused]: https://unused.example/reference",
+  ].join("\n");
+
+  const canonical = serializeKoshMarkdown(parseKoshMarkdown(source, koshEditorSchema));
+
+  expect(canonical).toContain("[the docs](https://example.com/guide)");
+  expect(canonical).not.toContain("[docs]:");
+  expect(canonical).toContain("unused");
+  expect(canonical).toContain("https://unused.example/reference");
+  expect(serializeKoshMarkdown(parseKoshMarkdown(canonical, koshEditorSchema))).toBe(canonical);
+});
+
 it("starts with the controlled value and reports canonical document changes", () => {
   const onChange = vi.fn();
   const { getByRole } = render(
@@ -271,6 +288,14 @@ it("propagates disabled changes into an existing CodeMirror node view", async ()
   );
   const view = editorView(result.getByRole("textbox", { name: "Body" }));
   const codeView = await embeddedCodeView(result.container);
+  act(() => {
+    codeView.focus();
+    codeView.dispatch({
+      changes: { from: codeView.state.doc.length, insert: "\ncommitted edit" },
+    });
+  });
+  expect(serializeKoshMarkdown(view.state.doc)).toContain("committed edit");
+  onChange.mockClear();
 
   result.rerender(
     <RichTextEditor
@@ -283,6 +308,13 @@ it("propagates disabled changes into an existing CodeMirror node view", async ()
 
   expect(codeView.state.readOnly).toBe(true);
   expect(codeView.contentDOM).toHaveAttribute("contenteditable", "false");
+  const childCount = view.state.doc.childCount;
+  expect(fireEvent.keyDown(codeView.contentDOM, { key: "z", metaKey: true })).toBe(false);
+  expect(fireEvent.keyDown(codeView.contentDOM, { ctrlKey: true, key: "Enter" })).toBe(false);
+  expect(serializeKoshMarkdown(view.state.doc)).toContain("committed edit");
+  expect(view.state.doc.childCount).toBe(childCount);
+  expect(onChange).not.toHaveBeenCalled();
+
   act(() => {
     codeView.focus();
     codeView.dispatch({
@@ -291,6 +323,20 @@ it("propagates disabled changes into an existing CodeMirror node view", async ()
   });
   expect(serializeKoshMarkdown(view.state.doc)).not.toContain("unsafe edit");
   expect(onChange).not.toHaveBeenCalled();
+});
+
+it("renders and toggles task state through accessible editor controls", () => {
+  const { getAllByRole, view } = controlledEditor("- [x] done\n- [ ] later");
+  const checkboxes = getAllByRole("checkbox");
+
+  expect(checkboxes).toHaveLength(2);
+  expect(checkboxes[0]).toBeChecked();
+  expect(checkboxes[1]).not.toBeChecked();
+
+  fireEvent.click(checkboxes[0]!);
+  fireEvent.click(checkboxes[1]!);
+
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("- [ ] done\n- [x] later");
 });
 
 it("prevents table toolbar commands from creating unserializable cell blocks", () => {
