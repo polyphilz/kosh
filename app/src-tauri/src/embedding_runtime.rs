@@ -642,7 +642,6 @@ fn prepare_and_verify(
     if allow_cached_verification && candidate_artifact_path.is_file() {
         match build_verification_receipt(inner, candidate_artifact_path, sidecar_path) {
             Ok(expected) if verification_receipt_matches(&inner.data_root, &expected) => {
-                sweep_stale_sidecar(&inner.data_root, sidecar_path, candidate_artifact_path);
                 update_status(inner, |status| {
                     status.phase = SemanticRuntimePhase::Verifying;
                     status.downloaded_bytes = inner.contract.manifest.config.model_file_size;
@@ -2530,6 +2529,58 @@ mod tests {
         assert_eq!(idle.phase, SemanticRuntimePhase::Ready);
         assert!(idle.verified);
         assert!(!idle.runtime_running);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_preparation_preserves_the_runtime_owned_live_sidecar() {
+        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+
+        let directory = tempfile::tempdir().expect("cached runtime directory");
+        let model_path = directory.path().join("model.gguf");
+        let sidecar_path = directory.path().join("llama-server");
+        fs::write(&model_path, b"0123456789").expect("model fixture");
+        fs::write(&sidecar_path, b"#!/bin/sh\nsleep 30\n").expect("sidecar fixture");
+        let mut permissions = sidecar_path
+            .metadata()
+            .expect("sidecar metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&sidecar_path, permissions).expect("executable sidecar");
+        let runtime = EmbeddingRuntime::start(test_configuration(
+            directory.path(),
+            Some(sidecar_path.clone()),
+            Some(model_path.clone()),
+            test_contract(b"0123456789", "http://127.0.0.1:1/model".into()),
+            Duration::from_secs(60),
+        ));
+        let receipt = build_verification_receipt(&runtime.inner, &model_path, &sidecar_path)
+            .expect("verification receipt");
+        write_verification_receipt(directory.path(), &receipt).expect("receipt write");
+
+        let mut command = Command::new(&sidecar_path);
+        command.arg("--model").arg(&model_path).process_group(0);
+        let child = command.spawn().expect("owned sidecar process");
+        let pid = child.id();
+        write_pidfile(directory.path(), pid, &sidecar_path, &model_path).expect("sidecar PID file");
+        *lock(&runtime.inner.runtime) = SidecarRuntime {
+            child: Some(child),
+            endpoint: Some("http://127.0.0.1:1".into()),
+            model_path: Some(model_path.clone()),
+            model_fingerprint: Some(receipt.model),
+            sidecar_fingerprint: Some(receipt.sidecar),
+            last_used: Some(Instant::now()),
+            log_threads: Vec::new(),
+        };
+
+        let prepared = runtime.prepare().expect("cached preparation");
+
+        assert!(prepared.runtime_running);
+        assert_eq!(
+            lock(&runtime.inner.runtime).child.as_ref().map(Child::id),
+            Some(pid)
+        );
+        assert!(process_exists(pid as i32));
     }
 
     #[cfg(unix)]
