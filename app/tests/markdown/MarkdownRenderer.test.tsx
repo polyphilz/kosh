@@ -97,9 +97,14 @@ it("opens validated HTTP links only through the caller-owned handler", () => {
   );
   const link = getByRole("link", { name: "Open docs" });
 
-  expect(fireEvent.click(link)).toBe(false);
+  expect(fireEvent.click(link)).toBe(true);
   expect(onOpenExternalUrl).toHaveBeenCalledWith("https://example.com/docs?q=kosh");
+  expect(link).not.toHaveAttribute("href");
   expect(link).not.toHaveAttribute("target");
+
+  fireEvent(link, new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+  fireEvent.contextMenu(link);
+  expect(onOpenExternalUrl).toHaveBeenCalledOnce();
 });
 
 it("renders valid links inertly when no app-owned opener is supplied", () => {

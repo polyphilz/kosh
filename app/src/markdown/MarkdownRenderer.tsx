@@ -1,11 +1,4 @@
-import {
-  Children,
-  Component,
-  useMemo,
-  type ErrorInfo,
-  type MouseEvent,
-  type ReactNode,
-} from "react";
+import { Children, Component, useMemo, type ErrorInfo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { rehypePlugins, remarkPlugins } from "./rendererConfig";
 import { externalHttpUrl, markdownUrlTransform } from "./urlPolicy";
@@ -43,16 +36,21 @@ function rendererComponents(
       if (!url || !onOpenExternalUrl) {
         return <span className="kosh-markdown__inert-link">{children}</span>;
       }
-      const openLink = (event: MouseEvent<HTMLAnchorElement>) => {
-        event.preventDefault();
+      const openLink = () => {
         Promise.resolve(onOpenExternalUrl(url)).catch((error: unknown) => {
           console.error("Could not open external Markdown link", error);
         });
       };
       return (
-        <a href={url} onClick={openLink} rel="noopener noreferrer">
+        <button
+          className="kosh-markdown__external-link"
+          onClick={openLink}
+          role="link"
+          title={url}
+          type="button"
+        >
           {children}
-        </a>
+        </button>
       );
     },
     img({ alt }) {

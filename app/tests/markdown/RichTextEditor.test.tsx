@@ -1,5 +1,6 @@
 import { EditorView as CodeMirrorView } from "@codemirror/view";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { StrictMode, createRef } from "react";
 import { TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
@@ -100,7 +101,7 @@ it("applies toolbar and keyboard formatting while retaining editor focus", () =>
     view.focus();
   });
 
-  fireEvent.mouseDown(getByRole("button", { name: "Bold" }));
+  fireEvent.click(getByRole("button", { name: "Bold" }));
   fireEvent.keyDown(textbox, { key: "i", metaKey: true });
 
   const canonical = serializeKoshMarkdown(view.state.doc);
@@ -108,12 +109,25 @@ it("applies toolbar and keyboard formatting while retaining editor focus", () =>
   expect(document.activeElement).toBe(textbox);
 });
 
+it("activates toolbar buttons through the keyboard click path", async () => {
+  const user = userEvent.setup();
+  const { getByRole, view } = controlledEditor("word");
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 5)));
+  });
+
+  getByRole("button", { name: "Bold" }).focus();
+  await user.keyboard("{Enter}");
+
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("**word**");
+});
+
 it("validates links and serializes only absolute HTTP destinations", () => {
   const { getByRole, view } = controlledEditor("word");
   act(() => {
     view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 5)));
   });
-  fireEvent.mouseDown(getByRole("button", { name: "Link" }));
+  fireEvent.click(getByRole("button", { name: "Link" }));
   const input = getByRole("textbox", { name: "Link URL" });
   fireEvent.change(input, { target: { value: "javascript:alert(1)" } });
   fireEvent.click(getByRole("button", { name: "Apply" }));
@@ -126,7 +140,7 @@ it("validates links and serializes only absolute HTTP destinations", () => {
 
 it("treats clearing a link at an unlinked cursor as a safe no-op", () => {
   const { getByRole, view } = controlledEditor("word");
-  fireEvent.mouseDown(getByRole("button", { name: "Link" }));
+  fireEvent.click(getByRole("button", { name: "Link" }));
   fireEvent.change(getByRole("textbox", { name: "Link URL" }), {
     target: { value: "" },
   });
@@ -141,7 +155,7 @@ it("updates the complete link mark when editing at a collapsed cursor", () => {
   act(() => {
     view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 3)));
   });
-  fireEvent.mouseDown(getByRole("button", { name: "Link" }));
+  fireEvent.click(getByRole("button", { name: "Link" }));
   const input = getByRole("textbox", { name: "Link URL" });
   expect(input).toHaveValue("https://old.example/");
   fireEvent.change(input, { target: { value: "https://new.example/path" } });
@@ -157,7 +171,7 @@ it("inserts and renders inline math from the editor-owned dialog", () => {
     view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
   });
 
-  fireEvent.mouseDown(getByRole("button", { name: "Inline math" }));
+  fireEvent.click(getByRole("button", { name: "Inline math" }));
   const formula = getByRole("textbox", { name: "Formula" });
   fireEvent.change(formula, { target: { value: "E = mc^2" } });
   expect(
@@ -238,10 +252,14 @@ it("propagates disabled changes into an existing CodeMirror node view", async ()
 });
 
 it("prevents table toolbar commands from creating unserializable cell blocks", () => {
-  const { getByRole } = controlledEditor("| Heading |\n| ------- |\n| cell    |");
+  const { getByRole, textbox, view } = controlledEditor("| Heading |\n| ------- |\n| cell    |");
 
   expect(getByRole("button", { name: "Bulleted list" })).toBeDisabled();
   expect(getByRole("button", { name: "Block quote" })).toBeDisabled();
+
+  const before = serializeKoshMarkdown(view.state.doc);
+  expect(fireEvent.keyDown(textbox, { key: "Enter", shiftKey: true })).toBe(false);
+  expect(serializeKoshMarkdown(view.state.doc)).toBe(before);
 });
 
 it("handles large plain-text paste, undo, and redo as editor transactions", () => {

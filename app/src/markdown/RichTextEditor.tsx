@@ -371,6 +371,9 @@ function arrowIntoCodeBlock(direction: "down" | "left" | "right" | "up"): Comman
 
 function insertHardBreak(): Command {
   return (state, dispatch) => {
+    if (ancestorIsActive(state, "table_cell") || ancestorIsActive(state, "table_header")) {
+      return true;
+    }
     const hardBreak = state.schema.nodes.hard_break;
     if (!hardBreak) {
       return false;
@@ -574,7 +577,6 @@ function ToolbarButton({
 }) {
   const handleMouseDown = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    onPress();
   };
   return (
     <Button
@@ -587,6 +589,7 @@ function ToolbarButton({
           : "kosh-rich-text-toolbar__button"
       }
       disabled={disabled}
+      onClick={onPress}
       onMouseDown={handleMouseDown}
       size="compact"
       tabIndex={-1}

@@ -339,12 +339,24 @@
   border-top: 1px solid var(--line);
 }
 
-.kosh-markdown a {
+.kosh-markdown a,
+.kosh-markdown__external-link {
   color: var(--accent);
   text-underline-offset: 0.14em;
 }
 
-.kosh-markdown a:focus-visible {
+.kosh-markdown__external-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.kosh-markdown a:focus-visible,
+.kosh-markdown__external-link:focus-visible {
   outline: 3px solid var(--accent-soft);
   outline-offset: 2px;
   border-radius: 2px;
