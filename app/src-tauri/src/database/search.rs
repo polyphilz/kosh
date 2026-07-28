@@ -1378,7 +1378,10 @@ mod tests {
 
         connection
             .execute_batch(
-                "INSERT INTO attachment_extraction(
+                "UPDATE attachment_extractor_config
+                 SET version = '2', updated_at = 40
+                 WHERE extractor = 'pdf-text';
+                 INSERT INTO attachment_extraction(
                     id, attachment_id, extractor, extractor_version, content_hash,
                     status, created_at, started_at, completed_at
                  ) VALUES(
@@ -1478,6 +1481,73 @@ mod tests {
                 "019f547b-6200-7000-8000-000000009504",
             )
             .expect("resolve stale extraction citation")
+            .state,
+            crate::database::CitationState::Historical
+        );
+
+        connection
+            .execute_batch(
+                "INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, created_at, started_at, completed_at
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009510',
+                    '019f547b-6200-7000-8000-000000009501',
+                    'pdf-text', '0', zeroblob(32), 'READY', 60, 60, 60
+                 );
+                 INSERT INTO attachment_segment(
+                    id, extraction_id, ordinal, locator_kind, page_number,
+                    content, content_hash
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009513',
+                    '019f547b-6200-7000-8000-000000009510',
+                    0, 'PDF_PAGE', 9,
+                    'The legacy_needle retry must stay historical.', zeroblob(32)
+                 );
+                 INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009514',
+                    '019f547b-6200-7000-8000-000000009513',
+                    'ATTACHMENT', 0,
+                    'The legacy_needle retry must stay historical.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":9}', 60, 'pdf-page-v0', '[]'
+                 );",
+            )
+            .expect("late stale extractor retry");
+        assert!(super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "legacy_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search stale configured extractor version")
+        .is_empty());
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "nova_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search configured extractor version after stale retry")
+            .iter()
+            .map(|result| result.passage_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["019f547b-6200-7000-8000-000000009509"]
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009514",
+            )
+            .expect("resolve stale configured extractor citation")
             .state,
             crate::database::CitationState::Historical
         );

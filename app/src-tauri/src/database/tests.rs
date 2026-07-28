@@ -875,7 +875,7 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
          ) VALUES(
             '019f547b-6200-7000-8000-000000000503',
             '019f547b-6200-7000-8000-000000000502',
-            'AUTHOR', 0, 'recoverable lexical evidence', zeroblob(32),
+            'AUTHOR', 0, 'recoverable ﬁle evidence', zeroblob(32),
             'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10,
             'markdown-blocks-v1', '[]'
          );
@@ -897,22 +897,8 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
             zeroblob(32), 10
          FROM passage
          WHERE passage.id = '019f547b-6200-7000-8000-000000000503';
-         INSERT INTO passage_fts_word(
-            passage_fts_word, rowid, title, heading_context, body,
-            source_labels, source_domains, attachment_names, extracted_text
-         )
-         SELECT
-            'delete', rowid, title, heading_context, body,
-            source_labels, source_domains, attachment_names, extracted_text
-         FROM passage_search_document;
-         INSERT INTO passage_fts_trigram(
-            passage_fts_trigram, rowid, title, heading_context, body,
-            source_labels, source_domains, attachment_names, extracted_text
-         )
-         SELECT
-            'delete', rowid, title, heading_context, body,
-            source_labels, source_domains, attachment_names, extracted_text
-         FROM passage_search_document;
+         INSERT INTO passage_fts_word(passage_fts_word) VALUES('delete-all');
+         INSERT INTO passage_fts_trigram(passage_fts_trigram) VALUES('delete-all');
          UPDATE index_state
          SET version = 'legacy', status = 'RUNNING', updated_at = 10
          WHERE name = 'PASSAGE_FTS';
@@ -935,7 +921,7 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
         .query_row(
             "SELECT count(*)
              FROM passage_fts_word
-             WHERE passage_fts_word MATCH 'lexical'",
+             WHERE passage_fts_word MATCH 'file'",
             [],
             |row| row.get(0),
         )
@@ -950,12 +936,26 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
         .query_row(
             "SELECT count(*)
              FROM passage_fts_word
-             WHERE passage_fts_word MATCH 'lexical'",
+             WHERE passage_fts_word MATCH 'file'",
             [],
             |row| row.get(0),
         )
         .expect("rebuilt search");
     assert_eq!(matches, 1);
+    assert!(database
+        .client()
+        .reconcile_fts()
+        .expect("normalized integrity maintenance"));
+    let matches_after_integrity: i64 = read_only
+        .query_row(
+            "SELECT count(*)
+             FROM passage_fts_word
+             WHERE passage_fts_word MATCH 'file'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("normalized search after integrity check");
+    assert_eq!(matches_after_integrity, 1);
     let state: (String, String) = read_only
         .query_row(
             "SELECT status, version FROM index_state WHERE name = 'PASSAGE_FTS'",

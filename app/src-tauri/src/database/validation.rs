@@ -13,6 +13,7 @@ const MAIN_TABLES: &[&str] = &[
     "app_settings",
     "attachment",
     "attachment_extraction",
+    "attachment_extractor_config",
     "attachment_segment",
     "draft",
     "draft_context",
@@ -240,12 +241,13 @@ pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
     let mut failed = Vec::new();
 
     for index in INDEXES {
-        let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 1)");
-        if force_rebuild || transaction.execute(&integrity, []).is_err() {
-            let rebuild = format!("INSERT INTO {index}({index}) VALUES('rebuild')");
-            if transaction.execute(&rebuild, []).is_err() {
-                failed.push(*index);
-            }
+        let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 0)");
+        let needs_rebuild = force_rebuild || transaction.execute(&integrity, []).is_err();
+        if needs_rebuild
+            && (rebuild_normalized_fts(&transaction, index).is_err()
+                || transaction.execute(&integrity, []).is_err())
+        {
+            failed.push(*index);
         }
     }
 
@@ -275,6 +277,37 @@ pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
     )?;
     transaction.commit()?;
     Ok(failed.is_empty())
+}
+
+fn rebuild_normalized_fts(
+    transaction: &rusqlite::Transaction<'_>,
+    index: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        &format!("INSERT INTO {index}({index}) VALUES('delete-all')"),
+        [],
+    )?;
+    transaction.execute(
+        &format!(
+            "INSERT INTO {index}(
+                rowid, title, heading_context, body, source_labels,
+                source_domains, attachment_names, extracted_text
+             )
+             SELECT
+                rowid,
+                kosh_search_normalize(title),
+                kosh_search_normalize(heading_context),
+                kosh_search_normalize(body),
+                kosh_search_normalize(source_labels),
+                kosh_search_normalize(source_domains),
+                kosh_search_normalize(attachment_names),
+                kosh_search_normalize(extracted_text)
+             FROM passage_search_document
+             ORDER BY rowid"
+        ),
+        [],
+    )?;
+    Ok(())
 }
 
 fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<()> {

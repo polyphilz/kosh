@@ -1,6 +1,30 @@
 DROP TABLE passage_fts_trigram;
 DROP TABLE passage_fts_word;
 
+CREATE TABLE attachment_extractor_config (
+    extractor TEXT PRIMARY KEY CHECK (length(extractor) > 0),
+    version TEXT NOT NULL CHECK (length(version) > 0),
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0)
+) STRICT;
+
+INSERT INTO attachment_extractor_config(extractor, version, updated_at)
+VALUES
+    ('ocr', '1', 0),
+    ('pdf-text', '1', 0),
+    ('text', '1', 0);
+
+CREATE TRIGGER attachment_extractor_config_identity_prevent_update
+BEFORE UPDATE OF extractor ON attachment_extractor_config
+BEGIN
+    SELECT RAISE(ABORT, 'extractor configuration identity is immutable');
+END;
+
+CREATE TRIGGER attachment_extractor_config_prevent_delete
+BEFORE DELETE ON attachment_extractor_config
+BEGIN
+    SELECT RAISE(ABORT, 'extractor configuration is retained');
+END;
+
 CREATE TABLE passage_search_document (
     rowid INTEGER PRIMARY KEY,
     passage_id TEXT NOT NULL UNIQUE,
@@ -34,6 +58,9 @@ JOIN attachment_segment AS segment
 JOIN attachment_extraction AS extraction
   ON extraction.id = segment.extraction_id
  AND extraction.status = 'READY'
+JOIN attachment_extractor_config AS extractor_config
+  ON extractor_config.extractor = extraction.extractor
+ AND extractor_config.version = extraction.extractor_version
 JOIN attachment
   ON attachment.id = extraction.attachment_id
  AND attachment.sha256 = extraction.content_hash
@@ -41,21 +68,6 @@ JOIN attachment
 WHERE passage.owner_kind = 'ATTACHMENT'
   AND passage.content = segment.content
   AND passage.content_hash = segment.content_hash
-  AND NOT EXISTS (
-      SELECT 1
-      FROM attachment_extraction AS newer_extraction
-      WHERE newer_extraction.attachment_id = extraction.attachment_id
-        AND newer_extraction.extractor = extraction.extractor
-        AND newer_extraction.content_hash = extraction.content_hash
-        AND newer_extraction.status = 'READY'
-        AND (
-            newer_extraction.created_at > extraction.created_at
-            OR (
-                newer_extraction.created_at = extraction.created_at
-                AND newer_extraction.id > extraction.id
-            )
-        )
-  )
   AND passage.construction_version = (
       SELECT candidate.construction_version
       FROM passage AS candidate
@@ -305,6 +317,62 @@ BEGIN
           ON extraction.id = segment.extraction_id
         WHERE segment.id = new.attachment_segment_id
     );
+END;
+
+CREATE TRIGGER attachment_extractor_config_search_after_version_update
+AFTER UPDATE OF version ON attachment_extractor_config
+BEGIN
+    DELETE FROM passage_search_document
+    WHERE passage_id IN (
+        SELECT passage.id
+        FROM passage
+        JOIN attachment_segment AS segment
+          ON segment.id = passage.attachment_segment_id
+        JOIN attachment_extraction AS extraction
+          ON extraction.id = segment.extraction_id
+        WHERE passage.owner_kind = 'ATTACHMENT'
+          AND extraction.extractor = new.extractor
+    );
+
+    INSERT INTO passage_search_document(
+        rowid,
+        passage_id,
+        tidbit_id,
+        title,
+        heading_context,
+        body,
+        source_labels,
+        source_domains,
+        attachment_names,
+        extracted_text,
+        owner_content_hash,
+        updated_at
+    )
+    SELECT
+        passage.rowid,
+        passage.id,
+        NULL,
+        '',
+        coalesce(
+            (
+                SELECT group_concat(value, char(10))
+                FROM json_each(passage.heading_context_json)
+            ),
+            ''
+        ),
+        '',
+        '',
+        '',
+        attachment.display_filename,
+        passage.content,
+        passage.content_hash,
+        attachment.updated_at
+    FROM current_attachment_passage AS current
+    JOIN passage ON passage.id = current.passage_id
+    JOIN attachment ON attachment.id = current.attachment_id
+    JOIN attachment_extraction AS extraction
+      ON extraction.id = current.extraction_id
+    WHERE extraction.extractor = new.extractor;
 END;
 
 CREATE TRIGGER tidbit_revision_attachment_search_after_insert
