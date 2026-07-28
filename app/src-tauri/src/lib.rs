@@ -1,4 +1,5 @@
 mod database;
+pub mod relevance;
 mod runtime;
 
 #[cfg(feature = "test-support")]
