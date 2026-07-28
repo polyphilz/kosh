@@ -1159,6 +1159,17 @@ fn ensure_sidecar(
             "sidecar start canceled".into(),
         ));
     }
+    let sidecar_path = inner.sidecar_path.as_deref().ok_or_else(|| {
+        SemanticRuntimeError::RuntimeUnavailable("no llama-server executable was found".into())
+    })?;
+    if require_verified_inputs {
+        let expected = build_verification_receipt(inner, model_path, sidecar_path)?;
+        if !verification_receipt_matches(&inner.data_root, &expected) {
+            return Err(SemanticRuntimeError::InvalidArtifact(
+                "the verified model or llama-server changed; retry verification".into(),
+            ));
+        }
+    }
     let mut runtime = lock(&inner.runtime);
     if let Some(child) = runtime.child.as_mut() {
         if child.try_wait()?.is_none() && runtime.model_path.as_deref() == Some(model_path) {
@@ -1172,17 +1183,6 @@ fn ensure_sidecar(
         stop_runtime(&mut runtime, &inner.data_root);
     }
 
-    let sidecar_path = inner.sidecar_path.as_deref().ok_or_else(|| {
-        SemanticRuntimeError::RuntimeUnavailable("no llama-server executable was found".into())
-    })?;
-    if require_verified_inputs {
-        let expected = build_verification_receipt(inner, model_path, sidecar_path)?;
-        if !verification_receipt_matches(&inner.data_root, &expected) {
-            return Err(SemanticRuntimeError::InvalidArtifact(
-                "the verified model or llama-server changed; retry verification".into(),
-            ));
-        }
-    }
     sweep_stale_sidecar(&inner.data_root, sidecar_path, model_path);
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -2347,6 +2347,43 @@ mod tests {
         fs::write(&model_path, b"abcdefghij").expect("mutated model");
         assert!(matches!(
             runtime.embed_query("must not start"),
+            Err(SemanticRuntimeError::InvalidArtifact(_))
+        ));
+        let status = runtime.status();
+        assert_eq!(status.phase, SemanticRuntimePhase::Failed);
+        assert!(!status.verified);
+        assert!(!status.runtime_running);
+        assert!(read_verification_receipt(directory.path())
+            .expect("verification receipt state")
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_runtime_rejects_artifacts_changed_after_verification() {
+        let directory = tempfile::tempdir().expect("live mutated runtime directory");
+        let model_path = directory.path().join("model.gguf");
+        let sidecar_path = directory.path().join("llama-server");
+        fs::write(&model_path, b"0123456789").expect("model fixture");
+        fs::write(&sidecar_path, b"sidecar").expect("sidecar fixture");
+        let (endpoint, transcript, server) = start_embedding_server(false, 2);
+        let runtime = EmbeddingRuntime::start(test_configuration(
+            directory.path(),
+            Some(sidecar_path),
+            Some(model_path.clone()),
+            test_contract(b"0123456789", "http://127.0.0.1:1/model".into()),
+            Duration::from_secs(60),
+        ));
+        install_running_fixture(&runtime, endpoint, &model_path);
+
+        runtime.prepare().expect("golden-compatible runtime");
+        server.join().expect("embedding fixture server");
+        assert_eq!(transcript.recv().expect("embedding transcript").len(), 2);
+        assert!(runtime.status().runtime_running);
+
+        fs::write(&model_path, b"abcdefghij").expect("mutated model");
+        assert!(matches!(
+            runtime.embed_document("must not reuse the sidecar"),
             Err(SemanticRuntimeError::InvalidArtifact(_))
         ));
         let status = runtime.status();
