@@ -220,6 +220,106 @@ fn lexical_upgrade_defers_backfill_until_post_start_reconciliation() {
 }
 
 #[test]
+fn media_lifecycle_upgrade_preserves_attachments_and_allows_shared_blobs() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(5))
+        .run(&mut main)
+        .expect("main schema before media lifecycle");
+    let sha256 = vec![0x5a_u8; 32];
+    main.execute(
+        "INSERT INTO attachment(
+            id, created_at, updated_at, sha256, display_filename,
+            media_type, byte_length, kind, extraction_state
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000601',
+            10, 10, ?1, 'first.bin', 'application/octet-stream',
+            4, 'BINARY', 'NOT_APPLICABLE'
+         )",
+        params![&sha256],
+    )
+    .expect("pre-upgrade attachment");
+    main.execute(
+        "INSERT INTO media_ingest_lease(
+            id, sha256, attachment_id, state, created_at, expires_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000603',
+            ?1,
+            '019f547b-6200-7000-8000-000000000601',
+            'COMMITTED',
+            10,
+            20
+         )",
+        params![&sha256],
+    )
+    .expect("pre-upgrade attachment lease");
+
+    migrations::run_main(&mut main).expect("media lifecycle migration");
+    assert_eq!(
+        main.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+            .expect("foreign key state"),
+        1
+    );
+    let foreign_key_errors = main
+        .prepare("PRAGMA foreign_key_check")
+        .expect("foreign key check")
+        .query_map([], |_| Ok(()))
+        .expect("foreign key rows")
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("foreign key results");
+    assert!(foreign_key_errors.is_empty());
+    assert_eq!(
+        main.query_row(
+            "SELECT attachment_id
+             FROM media_ingest_lease
+             WHERE id = '019f547b-6200-7000-8000-000000000603'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("preserved attachment lease"),
+        "019f547b-6200-7000-8000-000000000601"
+    );
+    main.execute(
+        "INSERT INTO attachment(
+            id, created_at, updated_at, sha256, display_filename,
+            media_type, byte_length, kind, extraction_state
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000602',
+            11, 11, ?1, 'second.bin', 'application/octet-stream',
+            4, 'BINARY', 'NOT_APPLICABLE'
+         )",
+        params![&sha256],
+    )
+    .expect("shared blob attachment");
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM attachment WHERE sha256 = ?1",
+            params![&sha256],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("shared attachment count"),
+        2
+    );
+    for (kind, name) in [
+        ("view", "current_attachment_passage"),
+        ("trigger", "passage_attachment_locator_validate"),
+        ("trigger", "attachment_search_refresh_after_update"),
+    ] {
+        assert_eq!(
+            main.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = ?1 AND name = ?2",
+                params![kind, name],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("dependent schema object"),
+            1
+        );
+    }
+}
+
+#[test]
 fn corrupt_application_id_is_rejected_before_migration() {
     let pair = TestPair::new();
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
@@ -1047,90 +1147,4 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
         )
         .expect("maintained index state");
     assert_eq!(state, ("IDLE".into(), "lexical-v1".into()));
-}
-
-#[test]
-fn media_reaper_checks_live_references_and_consumes_authorization_atomically() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Existing)
-            .expect("media writer");
-    let orphan_digest = vec![9_u8; 32];
-    let referenced_digest = vec![10_u8; 32];
-    media
-        .execute(
-            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
-             VALUES(?1, x'CAFE', 2, 10)",
-            params![&orphan_digest],
-        )
-        .expect("orphan media blob");
-    media
-        .execute(
-            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
-             VALUES(?1, x'BEEF', 2, 10)",
-            params![&referenced_digest],
-        )
-        .expect("referenced media blob");
-    assert!(media
-        .execute(
-            "DELETE FROM media_blob WHERE sha256 = ?1",
-            params![&orphan_digest]
-        )
-        .is_err());
-    media
-        .execute(
-            "INSERT INTO media_blob_reap_authorization(sha256, authorized_at, reason)
-             VALUES(?1, 19, 'stale capability')",
-            params![&orphan_digest],
-        )
-        .expect("stale authorization");
-    drop(media);
-
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    main.execute(
-        "INSERT INTO attachment(
-            id, created_at, updated_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000601',
-            10, 10, ?1, 'kept.bin', 'application/octet-stream',
-            2, 'BINARY', 'NOT_APPLICABLE'
-         )",
-        params![&referenced_digest],
-    )
-    .expect("live attachment");
-    drop(main);
-
-    let database = Database::initialize(pair.paths.clone()).expect("reconciled pair");
-    let client = database.client();
-    assert!(client
-        .reap_media_blob(orphan_digest.clone(), 20, "orphaned stage".into())
-        .expect("orphan reap"));
-    assert!(!client
-        .reap_media_blob(orphan_digest, 21, "idempotent retry".into())
-        .expect("missing blob is idempotent"));
-    assert!(matches!(
-        client.reap_media_blob(referenced_digest.clone(), 22, "unsafe reap".into()),
-        Err(DatabaseError::MediaInUse { references: 1 })
-    ));
-
-    let media = database.open_media_read_only().expect("read-only media");
-    let kept: i64 = media
-        .query_row(
-            "SELECT count(*) FROM media_blob WHERE sha256 = ?1",
-            params![referenced_digest],
-            |row| row.get(0),
-        )
-        .expect("kept blob");
-    assert_eq!(kept, 1);
-    let capabilities: i64 = media
-        .query_row(
-            "SELECT count(*) FROM media_blob_reap_authorization",
-            [],
-            |row| row.get(0),
-        )
-        .expect("authorization rows");
-    assert_eq!(capabilities, 0);
 }

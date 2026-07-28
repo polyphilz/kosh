@@ -1,6 +1,6 @@
 use std::sync::mpsc::{self, Sender, SyncSender};
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -9,6 +9,11 @@ use super::{
         InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
     },
     error::{DatabaseError, Result},
+    media::{
+        AttachmentRecord, IngestAttachmentWrite, MediaByteRange, MediaIntegrityReport,
+        MediaIntegrityScan, MediaLimits, MediaMaintenanceReport, MediaMaintenanceScan,
+        MediaPayload,
+    },
     migrations::MigrationHeads,
     passages::CitationResolution,
     search::{
@@ -81,11 +86,29 @@ pub(super) enum WriterMessage {
         failed_at_ms: i64,
         reply: SyncSender<Result<()>>,
     },
-    ReapMediaBlob {
-        sha256: Vec<u8>,
-        now: i64,
-        reason: String,
-        reply: SyncSender<Result<bool>>,
+    IngestAttachment {
+        write: IngestAttachmentWrite,
+        reply: SyncSender<Result<AttachmentRecord>>,
+    },
+    LoadMediaPayload {
+        attachment_id: String,
+        now_ms: i64,
+        requested_range: Option<MediaByteRange>,
+        max_response_bytes: u64,
+        reply: SyncSender<Result<MediaPayload>>,
+    },
+    MediaIntegrityReport {
+        scan: MediaIntegrityScan,
+        reply: SyncSender<Result<MediaIntegrityReport>>,
+    },
+    MaintainMedia {
+        scan: MediaMaintenanceScan,
+        reply: SyncSender<Result<MediaMaintenanceReport>>,
+    },
+    RecoverMediaLifecycleBatch {
+        now_ms: i64,
+        limits: MediaLimits,
+        cursor: Option<Vec<u8>>,
     },
     CreateTidbit {
         write: CreateTidbitWrite,
@@ -141,6 +164,7 @@ pub(super) enum WriterMessage {
     },
     ClearDraft {
         input: ClearDraftInput,
+        now_ms: i64,
         reply: SyncSender<Result<bool>>,
     },
     Shutdown,
@@ -166,19 +190,83 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub fn reap_media_blob(&self, sha256: Vec<u8>, now: i64, reason: String) -> Result<bool> {
+    pub(crate) fn ingest_attachment(
+        &self,
+        write: IngestAttachmentWrite,
+    ) -> Result<AttachmentRecord> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::ReapMediaBlob {
-                sha256,
-                now,
-                reason,
+            .send(WriterMessage::IngestAttachment { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_media_payload(
+        &self,
+        attachment_id: String,
+        now_ms: i64,
+        requested_range: Option<MediaByteRange>,
+        max_response_bytes: u64,
+    ) -> Result<MediaPayload> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadMediaPayload {
+                attachment_id,
+                now_ms,
+                requested_range,
+                max_response_bytes,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn media_integrity_report(&self, now_ms: i64) -> Result<MediaIntegrityReport> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MediaIntegrityReport {
+                scan: MediaIntegrityScan::new(now_ms)?,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn maintain_media(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> Result<MediaMaintenanceReport> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MaintainMedia {
+                scan: MediaMaintenanceScan::new(now_ms, limits)?,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn schedule_media_lifecycle_recovery(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> Result<()> {
+        self.sender
+            .send(WriterMessage::RecoverMediaLifecycleBatch {
+                now_ms,
+                limits,
+                cursor: None,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)
     }
 
     pub fn full_integrity_check(&self) -> Result<()> {
@@ -488,14 +576,24 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn clear_draft(&self, input: ClearDraftInput) -> Result<bool> {
+    pub(crate) fn clear_draft_at(&self, input: ClearDraftInput, now_ms: i64) -> Result<bool> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::ClearDraft { input, reply })
+            .send(WriterMessage::ClearDraft {
+                input,
+                now_ms,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_draft(&self, input: ClearDraftInput) -> Result<bool> {
+        let now_ms = input.expected_updated_at_ms;
+        self.clear_draft_at(input, now_ms)
     }
 
     pub(super) fn shutdown(&self) -> Result<()> {
@@ -526,74 +624,6 @@ pub(super) fn diagnostics(
         main_foreign_keys,
         media_foreign_keys,
     })
-}
-
-pub(super) fn reap_media_blob(
-    main: &mut Connection,
-    media: &mut Connection,
-    sha256: Vec<u8>,
-    now: i64,
-    reason: String,
-) -> Result<bool> {
-    if sha256.len() != 32 {
-        return Err(DatabaseError::InvalidInput(
-            "media digest must contain 32 bytes".into(),
-        ));
-    }
-    if now < 0 {
-        return Err(DatabaseError::InvalidInput(
-            "media reap timestamp must not be negative".into(),
-        ));
-    }
-    if reason.trim().is_empty() {
-        return Err(DatabaseError::InvalidInput(
-            "media reap reason must not be empty".into(),
-        ));
-    }
-
-    // The library ownership lock excludes other Kosh writers. The main write
-    // transaction additionally keeps the reference check serialized through
-    // the media deletion if a non-cooperating SQLite writer appears.
-    let main_transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let references: i64 = main_transaction.query_row(
-        "SELECT count(*) FROM attachment WHERE sha256 = ?1",
-        params![&sha256],
-        |row| row.get(0),
-    )?;
-    if references > 0 {
-        main_transaction.rollback()?;
-        return Err(DatabaseError::MediaInUse { references });
-    }
-
-    let transaction = media.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let exists = transaction
-        .query_row(
-            "SELECT 1 FROM media_blob WHERE sha256 = ?1",
-            params![&sha256],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if !exists {
-        transaction.rollback()?;
-        main_transaction.rollback()?;
-        return Ok(false);
-    }
-
-    transaction.execute(
-        "DELETE FROM media_blob_reap_authorization WHERE sha256 = ?1",
-        params![&sha256],
-    )?;
-    transaction.execute(
-        "INSERT INTO media_blob_reap_authorization(sha256, authorized_at, reason)
-         VALUES(?1, ?2, ?3)",
-        params![&sha256, now, reason],
-    )?;
-    let deleted =
-        transaction.execute("DELETE FROM media_blob WHERE sha256 = ?1", params![&sha256])?;
-    transaction.commit()?;
-    main_transaction.commit()?;
-    Ok(deleted == 1)
 }
 
 pub(super) fn install_lexical_benchmark_attachments(

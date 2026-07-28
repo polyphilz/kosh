@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use super::{passages, DatabaseError, Result};
+use super::{media, passages, DatabaseError, Result};
 
 const MAX_LIST_LIMIT: u32 = 100;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
@@ -168,6 +168,14 @@ pub(super) fn create_tidbit(
         &prepared,
         &write.source_ids,
     )?;
+    media::link_revision_attachments(
+        &transaction,
+        &write.revision_id,
+        None,
+        "capture",
+        &prepared.body_markdown,
+        write.now_ms,
+    )?;
     passages::insert_author_passages(
         &transaction,
         &write.revision_id,
@@ -218,6 +226,14 @@ pub(super) fn edit_tidbit(connection: &mut Connection, write: EditTidbitWrite) -
         updated_at_ms,
         &prepared,
         &write.source_ids,
+    )?;
+    media::link_revision_attachments(
+        &transaction,
+        &write.revision_id,
+        Some(&write.input.expected_revision_id),
+        &format!("edit:{}", write.input.id),
+        &prepared.body_markdown,
+        updated_at_ms,
     )?;
     passages::insert_author_passages(
         &transaction,

@@ -63,9 +63,6 @@ pub enum DatabaseError {
     #[error("tidbit {id} is deleted")]
     TidbitDeleted { id: String },
 
-    #[error("media blob is still referenced by {references} attachment(s)")]
-    MediaInUse { references: i64 },
-
     #[error("database writer failed to shut down cleanly")]
     WriterPanicked,
 }

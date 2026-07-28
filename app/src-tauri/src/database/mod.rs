@@ -1,8 +1,9 @@
 pub(crate) mod commands;
 mod connection;
-mod drafts;
+pub(crate) mod drafts;
 pub(crate) mod embedding_index;
 mod error;
+pub(crate) mod media;
 mod migrations;
 pub(crate) mod passages;
 mod paths;
@@ -16,12 +17,15 @@ mod drafts_tests;
 #[cfg(test)]
 mod embedding_index_tests;
 #[cfg(test)]
+mod media_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tidbits_tests;
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
+    io::Read,
     sync::{
         mpsc::{self, Receiver},
         Mutex,
@@ -33,6 +37,10 @@ use rusqlite::Connection;
 
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
+pub use media::{
+    AttachmentIngestInput, AttachmentKind, AttachmentRecord, MediaCleanupResult,
+    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
+};
 pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
 };
@@ -50,6 +58,8 @@ use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
 use connection::{DatabaseKind, FileState};
+
+static ATTACHMENT_INGEST_GATE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug)]
 struct DatabaseOwnership {
@@ -159,6 +169,36 @@ impl Database {
         connection::open_read_only(&self.paths.media, DatabaseKind::Media)
     }
 
+    pub fn ingest_attachment(
+        &self,
+        input: AttachmentIngestInput,
+        reader: impl Read,
+    ) -> Result<AttachmentRecord> {
+        let limits = input.limits.validate()?;
+        let _ingest_guard = ATTACHMENT_INGEST_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let attachment_id = uuid::Uuid::now_v7().to_string();
+        let ingest_lease_id = uuid::Uuid::now_v7().to_string();
+        let stage_id = uuid::Uuid::now_v7().to_string();
+        let staged = media::StagedAttachment::from_reader(
+            reader,
+            &self.paths.root.join("media-staging"),
+            &stage_id,
+            limits.max_attachment_bytes,
+        )?;
+        self.client
+            .ingest_attachment(staged.write(media::IngestAttachmentMetadata {
+                attachment_id,
+                ingest_lease_id,
+                draft_id: input.draft_id,
+                display_filename: input.display_filename,
+                media_type: input.media_type,
+                now_ms: input.now_ms,
+                limits,
+            }))
+    }
+
     pub fn shutdown(&self) -> Result<()> {
         let mut ownership = self
             .ownership
@@ -264,16 +304,82 @@ fn writer_loop(
                     failed_at_ms,
                 ));
             }
-            WriterMessage::ReapMediaBlob {
-                sha256,
-                now,
-                reason,
+            WriterMessage::IngestAttachment { write, reply } => {
+                let _ = reply.send(media::ingest_attachment(&mut main, &mut media, write));
+            }
+            WriterMessage::LoadMediaPayload {
+                attachment_id,
+                now_ms,
+                requested_range,
+                max_response_bytes,
                 reply,
             } => {
-                let _ = reply.send(writer::reap_media_blob(
-                    &mut main, &mut media, sha256, now, reason,
+                let _ = reply.send(media::load_media_payload(
+                    &main,
+                    &media,
+                    &attachment_id,
+                    now_ms,
+                    requested_range,
+                    max_response_bytes,
                 ));
             }
+            WriterMessage::MediaIntegrityReport { scan, reply } => match scan.step(&main, &media) {
+                Ok(media::MediaIntegrityScanStep::Continue(scan)) => {
+                    if let Err(error) =
+                        sender.send(WriterMessage::MediaIntegrityReport { scan, reply })
+                    {
+                        let WriterMessage::MediaIntegrityReport { reply, .. } = error.0 else {
+                            unreachable!("failed message retained its variant");
+                        };
+                        let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                    }
+                }
+                Ok(media::MediaIntegrityScanStep::Complete(report)) => {
+                    let _ = reply.send(Ok(report));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                }
+            },
+            WriterMessage::MaintainMedia { scan, reply } => {
+                match scan.step(&mut main, &mut media) {
+                    Ok(media::MediaMaintenanceScanStep::Continue(scan)) => {
+                        if let Err(error) =
+                            sender.send(WriterMessage::MaintainMedia { scan, reply })
+                        {
+                            let WriterMessage::MaintainMedia { reply, .. } = error.0 else {
+                                unreachable!("failed message retained its variant");
+                            };
+                            let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                        }
+                    }
+                    Ok(media::MediaMaintenanceScanStep::Complete(report)) => {
+                        let _ = reply.send(Ok(report));
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
+            WriterMessage::RecoverMediaLifecycleBatch {
+                now_ms,
+                limits,
+                cursor,
+            } => match media::recover_media_lifecycle_batch(
+                &mut main, &mut media, now_ms, limits, cursor,
+            ) {
+                Ok(Some(cursor)) => {
+                    let _ = sender.send(WriterMessage::RecoverMediaLifecycleBatch {
+                        now_ms,
+                        limits,
+                        cursor: Some(cursor),
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    log::warn!("background media lifecycle recovery could not complete: {error}");
+                }
+            },
             WriterMessage::CreateTidbit { write, reply } => {
                 let _ = reply.send(tidbits::create_tidbit(&mut main, write));
             }
@@ -336,8 +442,12 @@ fn writer_loop(
             WriterMessage::LoadDraft { context_key, reply } => {
                 let _ = reply.send(drafts::load_draft(&main, &context_key));
             }
-            WriterMessage::ClearDraft { input, reply } => {
-                let _ = reply.send(drafts::clear_draft(&mut main, input));
+            WriterMessage::ClearDraft {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(drafts::clear_draft(&mut main, input, now_ms));
             }
             WriterMessage::Shutdown => break,
         }

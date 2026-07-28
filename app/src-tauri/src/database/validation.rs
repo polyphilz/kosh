@@ -22,6 +22,7 @@ const MAIN_TABLES: &[&str] = &[
     "draft_source",
     "index_state",
     "media_ingest_lease",
+    "media_blob_reap_candidate",
     "passage",
     "passage_embedding",
     "passage_embedding_index",
@@ -391,8 +392,14 @@ fn rebuild_normalized_fts(
 
 fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<()> {
     let mut attachments = main.prepare(
-        "SELECT id, sha256, byte_length
+        "SELECT attachment.id, attachment.sha256, attachment.byte_length
          FROM attachment
+         WHERE attachment.deleted_at IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM tidbit_revision_attachment AS membership
+                WHERE membership.attachment_id = attachment.id
+            )
          ORDER BY id",
     )?;
     let rows = attachments.query_map([], |row| {
