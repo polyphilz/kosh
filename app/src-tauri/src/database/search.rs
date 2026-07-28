@@ -17,6 +17,12 @@ const MAX_CANDIDATE_LIMIT: u32 = 512;
 const RRF_RANK_CONSTANT: f64 = 60.0;
 const FTS_VERSION: &str = "lexical-v1";
 
+pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
+    result_limit
+        .saturating_mul(16)
+        .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum LexicalSearchMode {
@@ -170,10 +176,7 @@ pub(super) fn search_passages(
     let Some(query) = ParsedLexicalQuery::parse(&input.query, input.mode)? else {
         return Ok(Vec::new());
     };
-    let candidate_limit = input
-        .limit
-        .saturating_mul(16)
-        .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT);
+    let candidate_limit = candidate_limit(input.limit);
     let mut ranks = HashMap::<String, CandidateRanks>::new();
     if let Some(word_query) = query.word_match_query() {
         install_ranks(
@@ -388,6 +391,54 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
          ORDER BY active.tidbit_id, passage.ordinal",
         [],
     )?;
+    transaction.execute(
+        "INSERT INTO passage_search_document(
+            rowid,
+            passage_id,
+            tidbit_id,
+            title,
+            heading_context,
+            body,
+            source_labels,
+            source_domains,
+            attachment_names,
+            extracted_text,
+            owner_content_hash,
+            updated_at
+         )
+         SELECT
+            passage.rowid,
+            passage.id,
+            NULL,
+            '',
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            '',
+            '',
+            '',
+            attachment.display_filename,
+            passage.content,
+            passage.content_hash,
+            attachment.updated_at
+         FROM passage
+         JOIN attachment_segment AS segment
+           ON segment.id = passage.attachment_segment_id
+         JOIN attachment_extraction AS extraction
+           ON extraction.id = segment.extraction_id
+          AND extraction.status = 'READY'
+         JOIN attachment
+           ON attachment.id = extraction.attachment_id
+          AND attachment.sha256 = extraction.content_hash
+          AND attachment.deleted_at IS NULL
+         WHERE passage.owner_kind = 'ATTACHMENT'
+         ORDER BY attachment.id, passage.ordinal",
+        [],
+    )?;
     mark_fts_current(transaction)
 }
 
@@ -448,18 +499,43 @@ fn query_fts_index(
          JOIN passage_search_document AS document
            ON document.rowid = {index}.rowid
          JOIN passage ON passage.id = document.passage_id
-         JOIN active_passage AS active
-           ON active.passage_id = passage.id
-          AND active.tidbit_id = document.tidbit_id
-         JOIN tidbit
-           ON tidbit.id = active.tidbit_id
-          AND tidbit.deleted_at IS NULL
-          AND tidbit.current_revision_id = passage.tidbit_revision_id
-         JOIN tidbit_revision AS revision
-           ON revision.id = tidbit.current_revision_id
-          AND revision.tidbit_id = tidbit.id
-          AND revision.content_hash = document.owner_content_hash
          WHERE {index} MATCH ?1
+           AND (
+               (
+                   passage.owner_kind = 'AUTHOR'
+                   AND EXISTS (
+                       SELECT 1
+                       FROM active_passage AS active
+                       JOIN tidbit
+                         ON tidbit.id = active.tidbit_id
+                        AND tidbit.deleted_at IS NULL
+                        AND tidbit.current_revision_id = passage.tidbit_revision_id
+                       JOIN tidbit_revision AS revision
+                         ON revision.id = tidbit.current_revision_id
+                        AND revision.tidbit_id = tidbit.id
+                        AND revision.content_hash = document.owner_content_hash
+                       WHERE active.passage_id = passage.id
+                         AND active.tidbit_id = document.tidbit_id
+                   )
+               )
+               OR (
+                   passage.owner_kind = 'ATTACHMENT'
+                   AND document.tidbit_id IS NULL
+                   AND document.owner_content_hash = passage.content_hash
+                   AND EXISTS (
+                       SELECT 1
+                       FROM attachment_segment AS segment
+                       JOIN attachment_extraction AS extraction
+                         ON extraction.id = segment.extraction_id
+                        AND extraction.status = 'READY'
+                       JOIN attachment
+                         ON attachment.id = extraction.attachment_id
+                        AND attachment.sha256 = extraction.content_hash
+                        AND attachment.deleted_at IS NULL
+                       WHERE segment.id = passage.attachment_segment_id
+                   )
+               )
+           )
          ORDER BY bm25({index}, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5),
                   document.updated_at DESC,
                   document.passage_id
@@ -475,7 +551,7 @@ fn load_search_document(
     passage_id: &str,
     ranks: CandidateRanks,
 ) -> Result<Option<LexicalDocument>> {
-    connection
+    let authored = connection
         .query_row(
             "SELECT
                 tidbit.updated_at,
@@ -534,6 +610,66 @@ fn load_search_document(
               AND revision.tidbit_id = tidbit.id
               AND revision.content_hash = document.owner_content_hash
              WHERE document.passage_id = ?1",
+            params![passage_id],
+            |row| {
+                let fields = [
+                    (SearchField::Title, row.get::<_, String>(1)?),
+                    (SearchField::HeadingContext, row.get::<_, String>(2)?),
+                    (SearchField::Body, row.get::<_, String>(3)?),
+                    (SearchField::SourceLabel, row.get::<_, String>(4)?),
+                    (SearchField::SourceDomain, row.get::<_, String>(5)?),
+                    (SearchField::AttachmentName, row.get::<_, String>(6)?),
+                    (SearchField::ExtractedText, row.get::<_, String>(7)?),
+                ]
+                .into_iter()
+                .collect();
+                Ok(LexicalDocument {
+                    passage_id: passage_id.to_owned(),
+                    updated_at_ms: row.get(0)?,
+                    fields,
+                    word_rank: ranks.word,
+                    trigram_rank: ranks.trigram,
+                })
+            },
+        )
+        .optional()?;
+    if authored.is_some() {
+        return Ok(authored);
+    }
+
+    connection
+        .query_row(
+            "SELECT
+                attachment.updated_at,
+                '',
+                coalesce(
+                    (
+                        SELECT group_concat(value, char(10))
+                        FROM json_each(passage.heading_context_json)
+                    ),
+                    ''
+                ),
+                '',
+                '',
+                '',
+                attachment.display_filename,
+                passage.content
+             FROM passage_search_document AS document
+             JOIN passage
+               ON passage.id = document.passage_id
+              AND passage.owner_kind = 'ATTACHMENT'
+              AND passage.content_hash = document.owner_content_hash
+             JOIN attachment_segment AS segment
+               ON segment.id = passage.attachment_segment_id
+             JOIN attachment_extraction AS extraction
+               ON extraction.id = segment.extraction_id
+              AND extraction.status = 'READY'
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
+              AND attachment.deleted_at IS NULL
+             WHERE document.passage_id = ?1
+               AND document.tidbit_id IS NULL",
             params![passage_id],
             |row| {
                 let fields = [
@@ -775,6 +911,8 @@ fn find_normalized_spans(value: &str, needle: &str) -> Vec<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use rusqlite::params;
 
     use super::{
         parse_lexical_query, rank_lexical_documents, LexicalDocument, LexicalSearchMode,
@@ -1090,6 +1228,116 @@ mod tests {
                 })
                 .expect("restored search")
                 .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn database_search_indexes_ready_attachment_passages_and_tracks_deletion() {
+        let root = tempfile::tempdir().expect("temporary attachment search library");
+        let paths = DatabasePaths::new(root.path());
+        drop(Database::initialize(paths.clone()).expect("attachment search database"));
+        let connection =
+            connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+                .expect("attachment fixture writer");
+        connection
+            .execute_batch(
+                "INSERT INTO attachment(
+                    id, created_at, updated_at, sha256, display_filename,
+                    media_type, byte_length, kind, extraction_state
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009501',
+                    10, 10, zeroblob(32), 'calibration-plate.pdf',
+                    'application/pdf', 128, 'PDF', 'READY'
+                 );
+                 INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, created_at, started_at, completed_at
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009502',
+                    '019f547b-6200-7000-8000-000000009501',
+                    'pdf-text', '1', zeroblob(32), 'READY', 10, 10, 10
+                 );
+                 INSERT INTO attachment_segment(
+                    id, extraction_id, ordinal, locator_kind, page_number,
+                    content, content_hash
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009503',
+                    '019f547b-6200-7000-8000-000000009502',
+                    0, 'PDF_PAGE', 7, 'The quasar_needle calibration is authoritative.',
+                    zeroblob(32)
+                 );
+                 INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009504',
+                    '019f547b-6200-7000-8000-000000009503',
+                    'ATTACHMENT', 0,
+                    'The quasar_needle calibration is authoritative.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":7}', 10, 'pdf-page-v1', '[]'
+                 );",
+            )
+            .expect("ready attachment passage");
+        let results = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "quasar_needle calibration-plate.pdf".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            },
+        )
+        .expect("search extracted attachment text");
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .matched_fields
+            .contains(&SearchField::AttachmentName));
+        assert!(results[0]
+            .matched_fields
+            .contains(&SearchField::ExtractedText));
+        assert!(results[0].citation.tidbit.is_none());
+        assert_eq!(
+            results[0]
+                .citation
+                .attachment
+                .as_ref()
+                .map(|attachment| attachment.display_filename.as_str()),
+            Some("calibration-plate.pdf")
+        );
+        connection
+            .execute(
+                "UPDATE attachment SET updated_at = 20, deleted_at = 20 WHERE id = ?1",
+                params!["019f547b-6200-7000-8000-000000009501"],
+            )
+            .expect("soft delete attachment");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM passage_search_document WHERE passage_id = ?1",
+                    params!["019f547b-6200-7000-8000-000000009504"],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("deleted document count"),
+            0
+        );
+        connection
+            .execute(
+                "UPDATE attachment SET updated_at = 30, deleted_at = NULL WHERE id = ?1",
+                params!["019f547b-6200-7000-8000-000000009501"],
+            )
+            .expect("restore attachment");
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "quasar_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search restored attachment")
+            .len(),
             1
         );
     }

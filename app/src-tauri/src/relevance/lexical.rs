@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use crate::database::search::{
-    parse_lexical_query, rank_lexical_documents, LexicalDocument, LexicalSearchMode, SearchField,
+    candidate_limit, parse_lexical_query, rank_lexical_documents, LexicalDocument,
+    LexicalSearchMode, SearchField,
 };
 use rusqlite::{params, Connection, Statement};
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,7 @@ use super::{
 
 pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 1;
 pub const INTERACTIVE_LEXICAL_P95_BUDGET_MS: f64 = 100.0;
+const BENCHMARK_RESULT_LIMIT: u32 = 20;
 
 pub struct LexicalFixtureRetriever;
 
@@ -172,22 +174,31 @@ pub fn benchmark_scale_lexical(
             "CREATE TABLE benchmark_document(
                 rowid INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
+                heading_context TEXT NOT NULL,
                 body TEXT NOT NULL,
-                sources TEXT NOT NULL,
-                attachment_names TEXT NOT NULL
+                source_labels TEXT NOT NULL,
+                source_domains TEXT NOT NULL,
+                attachment_names TEXT NOT NULL,
+                extracted_text TEXT NOT NULL
              ) STRICT;
              CREATE VIRTUAL TABLE benchmark_word USING fts5(
                 title,
+                heading_context,
                 body,
-                sources,
+                source_labels,
+                source_domains,
                 attachment_names,
+                extracted_text,
                 tokenize = 'unicode61 remove_diacritics 2 tokenchars ''_'''
              );
              CREATE VIRTUAL TABLE benchmark_trigram USING fts5(
                 title,
+                heading_context,
                 body,
-                sources,
+                source_labels,
+                source_domains,
                 attachment_names,
+                extracted_text,
                 tokenize = 'trigram'
              );",
         )
@@ -201,31 +212,40 @@ pub fn benchmark_scale_lexical(
         let mut insert_document = transaction
             .prepare(
                 "INSERT INTO benchmark_document(
-                    rowid, title, body, sources, attachment_names
-                 ) VALUES(?1, ?2, ?3, ?4, ?5)",
+                    rowid, title, heading_context, body, source_labels,
+                    source_domains, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|error| benchmark_error("prepare document insert", error))?;
         let mut insert_word = transaction
             .prepare(
                 "INSERT INTO benchmark_word(
-                    rowid, title, body, sources, attachment_names
-                 ) VALUES(?1, ?2, ?3, ?4, ?5)",
+                    rowid, title, heading_context, body, source_labels,
+                    source_domains, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|error| benchmark_error("prepare word insert", error))?;
         let mut insert_trigram = transaction
             .prepare(
                 "INSERT INTO benchmark_trigram(
-                    rowid, title, body, sources, attachment_names
-                 ) VALUES(?1, ?2, ?3, ?4, ?5)",
+                    rowid, title, heading_context, body, source_labels,
+                    source_domains, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|error| benchmark_error("prepare trigram insert", error))?;
         for (index, tidbit) in corpus.tidbits.iter().enumerate() {
             let rowid = i64::try_from(index + 1)
                 .map_err(|_| RelevanceError::LexicalBenchmark("rowid overflow".into()))?;
-            let sources = tidbit
+            let source_labels = tidbit
                 .sources
                 .iter()
-                .flat_map(|source| [source.label.as_str(), source.url.as_str()])
+                .map(|source| source.label.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let source_domains = tidbit
+                .sources
+                .iter()
+                .map(|source| source.url.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
             let attachment_names = tidbit
@@ -238,27 +258,36 @@ pub fn benchmark_scale_lexical(
                 .execute(params![
                     rowid,
                     tidbit.title.as_deref().unwrap_or_default(),
+                    "",
                     tidbit.body_markdown,
-                    sources,
-                    attachment_names
+                    source_labels,
+                    source_domains,
+                    attachment_names,
+                    ""
                 ])
                 .map_err(|error| benchmark_error("insert source document", error))?;
             insert_word
                 .execute(params![
                     rowid,
                     tidbit.title.as_deref().unwrap_or_default(),
+                    "",
                     tidbit.body_markdown,
-                    sources,
-                    attachment_names
+                    source_labels,
+                    source_domains,
+                    attachment_names,
+                    ""
                 ])
                 .map_err(|error| benchmark_error("insert word document", error))?;
             insert_trigram
                 .execute(params![
                     rowid,
                     tidbit.title.as_deref().unwrap_or_default(),
+                    "",
                     tidbit.body_markdown,
-                    sources,
-                    attachment_names
+                    source_labels,
+                    source_domains,
+                    attachment_names,
+                    ""
                 ])
                 .map_err(|error| benchmark_error("insert trigram document", error))?;
         }
@@ -294,7 +323,7 @@ pub fn benchmark_scale_lexical(
             "SELECT rowid
              FROM benchmark_word
              WHERE benchmark_word MATCH ?1
-             ORDER BY bm25(benchmark_word, 8.0, 3.0, 4.5, 5.0)
+             ORDER BY bm25(benchmark_word, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5)
              LIMIT ?2",
         )
         .map_err(|error| benchmark_error("prepare word query", error))?;
@@ -303,23 +332,33 @@ pub fn benchmark_scale_lexical(
             "SELECT rowid
              FROM benchmark_trigram
              WHERE benchmark_trigram MATCH ?1
-             ORDER BY bm25(benchmark_trigram, 8.0, 3.0, 4.5, 5.0)
+             ORDER BY bm25(benchmark_trigram, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5)
              LIMIT ?2",
         )
         .map_err(|error| benchmark_error("prepare trigram query", error))?;
     let mut document_statement = connection
         .prepare(
-            "SELECT title, body, sources, attachment_names
+            "SELECT
+                title, heading_context, body, source_labels, source_domains,
+                attachment_names, extracted_text
              FROM benchmark_document
              WHERE rowid = ?1",
         )
         .map_err(|error| benchmark_error("prepare document hydration", error))?;
+    let mut citation_statement = connection
+        .prepare(
+            "SELECT rowid, title, body
+             FROM benchmark_document
+             WHERE rowid = ?1",
+        )
+        .map_err(|error| benchmark_error("prepare citation resolution", error))?;
     for query in queries.iter().take(10) {
         run_benchmark_query(
             query,
             &mut word_statement,
             &mut trigram_statement,
             &mut document_statement,
+            &mut citation_statement,
         )?;
     }
     let mut durations_ms = Vec::with_capacity(queries.len());
@@ -330,6 +369,7 @@ pub fn benchmark_scale_lexical(
             &mut word_statement,
             &mut trigram_statement,
             &mut document_statement,
+            &mut citation_statement,
         )?;
         durations_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
@@ -345,7 +385,7 @@ pub fn benchmark_scale_lexical(
         seed: corpus.seed.clone(),
         tidbit_count: corpus.stats.tidbit_count,
         query_count: u32::try_from(query_count).expect("validated query count"),
-        result_limit: 20,
+        result_limit: BENCHMARK_RESULT_LIMIT,
         indexing_duration_ms,
         query_p50_ms,
         query_p95_ms,
@@ -361,13 +401,15 @@ fn run_benchmark_query(
     word_statement: &mut Statement<'_>,
     trigram_statement: &mut Statement<'_>,
     document_statement: &mut Statement<'_>,
+    citation_statement: &mut Statement<'_>,
 ) -> super::Result<()> {
     let parsed = parse_lexical_query(query, LexicalSearchMode::Default)
         .map_err(|error| RelevanceError::LexicalBenchmark(error.to_string()))?
         .ok_or_else(|| RelevanceError::LexicalBenchmark("generated empty query".into()))?;
     let mut candidates = BTreeMap::<i64, (Option<usize>, Option<usize>)>::new();
+    let candidate_limit = candidate_limit(BENCHMARK_RESULT_LIMIT);
     if let Some(word_query) = parsed.word_match_query() {
-        for (position, rowid) in query_benchmark_rows(word_statement, &word_query)?
+        for (position, rowid) in query_benchmark_rows(word_statement, &word_query, candidate_limit)?
             .into_iter()
             .enumerate()
         {
@@ -375,9 +417,10 @@ fn run_benchmark_query(
         }
     }
     if let Some(trigram_query) = parsed.trigram_match_query() {
-        for (position, rowid) in query_benchmark_rows(trigram_statement, &trigram_query)?
-            .into_iter()
-            .enumerate()
+        for (position, rowid) in
+            query_benchmark_rows(trigram_statement, &trigram_query, candidate_limit)?
+                .into_iter()
+                .enumerate()
         {
             candidates.entry(rowid).or_default().1 = Some(position + 1);
         }
@@ -392,9 +435,12 @@ fn run_benchmark_query(
                         updated_at_ms: 0,
                         fields: [
                             (SearchField::Title, row.get::<_, String>(0)?),
-                            (SearchField::Body, row.get::<_, String>(1)?),
-                            (SearchField::SourceLabel, row.get::<_, String>(2)?),
-                            (SearchField::AttachmentName, row.get::<_, String>(3)?),
+                            (SearchField::HeadingContext, row.get::<_, String>(1)?),
+                            (SearchField::Body, row.get::<_, String>(2)?),
+                            (SearchField::SourceLabel, row.get::<_, String>(3)?),
+                            (SearchField::SourceDomain, row.get::<_, String>(4)?),
+                            (SearchField::AttachmentName, row.get::<_, String>(5)?),
+                            (SearchField::ExtractedText, row.get::<_, String>(6)?),
                         ]
                         .into_iter()
                         .collect(),
@@ -405,13 +451,32 @@ fn run_benchmark_query(
                 .map_err(|error| benchmark_error("hydrate query candidate", error))
         })
         .collect::<super::Result<Vec<_>>>()?;
-    let _ = rank_lexical_documents(&parsed, documents, 20);
+    let ranked = rank_lexical_documents(&parsed, documents, BENCHMARK_RESULT_LIMIT as usize);
+    for result in ranked {
+        let rowid = result
+            .passage_id
+            .parse::<i64>()
+            .map_err(|error| benchmark_error("parse citation rowid", error))?;
+        citation_statement
+            .query_row(params![rowid], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| benchmark_error("resolve citation candidate", error))?;
+    }
     Ok(())
 }
 
-fn query_benchmark_rows(statement: &mut Statement<'_>, query: &str) -> super::Result<Vec<i64>> {
+fn query_benchmark_rows(
+    statement: &mut Statement<'_>,
+    query: &str,
+    limit: u32,
+) -> super::Result<Vec<i64>> {
     let rows = statement
-        .query_map(params![query, 20_u32], |row| row.get::<_, i64>(0))
+        .query_map(params![query, limit], |row| row.get::<_, i64>(0))
         .map_err(|error| benchmark_error("run query", error))?;
     rows.map(|row| row.map_err(|error| benchmark_error("read query result", error)))
         .collect()

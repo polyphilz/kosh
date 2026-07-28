@@ -133,6 +133,114 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER passage_attachment_search_after_insert
+AFTER INSERT ON passage
+WHEN new.owner_kind = 'ATTACHMENT'
+BEGIN
+    INSERT INTO passage_search_document(
+        rowid,
+        passage_id,
+        tidbit_id,
+        title,
+        heading_context,
+        body,
+        source_labels,
+        source_domains,
+        attachment_names,
+        extracted_text,
+        owner_content_hash,
+        updated_at
+    )
+    SELECT
+        new.rowid,
+        new.id,
+        NULL,
+        '',
+        coalesce(
+            (
+                SELECT group_concat(value, char(10))
+                FROM json_each(new.heading_context_json)
+            ),
+            ''
+        ),
+        '',
+        '',
+        '',
+        attachment.display_filename,
+        new.content,
+        new.content_hash,
+        attachment.updated_at
+    FROM attachment_segment AS segment
+    JOIN attachment_extraction AS extraction
+      ON extraction.id = segment.extraction_id
+     AND extraction.status = 'READY'
+    JOIN attachment
+      ON attachment.id = extraction.attachment_id
+     AND attachment.sha256 = extraction.content_hash
+     AND attachment.deleted_at IS NULL
+    WHERE segment.id = new.attachment_segment_id;
+END;
+
+CREATE TRIGGER attachment_search_refresh_after_update
+AFTER UPDATE OF display_filename, deleted_at, updated_at ON attachment
+BEGIN
+    DELETE FROM passage_search_document
+    WHERE passage_id IN (
+        SELECT passage.id
+        FROM passage
+        JOIN attachment_segment AS segment
+          ON segment.id = passage.attachment_segment_id
+        JOIN attachment_extraction AS extraction
+          ON extraction.id = segment.extraction_id
+        WHERE passage.owner_kind = 'ATTACHMENT'
+          AND extraction.attachment_id = new.id
+    );
+
+    INSERT INTO passage_search_document(
+        rowid,
+        passage_id,
+        tidbit_id,
+        title,
+        heading_context,
+        body,
+        source_labels,
+        source_domains,
+        attachment_names,
+        extracted_text,
+        owner_content_hash,
+        updated_at
+    )
+    SELECT
+        passage.rowid,
+        passage.id,
+        NULL,
+        '',
+        coalesce(
+            (
+                SELECT group_concat(value, char(10))
+                FROM json_each(passage.heading_context_json)
+            ),
+            ''
+        ),
+        '',
+        '',
+        '',
+        new.display_filename,
+        passage.content,
+        passage.content_hash,
+        new.updated_at
+    FROM passage
+    JOIN attachment_segment AS segment
+      ON segment.id = passage.attachment_segment_id
+    JOIN attachment_extraction AS extraction
+      ON extraction.id = segment.extraction_id
+     AND extraction.status = 'READY'
+     AND extraction.attachment_id = new.id
+     AND extraction.content_hash = new.sha256
+    WHERE passage.owner_kind = 'ATTACHMENT'
+      AND new.deleted_at IS NULL;
+END;
+
 INSERT INTO passage_search_document(
     rowid,
     passage_id,
@@ -203,6 +311,51 @@ JOIN tidbit_revision AS revision
  AND revision.tidbit_id = tidbit.id
 WHERE tidbit.deleted_at IS NULL
   AND passage.owner_kind = 'AUTHOR';
+
+INSERT INTO passage_search_document(
+    rowid,
+    passage_id,
+    tidbit_id,
+    title,
+    heading_context,
+    body,
+    source_labels,
+    source_domains,
+    attachment_names,
+    extracted_text,
+    owner_content_hash,
+    updated_at
+)
+SELECT
+    passage.rowid,
+    passage.id,
+    NULL,
+    '',
+    coalesce(
+        (
+            SELECT group_concat(value, char(10))
+            FROM json_each(passage.heading_context_json)
+        ),
+        ''
+    ),
+    '',
+    '',
+    '',
+    attachment.display_filename,
+    passage.content,
+    passage.content_hash,
+    attachment.updated_at
+FROM passage
+JOIN attachment_segment AS segment
+  ON segment.id = passage.attachment_segment_id
+JOIN attachment_extraction AS extraction
+  ON extraction.id = segment.extraction_id
+ AND extraction.status = 'READY'
+JOIN attachment
+  ON attachment.id = extraction.attachment_id
+ AND attachment.sha256 = extraction.content_hash
+ AND attachment.deleted_at IS NULL
+WHERE passage.owner_kind = 'ATTACHMENT';
 
 UPDATE index_state
 SET version = 'lexical-v1',
