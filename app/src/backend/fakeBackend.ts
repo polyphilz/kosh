@@ -19,6 +19,7 @@ export const browserRuntimeProbe: RuntimeProbe = {
 
 export class FakeBackend implements Backend {
   private readonly probe: RuntimeProbe;
+  private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
   private sequence = 0;
 
@@ -32,6 +33,12 @@ export class FakeBackend implements Backend {
         generatedIdSequence(tidbit.currentRevisionId),
         ...tidbit.sources.map((source) => generatedIdSequence(source.id)),
       );
+      for (const source of tidbit.sources) {
+        const identity = sourceIdentity(source);
+        if (!this.sourceIds.has(identity)) {
+          this.sourceIds.set(identity, source.id);
+        }
+      }
     }
   }
 
@@ -159,39 +166,25 @@ export class FakeBackend implements Backend {
     return tidbit;
   }
 
-  private prepareSource(input: SourceDraft): TidbitSource {
-    const label = normalizeText(input.label);
-    const rawUrl = normalizeText(input.url);
-    let url: string | null = null;
-    if (rawUrl) {
-      const parsed = new URL(rawUrl);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        throw new Error("source URL must use HTTP or HTTPS");
-      }
-      parsed.hash = "";
-      url = parsed.toString();
-    }
-    if (!label && !url) {
-      throw new Error("each source needs a label or HTTP(S) URL");
-    }
-    return {
-      id: `fake-source-${this.nextSequence()}`,
-      label,
-      url,
-    };
-  }
-
   private prepareSources(inputs: SourceDraft[]): TidbitSource[] {
-    const sources = inputs.map((source) => this.prepareSource(source));
+    const sources = inputs.map(normalizeSource);
     const identities = new Set<string>();
     for (const source of sources) {
-      const identity = JSON.stringify([source.label, source.url]);
+      const identity = sourceIdentity(source);
       if (identities.has(identity)) {
         throw new Error("sources must not contain duplicates");
       }
       identities.add(identity);
     }
-    return sources;
+    return sources.map((source) => {
+      const identity = sourceIdentity(source);
+      let id = this.sourceIds.get(identity);
+      if (!id) {
+        id = `fake-source-${this.nextSequence()}`;
+        this.sourceIds.set(identity, id);
+      }
+      return { ...source, id };
+    });
   }
 }
 
@@ -205,6 +198,28 @@ function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
 function normalizeText(value: string | null): string | null {
   const normalized = value?.trim() ?? "";
   return normalized ? normalized : null;
+}
+
+function normalizeSource(input: SourceDraft): Omit<TidbitSource, "id"> {
+  const label = normalizeText(input.label);
+  const rawUrl = normalizeText(input.url);
+  let url: string | null = null;
+  if (rawUrl) {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("source URL must use HTTP or HTTPS");
+    }
+    parsed.hash = "";
+    url = parsed.toString();
+  }
+  if (!label && !url) {
+    throw new Error("each source needs a label or HTTP(S) URL");
+  }
+  return { label, url };
+}
+
+function sourceIdentity(source: Pick<TidbitSource, "label" | "url">): string {
+  return JSON.stringify([source.label, source.url]);
 }
 
 function validateBody(value: string): string {

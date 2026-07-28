@@ -106,4 +106,30 @@ describe("FakeBackend tidbits", () => {
     expect(await backend.loadTidbit(seeded.id)).toEqual(seeded);
     expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toHaveLength(2);
   });
+
+  it("reuses immutable source IDs across tidbits and edits", async () => {
+    const backend = new FakeBackend();
+    const first = await backend.createTidbit({
+      title: "First",
+      bodyMarkdown: "First use.",
+      sources: [{ label: "Docs", url: "https://example.com/reference#first" }],
+    });
+    const second = await backend.createTidbit({
+      title: "Second",
+      bodyMarkdown: "Second use.",
+      sources: [{ label: " Docs ", url: "HTTPS://EXAMPLE.COM:443/reference#second" }],
+    });
+
+    expect(second.sources[0]?.id).toBe(first.sources[0]?.id);
+
+    const edited = await backend.editTidbit({
+      id: second.id,
+      expectedRevisionId: second.currentRevisionId,
+      title: second.title,
+      bodyMarkdown: "Retained during edit.",
+      sources: [{ label: "Docs", url: "https://example.com/reference" }],
+    });
+
+    expect(edited.sources[0]?.id).toBe(first.sources[0]?.id);
+  });
 });
