@@ -1,14 +1,15 @@
 use serde::Serialize;
 use tauri::State;
 
+use crate::embedding_runtime::SemanticRuntimePhase;
 use crate::runtime::RuntimeState;
 
 use super::{
     drafts::SaveDraftWrite,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     CitationResolution, ClearDraftInput, DatabaseError, DeleteTidbitInput, Draft, EditTidbitInput,
-    ListTidbitsInput, PassageSearchResult, RestoreTidbitInput, SaveDraftInput, SearchPassagesInput,
-    Tidbit, TidbitDraft, TidbitListPage,
+    ListTidbitsInput, RestoreTidbitInput, SaveDraftInput, SearchPassagesInput,
+    SearchPassagesResponse, SemanticSearchReadiness, Tidbit, TidbitDraft, TidbitListPage,
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -136,9 +137,71 @@ pub(crate) async fn resolve_citation(
 pub(crate) async fn search_passages(
     state: State<'_, RuntimeState>,
     input: SearchPassagesInput,
-) -> CommandResult<Vec<PassageSearchResult>> {
+) -> CommandResult<SearchPassagesResponse> {
+    let has_query = super::search::validate_search_input(&input)?;
     let client = state.database_client();
-    run_writer(move || client.search_passages(input)).await
+    let runtime = state.embedding_runtime();
+    run_writer(move || {
+        if input.mode == super::LexicalSearchMode::Exact {
+            return client.search_passages_with_semantics(
+                input,
+                None,
+                SemanticSearchReadiness::NotRequested,
+            );
+        }
+
+        let index_readiness = client
+            .passage_embedding_search_readiness()
+            .unwrap_or(SemanticSearchReadiness::Failed);
+        let runtime_phase = runtime.status().phase;
+        let readiness = match index_readiness {
+            SemanticSearchReadiness::Ready => readiness_for_runtime(runtime_phase),
+            SemanticSearchReadiness::Indexing if runtime_phase == SemanticRuntimePhase::Ready => {
+                SemanticSearchReadiness::Indexing
+            }
+            SemanticSearchReadiness::Indexing => readiness_for_runtime(runtime_phase),
+            SemanticSearchReadiness::Failed => SemanticSearchReadiness::Failed,
+            SemanticSearchReadiness::WaitingForRuntime | SemanticSearchReadiness::NotRequested => {
+                SemanticSearchReadiness::Failed
+            }
+        };
+        if !has_query || readiness != SemanticSearchReadiness::Ready {
+            return client.search_passages_with_semantics(input, None, readiness);
+        }
+
+        match runtime.embed_query(&input.query) {
+            Ok(query_embedding) => client.search_passages_with_semantics(
+                input,
+                Some(query_embedding),
+                SemanticSearchReadiness::Ready,
+            ),
+            Err(error) => {
+                log::warn!(
+                    "semantic query embedding failed; using lexical search: {}",
+                    error.public_message()
+                );
+                client.search_passages_with_semantics(
+                    input,
+                    None,
+                    readiness_for_runtime(runtime.status().phase),
+                )
+            }
+        }
+    })
+    .await
+}
+
+fn readiness_for_runtime(phase: SemanticRuntimePhase) -> SemanticSearchReadiness {
+    match phase {
+        SemanticRuntimePhase::Ready => SemanticSearchReadiness::Ready,
+        SemanticRuntimePhase::Failed => SemanticSearchReadiness::Failed,
+        SemanticRuntimePhase::NotDownloaded
+        | SemanticRuntimePhase::VerificationRequired
+        | SemanticRuntimePhase::Downloading
+        | SemanticRuntimePhase::Verifying
+        | SemanticRuntimePhase::Starting
+        | SemanticRuntimePhase::Unavailable => SemanticSearchReadiness::WaitingForRuntime,
+    }
 }
 
 #[tauri::command]

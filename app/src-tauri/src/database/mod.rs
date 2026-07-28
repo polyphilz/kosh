@@ -38,7 +38,8 @@ pub use passages::{
 };
 pub use paths::DatabasePaths;
 pub use search::{
-    LexicalSearchMode, PassageSearchResult, SearchField, SearchHighlight, SearchPassagesInput,
+    LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
+    SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
 };
 pub use tidbits::{
     DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
@@ -240,6 +241,9 @@ fn writer_loop(
             WriterMessage::PassageEmbeddingIndexNeedsReconciliation { reply } => {
                 let _ = reply.send(embedding_index::needs_reconciliation(&main));
             }
+            WriterMessage::PassageEmbeddingSearchReadiness { reply } => {
+                let _ = reply.send(search::semantic_index_readiness(&main));
+            }
             WriterMessage::ActivatePassageEmbeddingIndexIfComplete {
                 activated_at_ms,
                 reply,
@@ -299,8 +303,18 @@ fn writer_loop(
             WriterMessage::ResolveCitation { passage_id, reply } => {
                 let _ = reply.send(passages::resolve_citation(&main, &passage_id));
             }
-            WriterMessage::SearchPassages { input, reply } => {
-                let _ = reply.send(search::search_passages(&main, input));
+            WriterMessage::SearchPassages {
+                input,
+                query_embedding,
+                fallback_readiness,
+                reply,
+            } => {
+                let _ = reply.send(search::search_passages_with_semantics(
+                    &main,
+                    input,
+                    query_embedding.as_deref(),
+                    fallback_readiness,
+                ));
             }
             WriterMessage::RefreshAttachmentSearchDocuments {
                 attachment_id,

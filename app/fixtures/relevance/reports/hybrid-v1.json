@@ -1,0 +1,1008 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "kosh-relevance-v1",
+  "fixtureDigest": "29392576875c47f4e47cbc86c0f55bc047167cdb49546d380b682a848c085cee",
+  "retriever": "kosh-hybrid-jina-v1",
+  "resultLimit": 10,
+  "passed": true,
+  "summary": {
+    "queryCount": 17,
+    "passedQueryCount": 17,
+    "recallAt5": 1.0,
+    "recallAt10": 1.0,
+    "meanReciprocalRank": 1.0,
+    "ndcgAt10": 0.9989907192886318,
+    "citationLocatorAccuracy": 1.0,
+    "exactPhraseSuccess": 1.0,
+    "forbiddenHitsAt10": 0
+  },
+  "categories": {
+    "CODE_IDENTIFIER": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "EXACT": {
+      "queryCount": 2,
+      "passedQueryCount": 2,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": 1.0,
+      "forbiddenHitsAt10": 0
+    },
+    "FORMULA": {
+      "queryCount": 2,
+      "passedQueryCount": 2,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "MISSPELLING": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "NEAR_DUPLICATE": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "OCR": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "PDF": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "PHRASE": {
+      "queryCount": 2,
+      "passedQueryCount": 2,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": 1.0,
+      "forbiddenHitsAt10": 0
+    },
+    "PROSE": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 0.9828422279067397,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "SOURCE_DOMAIN": {
+      "queryCount": 2,
+      "passedQueryCount": 2,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "SYNONYM": {
+      "queryCount": 2,
+      "passedQueryCount": 2,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "UNICODE": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    }
+  },
+  "queries": [
+    {
+      "queryId": "query-heat-phrase",
+      "text": "\"impatient motion\"",
+      "searchMode": "DEFAULT",
+      "category": "PHRASE",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": true,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-heat-modern",
+          "score": 0.036065573770491806,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 2,
+            "endBlock": 2,
+            "sourceStartByte": 36,
+            "sourceEndByte": 174,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-cache-identifier",
+      "text": "passage_cache_key",
+      "searchMode": "DEFAULT",
+      "category": "CODE_IDENTIFIER",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-code-cache-key",
+          "score": 0.03360655737704918,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 3,
+            "endBlock": 3,
+            "sourceStartByte": 54,
+            "sourceEndByte": 168,
+            "startChar": null,
+            "endChar": null,
+            "startLine": 1,
+            "endLine": 3
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-bayes-formula",
+      "text": "P(A|B) P(B|A)",
+      "searchMode": "DEFAULT",
+      "category": "FORMULA",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-formula-bayes",
+          "score": 0.03360655737704918,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 15,
+            "sourceEndByte": 59,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-sqlite-domain",
+      "text": "sqlite.org FTS5 tokenizer",
+      "searchMode": "DEFAULT",
+      "category": "SOURCE_DOMAIN",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-source-sqlite",
+          "score": 0.03524590163934427,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 10,
+            "sourceEndByte": 91,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "body",
+            "sourceLabel",
+            "sourceDomain"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-ocr-invoice",
+      "text": "QZ-4817 ceramic lubricant",
+      "searchMode": "DEFAULT",
+      "category": "OCR",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-ocr-receipt",
+          "score": 0.03360655737704918,
+          "locator": {
+            "kind": "OCR_REGION",
+            "page": null,
+            "region": {
+              "x": 84,
+              "y": 122,
+              "width": 1032,
+              "height": 214
+            }
+          },
+          "matchedFields": [
+            "extractedText"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-pdf-attention",
+      "text": "attention heads representation subspaces page 42",
+      "searchMode": "DEFAULT",
+      "category": "PDF",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-pdf-transformer",
+          "score": 0.03524590163934427,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 42
+          },
+          "matchedFields": [
+            "headingContext",
+            "extractedText"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-car-upkeep",
+      "text": "car upkeep schedule",
+      "searchMode": "DEFAULT",
+      "category": "SYNONYM",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-synonym-automobile",
+          "score": 0.03360655737704918,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 23,
+            "sourceEndByte": 126,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-concurrency-misspelling",
+      "text": "concurency semafore worker permits",
+      "searchMode": "DEFAULT",
+      "category": "MISSPELLING",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-misspelling-concurrency",
+          "score": 0.013934426229508197,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 113,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": []
+        }
+      ]
+    },
+    {
+      "queryId": "query-obsolete-caloric",
+      "text": "obsolete weightless heat fluid theory",
+      "searchMode": "DEFAULT",
+      "category": "NEAR_DUPLICATE",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-heat-caloric",
+          "score": 0.03524590163934427,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 29,
+            "sourceEndByte": 137,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-resolve-citation-exact",
+      "text": "resolveCitationTarget",
+      "searchMode": "EXACT",
+      "category": "EXACT",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": true,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-code-resolve-citation",
+          "score": 25.0327868852459,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 2,
+            "endBlock": 2,
+            "sourceStartByte": 32,
+            "sourceEndByte": 121,
+            "startChar": null,
+            "endChar": null,
+            "startLine": 1,
+            "endLine": 1
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-unicode-diacritics",
+      "text": "naive cafe resume outcomes",
+      "searchMode": "DEFAULT",
+      "category": "UNICODE",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-unicode-cafe",
+          "score": 0.03524590163934427,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 11,
+            "sourceEndByte": 91,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-model-filename",
+      "text": "jina-embeddings-v5-small.onnx tokenizer digest",
+      "searchMode": "EXACT",
+      "category": "EXACT",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": true,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-filename-model",
+          "score": 33.0327868852459,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 16,
+            "sourceEndByte": 105,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body",
+            "attachmentName"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-herb-hydration",
+      "text": "when should I hydrate a wilted herb",
+      "searchMode": "DEFAULT",
+      "category": "SYNONYM",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-prose-gardening",
+          "score": 0.03440061475409836,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 14,
+            "sourceEndByte": 114,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-source-rust",
+          "score": 0.03419026328862394,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 94,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body",
+            "sourceLabel",
+            "sourceDomain"
+          ]
+        },
+        {
+          "passageId": "passage-synonym-automobile",
+          "score": 0.03412698412698413,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 23,
+            "sourceEndByte": 126,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-phrase-dough",
+          "score": 0.033353394318728934,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 10,
+            "sourceEndByte": 94,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-heat-caloric",
+          "score": 0.03307291666666667,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 29,
+            "sourceEndByte": 137,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-formula-fourier",
+          "score": 0.032499999999999994,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 10,
+            "sourceEndByte": 72,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-heat-modern",
+          "score": 0.032454228421970356,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 2,
+            "endBlock": 2,
+            "sourceStartByte": 36,
+            "sourceEndByte": 174,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body",
+            "sourceLabel",
+            "sourceDomain"
+          ]
+        },
+        {
+          "passageId": "passage-misspelling-concurrency",
+          "score": 0.030931677018633544,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 113,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-unicode-cafe",
+          "score": 0.03064613526570048,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 11,
+            "sourceEndByte": 91,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-formula-bayes",
+          "score": 0.030301857585139317,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 15,
+            "sourceEndByte": 59,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-dough-phrase",
+      "text": "\"resting dough before kneading\"",
+      "searchMode": "DEFAULT",
+      "category": "PHRASE",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": true,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-phrase-dough",
+          "score": 0.036065573770491806,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 10,
+            "sourceEndByte": 94,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-fourier-formula",
+      "text": "integral negative infinity e^{-i omega t}",
+      "searchMode": "DEFAULT",
+      "category": "FORMULA",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-formula-fourier",
+          "score": 0.03360655737704918,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 10,
+            "sourceEndByte": 72,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-rust-domain",
+      "text": "doc.rust-lang.org lazy iterator adaptor",
+      "searchMode": "DEFAULT",
+      "category": "SOURCE_DOMAIN",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-source-rust",
+          "score": 0.03524590163934427,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 94,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "body",
+            "sourceDomain"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-heat-models",
+      "text": "different models of heat and temperature",
+      "searchMode": "DEFAULT",
+      "category": "PROSE",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 0.9828422279067397,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-heat-modern",
+          "score": 0.03524590163934427,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 2,
+            "endBlock": 2,
+            "sourceStartByte": 36,
+            "sourceEndByte": 174,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-filename-model",
+          "score": 0.03445980542754736,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 16,
+            "sourceEndByte": 105,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-heat-caloric",
+          "score": 0.034395801331285204,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 29,
+            "sourceEndByte": 137,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-prose-gardening",
+          "score": 0.03182692307692308,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 14,
+            "sourceEndByte": 114,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body"
+          ]
+        }
+      ]
+    }
+  ]
+}

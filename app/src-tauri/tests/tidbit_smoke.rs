@@ -2,7 +2,7 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    Draft, PassageSearchResult, Tidbit,
+    Draft, SearchExecutionMode, SearchPassagesResponse, SemanticSearchReadiness, Tidbit,
 };
 
 fn invoke(
@@ -84,11 +84,19 @@ fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
             }
         }),
     )
-    .deserialize::<Vec<PassageSearchResult>>()
+    .deserialize::<SearchPassagesResponse>()
     .expect("search result payload");
-    assert_eq!(search_results.len(), 1);
     assert_eq!(
-        search_results[0]
+        search_results.execution_mode,
+        SearchExecutionMode::LexicalOnly
+    );
+    assert_eq!(
+        search_results.semantic_readiness,
+        SemanticSearchReadiness::WaitingForRuntime
+    );
+    assert_eq!(search_results.results.len(), 1);
+    assert_eq!(
+        search_results.results[0]
             .citation
             .tidbit
             .as_ref()

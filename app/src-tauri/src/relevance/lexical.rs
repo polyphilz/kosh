@@ -107,7 +107,7 @@ impl Retriever for LexicalFixtureRetriever {
     }
 }
 
-fn fixture_candidate_ranks(
+pub(crate) fn fixture_candidate_ranks(
     corpus: &[EvaluationPassage],
     query: &crate::database::search::ParsedLexicalQuery,
     result_limit: usize,
@@ -254,7 +254,7 @@ fn install_fixture_ranks(
     Ok(())
 }
 
-fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchField, String> {
+pub(crate) fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchField, String> {
     let authored = matches!(passage.locator, EvaluationLocator::MarkdownBlocks { .. });
     [
         (

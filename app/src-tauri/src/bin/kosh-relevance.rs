@@ -1,14 +1,20 @@
 use std::path::{Path, PathBuf};
 
 use kosh_lib::relevance::{
-    benchmark_scale_lexical, generate_scale_corpus, measure_scale_generation, read_json,
-    run_relevance_suite, write_pretty_json, write_text, EmptyRetriever, LexicalFixtureRetriever,
+    benchmark_scale_lexical, generate_hybrid_vector_fixture, generate_scale_corpus,
+    measure_scale_generation, read_json, run_relevance_suite, write_pretty_json, write_text,
+    EmptyRetriever, HybridFixtureRetriever, HybridVectorFixture, LexicalFixtureRetriever,
     RelevanceFixture, ScaleGenerationOptions,
 };
+use kosh_lib::EmbeddingRuntime;
 
 const DEFAULT_FIXTURE: &str = "fixtures/relevance/v1.json";
 const DEFAULT_EMPTY_PREFIX: &str = ".data/relevance/reports/empty-v1";
 const DEFAULT_LEXICAL_PREFIX: &str = ".data/relevance/reports/lexical-v1";
+const DEFAULT_HYBRID_VECTOR_FIXTURE: &str = "fixtures/relevance/jina-v1-vectors.json";
+const DEFAULT_HYBRID_PREFIX: &str = ".data/relevance/reports/hybrid-v1";
+const DEFAULT_SEMANTIC_DATA_ROOT: &str = ".data/relevance/semantic-runtime";
+const DEFAULT_RESOURCE_DIR: &str = "src-tauri/resources";
 const DEFAULT_SCALE_OUTPUT: &str = ".data/relevance/scale-v1.json";
 const DEFAULT_LEXICAL_SCALE_OUTPUT: &str =
     ".data/relevance/reports/lexical-scale-v1.performance.json";
@@ -75,6 +81,76 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
                 read_json(&fixture_path).map_err(|error| error.to_string())?;
             let report = run_relevance_suite(&fixture, &mut LexicalFixtureRetriever)
                 .map_err(|error| error.to_string())?;
+            let json_path = with_suffix(&output_prefix, "json");
+            let text_path = with_suffix(&output_prefix, "txt");
+            write_pretty_json(&json_path, &report).map_err(|error| error.to_string())?;
+            write_text(&text_path, &report.to_text()).map_err(|error| error.to_string())?;
+            print!("{}", report.to_text());
+            println!(
+                "\nwrote {} and {}",
+                json_path.display(),
+                text_path.display()
+            );
+        }
+        "hybrid-vectors" => {
+            expect_argument_count(&arguments, 1, 5)?;
+            let fixture_path =
+                PathBuf::from(arguments.get(1).map_or(DEFAULT_FIXTURE, String::as_str));
+            let output = PathBuf::from(
+                arguments
+                    .get(2)
+                    .map_or(DEFAULT_HYBRID_VECTOR_FIXTURE, String::as_str),
+            );
+            let data_root = PathBuf::from(
+                arguments
+                    .get(3)
+                    .map_or(DEFAULT_SEMANTIC_DATA_ROOT, String::as_str),
+            );
+            let resource_dir = PathBuf::from(
+                arguments
+                    .get(4)
+                    .map_or(DEFAULT_RESOURCE_DIR, String::as_str),
+            );
+            let fixture: RelevanceFixture =
+                read_json(&fixture_path).map_err(|error| error.to_string())?;
+            let runtime = EmbeddingRuntime::new(&data_root, Some(&resource_dir));
+            let vectors = (|| {
+                runtime.prepare().map_err(|error| error.to_string())?;
+                generate_hybrid_vector_fixture(&fixture, &runtime)
+                    .map_err(|error| error.to_string())
+            })();
+            runtime.shutdown();
+            let vectors = vectors?;
+            write_pretty_json(&output, &vectors).map_err(|error| error.to_string())?;
+            println!(
+                "wrote {} passage and {} query vectors to {}",
+                vectors.passage_embeddings.len(),
+                vectors.query_embeddings.len(),
+                output.display()
+            );
+        }
+        "hybrid-report" => {
+            expect_argument_count(&arguments, 1, 4)?;
+            let fixture_path =
+                PathBuf::from(arguments.get(1).map_or(DEFAULT_FIXTURE, String::as_str));
+            let vector_path = PathBuf::from(
+                arguments
+                    .get(2)
+                    .map_or(DEFAULT_HYBRID_VECTOR_FIXTURE, String::as_str),
+            );
+            let output_prefix = PathBuf::from(
+                arguments
+                    .get(3)
+                    .map_or(DEFAULT_HYBRID_PREFIX, String::as_str),
+            );
+            let fixture: RelevanceFixture =
+                read_json(&fixture_path).map_err(|error| error.to_string())?;
+            let vectors: HybridVectorFixture =
+                read_json(&vector_path).map_err(|error| error.to_string())?;
+            let mut retriever = HybridFixtureRetriever::new(&fixture, vectors)
+                .map_err(|error| error.to_string())?;
+            let report =
+                run_relevance_suite(&fixture, &mut retriever).map_err(|error| error.to_string())?;
             let json_path = with_suffix(&output_prefix, "json");
             let text_path = with_suffix(&output_prefix, "txt");
             write_pretty_json(&json_path, &report).map_err(|error| error.to_string())?;
@@ -218,6 +294,8 @@ fn usage() -> String {
      kosh-relevance validate [fixture]\n  \
      kosh-relevance empty-report [fixture] [output-prefix]\n  \
      kosh-relevance lexical-report [fixture] [output-prefix]\n  \
+     kosh-relevance hybrid-vectors [fixture] [output] [data-root] [resource-dir]\n  \
+     kosh-relevance hybrid-report [fixture] [vectors] [output-prefix]\n  \
      kosh-relevance generate-scale [output] [count] [seed]\n  \
      kosh-relevance benchmark-lexical [output] [count] [queries] [seed]"
         .into()
