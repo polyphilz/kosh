@@ -28,7 +28,7 @@ export const SearchResultCard = forwardRef<HTMLButtonElement, SearchResultCardPr
         <span className="search-result-card__topline">
           <strong>
             <HighlightedText
-              fields={["TITLE"]}
+              fields={["TITLE", "ATTACHMENT_NAME"]}
               highlights={result.highlights}
               text={resultTitle(result)}
             />
