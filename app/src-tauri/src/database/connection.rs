@@ -87,7 +87,9 @@ pub fn inspect_file(path: &Path) -> Result<FileState> {
 }
 
 pub fn open_writer(path: &Path, kind: DatabaseKind, state: FileState) -> Result<Connection> {
-    register_sqlite_vec()?;
+    if let Err(error) = register_sqlite_vec() {
+        log::warn!("sqlite-vec is unavailable; semantic search is disabled: {error}");
+    }
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -105,7 +107,9 @@ pub fn open_writer(path: &Path, kind: DatabaseKind, state: FileState) -> Result<
 }
 
 pub fn open_read_only(path: &Path, kind: DatabaseKind) -> Result<Connection> {
-    register_sqlite_vec()?;
+    if let Err(error) = register_sqlite_vec() {
+        log::warn!("sqlite-vec is unavailable on read connection: {error}");
+    }
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = Connection::open_with_flags(path, flags)?;
     configure_length_limit(&connection, kind)?;

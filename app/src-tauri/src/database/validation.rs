@@ -155,7 +155,7 @@ fn validate_optional_embedding_index(connection: &mut Connection) {
     })();
     if let Err(error) = result {
         log::warn!("semantic passage index is unavailable at startup: {error}");
-        let _ = embedding_index::record_failure(
+        let _ = embedding_index::quarantine(
             connection,
             "semantic passage index is unavailable; repair is required",
             0,

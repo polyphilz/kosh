@@ -167,9 +167,10 @@ fn worker_loop(database: DatabaseClient, runtime: Arc<EmbeddingRuntime>, shutdow
 }
 
 fn reconciliation_required(progress: &PassageEmbeddingIndexProgress) -> bool {
-    !progress.active
-        || progress.indexed_passages != progress.total_passages
-        || progress.state != PassageEmbeddingIndexState::Idle
+    progress.state != PassageEmbeddingIndexState::Failed
+        && (!progress.active
+            || progress.indexed_passages != progress.total_passages
+            || progress.state != PassageEmbeddingIndexState::Idle)
 }
 
 fn reconcile_batch(
@@ -231,6 +232,7 @@ mod tests {
         for invalidated in [
             PassageEmbeddingIndexProgress {
                 state: PassageEmbeddingIndexState::Dirty,
+                error: Some("retryable runtime failure".into()),
                 ..complete.clone()
             },
             PassageEmbeddingIndexProgress {
@@ -239,10 +241,15 @@ mod tests {
             },
             PassageEmbeddingIndexProgress {
                 active: false,
-                ..complete
+                ..complete.clone()
             },
         ] {
             assert!(reconciliation_required(&invalidated));
         }
+        assert!(!reconciliation_required(&PassageEmbeddingIndexProgress {
+            state: PassageEmbeddingIndexState::Failed,
+            error: Some("structural validation failed".into()),
+            ..complete
+        }));
     }
 }

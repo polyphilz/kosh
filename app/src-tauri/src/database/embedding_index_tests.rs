@@ -220,7 +220,7 @@ fn upgrading_from_an_active_legacy_index_waits_for_the_complete_current_corpus()
 }
 
 #[test]
-fn migration_from_v4_preserves_authored_data_and_pins_vec_version() {
+fn v5_required_migration_preserves_authored_data_without_materializing_vec() {
     let library = TestLibrary::new();
     let mut main =
         connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Fresh)
@@ -233,10 +233,38 @@ fn migration_from_v4_preserves_authored_data_and_pins_vec_version() {
         .query_row("SELECT vec_version()", [], |row| row.get(0))
         .expect("sqlite-vec version");
     assert_eq!(vec_version, "v0.1.9");
+    main.execute(
+        "INSERT INTO source(id, created_at, label)
+         VALUES('019f547b-6200-7000-8000-000000000090', 10, 'authored source')",
+        [],
+    )
+    .expect("authored v4 data");
+
+    migrations::run_main(&mut main).expect("required v5 migration");
+    assert_eq!(
+        main.query_row(
+            "SELECT label FROM source
+             WHERE id = '019f547b-6200-7000-8000-000000000090'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("authored data survives"),
+        "authored source"
+    );
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM sqlite_schema
+             WHERE type = 'table' AND name = 'passage_embedding_vec_jina_v1'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("optional table count"),
+        0
+    );
 }
 
 #[test]
-fn missing_optional_vector_table_does_not_block_authored_library_startup() {
+fn missing_optional_vector_table_is_recreated_outside_required_migrations() {
     let library = TestLibrary::new();
     let database = Database::initialize(library.paths.clone()).expect("database");
     let original = create_tidbit(&database.client(), "lexical evidence remains", 10);
@@ -260,10 +288,61 @@ fn missing_optional_vector_table_does_not_block_authored_library_startup() {
         "lexical evidence remains"
     );
     create_tidbit(&reopened.client(), "capture still works", 20);
+    assert!(reopened
+        .open_main_read_only()
+        .expect("read connection")
+        .query_row(
+            "SELECT 1
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = 'passage_embedding_vec_jina_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok());
     let progress = reopened
         .client()
         .passage_embedding_index_progress()
-        .expect("failed semantic progress remains observable");
+        .expect("semantic progress remains observable");
+    assert_eq!(progress.state, PassageEmbeddingIndexState::Dirty);
+    assert_eq!(progress.indexed_passages, 0);
+}
+
+#[test]
+fn invalid_optional_vector_table_is_quarantined_without_blocking_capture() {
+    let library = TestLibrary::new();
+    let database = Database::initialize(library.paths.clone()).expect("database");
+    let original = create_tidbit(&database.client(), "authored evidence survives", 10);
+    database.shutdown().expect("shutdown database");
+
+    let main =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("main writer");
+    main.execute("DROP TABLE passage_embedding_vec_jina_v1", [])
+        .expect("remove vector table");
+    main.execute_batch(
+        "CREATE TABLE passage_embedding_vec_jina_v1(
+            rowid INTEGER PRIMARY KEY,
+            embedding BLOB NOT NULL
+         ) STRICT;",
+    )
+    .expect("install incompatible derived table");
+    drop(main);
+
+    let reopened =
+        Database::initialize(library.paths.clone()).expect("authored library remains available");
+    assert_eq!(
+        reopened
+            .client()
+            .load_tidbit(original.id)
+            .expect("load authored tidbit")
+            .body_markdown,
+        "authored evidence survives"
+    );
+    create_tidbit(&reopened.client(), "capture remains available", 20);
+    let progress = reopened
+        .client()
+        .passage_embedding_index_progress()
+        .expect("quarantined progress");
     assert_eq!(progress.state, PassageEmbeddingIndexState::Failed);
     assert_eq!(progress.indexed_passages, 0);
 }

@@ -56,10 +56,6 @@ BEGIN
     SELECT RAISE(ABORT, 'passage embedding index definitions are retained');
 END;
 
-CREATE VIRTUAL TABLE passage_embedding_vec_jina_v1 USING vec0(
-    embedding float[768] distance_metric=cosine
-);
-
 CREATE TABLE passage_embedding (
     passage_id TEXT NOT NULL,
     embedding_index_id TEXT NOT NULL,

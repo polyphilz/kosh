@@ -8,6 +8,27 @@ use super::{DatabaseError, Result};
 pub(crate) const JINA_V1_VEC_TABLE: &str = "passage_embedding_vec_jina_v1";
 pub(crate) const RECONCILIATION_BATCH_SIZE: u32 = 32;
 
+pub(crate) fn ensure_vector_table(connection: &Connection) -> Result<()> {
+    super::connection::register_sqlite_vec()?;
+    if connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+            params![JINA_V1_VEC_TABLE],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "CREATE VIRTUAL TABLE passage_embedding_vec_jina_v1 USING vec0(
+            embedding float[768] distance_metric=cosine
+         );",
+    )?;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PendingPassageEmbedding {
     pub passage_rowid: i64,
@@ -328,10 +349,23 @@ pub(crate) fn activate_if_complete(
     Ok(true)
 }
 
-pub(crate) fn record_failure(
+pub(crate) fn record_retryable_failure(
     connection: &Connection,
     error: &str,
     failed_at_ms: i64,
+) -> Result<()> {
+    record_failure_with_state(connection, error, failed_at_ms, "DIRTY")
+}
+
+pub(crate) fn quarantine(connection: &Connection, error: &str, failed_at_ms: i64) -> Result<()> {
+    record_failure_with_state(connection, error, failed_at_ms, "FAILED")
+}
+
+fn record_failure_with_state(
+    connection: &Connection,
+    error: &str,
+    failed_at_ms: i64,
+    state: &str,
 ) -> Result<()> {
     if failed_at_ms < 0 {
         return Err(DatabaseError::InvalidInput(
@@ -341,10 +375,10 @@ pub(crate) fn record_failure(
     let bounded_error = error.chars().take(1_024).collect::<String>();
     let changed = connection.execute(
         "UPDATE index_state
-         SET status = 'FAILED', cursor = NULL,
+         SET status = ?3, cursor = NULL,
              updated_at = max(updated_at, ?1), error = ?2
          WHERE name = 'PASSAGE_EMBEDDING'",
-        params![failed_at_ms, bounded_error],
+        params![failed_at_ms, bounded_error, state],
     )?;
     if changed != 1 {
         return Err(DatabaseError::Validation {
