@@ -3,13 +3,14 @@ import {
   parseKoshMediaToken,
   serializeKoshAttachmentToken,
   serializeKoshImageToken,
+  serializeKoshPdfToken,
 } from "../../src/markdown/mediaTokens";
 
 const imageId = "01980c8e-6c00-7000-8000-000000000201";
 const attachmentId = "01980c8e-6c00-7000-8000-000000000202";
 
 describe("reserved Kosh media tokens", () => {
-  it("round-trips canonical image and attachment references", () => {
+  it("round-trips canonical image, PDF, and generic attachment references", () => {
     const image = serializeKoshImageToken({
       attachmentId: imageId,
       widthPercent: 70,
@@ -17,6 +18,7 @@ describe("reserved Kosh media tokens", () => {
       caption: "Chapter 2 / overview",
     });
     const attachment = serializeKoshAttachmentToken(attachmentId);
+    const pdf = serializeKoshPdfToken(attachmentId);
 
     expect(image).toBe(
       `{{kosh:image:${imageId};width=70%;alt=Architecture%20diagram;caption=Chapter%202%20%2F%20overview}}`,
@@ -32,6 +34,11 @@ describe("reserved Kosh media tokens", () => {
       attachmentId,
       kind: "attachment",
     });
+    expect(pdf).toBe(`{{kosh:pdf:${attachmentId}}}`);
+    expect(parseKoshMediaToken(pdf)).toEqual({
+      attachmentId,
+      kind: "pdf",
+    });
   });
 
   it("rejects ambiguous IDs, casing, widths, and trailing content", () => {
@@ -45,6 +52,7 @@ describe("reserved Kosh media tokens", () => {
       parseKoshMediaToken(`{{kosh:image:${imageId};width=70%;caption=Caption;alt=Alt}}`),
     ).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:attachment:${attachmentId}}} extra`)).toBeNull();
+    expect(parseKoshMediaToken(`{{kosh:pdf:${attachmentId}}} extra`)).toBeNull();
     expect(() =>
       serializeKoshImageToken({
         attachmentId: imageId,

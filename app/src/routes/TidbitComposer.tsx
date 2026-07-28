@@ -11,6 +11,7 @@ import {
 import { useBackend } from "../backend/context";
 import type {
   DraftRecord,
+  PdfRecord,
   SaveDraftInput,
   SourceDraft,
   TidbitDraft,
@@ -23,10 +24,18 @@ import { RichTextEditor, type RichTextEditorHandle } from "../markdown/RichTextE
 
 const AUTOSAVE_DELAY_MS = 350;
 const IMAGE_DROP_EVENT = "kosh://image-drop";
+const PDF_DROP_EVENT = "kosh://pdf-drop";
 
 interface ImageDropNotice {
   dropId: string;
   filenames: string[];
+}
+
+interface PdfDropNotice {
+  selections: Array<{
+    selectionId: string;
+    filename: string;
+  }>;
 }
 
 interface ComposerState {
@@ -67,6 +76,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   const [editorMediaPending, setEditorMediaPending] = useState(false);
   const [dropMediaPending, setDropMediaPending] = useState(false);
+  const [pdfDropListenerReady, setPdfDropListenerReady] = useState(false);
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
   const editorMediaPendingRef = useRef(false);
@@ -190,6 +200,90 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
       unlisten?.();
     };
   }, [backend, enqueueDraftSave]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<PdfDropNotice>(PDF_DROP_EVENT, (event) => {
+      const selectionIds = event.payload.selections.map((selection) => selection.selectionId);
+      if (!active || !readyRef.current || busyRef.current) {
+        void backend.discardPdfDropSelections(selectionIds).catch((reason: unknown) => {
+          console.error("Could not discard an ignored PDF drop", reason);
+        });
+        return;
+      }
+      pendingDropCountRef.current += 1;
+      setDropMediaPending(true);
+      setError(null);
+      void enqueueDraftSave(stateRef.current)
+        .then(async (draft) => {
+          const pdfs: PdfRecord[] = [];
+          const failures: string[] = [];
+          for (const selection of event.payload.selections) {
+            try {
+              pdfs.push(await backend.ingestSelectedPdf(selection.selectionId, draft.id));
+            } catch (reason) {
+              failures.push(`${selection.filename}: ${errorMessage(reason)}`);
+            }
+          }
+          return { failures, pdfs };
+        })
+        .then(({ failures, pdfs }) => {
+          if (!active) return;
+          editorRef.current?.insertPdfs(pdfs);
+          if (failures.length > 0) {
+            setError(`Could not add dropped PDFs: ${failures.join("; ")}`);
+          }
+        })
+        .catch((reason: unknown) => {
+          if (active) {
+            setError(`Could not add dropped PDF: ${errorMessage(reason)}`);
+          }
+        })
+        .finally(() => {
+          pendingDropCountRef.current = Math.max(0, pendingDropCountRef.current - 1);
+          if (active) {
+            setDropMediaPending(pendingDropCountRef.current > 0);
+          }
+        });
+    }).then((stop) => {
+      if (active) {
+        unlisten = stop;
+        setPdfDropListenerReady(true);
+      } else {
+        stop();
+      }
+    });
+    return () => {
+      active = false;
+      setPdfDropListenerReady(false);
+      unlisten?.();
+      void backend
+        .setPdfDropConsumerActive(false)
+        .catch((reason: unknown) =>
+          console.error("Could not release the PDF drop consumer", reason),
+        );
+    };
+  }, [backend, enqueueDraftSave]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window) || !pdfDropListenerReady) {
+      return;
+    }
+    void backend
+      .setPdfDropConsumerActive(ready && !busy)
+      .catch((reason: unknown) => console.error("Could not update the PDF drop consumer", reason));
+    return () => {
+      void backend
+        .setPdfDropConsumerActive(false)
+        .catch((reason: unknown) =>
+          console.error("Could not release the PDF drop consumer", reason),
+        );
+    };
+  }, [backend, busy, pdfDropListenerReady, ready]);
 
   useEffect(() => {
     if (!ready || !dirty || busy) return;
@@ -367,7 +461,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
               markChanged((current) => ({ ...current, bodyMarkdown }));
             }
           }}
-          onImageError={(reason) => setError(`Could not add image: ${errorMessage(reason)}`)}
+          onImageError={(reason) => setError(`Could not add attachment: ${errorMessage(reason)}`)}
           onPendingImagesChange={(pending) => {
             editorMediaPendingRef.current = pending;
             setEditorMediaPending(pending);
@@ -383,9 +477,18 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
             const draft = await enqueueDraftSave(stateRef.current);
             return backend.ingestSelectedImage(selectionId, draft.id);
           }}
+          pdfStatus={(attachmentId) => backend.pdfStatus(attachmentId)}
+          openPdfExternal={(attachmentId) => backend.openPdfExternal(attachmentId)}
+          pickPdf={async () => {
+            const selectionId = await backend.selectPdf();
+            if (!selectionId) return null;
+            const draft = await enqueueDraftSave(stateRef.current);
+            return backend.ingestSelectedPdf(selectionId, draft.id);
+          }}
           placeholder="Drop the knowledge here…"
           ref={editorRef}
           retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}
+          retryPdfExtraction={(attachmentId) => backend.retryPdfExtraction(attachmentId)}
           value={state.bodyMarkdown}
         />
 
@@ -496,7 +599,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
             variant="accent"
           >
             {mediaPending
-              ? "Adding image…"
+              ? "Adding attachment…"
               : busy
                 ? "Saving…"
                 : tidbit
@@ -526,7 +629,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
               onClick={() => void confirmDiscard()}
               variant="danger"
             >
-              {mediaPending ? "Adding image…" : busy ? "Discarding…" : "Discard draft"}
+              {mediaPending ? "Adding attachment…" : busy ? "Discarding…" : "Discard draft"}
             </Button>
           </>
         }
@@ -540,7 +643,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
       >
         <p>
           {mediaPending
-            ? "Wait for pending images to finish before discarding this draft."
+            ? "Wait for pending attachments to finish before discarding this draft."
             : "Your changes cannot be recovered after they are discarded."}
         </p>
       </Dialog>

@@ -134,6 +134,24 @@ function visitKoshImageNodes(node: MarkdownAstNode) {
         };
         continue;
       }
+      if (token?.kind === "pdf") {
+        node.children[index] = {
+          alt: "PDF attachment",
+          title: "kosh-pdf",
+          type: "image",
+          url: attachmentMediaUrl(token.attachmentId),
+        };
+        continue;
+      }
+      if (token?.kind === "attachment") {
+        node.children[index] = {
+          alt: "Attachment",
+          title: "kosh-attachment",
+          type: "image",
+          url: attachmentMediaUrl(token.attachmentId),
+        };
+        continue;
+      }
     }
     visitKoshImageNodes(child);
   }

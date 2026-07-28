@@ -379,6 +379,77 @@
   text-align: center;
 }
 
+.kosh-pdf-node {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0.8em 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+}
+
+.kosh-pdf-node.ProseMirror-selectednode {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  box-shadow: var(--focus-ring);
+}
+
+.kosh-pdf-node__icon {
+  padding: 5px 7px;
+  border-radius: 5px;
+  color: var(--surface-solid);
+  background: var(--danger);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+
+.kosh-pdf-node__details {
+  display: grid;
+  min-width: 0;
+}
+
+.kosh-pdf-node__details strong,
+.kosh-pdf-node__status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kosh-pdf-node__details strong {
+  font-size: 12px;
+}
+
+.kosh-pdf-node__status {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.kosh-pdf-node__controls {
+  display: flex;
+  gap: 8px;
+}
+
+.kosh-pdf-node__button {
+  padding: 3px 0;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font: 10px/1.3 var(--font-family-app);
+}
+
+.kosh-pdf-node__button:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.kosh-pdf-node__button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .kosh-editor-dialog {
   display: grid;
   gap: 10px;
@@ -496,6 +567,37 @@
   margin-top: 6px;
   color: var(--muted);
   font-size: 0.84em;
+}
+
+.kosh-markdown__pdf {
+  margin: 1em 0;
+}
+
+.kosh-markdown__pdf object {
+  display: block;
+  width: 100%;
+  height: min(72vh, 720px);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.kosh-markdown__pdf figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.84em;
+}
+
+.kosh-markdown__attachment {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--accent);
+  text-decoration: none;
 }
 
 .kosh-markdown blockquote {

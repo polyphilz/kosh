@@ -18,7 +18,7 @@ use crate::{
     database::{
         media::{
             CanonicalImage, ImageOcrJob, ImageOcrRegion, IngestAttachmentMetadata,
-            IngestImageWrite, MediaByteRange, StagedAttachment,
+            IngestImageWrite, MediaByteRange, MediaRangeRequest, StagedAttachment,
         },
         DatabaseClient, DatabaseError, ImageOcrDiagnostics, ImageRecord, ImageStatusRecord,
         MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
@@ -288,12 +288,26 @@ pub(crate) fn handle_image_drop<R: tauri::Runtime>(
     let Some(state) = window.try_state::<RuntimeState>() else {
         return;
     };
-    let Some(notice) = state.register_image_drop(paths) else {
+    let image_paths = image_drop_candidates(paths);
+    let Some(notice) = state.register_image_drop(&image_paths) else {
         return;
     };
     if let Err(error) = window.emit(IMAGE_DROP_EVENT, notice) {
         log::warn!("could not notify the editor about a native image drop: {error}");
     }
+}
+
+fn image_drop_candidates(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|path| {
+            !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        })
+        .cloned()
+        .collect()
 }
 
 async fn ingest_image_path(
@@ -716,7 +730,9 @@ fn recognize_without_panicking(
 }
 
 #[cfg(target_os = "macos")]
-fn recognize_image_text(bytes: &[u8]) -> std::result::Result<Vec<ImageOcrRegion>, String> {
+pub(crate) fn recognize_image_text(
+    bytes: &[u8],
+) -> std::result::Result<Vec<ImageOcrRegion>, String> {
     use objc2::{rc::autoreleasepool, runtime::AnyObject, AnyThread};
     use objc2_foundation::{NSArray, NSData, NSDictionary};
     use objc2_vision::{
@@ -769,7 +785,9 @@ fn recognize_image_text(bytes: &[u8]) -> std::result::Result<Vec<ImageOcrRegion>
 }
 
 #[cfg(not(target_os = "macos"))]
-fn recognize_image_text(_bytes: &[u8]) -> std::result::Result<Vec<ImageOcrRegion>, String> {
+pub(crate) fn recognize_image_text(
+    _bytes: &[u8],
+) -> std::result::Result<Vec<ImageOcrRegion>, String> {
     Err("Apple Vision OCR is available only on macOS".into())
 }
 
@@ -866,19 +884,24 @@ pub(crate) fn protocol_response<R: tauri::Runtime>(
     }
 }
 
-fn parse_range(value: &str) -> Option<MediaByteRange> {
+fn parse_range(value: &str) -> Option<MediaRangeRequest> {
     let range = value.strip_prefix("bytes=")?;
     if range.contains(',') {
         return None;
     }
     let (start, end) = range.split_once('-')?;
-    if start.is_empty() || end.is_empty() {
-        return None;
+    match (start.is_empty(), end.is_empty()) {
+        (false, false) => Some(MediaRangeRequest::Inclusive(MediaByteRange {
+            start: start.parse().ok()?,
+            end_inclusive: end.parse().ok()?,
+        })),
+        (false, true) => Some(MediaRangeRequest::From(start.parse().ok()?)),
+        (true, false) => {
+            let length = end.parse().ok()?;
+            (length > 0).then_some(MediaRangeRequest::Suffix(length))
+        }
+        (true, true) => None,
     }
-    Some(MediaByteRange {
-        start: start.parse().ok()?,
-        end_inclusive: end.parse().ok()?,
-    })
 }
 
 fn is_uuid_v7(value: &str) -> bool {
@@ -948,16 +971,38 @@ mod tests {
     }
 
     #[test]
-    fn range_parser_accepts_one_bounded_range_only() {
+    fn image_drop_candidates_preserve_content_sniffing_and_exclude_declared_pdfs() {
+        let paths = [
+            PathBuf::from("extensionless"),
+            PathBuf::from("camera-export.bin"),
+            PathBuf::from("chapter.pdf"),
+            PathBuf::from("appendix.PDF"),
+        ];
+
+        assert_eq!(
+            image_drop_candidates(&paths),
+            [
+                PathBuf::from("extensionless"),
+                PathBuf::from("camera-export.bin")
+            ]
+        );
+    }
+
+    #[test]
+    fn range_parser_accepts_single_bounded_open_and_suffix_ranges() {
         assert_eq!(
             parse_range("bytes=10-19"),
-            Some(MediaByteRange {
+            Some(MediaRangeRequest::Inclusive(MediaByteRange {
                 start: 10,
                 end_inclusive: 19
-            })
+            }))
         );
-        assert_eq!(parse_range("bytes=10-"), None);
-        assert_eq!(parse_range("bytes=-10"), None);
+        assert_eq!(parse_range("bytes=10-"), Some(MediaRangeRequest::From(10)));
+        assert_eq!(
+            parse_range("bytes=-10"),
+            Some(MediaRangeRequest::Suffix(10))
+        );
+        assert_eq!(parse_range("bytes=-0"), None);
         assert_eq!(parse_range("bytes=0-1,4-5"), None);
     }
 

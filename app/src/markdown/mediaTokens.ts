@@ -4,6 +4,7 @@ const imagePattern = new RegExp(
   "u",
 );
 const attachmentPattern = new RegExp(`^\\{\\{kosh:attachment:(${UUID_V7})\\}\\}$`, "u");
+const pdfPattern = new RegExp(`^\\{\\{kosh:pdf:(${UUID_V7})\\}\\}$`, "u");
 const markdownDelimiterPattern = /[!'()*_~]/gu;
 
 export interface KoshImageToken {
@@ -19,7 +20,12 @@ export interface KoshAttachmentToken {
   kind: "attachment";
 }
 
-export type KoshMediaToken = KoshImageToken | KoshAttachmentToken;
+export interface KoshPdfToken {
+  attachmentId: string;
+  kind: "pdf";
+}
+
+export type KoshMediaToken = KoshImageToken | KoshAttachmentToken | KoshPdfToken;
 
 export function parseKoshMediaToken(value: string): KoshMediaToken | null {
   const image = imagePattern.exec(value);
@@ -40,6 +46,10 @@ export function parseKoshMediaToken(value: string): KoshMediaToken | null {
       ...(altText === undefined ? {} : { altText }),
       ...(caption === undefined ? {} : { caption }),
     };
+  }
+  const pdf = pdfPattern.exec(value);
+  if (pdf) {
+    return { attachmentId: pdf[1]!, kind: "pdf" };
   }
   const attachment = attachmentPattern.exec(value);
   return attachment ? { attachmentId: attachment[1]!, kind: "attachment" } : null;
@@ -67,6 +77,11 @@ export function serializeKoshImageToken(token: Omit<KoshImageToken, "kind">): st
 export function serializeKoshAttachmentToken(attachmentId: string): string {
   assertUuidV7(attachmentId);
   return `{{kosh:attachment:${attachmentId}}}`;
+}
+
+export function serializeKoshPdfToken(attachmentId: string): string {
+  assertUuidV7(attachmentId);
+  return `{{kosh:pdf:${attachmentId}}}`;
 }
 
 function assertUuidV7(value: string): void {

@@ -3,6 +3,7 @@ mod embedding;
 mod embedding_runtime;
 mod media;
 mod passage_embedding_indexer;
+mod pdf;
 pub mod relevance;
 mod runtime;
 
@@ -50,6 +51,13 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         media::image_status,
         media::retry_image_ocr,
         media::image_ocr_diagnostics,
+        pdf::select_pdf,
+        pdf::ingest_selected_pdf,
+        pdf::set_pdf_drop_consumer_active,
+        pdf::discard_pdf_drop_selections,
+        pdf::pdf_status,
+        pdf::retry_pdf_extraction,
+        pdf::open_pdf_external,
         database::commands::create_tidbit,
         database::commands::load_tidbit,
         database::commands::list_tidbits,
@@ -71,7 +79,10 @@ pub fn run() {
             .register_uri_scheme_protocol("kosh-media", |context, request| {
                 media::protocol_response(context.app_handle(), request)
             })
-            .on_window_event(media::handle_image_drop),
+            .on_window_event(|window, event| {
+                media::handle_image_drop(window, event);
+                pdf::handle_pdf_drop(window, event);
+            }),
     )
     .setup(|app| {
         let data_dir = select_data_dir(
@@ -88,16 +99,20 @@ pub fn run() {
     .expect("error while running Kosh");
 }
 
+pub fn run_pdf_worker_if_requested() -> Option<i32> {
+    pdf::run_worker_if_requested()
+}
+
 pub use database::{
     AttachmentIngestInput, AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator,
     CitationResolution, CitationState, CitationTidbit, ClearDraftInput, Database,
     DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput, Draft, EditTidbitInput,
     ImageOcrDiagnostics, ImageOcrRecovery, ImageOcrStatus, ImageRecord, ImageStatusRecord,
     LexicalSearchMode, ListTidbitsInput, MediaCleanupResult, MediaIntegrityReport, MediaLimits,
-    MediaMaintenanceReport, PassageSearchResult, RestoreTidbitInput, SaveDraftInput,
-    SearchExecutionMode, SearchField, SearchHighlight, SearchPassagesInput, SearchPassagesResponse,
-    SemanticSearchReadiness, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem,
-    TidbitListPage, TidbitSource,
+    MediaMaintenanceReport, PassageSearchResult, PdfExtractionStatus, PdfRecord, PdfStatusRecord,
+    RestoreTidbitInput, SaveDraftInput, SearchExecutionMode, SearchField, SearchHighlight,
+    SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness, SourceDraft, Tidbit,
+    TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
 pub use embedding_runtime::{

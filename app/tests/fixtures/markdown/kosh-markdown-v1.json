@@ -43,8 +43,14 @@
   },
   {
     "id": "reserved-media-tokens",
-    "canonical": "{{kosh:image:01980c8e-6c00-7000-8000-000000000201;width=70%}}\n\n{{kosh:attachment:01980c8e-6c00-7000-8000-000000000202}}",
-    "selectors": [".kosh-markdown__image img", "p"],
-    "text": ["{{kosh:attachment:"]
+    "canonical": "{{kosh:image:01980c8e-6c00-7000-8000-000000000201;width=70%}}\n\n{{kosh:pdf:01980c8e-6c00-7000-8000-000000000202}}",
+    "selectors": [".kosh-markdown__image img", ".kosh-markdown__pdf object"],
+    "text": ["PDF attachment"]
+  },
+  {
+    "id": "generic-attachment-token",
+    "canonical": "{{kosh:attachment:01980c8e-6c00-7000-8000-000000000203}}",
+    "selectors": [".kosh-markdown__attachment"],
+    "text": ["Attachment"]
   }
 ]
