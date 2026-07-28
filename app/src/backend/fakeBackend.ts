@@ -24,9 +24,14 @@ export class FakeBackend implements Backend {
 
   constructor(probe: RuntimeProbe = browserRuntimeProbe, tidbits: TidbitRecord[] = []) {
     this.probe = probe;
-    this.sequence = tidbits.length;
     for (const tidbit of tidbits) {
       this.tidbits.set(tidbit.id, cloneTidbit(tidbit));
+      this.sequence = Math.max(
+        this.sequence,
+        generatedIdSequence(tidbit.id),
+        generatedIdSequence(tidbit.currentRevisionId),
+        ...tidbit.sources.map((source) => generatedIdSequence(source.id)),
+      );
     }
   }
 
@@ -228,4 +233,13 @@ function collapseAndTruncate(value: string, limit: number): string {
 function truncate(value: string, limit: number): string {
   const characters = [...value];
   return characters.length > limit ? `${characters.slice(0, limit).join("")}…` : value;
+}
+
+function generatedIdSequence(value: string): number {
+  const match = /^fake-(?:tidbit|revision|source)-(\d+)$/u.exec(value);
+  if (!match) {
+    return 0;
+  }
+  const sequence = Number(match[1]);
+  return Number.isSafeInteger(sequence) ? sequence : 0;
 }

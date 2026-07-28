@@ -81,4 +81,29 @@ describe("FakeBackend tidbits", () => {
       }),
     ).rejects.toThrow("sources must not contain duplicates");
   });
+
+  it("allocates generated IDs beyond IDs already present in seeded tidbits", async () => {
+    const source = new FakeBackend();
+    const seed = await source.createTidbit({
+      title: "Seed",
+      bodyMarkdown: "Keep this seeded record.",
+      sources: [],
+    });
+    const seeded = {
+      ...seed,
+      id: "fake-tidbit-2",
+      currentRevisionId: "fake-revision-7",
+    };
+    const backend = new FakeBackend(undefined, [seeded]);
+
+    const created = await backend.createTidbit({
+      title: "New",
+      bodyMarkdown: "Do not overwrite the seed.",
+      sources: [],
+    });
+
+    expect(created.id).toBe("fake-tidbit-8");
+    expect(await backend.loadTidbit(seeded.id)).toEqual(seeded);
+    expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toHaveLength(2);
+  });
 });
