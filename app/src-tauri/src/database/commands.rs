@@ -4,9 +4,10 @@ use tauri::State;
 use crate::runtime::RuntimeState;
 
 use super::{
+    drafts::SaveDraftWrite,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    DatabaseError, DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, Tidbit, TidbitDraft,
-    TidbitListPage,
+    ClearDraftInput, DatabaseError, DeleteTidbitInput, Draft, EditTidbitInput, ListTidbitsInput,
+    SaveDraftInput, Tidbit, TidbitDraft, TidbitListPage,
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -109,6 +110,42 @@ pub(crate) async fn delete_tidbit(
     let client = state.database_client();
     let now_ms = state.now_ms();
     run_writer(move || client.delete_tidbit(input, now_ms)).await
+}
+
+#[tauri::command]
+pub(crate) async fn save_draft(
+    state: State<'_, RuntimeState>,
+    input: SaveDraftInput,
+) -> CommandResult<Draft> {
+    let client = state.database_client();
+    let write = SaveDraftWrite {
+        input,
+        now_ms: state.now_ms(),
+        draft_id: state
+            .next_ids(1)
+            .into_iter()
+            .next()
+            .expect("requested draft ID"),
+    };
+    run_writer(move || client.save_draft(write)).await
+}
+
+#[tauri::command]
+pub(crate) async fn load_draft(
+    state: State<'_, RuntimeState>,
+    context_key: String,
+) -> CommandResult<Option<Draft>> {
+    let client = state.database_client();
+    run_writer(move || client.load_draft(context_key)).await
+}
+
+#[tauri::command]
+pub(crate) async fn clear_draft(
+    state: State<'_, RuntimeState>,
+    input: ClearDraftInput,
+) -> CommandResult<bool> {
+    let client = state.database_client();
+    run_writer(move || client.clear_draft(input)).await
 }
 
 async fn run_writer<T, F>(operation: F) -> CommandResult<T>

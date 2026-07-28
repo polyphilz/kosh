@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  ClearDraftInput,
   DeleteTidbitInput,
   EditTidbitInput,
   ListTidbitsInput,
+  SaveDraftInput,
   TidbitDraft,
 } from "../../src/backend/contracts";
 import { tauriBackend } from "../../src/backend/tauriBackend";
@@ -37,12 +39,25 @@ describe("tauriBackend tidbit gateway", () => {
       limit: 50,
       cursor: { updatedAtMs: 42, id: "tidbit-1" },
     };
+    const savedDraft: SaveDraftInput = {
+      contextKey: "capture",
+      tidbitId: null,
+      baseRevisionId: null,
+      ...draft,
+    };
+    const clearDraft: ClearDraftInput = {
+      contextKey: "capture",
+      expectedUpdatedAtMs: 42,
+    };
 
     await tauriBackend.createTidbit(draft);
     await tauriBackend.loadTidbit("tidbit-1");
     await tauriBackend.listTidbits(list);
     await tauriBackend.editTidbit(edit);
     await tauriBackend.deleteTidbit(deletion);
+    await tauriBackend.saveDraft(savedDraft);
+    await tauriBackend.loadDraft("capture");
+    await tauriBackend.clearDraft(clearDraft);
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
       ["create_tidbit", { input: draft }],
@@ -50,6 +65,9 @@ describe("tauriBackend tidbit gateway", () => {
       ["list_tidbits", { input: list }],
       ["edit_tidbit", { input: edit }],
       ["delete_tidbit", { input: deletion }],
+      ["save_draft", { input: savedDraft }],
+      ["load_draft", { contextKey: "capture" }],
+      ["clear_draft", { input: clearDraft }],
     ]);
   });
 });

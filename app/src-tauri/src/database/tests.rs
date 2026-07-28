@@ -178,13 +178,17 @@ fn unknown_future_migration_is_rejected_as_missing_from_the_binary() {
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
 
     let connection = Connection::open(&pair.paths.main).expect("main database");
+    let future_version = migrations::expected_heads()
+        .main
+        .expect("main migration head")
+        + 1;
     connection
         .execute(
             "INSERT INTO refinery_schema_history(version, name, applied_on, checksum)
-             SELECT 2, 'removed_from_binary', applied_on, '0'
+             SELECT ?1, 'removed_from_binary', applied_on, '0'
              FROM refinery_schema_history
              WHERE version = 1",
-            [],
+            params![future_version],
         )
         .expect("future migration");
     drop(connection);

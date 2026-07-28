@@ -133,3 +133,79 @@ describe("FakeBackend tidbits", () => {
     expect(edited.sources[0]?.id).toBe(first.sources[0]?.id);
   });
 });
+
+describe("FakeBackend drafts", () => {
+  it("restores exact partial input and protects newer autosaves from stale clears", async () => {
+    const backend = new FakeBackend({
+      dataDir: "/tmp/kosh-fake",
+      nowMs: 1_000,
+      requestId: "request-1",
+    });
+    const first = await backend.saveDraft({
+      contextKey: "capture",
+      tidbitId: null,
+      baseRevisionId: null,
+      title: "  unfinished  ",
+      bodyMarkdown: "",
+      sources: [{ label: null, url: "" }],
+    });
+    const second = await backend.saveDraft({
+      contextKey: "capture",
+      tidbitId: null,
+      baseRevisionId: null,
+      title: null,
+      bodyMarkdown: "newer",
+      sources: [],
+    });
+
+    expect(await backend.loadDraft("capture")).toEqual(second);
+    expect(second.id).toBe(first.id);
+    expect(second.updatedAtMs).toBeGreaterThan(first.updatedAtMs);
+    await expect(
+      backend.clearDraft({
+        contextKey: "capture",
+        expectedUpdatedAtMs: first.updatedAtMs,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      backend.clearDraft({
+        contextKey: "capture",
+        expectedUpdatedAtMs: second.updatedAtMs,
+      }),
+    ).resolves.toBe(true);
+    await expect(backend.loadDraft("capture")).resolves.toBeNull();
+  });
+
+  it("pins edit drafts to a revision owned by that tidbit", async () => {
+    const backend = new FakeBackend();
+    const tidbit = await backend.createTidbit({
+      title: null,
+      bodyMarkdown: "Original",
+      sources: [],
+    });
+
+    await expect(
+      backend.saveDraft({
+        contextKey: `edit:${tidbit.id}`,
+        tidbitId: tidbit.id,
+        baseRevisionId: tidbit.currentRevisionId,
+        title: null,
+        bodyMarkdown: "Editing",
+        sources: [],
+      }),
+    ).resolves.toMatchObject({
+      tidbitId: tidbit.id,
+      baseRevisionId: tidbit.currentRevisionId,
+    });
+    await expect(
+      backend.saveDraft({
+        contextKey: `edit:${tidbit.id}`,
+        tidbitId: tidbit.id,
+        baseRevisionId: "another-revision",
+        title: null,
+        bodyMarkdown: "Invalid",
+        sources: [],
+      }),
+    ).rejects.toThrow("must belong");
+  });
+});

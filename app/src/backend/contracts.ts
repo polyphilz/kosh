@@ -25,6 +25,23 @@ export interface DeleteTidbitInput {
   expectedRevisionId: string;
 }
 
+export interface SaveDraftInput extends TidbitDraft {
+  contextKey: string;
+  tidbitId: string | null;
+  baseRevisionId: string | null;
+}
+
+export interface ClearDraftInput {
+  contextKey: string;
+  expectedUpdatedAtMs: number;
+}
+
+export interface DraftRecord extends SaveDraftInput {
+  id: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
 export interface TidbitSource {
   id: string;
   label: string | null;
@@ -76,4 +93,7 @@ export interface Backend {
   listTidbits(input: ListTidbitsInput): Promise<TidbitListPage>;
   editTidbit(input: EditTidbitInput): Promise<TidbitRecord>;
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
+  saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
+  loadDraft(contextKey: string): Promise<DraftRecord | null>;
+  clearDraft(input: ClearDraftInput): Promise<boolean>;
 }

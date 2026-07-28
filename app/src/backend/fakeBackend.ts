@@ -1,9 +1,12 @@
 import type {
   Backend,
+  ClearDraftInput,
   DeleteTidbitInput,
+  DraftRecord,
   EditTidbitInput,
   ListTidbitsInput,
   RuntimeProbe,
+  SaveDraftInput,
   SourceDraft,
   TidbitDraft,
   TidbitListPage,
@@ -19,6 +22,8 @@ export const browserRuntimeProbe: RuntimeProbe = {
 
 export class FakeBackend implements Backend {
   private readonly probe: RuntimeProbe;
+  private readonly drafts = new Map<string, DraftRecord>();
+  private readonly revisionOwners = new Map<string, string>();
   private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
   private sequence = 0;
@@ -27,6 +32,7 @@ export class FakeBackend implements Backend {
     this.probe = probe;
     for (const tidbit of tidbits) {
       this.tidbits.set(tidbit.id, cloneTidbit(tidbit));
+      this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
       this.sequence = Math.max(
         this.sequence,
         generatedIdSequence(tidbit.id),
@@ -64,6 +70,7 @@ export class FakeBackend implements Backend {
       sources,
     };
     this.tidbits.set(tidbit.id, tidbit);
+    this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
     return cloneTidbit(tidbit);
   }
 
@@ -89,7 +96,7 @@ export class FakeBackend implements Backend {
       : sorted;
     const hasMore = afterCursor.length > input.limit;
     const page = afterCursor.slice(0, input.limit);
-    const last = page.at(-1);
+    const last = page[page.length - 1];
     return {
       items: page.map((tidbit) => ({
         id: tidbit.id,
@@ -132,6 +139,7 @@ export class FakeBackend implements Backend {
       sources: this.prepareSources(input.sources),
     };
     this.tidbits.set(updated.id, updated);
+    this.revisionOwners.set(updated.currentRevisionId, updated.id);
     return cloneTidbit(updated);
   }
 
@@ -151,6 +159,45 @@ export class FakeBackend implements Backend {
     };
     this.tidbits.set(deleted.id, deleted);
     return cloneTidbit(deleted);
+  }
+
+  async saveDraft(input: SaveDraftInput): Promise<DraftRecord> {
+    this.validateDraftContext(input);
+    const existing = this.drafts.get(input.contextKey);
+    const sequence = this.nextSequence();
+    const draft: DraftRecord = {
+      id: existing?.id ?? `fake-draft-${sequence}`,
+      contextKey: input.contextKey,
+      tidbitId: input.tidbitId,
+      baseRevisionId: input.baseRevisionId,
+      createdAtMs: existing?.createdAtMs ?? this.probe.nowMs + sequence,
+      updatedAtMs: existing
+        ? Math.max(existing.updatedAtMs + 1, this.probe.nowMs + sequence)
+        : this.probe.nowMs + sequence,
+      title: input.title === "" ? null : input.title,
+      bodyMarkdown: input.bodyMarkdown,
+      sources: input.sources.map((source) => ({ ...source })),
+    };
+    this.drafts.set(draft.contextKey, draft);
+    return cloneDraft(draft);
+  }
+
+  async loadDraft(contextKey: string): Promise<DraftRecord | null> {
+    validateDraftContextKey(contextKey);
+    const draft = this.drafts.get(contextKey);
+    return draft ? cloneDraft(draft) : null;
+  }
+
+  async clearDraft(input: ClearDraftInput): Promise<boolean> {
+    validateDraftContextKey(input.contextKey);
+    if (!Number.isSafeInteger(input.expectedUpdatedAtMs) || input.expectedUpdatedAtMs < 0) {
+      throw new Error("draft timestamp must be a non-negative JavaScript-safe integer");
+    }
+    const draft = this.drafts.get(input.contextKey);
+    if (!draft || draft.updatedAtMs !== input.expectedUpdatedAtMs) {
+      return false;
+    }
+    return this.drafts.delete(input.contextKey);
   }
 
   private nextSequence(): number {
@@ -186,6 +233,22 @@ export class FakeBackend implements Backend {
       return { ...source, id };
     });
   }
+
+  private validateDraftContext(input: SaveDraftInput): void {
+    validateDraftContextKey(input.contextKey);
+    if (input.contextKey === "capture") {
+      if (input.tidbitId !== null || input.baseRevisionId !== null) {
+        throw new Error("capture draft must not have edit metadata");
+      }
+      return;
+    }
+    if (!input.tidbitId || !input.baseRevisionId || input.contextKey !== `edit:${input.tidbitId}`) {
+      throw new Error("edit draft needs matching edit metadata");
+    }
+    if (this.revisionOwners.get(input.baseRevisionId) !== input.tidbitId) {
+      throw new Error("draft base revision must belong to its tidbit");
+    }
+  }
 }
 
 function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
@@ -193,6 +256,20 @@ function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
     ...tidbit,
     sources: tidbit.sources.map((source) => ({ ...source })),
   };
+}
+
+function cloneDraft(draft: DraftRecord): DraftRecord {
+  return {
+    ...draft,
+    sources: draft.sources.map((source) => ({ ...source })),
+  };
+}
+
+function validateDraftContextKey(contextKey: string): void {
+  if (contextKey === "capture" || /^edit:.+/u.test(contextKey)) {
+    return;
+  }
+  throw new Error("draft context must be capture or edit:<tidbitId>");
 }
 
 function normalizeText(value: string | null): string | null {

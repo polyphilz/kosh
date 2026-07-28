@@ -1,5 +1,6 @@
 pub(crate) mod commands;
 mod connection;
+mod drafts;
 mod error;
 mod migrations;
 mod paths;
@@ -7,6 +8,8 @@ mod tidbits;
 mod validation;
 mod writer;
 
+#[cfg(test)]
+mod drafts_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -23,6 +26,7 @@ use std::{
 
 use rusqlite::Connection;
 
+pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use paths::DatabasePaths;
 pub use tidbits::{
@@ -206,6 +210,15 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
                 reply,
             } => {
                 let _ = reply.send(tidbits::delete_tidbit(&mut main, input, now_ms));
+            }
+            WriterMessage::SaveDraft { write, reply } => {
+                let _ = reply.send(drafts::save_draft(&mut main, write));
+            }
+            WriterMessage::LoadDraft { context_key, reply } => {
+                let _ = reply.send(drafts::load_draft(&main, &context_key));
+            }
+            WriterMessage::ClearDraft { input, reply } => {
+                let _ = reply.send(drafts::clear_draft(&mut main, input));
             }
             WriterMessage::Shutdown => break,
         }
