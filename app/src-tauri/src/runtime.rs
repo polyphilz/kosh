@@ -74,9 +74,9 @@ impl RuntimeState {
         if let Err(error) = state
             .database
             .client()
-            .recover_media_lifecycle(state.clock.now_ms(), state.media_limits)
+            .schedule_media_lifecycle_recovery(state.clock.now_ms(), state.media_limits)
         {
-            log::warn!("startup media lifecycle recovery could not complete: {error}");
+            log::warn!("startup media lifecycle recovery could not be scheduled: {error}");
         }
         if let Err(error) =
             crate::media::recover_staging_directory(&state.media_staging_directory())

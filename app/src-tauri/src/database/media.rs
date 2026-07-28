@@ -781,42 +781,6 @@ pub(crate) fn sync_draft_media_leases(
             "a draft may contain at most {max_attachments_per_draft} attachments"
         )));
     }
-    let wanted = references
-        .iter()
-        .map(|reference| reference.id.as_str())
-        .collect::<HashSet<_>>();
-    let existing = transaction
-        .prepare(
-            "SELECT lease.id, lease.attachment_id
-             FROM draft_media_lease AS draft_lease
-             JOIN media_ingest_lease AS lease
-               ON lease.id = draft_lease.media_ingest_lease_id
-             WHERE draft_lease.draft_id = ?1",
-        )?
-        .query_map(params![draft_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for (lease_id, attachment_id) in existing {
-        if attachment_id
-            .as_deref()
-            .is_some_and(|id| wanted.contains(id))
-        {
-            continue;
-        }
-        transaction.execute(
-            "DELETE FROM draft_media_lease
-             WHERE draft_id = ?1 AND media_ingest_lease_id = ?2",
-            params![draft_id, &lease_id],
-        )?;
-        transaction.execute(
-            "UPDATE media_ingest_lease
-             SET state = 'ABANDONED',
-                 expires_at = max(created_at, min(expires_at, ?1))
-             WHERE id = ?2 AND state = 'COMMITTED'",
-            params![now_ms, &lease_id],
-        )?;
-    }
     for reference in references {
         let lease_id = transaction
             .query_row(
@@ -1106,9 +1070,38 @@ fn reconcile_and_reap(
     now_ms: i64,
     limits: MediaLimits,
 ) -> Result<MediaCleanupResult> {
-    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute(
-        "UPDATE media_ingest_lease
+    let (cleanup, _) = reconcile_and_reap_from(main, media, now_ms, limits, None, true, true)?;
+    Ok(cleanup)
+}
+
+pub(crate) fn recover_media_lifecycle_batch(
+    main: &mut Connection,
+    media: &mut Connection,
+    now_ms: i64,
+    limits: MediaLimits,
+    cursor: Option<Vec<u8>>,
+) -> Result<Option<Vec<u8>>> {
+    validate_timestamp(now_ms, "nowMs")?;
+    let limits = limits.validate()?;
+    let first_batch = cursor.is_none();
+    let (_, next_cursor) =
+        reconcile_and_reap_from(main, media, now_ms, limits, cursor, false, first_batch)?;
+    Ok(next_cursor)
+}
+
+fn reconcile_and_reap_from(
+    main: &mut Connection,
+    media: &mut Connection,
+    now_ms: i64,
+    limits: MediaLimits,
+    cursor: Option<Vec<u8>>,
+    scan_all_blobs: bool,
+    run_lifecycle_work: bool,
+) -> Result<(MediaCleanupResult, Option<Vec<u8>>)> {
+    let retired_attachment_count = if run_lifecycle_work {
+        let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE media_ingest_lease
          SET state = 'ABANDONED', expires_at = min(expires_at, ?1)
          WHERE state IN ('STAGED', 'COMMITTED')
            AND expires_at <= ?1
@@ -1119,10 +1112,10 @@ fn reconcile_and_reap(
                     WHERE membership.attachment_id = media_ingest_lease.attachment_id
                 )
            )",
-        params![now_ms],
-    )?;
-    let retired_attachment_count = transaction.execute(
-        "UPDATE attachment
+            params![now_ms],
+        )?;
+        let retired_attachment_count = transaction.execute(
+            "UPDATE attachment
          SET deleted_at = max(created_at, ?1),
              updated_at = max(updated_at, ?1)
          WHERE deleted_at IS NULL
@@ -1136,18 +1129,18 @@ fn reconcile_and_reap(
                   AND lease.state = 'COMMITTED'
                   AND lease.expires_at > ?1
            )",
-        params![now_ms],
-    )? as u64;
-    transaction.execute(
-        "DELETE FROM draft_media_lease
+            params![now_ms],
+        )? as u64;
+        transaction.execute(
+            "DELETE FROM draft_media_lease
          WHERE media_ingest_lease_id IN (
             SELECT id FROM media_ingest_lease
             WHERE state = 'ABANDONED' AND expires_at <= ?1
          )",
-        params![now_ms],
-    )?;
-    transaction.execute(
-        "DELETE FROM media_blob_reap_candidate
+            params![now_ms],
+        )?;
+        transaction.execute(
+            "DELETE FROM media_blob_reap_candidate
          WHERE sha256 IN (
             SELECT attachment.sha256
             FROM attachment
@@ -1157,15 +1150,34 @@ fn reconcile_and_reap(
                     WHERE membership.attachment_id = attachment.id
                )
          )",
-        [],
-    )?;
-    transaction.commit()?;
+            [],
+        )?;
+        transaction.commit()?;
 
-    media.execute(
-        "DELETE FROM media_blob_lease WHERE expires_at <= ?1",
-        params![now_ms],
-    )?;
-    reconcile_blob_candidates(main, media, now_ms)?;
+        media.execute(
+            "DELETE FROM media_blob_lease WHERE expires_at <= ?1",
+            params![now_ms],
+        )?;
+        retired_attachment_count
+    } else {
+        0
+    };
+    let next_cursor = if scan_all_blobs {
+        let mut cursor = cursor;
+        loop {
+            let next = reconcile_blob_candidate_batch(main, media, now_ms, cursor.as_deref())?;
+            let Some(next) = next else {
+                break;
+            };
+            cursor = Some(next);
+        }
+        None
+    } else {
+        reconcile_blob_candidate_batch(main, media, now_ms, cursor.as_deref())?
+    };
+    if !run_lifecycle_work {
+        return Ok((MediaCleanupResult::default(), next_cursor));
+    }
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let cutoff = now_ms.saturating_sub(limits.orphan_grace_period_ms);
     let candidates = transaction
@@ -1273,24 +1285,27 @@ fn reconcile_and_reap(
         )?;
         main_transaction.commit()?;
     }
-    Ok(cleanup)
+    Ok((cleanup, next_cursor))
 }
 
-fn reconcile_blob_candidates(main: &mut Connection, media: &Connection, now_ms: i64) -> Result<()> {
-    let mut cursor: Option<Vec<u8>> = None;
-    loop {
-        let hashes = load_media_blob_hash_batch(media, cursor.as_deref())?;
-        if hashes.is_empty() {
-            return Ok(());
-        }
-        let next_cursor = hashes.last().cloned();
-        let batch_is_complete = hashes.len()
-            < usize::try_from(MEDIA_RECONCILE_BATCH_SIZE)
-                .expect("media reconciliation batch size fits usize");
-        let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        {
-            let mut live_statement = transaction.prepare(
-                "SELECT EXISTS(
+fn reconcile_blob_candidate_batch(
+    main: &mut Connection,
+    media: &Connection,
+    now_ms: i64,
+    cursor: Option<&[u8]>,
+) -> Result<Option<Vec<u8>>> {
+    let hashes = load_media_blob_hash_batch(media, cursor)?;
+    if hashes.is_empty() {
+        return Ok(None);
+    }
+    let next_cursor = (hashes.len()
+        == usize::try_from(MEDIA_RECONCILE_BATCH_SIZE)
+            .expect("media reconciliation batch size fits usize"))
+    .then(|| hashes.last().expect("nonempty media hash batch").clone());
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    {
+        let mut live_statement = transaction.prepare(
+            "SELECT EXISTS(
                     SELECT 1
                     FROM attachment
                     WHERE sha256 = ?1
@@ -1303,34 +1318,30 @@ fn reconcile_blob_candidates(main: &mut Connection, media: &Connection, now_ms: 
                            )
                       )
                  )",
-            )?;
-            let mut lease_statement = media.prepare(
-                "SELECT EXISTS(
+        )?;
+        let mut lease_statement = media.prepare(
+            "SELECT EXISTS(
                     SELECT 1
                     FROM media_blob_lease
                     WHERE sha256 = ?1 AND expires_at > ?2
                  )",
-            )?;
-            let mut candidate_statement = transaction.prepare(
-                "INSERT OR IGNORE INTO media_blob_reap_candidate(
+        )?;
+        let mut candidate_statement = transaction.prepare(
+            "INSERT OR IGNORE INTO media_blob_reap_candidate(
                     sha256, orphaned_at, reason
                  ) VALUES(?1, ?2, 'unreferenced media blob')",
-            )?;
-            for hash in hashes {
-                let live: bool = live_statement.query_row(params![&hash], |row| row.get(0))?;
-                let leased: bool =
-                    lease_statement.query_row(params![&hash, now_ms], |row| row.get(0))?;
-                if !live && !leased {
-                    candidate_statement.execute(params![hash, now_ms])?;
-                }
+        )?;
+        for hash in hashes {
+            let live: bool = live_statement.query_row(params![&hash], |row| row.get(0))?;
+            let leased: bool =
+                lease_statement.query_row(params![&hash, now_ms], |row| row.get(0))?;
+            if !live && !leased {
+                candidate_statement.execute(params![hash, now_ms])?;
             }
         }
-        transaction.commit()?;
-        if batch_is_complete {
-            return Ok(());
-        }
-        cursor = next_cursor;
     }
+    transaction.commit()?;
+    Ok(next_cursor)
 }
 
 fn load_media_blob_hash_batch(

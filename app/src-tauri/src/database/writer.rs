@@ -105,10 +105,10 @@ pub(super) enum WriterMessage {
         limits: MediaLimits,
         reply: SyncSender<Result<MediaMaintenanceReport>>,
     },
-    RecoverMediaLifecycle {
+    RecoverMediaLifecycleBatch {
         now_ms: i64,
         limits: MediaLimits,
-        reply: SyncSender<Result<super::MediaCleanupResult>>,
+        cursor: Option<Vec<u8>>,
     },
     CreateTidbit {
         write: CreateTidbitWrite,
@@ -253,22 +253,18 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn recover_media_lifecycle(
+    pub(crate) fn schedule_media_lifecycle_recovery(
         &self,
         now_ms: i64,
         limits: MediaLimits,
-    ) -> Result<super::MediaCleanupResult> {
-        let (reply, receiver) = mpsc::sync_channel(1);
+    ) -> Result<()> {
         self.sender
-            .send(WriterMessage::RecoverMediaLifecycle {
+            .send(WriterMessage::RecoverMediaLifecycleBatch {
                 now_ms,
                 limits,
-                reply,
+                cursor: None,
             })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
+            .map_err(|_| DatabaseError::WriterUnavailable)
     }
 
     pub fn full_integrity_check(&self) -> Result<()> {

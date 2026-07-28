@@ -328,15 +328,25 @@ fn writer_loop(
             } => {
                 let _ = reply.send(media::maintain_media(&mut main, &mut media, now_ms, limits));
             }
-            WriterMessage::RecoverMediaLifecycle {
+            WriterMessage::RecoverMediaLifecycleBatch {
                 now_ms,
                 limits,
-                reply,
-            } => {
-                let _ = reply.send(media::recover_media_lifecycle(
-                    &mut main, &mut media, now_ms, limits,
-                ));
-            }
+                cursor,
+            } => match media::recover_media_lifecycle_batch(
+                &mut main, &mut media, now_ms, limits, cursor,
+            ) {
+                Ok(Some(cursor)) => {
+                    let _ = sender.send(WriterMessage::RecoverMediaLifecycleBatch {
+                        now_ms,
+                        limits,
+                        cursor: Some(cursor),
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    log::warn!("background media lifecycle recovery could not complete: {error}");
+                }
+            },
             WriterMessage::CreateTidbit { write, reply } => {
                 let _ = reply.send(tidbits::create_tidbit(&mut main, write));
             }

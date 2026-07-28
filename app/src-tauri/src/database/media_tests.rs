@@ -10,8 +10,9 @@ use tempfile::TempDir;
 use super::{
     drafts::SaveDraftWrite,
     media::{
-        referenced_attachments, AttachmentDisplayRole, IngestAttachmentMetadata,
-        IngestAttachmentWrite, MediaByteRange, StagedAttachment, MEDIA_RECONCILE_BATCH_SIZE,
+        recover_media_lifecycle_batch, referenced_attachments, AttachmentDisplayRole,
+        IngestAttachmentMetadata, IngestAttachmentWrite, MediaByteRange, StagedAttachment,
+        MEDIA_RECONCILE_BATCH_SIZE,
     },
     tidbits::CreateTidbitWrite,
     AttachmentIngestInput, AttachmentKind, ClearDraftInput, Database, DatabaseError, DatabasePaths,
@@ -340,6 +341,41 @@ fn assert_directory_empty(path: &Path) {
 }
 
 #[test]
+fn removed_draft_media_remains_authorized_for_undo_until_expiry() {
+    let library = TestLibrary::new();
+    let attachment = library.ingest(
+        (0x728, 0x729, 0x72a),
+        "undo.png",
+        "image/png",
+        b"undo image",
+        11,
+        MediaLimits::default(),
+    );
+    let body = format!("{{{{kosh:image:{};width=70%}}}}", attachment.id);
+    library.save_capture(&body, 12);
+    library.save_capture("", 13);
+
+    let main = library.database.open_main_read_only().expect("main reader");
+    assert_eq!(
+        main.query_row(
+            "SELECT lease.state
+             FROM draft_media_lease AS draft_lease
+             JOIN media_ingest_lease AS lease
+               ON lease.id = draft_lease.media_ingest_lease_id
+             WHERE draft_lease.draft_id = ?1 AND lease.attachment_id = ?2",
+            params![CAPTURE_DRAFT_ID, attachment.id],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("retained draft media capability"),
+        "COMMITTED"
+    );
+    drop(main);
+
+    let restored = library.save_capture(&body, 14);
+    assert_eq!(restored.body_markdown, body);
+}
+
+#[test]
 fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     let library = TestLibrary::new();
     let limits = MediaLimits {
@@ -429,7 +465,7 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
 }
 
 #[test]
-fn lifecycle_reconciliation_discovers_candidates_across_bounded_hash_batches() {
+fn lifecycle_reconciliation_yields_between_bounded_hash_batches() {
     let library = TestLibrary::new();
     let mut media = Connection::open(&library.paths.media).expect("media writer");
     let transaction = media.transaction().expect("media transaction");
@@ -451,31 +487,50 @@ fn lifecycle_reconciliation_discovers_candidates_across_bounded_hash_batches() {
     }
     transaction.commit().expect("commit orphan media blobs");
     drop(media);
-
-    let cleanup = library
+    library
         .database
-        .client()
-        .recover_media_lifecycle(
-            12,
-            MediaLimits {
-                orphan_grace_period_ms: 100,
-                ..MediaLimits::default()
-            },
-        )
-        .expect("reconcile media in bounded batches");
+        .shutdown()
+        .expect("stop database writer before direct batch probes");
 
-    assert_eq!(cleanup.deleted_blob_count, 0);
+    let mut main = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("direct main writer");
+    let mut media = super::connection::open_writer(
+        &library.paths.media,
+        super::connection::DatabaseKind::Media,
+        super::connection::FileState::Existing,
+    )
+    .expect("direct media writer");
+    let limits = MediaLimits {
+        orphan_grace_period_ms: 100,
+        ..MediaLimits::default()
+    };
+    let cursor = recover_media_lifecycle_batch(&mut main, &mut media, 12, limits, None)
+        .expect("first bounded lifecycle batch")
+        .expect("more media hashes remain");
     assert_eq!(
-        library
-            .database
-            .open_main_read_only()
-            .expect("main reader")
-            .query_row(
-                "SELECT count(*) FROM media_blob_reap_candidate",
-                [],
-                |row| { row.get::<_, u32>(0) }
-            )
-            .expect("reap candidate count"),
+        main.query_row(
+            "SELECT count(*) FROM media_blob_reap_candidate",
+            [],
+            |row| { row.get::<_, u32>(0) }
+        )
+        .expect("first reap candidate count"),
+        MEDIA_RECONCILE_BATCH_SIZE
+    );
+
+    let completed = recover_media_lifecycle_batch(&mut main, &mut media, 12, limits, Some(cursor))
+        .expect("second bounded lifecycle batch");
+    assert_eq!(completed, None);
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM media_blob_reap_candidate",
+            [],
+            |row| { row.get::<_, u32>(0) }
+        )
+        .expect("complete reap candidate count"),
         blob_count
     );
 }
