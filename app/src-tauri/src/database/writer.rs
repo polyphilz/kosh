@@ -7,6 +7,7 @@ use super::{
     error::{DatabaseError, Result},
     migrations::MigrationHeads,
     passages::CitationResolution,
+    search::{PassageSearchResult, SearchPassagesInput},
     tidbits::{
         CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput,
         RestoreTidbitInput, Tidbit, TidbitListPage,
@@ -72,6 +73,10 @@ pub(super) enum WriterMessage {
     ResolveCitation {
         passage_id: String,
         reply: SyncSender<Result<CitationResolution>>,
+    },
+    SearchPassages {
+        input: SearchPassagesInput,
+        reply: SyncSender<Result<Vec<PassageSearchResult>>>,
     },
     SaveDraft {
         write: SaveDraftWrite,
@@ -231,6 +236,19 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::ResolveCitation { passage_id, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn search_passages(
+        &self,
+        input: SearchPassagesInput,
+    ) -> Result<Vec<PassageSearchResult>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::SearchPassages { input, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

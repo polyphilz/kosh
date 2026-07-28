@@ -1,4 +1,5 @@
 mod fixture;
+mod lexical;
 mod report;
 mod scale;
 
@@ -8,6 +9,10 @@ pub use fixture::{
     EvaluationAttachment, EvaluationLocator, EvaluationPassage, EvaluationQuery, EvaluationRegion,
     EvaluationSource, ExpectedCitation, QueryCategory, RelevanceFixture, RelevanceJudgment,
     RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
+};
+pub use lexical::{
+    benchmark_scale_lexical, LexicalFixtureRetriever, LexicalPerformanceReport,
+    INTERACTIVE_LEXICAL_P95_BUDGET_MS, LEXICAL_PERFORMANCE_SCHEMA_VERSION,
 };
 pub use report::{
     run_relevance_suite, EmptyRetriever, QueryMetrics, QueryReport, RelevanceReport, ReportSummary,
@@ -43,6 +48,8 @@ pub enum RelevanceError {
     InvalidFixture(String),
     #[error("retriever failed for query {query_id}: {message}")]
     Retrieval { query_id: String, message: String },
+    #[error("lexical benchmark failed: {0}")]
+    LexicalBenchmark(String),
 }
 
 pub type Result<T> = std::result::Result<T, RelevanceError>;

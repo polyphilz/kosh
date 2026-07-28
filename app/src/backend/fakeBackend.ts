@@ -6,9 +6,12 @@ import type {
   DraftRecord,
   EditTidbitInput,
   ListTidbitsInput,
+  PassageSearchResult,
   RuntimeProbe,
   RestoreTidbitInput,
   SaveDraftInput,
+  SearchField,
+  SearchPassagesInput,
   SourceDraft,
   TidbitDraft,
   TidbitListPage,
@@ -227,6 +230,78 @@ export class FakeBackend implements Backend {
     };
   }
 
+  async searchPassages(input: SearchPassagesInput): Promise<PassageSearchResult[]> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new Error("limit must be between 1 and 100");
+    }
+    if ([...input.query].length > 512) {
+      throw new Error("query must contain at most 512 characters");
+    }
+    const atoms = parseSearchAtoms(input.query);
+    if (atoms.length === 0) {
+      return [];
+    }
+    const matches = [...this.tidbits.values()]
+      .filter((tidbit) => tidbit.deletedAtMs === null)
+      .flatMap((tidbit) => {
+        const fields: Array<[SearchField, string]> = [
+          ["TITLE", tidbit.title ?? ""],
+          ["BODY", tidbit.bodyMarkdown],
+          ["SOURCE_LABEL", tidbit.sources.flatMap((source) => source.label ?? []).join("\n")],
+          ["SOURCE_DOMAIN", tidbit.sources.flatMap((source) => source.url ?? []).join("\n")],
+        ];
+        const matchedAtoms = atoms.map((atom) =>
+          fields.some(([, value]) =>
+            normalizeSearchText(value).includes(normalizeSearchText(atom)),
+          ),
+        );
+        const matchedAtomCount = matchedAtoms.filter(Boolean).length;
+        const qualifies =
+          input.mode === "EXACT"
+            ? matchedAtoms.every(Boolean)
+            : matchedAtomCount >= Math.min(atoms.length, 2);
+        if (!qualifies) {
+          return [];
+        }
+        const matchedFields = fields
+          .filter(([, value]) =>
+            atoms.some((atom) => normalizeSearchText(value).includes(normalizeSearchText(atom))),
+          )
+          .map(([field]) => field);
+        const highlights = fields.flatMap(([field, value]) =>
+          atoms.flatMap((atom) => searchSpans(value, atom, field)),
+        );
+        return [
+          {
+            tidbit,
+            matchedFields,
+            highlights: highlights.slice(0, 32),
+            score: matchedAtomCount,
+          },
+        ];
+      })
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          right.tidbit.updatedAtMs - left.tidbit.updatedAtMs ||
+          left.tidbit.id.localeCompare(right.tidbit.id),
+      )
+      .slice(0, input.limit);
+
+    return Promise.all(
+      matches.map(async ({ tidbit, matchedFields, highlights, score }) => {
+        const passageId = `fake-passage:${tidbit.currentRevisionId}`;
+        return {
+          passageId,
+          score,
+          matchedFields,
+          highlights,
+          citation: await this.resolveCitation(passageId),
+        };
+      }),
+    );
+  }
+
   async saveDraft(input: SaveDraftInput): Promise<DraftRecord> {
     this.validateDraftContext(input);
     const existing = this.drafts.get(input.contextKey);
@@ -407,4 +482,33 @@ function generatedIdSequence(value: string): number {
   }
   const sequence = Number(match[1]);
   return Number.isSafeInteger(sequence) ? sequence : 0;
+}
+
+function parseSearchAtoms(query: string): string[] {
+  return [...query.matchAll(/"([^"]+)"|(\S+)/gu)]
+    .map((match) => (match[1] ?? match[2] ?? "").trim())
+    .filter(Boolean);
+}
+
+function normalizeSearchText(value: string): string {
+  return value.normalize("NFKD").replace(/\p{M}/gu, "").toLocaleLowerCase();
+}
+
+function searchSpans(value: string, atom: string, field: SearchField) {
+  const normalizedValue = normalizeSearchText(value);
+  const normalizedAtom = normalizeSearchText(atom);
+  if (!normalizedAtom) {
+    return [];
+  }
+  const start = normalizedValue.indexOf(normalizedAtom);
+  if (start < 0) {
+    return [];
+  }
+  return [
+    {
+      field,
+      startChar: Array.from(normalizedValue.slice(0, start)).length,
+      endChar: Array.from(normalizedValue.slice(0, start + normalizedAtom.length)).length,
+    },
+  ];
 }

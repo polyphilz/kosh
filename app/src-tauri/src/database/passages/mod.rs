@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{tidbits, DatabaseError, Result, TidbitSource};
+use super::{search, tidbits, DatabaseError, Result, TidbitSource};
 use builder::{build_markdown_passages, MarkdownLocator, CONSTRUCTION_VERSION};
 
 pub(super) const BACKGROUND_RECONCILE_BATCH_SIZE: u32 = 25;
@@ -149,21 +149,6 @@ pub(super) fn insert_author_passages(
                 heading_context_json,
             ],
         )?;
-    }
-    let state_updated = transaction.execute(
-        "UPDATE index_state
-         SET status = 'DIRTY',
-             cursor = NULL,
-             updated_at = max(updated_at, ?1),
-             error = NULL
-         WHERE name = 'PASSAGE_FTS'",
-        params![created_at_ms],
-    )?;
-    if state_updated != 1 {
-        return Err(DatabaseError::Validation {
-            kind: "main",
-            reason: "PASSAGE_FTS index state is missing".into(),
-        });
     }
     Ok(passages.len())
 }
@@ -320,6 +305,7 @@ fn reconcile_author_passage_batch_transaction(
              ORDER BY tidbit.id, passage.ordinal",
             params![CONSTRUCTION_VERSION],
         )?;
+        search::rebuild_documents(&transaction)?;
     }
     let status = if has_more { "DIRTY" } else { "IDLE" };
     let cursor = if has_more {
@@ -374,6 +360,7 @@ pub(super) fn replace_active_author_passages(
             "current revision has no authored passages".into(),
         ));
     }
+    search::replace_tidbit_documents(transaction, tidbit_id)?;
     Ok(())
 }
 
@@ -421,6 +408,7 @@ pub(super) fn deactivate_tidbit(transaction: &Transaction<'_>, tidbit_id: &str) 
         "DELETE FROM active_passage WHERE tidbit_id = ?1",
         params![tidbit_id],
     )?;
+    search::replace_tidbit_documents(transaction, tidbit_id)?;
     Ok(())
 }
 

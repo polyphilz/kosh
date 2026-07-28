@@ -25,6 +25,7 @@ const MAIN_TABLES: &[&str] = &[
     "passage_embedding",
     "passage_fts_trigram",
     "passage_fts_word",
+    "passage_search_document",
     "research_citation",
     "research_event",
     "research_run",
@@ -212,7 +213,7 @@ fn recover_interrupted_derived_work(connection: &mut Connection) -> Result<()> {
 
 pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
     const INDEXES: &[&str] = &["passage_fts_word", "passage_fts_trigram"];
-    const VERSION: &str = "1";
+    const VERSION: &str = "lexical-v1";
     let existing_version = connection
         .query_row(
             "SELECT version FROM index_state WHERE name = 'PASSAGE_FTS'",

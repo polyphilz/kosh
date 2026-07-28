@@ -5,6 +5,7 @@ mod error;
 mod migrations;
 mod passages;
 mod paths;
+pub(crate) mod search;
 mod tidbits;
 mod validation;
 mod writer;
@@ -33,6 +34,9 @@ pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
 };
 pub use paths::DatabasePaths;
+pub use search::{
+    LexicalSearchMode, PassageSearchResult, SearchField, SearchHighlight, SearchPassagesInput,
+};
 pub use tidbits::{
     DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
     TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
@@ -245,6 +249,9 @@ fn writer_loop(
             }
             WriterMessage::ResolveCitation { passage_id, reply } => {
                 let _ = reply.send(passages::resolve_citation(&main, &passage_id));
+            }
+            WriterMessage::SearchPassages { input, reply } => {
+                let _ = reply.send(search::search_passages(&main, input));
             }
             WriterMessage::SaveDraft { write, reply } => {
                 let _ = reply.send(drafts::save_draft(&mut main, write));

@@ -17,6 +17,8 @@
     "test:visual:update": "playwright test tests/browser/catalog.spec.ts --update-snapshots",
     "relevance:validate": "cargo run --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- validate fixtures/relevance/v1.json",
     "relevance:empty": "cargo run --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- empty-report fixtures/relevance/v1.json .data/relevance/reports/empty-v1",
+    "relevance:lexical": "cargo run --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- lexical-report fixtures/relevance/v1.json .data/relevance/reports/lexical-v1",
+    "relevance:lexical-scale": "cargo run --release --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- benchmark-lexical .data/relevance/reports/lexical-scale-v1.performance.json 10000 200",
     "relevance:scale": "cargo run --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- generate-scale .data/relevance/scale-v1.json 10000",
     "check:frontend": "pnpm lint && pnpm fmt:check && pnpm build && pnpm test && pnpm test:browser",
     "check:native": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support",
