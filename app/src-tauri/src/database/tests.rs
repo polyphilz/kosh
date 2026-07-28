@@ -320,6 +320,96 @@ fn media_lifecycle_upgrade_preserves_attachments_and_allows_shared_blobs() {
 }
 
 #[test]
+fn revision_owned_attachment_search_upgrade_removes_draft_only_documents() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(7))
+        .run(&mut main)
+        .expect("main schema before revision-owned attachment search");
+    main.execute_batch(
+        "INSERT INTO attachment(
+            id, created_at, updated_at, sha256, display_filename,
+            media_type, byte_length, kind, extraction_state
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000801',
+            10, 10, zeroblob(32), 'draft-only.pdf',
+            'application/pdf', 128, 'PDF', 'READY'
+         );
+         INSERT INTO attachment_extraction(
+            id, attachment_id, extractor, extractor_version, content_hash,
+            status, created_at, started_at, completed_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000802',
+            '019f547b-6200-7000-8000-000000000801',
+            'pdf-text', '1', zeroblob(32), 'READY', 10, 10, 10
+         );
+         INSERT INTO attachment_segment(
+            id, extraction_id, ordinal, locator_kind, page_number,
+            content, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000803',
+            '019f547b-6200-7000-8000-000000000802',
+            0, 'PDF_PAGE', 1, 'draft_only_upgrade_evidence', zeroblob(32)
+         );
+         INSERT INTO passage(
+            id, attachment_segment_id, owner_kind, ordinal, content,
+            content_hash, locator_kind, locator_json, created_at,
+            construction_version, heading_context_json
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000804',
+            '019f547b-6200-7000-8000-000000000803',
+            'ATTACHMENT', 0, 'draft_only_upgrade_evidence',
+            zeroblob(32), 'PDF_PAGE', '{\"page\":1}', 10,
+            'pdf-page-v1', '[]'
+         );
+         INSERT INTO passage_search_document(
+            rowid, passage_id, tidbit_id, title, heading_context, body,
+            source_labels, source_domains, attachment_names, extracted_text,
+            owner_content_hash, updated_at
+         )
+         SELECT
+            rowid, id, NULL, '', '', '', '', '', 'draft-only.pdf',
+            content, content_hash, 10
+         FROM passage
+         WHERE id = '019f547b-6200-7000-8000-000000000804';",
+    )
+    .expect("legacy draft-only attachment search document");
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM current_attachment_passage",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("legacy current attachment passage"),
+        1
+    );
+
+    migrations::run_main(&mut main).expect("revision-owned attachment search migration");
+
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM current_attachment_passage",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("gated current attachment passage"),
+        0
+    );
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM passage_search_document
+             WHERE passage_id = '019f547b-6200-7000-8000-000000000804'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("removed draft-only search document"),
+        0
+    );
+}
+
+#[test]
 fn corrupt_application_id_is_rejected_before_migration() {
     let pair = TestPair::new();
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));

@@ -1,14 +1,17 @@
 const UUID_V7 = "[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const imagePattern = new RegExp(
-  `^\\{\\{kosh:image:(${UUID_V7});width=(100|[1-9][0-9])%\\}\\}$`,
+  `^\\{\\{kosh:image:(${UUID_V7});width=(100|[1-9][0-9])%(?:;alt=([^;]+))?(?:;caption=([^;]+))?\\}\\}$`,
   "u",
 );
 const attachmentPattern = new RegExp(`^\\{\\{kosh:attachment:(${UUID_V7})\\}\\}$`, "u");
+const markdownDelimiterPattern = /[!'()*_~]/gu;
 
 export interface KoshImageToken {
   attachmentId: string;
   kind: "image";
   widthPercent: number;
+  altText?: string;
+  caption?: string;
 }
 
 export interface KoshAttachmentToken {
@@ -22,9 +25,21 @@ export function parseKoshMediaToken(value: string): KoshMediaToken | null {
   const image = imagePattern.exec(value);
   if (image) {
     const widthPercent = Number(image[2]);
-    return widthPercent >= 10 && widthPercent <= 100
-      ? { attachmentId: image[1]!, kind: "image", widthPercent }
-      : null;
+    if (widthPercent < 10 || widthPercent > 100) {
+      return null;
+    }
+    const altText = decodeCanonicalField(image[3]);
+    const caption = decodeCanonicalField(image[4]);
+    if (altText === null || caption === null) {
+      return null;
+    }
+    return {
+      attachmentId: image[1]!,
+      kind: "image",
+      widthPercent,
+      ...(altText === undefined ? {} : { altText }),
+      ...(caption === undefined ? {} : { caption }),
+    };
   }
   const attachment = attachmentPattern.exec(value);
   return attachment ? { attachmentId: attachment[1]!, kind: "attachment" } : null;
@@ -39,7 +54,14 @@ export function serializeKoshImageToken(token: Omit<KoshImageToken, "kind">): st
   ) {
     throw new Error("image token width must be an integer from 10 to 100");
   }
-  return `{{kosh:image:${token.attachmentId};width=${token.widthPercent}%}}`;
+  const altText = normalizedField(token.altText, 500, "image alt text");
+  const caption = normalizedField(token.caption, 2_000, "image caption");
+  return [
+    `{{kosh:image:${token.attachmentId};width=${token.widthPercent}%`,
+    altText ? `;alt=${encodeCanonicalField(altText)}` : "",
+    caption ? `;caption=${encodeCanonicalField(caption)}` : "",
+    "}}",
+  ].join("");
 }
 
 export function serializeKoshAttachmentToken(attachmentId: string): string {
@@ -51,4 +73,31 @@ function assertUuidV7(value: string): void {
   if (!new RegExp(`^${UUID_V7}$`, "u").test(value)) {
     throw new Error("media token attachment ID must be a lowercase UUIDv7");
   }
+}
+
+function normalizedField(value: string | undefined, limit: number, label: string): string {
+  const normalized = value?.trim() ?? "";
+  if ([...normalized].length > limit) {
+    throw new Error(`${label} must contain at most ${limit} characters`);
+  }
+  return normalized;
+}
+
+function decodeCanonicalField(value: string | undefined): string | undefined | null {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded && encodeCanonicalField(decoded) === value ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function encodeCanonicalField(value: string): string {
+  return encodeURIComponent(value).replace(markdownDelimiterPattern, (character) => {
+    const hex = character.codePointAt(0)!.toString(16).toUpperCase();
+    return `%${hex}`;
+  });
 }

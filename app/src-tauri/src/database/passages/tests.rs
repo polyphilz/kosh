@@ -239,7 +239,20 @@ fn attachment_citations_resolve_typed_file_and_line_provenance() {
         .expect("main writer");
     connection
         .execute_batch(
-            "INSERT INTO attachment(
+            "BEGIN;
+             INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+             VALUES(
+                '019f547b-6200-7000-8000-000000002105',
+                10, 10, '019f547b-6200-7000-8000-000000002106'
+             );
+             INSERT INTO tidbit_revision(
+                id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000002106',
+                '019f547b-6200-7000-8000-000000002105',
+                1, 10, 'Attachment citation owner.', zeroblob(32)
+             );
+             INSERT INTO attachment(
                 id, created_at, updated_at, sha256, display_filename,
                 media_type, byte_length, kind, extraction_state
              ) VALUES(
@@ -272,7 +285,15 @@ fn attachment_citations_resolve_typed_file_and_line_provenance() {
                 'ATTACHMENT', 0, 'exact attachment evidence', zeroblob(32),
                 'TEXT_LINES', '{\"start\":4,\"end\":7}', 10,
                 'text-lines-v1', '[]'
-             );",
+             );
+             INSERT INTO tidbit_revision_attachment(
+                tidbit_revision_id, attachment_id, sort_order, display_role
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000002106',
+                '019f547b-6200-7000-8000-000000002101',
+                0, 'ATTACHMENT'
+             );
+             COMMIT;",
         )
         .expect("attachment citation fixture");
 

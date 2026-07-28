@@ -27,6 +27,17 @@ pub(crate) const MEDIA_RECONCILE_BATCH_SIZE: u32 = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
 const TOKEN_SUFFIX: &str = "}}";
+const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
+const IMAGE_OCR_EXTRACTOR: &str = "ocr";
+const MAX_IMAGE_OCR_ATTEMPTS: u32 = 4;
+const IMAGE_OCR_RETRY_DELAYS_MS: [i64; 3] = [5 * 60 * 1_000, 30 * 60 * 1_000, 2 * 60 * 60 * 1_000];
+const IMAGE_OCR_RECOVERY_BATCH_SIZE: usize = 64;
+const MAX_OCR_REGIONS: usize = 4_096;
+const MAX_OCR_REGION_CHARS: usize = 16_384;
+const MAX_OCR_TOTAL_CHARS: usize = 1_000_000;
+const INTERRUPTED_OCR_ERROR: &str = "OCR was interrupted before it completed";
+const STALE_OCR_ERROR: &str = "OCR extractor provenance is no longer current";
+const RETIRED_OCR_ERROR: &str = "Image was retired before OCR completed";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -135,6 +146,108 @@ pub struct AttachmentRecord {
     pub media_type: String,
     pub byte_length: u64,
     pub kind: AttachmentKind,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ImageOcrStatus {
+    Pending,
+    Running,
+    RetryWait,
+    Ready,
+    Failed,
+}
+
+impl ImageOcrStatus {
+    fn from_db(value: &str) -> Result<Self> {
+        match value {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "RETRY_WAIT" => Ok(Self::RetryWait),
+            "READY" => Ok(Self::Ready),
+            "FAILED" => Ok(Self::Failed),
+            _ => Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("unknown image OCR state {value}"),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRecord {
+    #[serde(flatten)]
+    pub attachment: AttachmentRecord,
+    pub natural_width: u32,
+    pub natural_height: u32,
+    pub ocr_status: ImageOcrStatus,
+    pub ocr_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageStatusRecord {
+    pub attachment_id: String,
+    pub natural_width: u32,
+    pub natural_height: u32,
+    pub ocr_status: ImageOcrStatus,
+    pub ocr_error: Option<String>,
+    pub next_attempt_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CanonicalImage {
+    pub bytes: Vec<u8>,
+    pub natural_width: u32,
+    pub natural_height: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IngestImageWrite {
+    pub attachment: IngestAttachmentWrite,
+    pub extraction_id: String,
+    pub preview: CanonicalImage,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImageOcrRegion {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ImageOcrJob {
+    pub extraction_id: String,
+    pub attachment_id: String,
+    pub extractor_version: String,
+    pub content_hash: Vec<u8>,
+    pub attempt_count: u32,
+    pub preview_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOcrRecovery {
+    pub requeued: u64,
+    pub terminally_failed: u64,
+    pub remaining: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOcrDiagnostics {
+    pub pending: u64,
+    pub running: u64,
+    pub retry_wait: u64,
+    pub ready: u64,
+    pub failed: u64,
+    pub oldest_eligible_at_ms: Option<i64>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -354,6 +467,29 @@ pub(crate) fn ingest_attachment(
     media: &mut Connection,
     mut write: IngestAttachmentWrite,
 ) -> Result<AttachmentRecord> {
+    let (limits, kind, expires_at) = validate_attachment_ingest(main, &mut write)?;
+    let media_transaction = media.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    stage_attachment_media(&media_transaction, &write, expires_at)?;
+    media_transaction.commit()?;
+
+    let main_transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    insert_attachment_records(&main_transaction, &write, limits, kind, expires_at)?;
+    main_transaction.commit()?;
+
+    clear_committed_media_lease(
+        media,
+        &write.ingest_lease_id,
+        &write.sha256,
+        &write.attachment_id,
+        "attachment",
+    );
+    Ok(attachment_record(write, kind))
+}
+
+fn validate_attachment_ingest(
+    main: &Connection,
+    write: &mut IngestAttachmentWrite,
+) -> Result<(MediaLimits, AttachmentKind, i64)> {
     validate_uuid_v7(&write.attachment_id, "attachmentId")?;
     validate_uuid_v7(&write.ingest_lease_id, "ingestLeaseId")?;
     validate_uuid_v7(&write.draft_id, "draftId")?;
@@ -374,11 +510,18 @@ pub(crate) fn ingest_attachment(
         )));
     }
     validate_draft_capacity(main, &write.draft_id, limits.max_attachments_per_draft)?;
-    validate_staged_file(&write)?;
-
+    validate_staged_file(write)?;
+    let kind = AttachmentKind::from_media_type(&write.media_type);
     let expires_at = limits.lease_expiry(write.now_ms)?;
-    let media_transaction = media.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let inserted = media_transaction.execute(
+    Ok((limits, kind, expires_at))
+}
+
+fn stage_attachment_media(
+    transaction: &Transaction<'_>,
+    write: &IngestAttachmentWrite,
+    expires_at: i64,
+) -> Result<()> {
+    let inserted = transaction.execute(
         "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
          VALUES(?1, ?2, ?3, ?4)
          ON CONFLICT(sha256) DO NOTHING",
@@ -393,17 +536,17 @@ pub(crate) fn ingest_attachment(
             write.now_ms
         ],
     )?;
-    let rowid: i64 = media_transaction.query_row(
+    let rowid: i64 = transaction.query_row(
         "SELECT rowid FROM media_blob WHERE sha256 = ?1",
         params![&write.sha256],
         |row| row.get(0),
     )?;
     if inserted == 1 {
-        write_staged_blob(&media_transaction, rowid, &write)?;
+        write_staged_blob(transaction, rowid, write)?;
     } else {
-        validate_existing_blob(&media_transaction, rowid, &write)?;
+        validate_existing_blob(transaction, rowid, write)?;
     }
-    media_transaction.execute(
+    transaction.execute(
         "INSERT INTO media_blob_lease(lease_id, sha256, created_at, expires_at)
          VALUES(?1, ?2, ?3, ?4)
          ON CONFLICT(lease_id, sha256) DO UPDATE SET
@@ -415,16 +558,22 @@ pub(crate) fn ingest_attachment(
             expires_at
         ],
     )?;
-    media_transaction.commit()?;
+    Ok(())
+}
 
-    let kind = AttachmentKind::from_media_type(&write.media_type);
-    let main_transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+fn insert_attachment_records(
+    transaction: &Transaction<'_>,
+    write: &IngestAttachmentWrite,
+    limits: MediaLimits,
+    kind: AttachmentKind,
+    expires_at: i64,
+) -> Result<()> {
     validate_draft_capacity(
-        &main_transaction,
+        transaction,
         &write.draft_id,
         limits.max_attachments_per_draft,
     )?;
-    main_transaction.execute(
+    transaction.execute(
         "INSERT INTO attachment(
             id, created_at, updated_at, sha256, display_filename,
             media_type, byte_length, kind, extraction_state
@@ -440,7 +589,7 @@ pub(crate) fn ingest_attachment(
             kind.extraction_state()
         ],
     )?;
-    main_transaction.execute(
+    transaction.execute(
         "INSERT INTO media_ingest_lease(
             id, sha256, attachment_id, state, created_at, expires_at
          ) VALUES(?1, ?2, ?3, 'COMMITTED', ?4, ?5)",
@@ -452,35 +601,204 @@ pub(crate) fn ingest_attachment(
             expires_at
         ],
     )?;
-    main_transaction.execute(
+    transaction.execute(
         "INSERT INTO draft_media_lease(draft_id, media_ingest_lease_id)
          VALUES(?1, ?2)",
         params![&write.draft_id, &write.ingest_lease_id],
     )?;
-    main_transaction.execute(
+    transaction.execute(
         "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
         params![&write.sha256],
     )?;
-    main_transaction.commit()?;
+    Ok(())
+}
 
+fn clear_committed_media_lease(
+    media: &Connection,
+    lease_id: &str,
+    sha256: &[u8],
+    attachment_id: &str,
+    kind: &str,
+) {
     if let Err(error) = media.execute(
         "DELETE FROM media_blob_lease WHERE lease_id = ?1 AND sha256 = ?2",
-        params![&write.ingest_lease_id, &write.sha256],
+        params![lease_id, sha256],
     ) {
         log::warn!(
-            "attachment {} committed but its staging lease could not be cleared: {error}",
-            write.attachment_id
+            "{kind} {attachment_id} committed but its staging lease could not be cleared: {error}"
         );
     }
+}
 
-    Ok(AttachmentRecord {
+fn attachment_record(write: IngestAttachmentWrite, kind: AttachmentKind) -> AttachmentRecord {
+    AttachmentRecord {
         id: write.attachment_id,
         ingest_lease_id: write.ingest_lease_id,
         display_filename: write.display_filename,
         media_type: write.media_type,
         byte_length: write.byte_length,
         kind,
+    }
+}
+
+pub(crate) fn ingest_image(
+    main: &mut Connection,
+    media: &mut Connection,
+    mut write: IngestImageWrite,
+) -> Result<ImageRecord> {
+    validate_uuid_v7(&write.extraction_id, "extractionId")?;
+    if write.preview.bytes.is_empty() {
+        return Err(DatabaseError::InvalidInput(
+            "canonical image preview is empty".into(),
+        ));
+    }
+    if write.preview.natural_width == 0 || write.preview.natural_height == 0 {
+        return Err(DatabaseError::InvalidInput(
+            "canonical image preview has invalid dimensions".into(),
+        ));
+    }
+    let (limits, kind, expires_at) = validate_attachment_ingest(main, &mut write.attachment)?;
+    if kind != AttachmentKind::Image {
+        return Err(DatabaseError::InvalidInput(
+            "decoded images must use an image media type".into(),
+        ));
+    }
+    let preview_byte_length = u64::try_from(write.preview.bytes.len())
+        .map_err(|_| DatabaseError::InvalidInput("image preview is too large".into()))?;
+    if preview_byte_length > limits.max_attachment_bytes {
+        return Err(DatabaseError::InvalidInput(format!(
+            "canonical image preview exceeds the {}-byte limit",
+            limits.max_attachment_bytes
+        )));
+    }
+    let attachment_id = write.attachment.attachment_id.clone();
+    let ingest_lease_id = write.attachment.ingest_lease_id.clone();
+    let now_ms = write.attachment.now_ms;
+    let preview_hash = Sha256::digest(&write.preview.bytes).to_vec();
+    let media_transaction = media.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    stage_attachment_media(&media_transaction, &write.attachment, expires_at)?;
+    insert_media_bytes(
+        &media_transaction,
+        &preview_hash,
+        &write.preview.bytes,
+        now_ms,
+    )?;
+    media_transaction.execute(
+        "INSERT INTO media_blob_lease(lease_id, sha256, created_at, expires_at)
+         VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(lease_id, sha256) DO UPDATE SET
+            expires_at = max(expires_at, excluded.expires_at)",
+        params![&ingest_lease_id, &preview_hash, now_ms, expires_at],
+    )?;
+    media_transaction.commit()?;
+
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    insert_attachment_records(&transaction, &write.attachment, limits, kind, expires_at)?;
+    let extractor_version: String = transaction.query_row(
+        "SELECT version
+         FROM attachment_extractor_config
+         WHERE extractor = ?1",
+        params![IMAGE_OCR_EXTRACTOR],
+        |row| row.get(0),
+    )?;
+    transaction.execute(
+        "INSERT INTO attachment_image(
+            attachment_id, preview_sha256, preview_media_type,
+            preview_byte_length, natural_width, natural_height, created_at
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            &attachment_id,
+            &preview_hash,
+            IMAGE_PREVIEW_MEDIA_TYPE,
+            i64::try_from(preview_byte_length).expect("validated preview byte length fits i64"),
+            write.preview.natural_width,
+            write.preview.natural_height,
+            now_ms
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO attachment_extraction(
+            id, attachment_id, extractor, extractor_version, content_hash,
+            status, error, created_at, started_at, completed_at
+         ) VALUES(?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, ?6, NULL, NULL)",
+        params![
+            &write.extraction_id,
+            &attachment_id,
+            IMAGE_OCR_EXTRACTOR,
+            &extractor_version,
+            &write.attachment.sha256,
+            now_ms
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO image_ocr_queue(
+            extraction_id, state, attempt_count, next_attempt_at,
+            started_at, last_error, updated_at
+         ) VALUES(?1, 'PENDING', 0, ?2, NULL, NULL, ?2)",
+        params![&write.extraction_id, now_ms],
+    )?;
+    transaction.execute(
+        "DELETE FROM media_blob_reap_candidate
+         WHERE sha256 IN (?1, ?2)",
+        params![&write.attachment.sha256, &preview_hash],
+    )?;
+    transaction.commit()?;
+
+    clear_committed_media_lease(
+        media,
+        &ingest_lease_id,
+        &write.attachment.sha256,
+        &attachment_id,
+        "image original",
+    );
+    clear_committed_media_lease(
+        media,
+        &ingest_lease_id,
+        &preview_hash,
+        &attachment_id,
+        "image preview",
+    );
+
+    Ok(ImageRecord {
+        attachment: attachment_record(write.attachment, kind),
+        natural_width: write.preview.natural_width,
+        natural_height: write.preview.natural_height,
+        ocr_status: ImageOcrStatus::Pending,
+        ocr_error: None,
     })
+}
+
+fn insert_media_bytes(
+    transaction: &Transaction<'_>,
+    sha256: &[u8],
+    bytes: &[u8],
+    now_ms: i64,
+) -> Result<()> {
+    if sha256.len() != 32 || Sha256::digest(bytes).as_slice() != sha256 {
+        return Err(DatabaseError::InvalidInput(
+            "canonical media digest does not match its bytes".into(),
+        ));
+    }
+    let byte_length = i64::try_from(bytes.len())
+        .map_err(|_| DatabaseError::InvalidInput("canonical media is too large".into()))?;
+    transaction.execute(
+        "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+         VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(sha256) DO NOTHING",
+        params![sha256, bytes, byte_length, now_ms],
+    )?;
+    let (stored_length, stored_bytes): (i64, Vec<u8>) = transaction.query_row(
+        "SELECT byte_length, bytes FROM media_blob WHERE sha256 = ?1",
+        params![sha256],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if stored_length != byte_length || Sha256::digest(&stored_bytes).as_slice() != sha256 {
+        return Err(DatabaseError::Validation {
+            kind: "media",
+            reason: "deduplicated canonical media does not match its digest".into(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn load_media_payload(
@@ -501,15 +819,17 @@ pub(crate) fn load_media_payload(
     let (sha256, media_type, byte_length, revision_bound) = main
         .query_row(
             "SELECT
-                attachment.sha256,
-                attachment.media_type,
-                attachment.byte_length,
+                coalesce(image.preview_sha256, attachment.sha256),
+                coalesce(image.preview_media_type, attachment.media_type),
+                coalesce(image.preview_byte_length, attachment.byte_length),
                 EXISTS (
                     SELECT 1
                     FROM tidbit_revision_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
                 )
              FROM attachment
+             LEFT JOIN attachment_image AS image
+               ON image.attachment_id = attachment.id
              WHERE attachment.id = ?1
                AND attachment.deleted_at IS NULL
                AND (
@@ -625,6 +945,934 @@ pub(crate) fn load_media_payload(
     })
 }
 
+pub(crate) fn load_image_status(
+    main: &Connection,
+    attachment_id: &str,
+) -> Result<ImageStatusRecord> {
+    validate_uuid_v7(attachment_id, "attachmentId")?;
+    main.query_row(
+        "SELECT
+            image.attachment_id,
+            image.natural_width,
+            image.natural_height,
+            queue.state,
+            queue.last_error,
+            queue.next_attempt_at
+         FROM attachment_image AS image
+         JOIN attachment ON attachment.id = image.attachment_id
+         JOIN attachment_extraction AS extraction
+           ON extraction.attachment_id = attachment.id
+          AND extraction.content_hash = attachment.sha256
+          AND extraction.extractor = ?2
+         JOIN attachment_extractor_config AS config
+           ON config.extractor = extraction.extractor
+          AND config.version = extraction.extractor_version
+         JOIN image_ocr_queue AS queue ON queue.extraction_id = extraction.id
+         WHERE image.attachment_id = ?1
+           AND attachment.deleted_at IS NULL",
+        params![attachment_id, IMAGE_OCR_EXTRACTOR],
+        |row| {
+            let state = row.get::<_, String>(3)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, u32>(2)?,
+                state,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        },
+    )
+    .optional()?
+    .ok_or_else(|| DatabaseError::NotFound {
+        entity: "image",
+        id: attachment_id.into(),
+    })
+    .and_then(
+        |(attachment_id, natural_width, natural_height, state, ocr_error, next_attempt_at_ms)| {
+            Ok(ImageStatusRecord {
+                attachment_id,
+                natural_width,
+                natural_height,
+                ocr_status: ImageOcrStatus::from_db(&state)?,
+                ocr_error,
+                next_attempt_at_ms,
+            })
+        },
+    )
+}
+
+pub(crate) fn claim_next_image_ocr(
+    main: &mut Connection,
+    media: &Connection,
+    now_ms: i64,
+) -> Result<Option<ImageOcrJob>> {
+    validate_timestamp(now_ms, "nowMs")?;
+    loop {
+        let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let pending = transaction
+            .query_row(
+                "SELECT
+                    extraction.id,
+                    extraction.attachment_id,
+                    extraction.extractor_version,
+                    extraction.content_hash,
+                    queue.attempt_count,
+                    image.preview_sha256,
+                    image.preview_byte_length
+                 FROM image_ocr_queue AS queue
+                 JOIN attachment_extraction AS extraction
+                   ON extraction.id = queue.extraction_id
+                 JOIN attachment_extractor_config AS config
+                   ON config.extractor = extraction.extractor
+                  AND config.version = extraction.extractor_version
+                 JOIN attachment
+                   ON attachment.id = extraction.attachment_id
+                  AND attachment.sha256 = extraction.content_hash
+                  AND attachment.deleted_at IS NULL
+                 JOIN attachment_image AS image
+                   ON image.attachment_id = attachment.id
+                 WHERE queue.state IN ('PENDING', 'RETRY_WAIT')
+                   AND queue.next_attempt_at <= ?1
+                   AND extraction.extractor = ?2
+                 ORDER BY queue.next_attempt_at, extraction.created_at, extraction.id
+                 LIMIT 1",
+                params![now_ms, IMAGE_OCR_EXTRACTOR],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, u32>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            extraction_id,
+            attachment_id,
+            extractor_version,
+            content_hash,
+            attempt_count,
+            preview_hash,
+            preview_byte_length,
+        )) = pending
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let next_attempt =
+            attempt_count
+                .checked_add(1)
+                .ok_or_else(|| DatabaseError::Validation {
+                    kind: "main",
+                    reason: format!("OCR attempt counter overflow for {attachment_id}"),
+                })?;
+        let preview_bytes = match load_media_blob_bytes(
+            media,
+            &preview_hash,
+            preview_byte_length,
+            &attachment_id,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error @ DatabaseError::Validation { .. }) => {
+                let error = truncate_ocr_error(&error.to_string());
+                quarantine_unreadable_image_ocr(
+                    &transaction,
+                    &extraction_id,
+                    &attachment_id,
+                    &error,
+                    now_ms,
+                )?;
+                transaction.commit()?;
+                log::warn!("quarantined image OCR job for {attachment_id}: {error}");
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let updated = transaction.execute(
+            "UPDATE image_ocr_queue
+             SET state = 'RUNNING',
+                 attempt_count = ?1,
+                 next_attempt_at = NULL,
+                 started_at = ?2,
+                 updated_at = ?2
+             WHERE extraction_id = ?3
+               AND state IN ('PENDING', 'RETRY_WAIT')
+               AND attempt_count = ?4",
+            params![next_attempt, now_ms, &extraction_id, attempt_count],
+        )?;
+        if updated != 1 {
+            return Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("OCR claim raced for image {attachment_id}"),
+            });
+        }
+        transaction.execute(
+            "UPDATE attachment_extraction
+             SET status = 'RUNNING',
+                 error = NULL,
+                 started_at = coalesce(started_at, ?1),
+                 completed_at = NULL
+             WHERE id = ?2",
+            params![now_ms, &extraction_id],
+        )?;
+        transaction.commit()?;
+        return Ok(Some(ImageOcrJob {
+            extraction_id,
+            attachment_id,
+            extractor_version,
+            content_hash,
+            attempt_count: next_attempt,
+            preview_bytes,
+        }));
+    }
+}
+
+fn quarantine_unreadable_image_ocr(
+    transaction: &Transaction<'_>,
+    extraction_id: &str,
+    attachment_id: &str,
+    error: &str,
+    now_ms: i64,
+) -> Result<()> {
+    transaction.execute(
+        "UPDATE attachment_extraction
+         SET status = 'FAILED', error = ?1, completed_at = ?2
+         WHERE id = ?3",
+        params![error, now_ms, extraction_id],
+    )?;
+    transaction.execute(
+        "UPDATE image_ocr_queue
+         SET state = 'FAILED',
+             attempt_count = max(attempt_count, 1),
+             next_attempt_at = NULL,
+             started_at = NULL,
+             last_error = ?1,
+             updated_at = ?2
+         WHERE extraction_id = ?3",
+        params![error, now_ms, extraction_id],
+    )?;
+    transaction.execute(
+        "UPDATE attachment
+         SET extraction_state = 'FAILED',
+             updated_at = max(updated_at, ?1)
+         WHERE id = ?2",
+        params![now_ms, attachment_id],
+    )?;
+    Ok(())
+}
+
+fn load_media_blob_bytes(
+    media: &Connection,
+    sha256: &[u8],
+    expected_length: i64,
+    attachment_id: &str,
+) -> Result<Vec<u8>> {
+    if expected_length <= 0 || expected_length > MAX_DIRECT_ATTACHMENT_BYTES as i64 {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: format!("image {attachment_id} has an invalid preview length"),
+        });
+    }
+    let (rowid, stored_length) = media
+        .query_row(
+            "SELECT rowid, byte_length FROM media_blob WHERE sha256 = ?1",
+            params![sha256],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| DatabaseError::Validation {
+            kind: "database pair",
+            reason: format!("image {attachment_id} has no canonical preview"),
+        })?;
+    if stored_length != expected_length {
+        return Err(DatabaseError::Validation {
+            kind: "database pair",
+            reason: format!("image {attachment_id} preview length does not match metadata"),
+        });
+    }
+    let mut blob = media.blob_open(MAIN_DB, "media_blob", "bytes", rowid, true)?;
+    let actual = digest_reader(&mut blob)?;
+    if actual.as_slice() != sha256 {
+        return Err(DatabaseError::Validation {
+            kind: "media",
+            reason: format!("image {attachment_id} preview is corrupt"),
+        });
+    }
+    blob.seek(SeekFrom::Start(0))?;
+    let mut bytes = vec![
+        0;
+        usize::try_from(expected_length).map_err(|_| {
+            DatabaseError::Validation {
+                kind: "main",
+                reason: format!("image {attachment_id} preview does not fit memory"),
+            }
+        })?
+    ];
+    blob.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn complete_image_ocr(
+    main: &mut Connection,
+    job: &ImageOcrJob,
+    result: std::result::Result<Vec<ImageOcrRegion>, String>,
+    completed_at_ms: i64,
+) -> Result<()> {
+    validate_timestamp(completed_at_ms, "completedAtMs")?;
+    validate_uuid_v7(&job.extraction_id, "extractionId")?;
+    validate_uuid_v7(&job.attachment_id, "attachmentId")?;
+    if job.content_hash.len() != 32 {
+        return Err(DatabaseError::InvalidInput(
+            "OCR content hash must contain 32 bytes".into(),
+        ));
+    }
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current: bool = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM image_ocr_queue AS queue
+            JOIN attachment_extraction AS extraction
+              ON extraction.id = queue.extraction_id
+            JOIN attachment_extractor_config AS config
+              ON config.extractor = extraction.extractor
+             AND config.version = extraction.extractor_version
+            JOIN attachment
+              ON attachment.id = extraction.attachment_id
+             AND attachment.sha256 = extraction.content_hash
+             AND attachment.deleted_at IS NULL
+            WHERE queue.extraction_id = ?1
+              AND queue.state = 'RUNNING'
+              AND queue.attempt_count = ?2
+              AND extraction.attachment_id = ?3
+              AND extraction.extractor = ?4
+              AND extraction.extractor_version = ?5
+              AND extraction.content_hash = ?6
+         )",
+        params![
+            &job.extraction_id,
+            job.attempt_count,
+            &job.attachment_id,
+            IMAGE_OCR_EXTRACTOR,
+            &job.extractor_version,
+            &job.content_hash
+        ],
+        |row| row.get(0),
+    )?;
+    if !current {
+        let retired: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM image_ocr_queue AS queue
+                JOIN attachment_extraction AS extraction
+                  ON extraction.id = queue.extraction_id
+                JOIN attachment
+                  ON attachment.id = extraction.attachment_id
+                WHERE queue.extraction_id = ?1
+                  AND queue.state = 'FAILED'
+                  AND queue.last_error = ?2
+                  AND extraction.attachment_id = ?3
+                  AND attachment.deleted_at IS NOT NULL
+             )",
+            params![&job.extraction_id, RETIRED_OCR_ERROR, &job.attachment_id],
+            |row| row.get(0),
+        )?;
+        if retired {
+            return Ok(());
+        }
+        return Err(DatabaseError::InvalidInput(format!(
+            "OCR result for image {} is stale",
+            job.attachment_id
+        )));
+    }
+
+    let result =
+        result.and_then(|regions| validate_ocr_regions(regions).map_err(|error| error.to_string()));
+    match result {
+        Ok(regions) => {
+            let construction_version: String = transaction.query_row(
+                "SELECT passage_construction_version
+                 FROM attachment_extractor_config
+                 WHERE extractor = ?1 AND version = ?2",
+                params![IMAGE_OCR_EXTRACTOR, &job.extractor_version],
+                |row| row.get(0),
+            )?;
+            for (ordinal, region) in regions.into_iter().enumerate() {
+                let segment_id = Uuid::now_v7().to_string();
+                let passage_id = Uuid::now_v7().to_string();
+                let region_value = serde_json::json!({
+                    "coordinateSystem": "vision-normalized-bottom-left",
+                    "height": region.height,
+                    "width": region.width,
+                    "x": region.x,
+                    "y": region.y,
+                });
+                let region_json = serde_json::to_string(&region_value).map_err(|error| {
+                    DatabaseError::InvalidInput(format!("could not serialize OCR region: {error}"))
+                })?;
+                let locator_json = serde_json::to_string(
+                    &serde_json::json!({ "region": region_value }),
+                )
+                .map_err(|error| {
+                    DatabaseError::InvalidInput(format!("could not serialize OCR locator: {error}"))
+                })?;
+                let content_hash = Sha256::digest(region.text.as_bytes()).to_vec();
+                transaction.execute(
+                    "INSERT INTO attachment_segment(
+                        id, extraction_id, ordinal, locator_kind, page_number,
+                        line_start, line_end, region_json, content, content_hash
+                     ) VALUES(?1, ?2, ?3, 'OCR_REGION', NULL, NULL, NULL, ?4, ?5, ?6)",
+                    params![
+                        &segment_id,
+                        &job.extraction_id,
+                        i64::try_from(ordinal).expect("bounded OCR ordinal fits i64"),
+                        &region_json,
+                        &region.text,
+                        &content_hash
+                    ],
+                )?;
+                transaction.execute(
+                    "UPDATE attachment_extraction
+                     SET status = 'READY', error = NULL, completed_at = ?1
+                     WHERE id = ?2",
+                    params![completed_at_ms, &job.extraction_id],
+                )?;
+                transaction.execute(
+                    "INSERT INTO passage(
+                        id, tidbit_revision_id, attachment_segment_id, owner_kind,
+                        ordinal, content, content_hash, locator_kind, locator_json,
+                        created_at, construction_version, heading_context_json
+                     ) VALUES(
+                        ?1, NULL, ?2, 'ATTACHMENT', 0, ?3, ?4, 'OCR_REGION',
+                        ?5, ?6, ?7, '[]'
+                     )",
+                    params![
+                        &passage_id,
+                        &segment_id,
+                        &region.text,
+                        &content_hash,
+                        &locator_json,
+                        completed_at_ms,
+                        &construction_version
+                    ],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE attachment_extraction
+                 SET status = 'READY', error = NULL, completed_at = ?1
+                 WHERE id = ?2",
+                params![completed_at_ms, &job.extraction_id],
+            )?;
+            transaction.execute(
+                "UPDATE image_ocr_queue
+                 SET state = 'READY',
+                     next_attempt_at = NULL,
+                     started_at = NULL,
+                     last_error = NULL,
+                     updated_at = ?1
+                 WHERE extraction_id = ?2",
+                params![completed_at_ms, &job.extraction_id],
+            )?;
+            transaction.execute(
+                "UPDATE attachment
+                 SET extraction_state = 'READY',
+                     updated_at = max(updated_at, ?1)
+                 WHERE id = ?2",
+                params![completed_at_ms, &job.attachment_id],
+            )?;
+        }
+        Err(error) => {
+            let error = truncate_ocr_error(&error);
+            if job.attempt_count < MAX_IMAGE_OCR_ATTEMPTS {
+                let retry_at = checked_timestamp_add(
+                    completed_at_ms,
+                    image_ocr_retry_delay(job.attempt_count)?,
+                    "OCR retry time",
+                )?;
+                transaction.execute(
+                    "UPDATE attachment_extraction
+                     SET status = 'PENDING', error = ?1, completed_at = NULL
+                     WHERE id = ?2",
+                    params![&error, &job.extraction_id],
+                )?;
+                transaction.execute(
+                    "UPDATE image_ocr_queue
+                     SET state = 'RETRY_WAIT',
+                         next_attempt_at = ?1,
+                         started_at = NULL,
+                         last_error = ?2,
+                         updated_at = ?3
+                     WHERE extraction_id = ?4",
+                    params![retry_at, &error, completed_at_ms, &job.extraction_id],
+                )?;
+            } else {
+                transaction.execute(
+                    "UPDATE attachment_extraction
+                     SET status = 'FAILED', error = ?1, completed_at = ?2
+                     WHERE id = ?3",
+                    params![&error, completed_at_ms, &job.extraction_id],
+                )?;
+                transaction.execute(
+                    "UPDATE image_ocr_queue
+                     SET state = 'FAILED',
+                         next_attempt_at = NULL,
+                         started_at = NULL,
+                         last_error = ?1,
+                         updated_at = ?2
+                     WHERE extraction_id = ?3",
+                    params![&error, completed_at_ms, &job.extraction_id],
+                )?;
+                transaction.execute(
+                    "UPDATE attachment
+                     SET extraction_state = 'FAILED',
+                         updated_at = max(updated_at, ?1)
+                     WHERE id = ?2",
+                    params![completed_at_ms, &job.attachment_id],
+                )?;
+            }
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn validate_ocr_regions(regions: Vec<ImageOcrRegion>) -> Result<Vec<ImageOcrRegion>> {
+    if regions.len() > MAX_OCR_REGIONS {
+        return Err(DatabaseError::InvalidInput(format!(
+            "OCR returned more than {MAX_OCR_REGIONS} regions"
+        )));
+    }
+    let mut normalized = Vec::with_capacity(regions.len());
+    let mut total_chars = 0_usize;
+    for mut region in regions {
+        region.text = region.text.trim().to_owned();
+        if region.text.is_empty() {
+            continue;
+        }
+        let chars = region.text.chars().count();
+        if chars > MAX_OCR_REGION_CHARS {
+            return Err(DatabaseError::InvalidInput(
+                "an OCR region contains too much text".into(),
+            ));
+        }
+        total_chars = total_chars
+            .checked_add(chars)
+            .ok_or_else(|| DatabaseError::InvalidInput("OCR text length overflow".into()))?;
+        if total_chars > MAX_OCR_TOTAL_CHARS {
+            return Err(DatabaseError::InvalidInput(
+                "OCR returned too much text".into(),
+            ));
+        }
+        let values = [region.x, region.y, region.width, region.height];
+        if values.iter().any(|value| !value.is_finite())
+            || region.x < 0.0
+            || region.y < 0.0
+            || region.width <= 0.0
+            || region.height <= 0.0
+            || region.x + region.width > 1.000_001
+            || region.y + region.height > 1.000_001
+        {
+            return Err(DatabaseError::InvalidInput(
+                "OCR returned an invalid normalized image region".into(),
+            ));
+        }
+        normalized.push(region);
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn retry_image_ocr(
+    main: &mut Connection,
+    attachment_id: &str,
+    now_ms: i64,
+) -> Result<ImageStatusRecord> {
+    validate_uuid_v7(attachment_id, "attachmentId")?;
+    validate_timestamp(now_ms, "nowMs")?;
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let extraction_id = transaction
+        .query_row(
+            "SELECT extraction.id
+             FROM attachment_extraction AS extraction
+             JOIN attachment_extractor_config AS config
+               ON config.extractor = extraction.extractor
+              AND config.version = extraction.extractor_version
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
+              AND attachment.deleted_at IS NULL
+             JOIN image_ocr_queue AS queue ON queue.extraction_id = extraction.id
+             WHERE attachment.id = ?1
+               AND extraction.extractor = ?2
+               AND queue.state = 'FAILED'",
+            params![attachment_id, IMAGE_OCR_EXTRACTOR],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            DatabaseError::InvalidInput(
+                "only a current, failed image OCR job can be retried".into(),
+            )
+        })?;
+    transaction.execute(
+        "UPDATE attachment_extraction
+         SET status = 'PENDING',
+             error = NULL,
+             started_at = NULL,
+             completed_at = NULL
+         WHERE id = ?1",
+        params![&extraction_id],
+    )?;
+    transaction.execute(
+        "UPDATE image_ocr_queue
+         SET state = 'PENDING',
+             attempt_count = 0,
+             next_attempt_at = ?1,
+             started_at = NULL,
+             last_error = NULL,
+             updated_at = ?1
+         WHERE extraction_id = ?2",
+        params![now_ms, &extraction_id],
+    )?;
+    transaction.execute(
+        "UPDATE attachment
+         SET extraction_state = 'PENDING',
+             updated_at = max(updated_at, ?1)
+         WHERE id = ?2",
+        params![now_ms, attachment_id],
+    )?;
+    transaction.commit()?;
+    load_image_status(main, attachment_id)
+}
+
+pub(crate) fn recover_interrupted_image_ocr(
+    main: &mut Connection,
+    stale_started_at_or_before: i64,
+    now_ms: i64,
+) -> Result<ImageOcrRecovery> {
+    validate_timestamp(stale_started_at_or_before, "staleStartedAtOrBefore")?;
+    validate_timestamp(now_ms, "nowMs")?;
+    let batch_limit =
+        i64::try_from(IMAGE_OCR_RECOVERY_BATCH_SIZE).expect("OCR recovery batch size fits i64");
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let stale = transaction
+        .prepare(
+            "SELECT
+                queue.extraction_id,
+                extraction.attachment_id,
+                config.version,
+                attachment.sha256
+             FROM image_ocr_queue AS queue
+             JOIN attachment_extraction AS extraction
+               ON extraction.id = queue.extraction_id
+             JOIN attachment_extractor_config AS config
+               ON config.extractor = extraction.extractor
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+             JOIN attachment_image AS image
+               ON image.attachment_id = attachment.id
+             WHERE extraction.extractor = ?1
+               AND attachment.deleted_at IS NULL
+               AND NOT (
+                    queue.state = 'FAILED'
+                    AND queue.last_error = ?2
+               )
+               AND (
+                    extraction.extractor_version <> config.version
+                    OR extraction.content_hash <> attachment.sha256
+               )
+             ORDER BY extraction.attachment_id, queue.extraction_id
+             LIMIT ?3",
+        )?
+        .query_map(
+            params![IMAGE_OCR_EXTRACTOR, STALE_OCR_ERROR, batch_limit],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let interrupted_limit = batch_limit.saturating_sub(
+        i64::try_from(stale.len()).expect("bounded stale OCR batch length fits i64"),
+    );
+    let mut recovery = ImageOcrRecovery::default();
+    for (extraction_id, attachment_id, current_extractor_version, attachment_hash) in stale {
+        transaction.execute(
+            "UPDATE attachment_extraction
+             SET status = 'FAILED', error = ?1, completed_at = ?2
+             WHERE id = ?3
+               AND status <> 'READY'",
+            params![STALE_OCR_ERROR, now_ms, &extraction_id],
+        )?;
+        transaction.execute(
+            "UPDATE image_ocr_queue
+             SET state = 'FAILED',
+                 attempt_count = max(attempt_count, 1),
+                 next_attempt_at = NULL,
+                 started_at = NULL,
+                 last_error = ?1,
+                 updated_at = ?2
+             WHERE extraction_id = ?3",
+            params![STALE_OCR_ERROR, now_ms, &extraction_id],
+        )?;
+        let current_exists: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM attachment_extraction AS extraction
+                JOIN image_ocr_queue AS queue
+                  ON queue.extraction_id = extraction.id
+                WHERE extraction.attachment_id = ?1
+                  AND extraction.extractor = ?2
+                  AND extraction.extractor_version = ?3
+                  AND extraction.content_hash = ?4
+             )",
+            params![
+                &attachment_id,
+                IMAGE_OCR_EXTRACTOR,
+                &current_extractor_version,
+                &attachment_hash
+            ],
+            |row| row.get(0),
+        )?;
+        if !current_exists {
+            let replacement_extraction_id = Uuid::now_v7().to_string();
+            transaction.execute(
+                "INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, error, created_at, started_at, completed_at
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, 'PENDING', NULL, ?6, NULL, NULL)",
+                params![
+                    &replacement_extraction_id,
+                    &attachment_id,
+                    IMAGE_OCR_EXTRACTOR,
+                    &current_extractor_version,
+                    &attachment_hash,
+                    now_ms
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO image_ocr_queue(
+                    extraction_id, state, attempt_count, next_attempt_at,
+                    started_at, last_error, updated_at
+                 ) VALUES(?1, 'PENDING', 0, ?2, NULL, NULL, ?2)",
+                params![&replacement_extraction_id, now_ms],
+            )?;
+            transaction.execute(
+                "UPDATE attachment
+                 SET extraction_state = 'PENDING',
+                     updated_at = max(updated_at, ?1)
+                 WHERE id = ?2",
+                params![now_ms, &attachment_id],
+            )?;
+            recovery.requeued += 1;
+        }
+        recovery.terminally_failed += 1;
+    }
+
+    let interrupted = transaction
+        .prepare(
+            "SELECT
+                queue.extraction_id,
+                extraction.attachment_id,
+                queue.attempt_count
+             FROM image_ocr_queue AS queue
+             JOIN attachment_extraction AS extraction
+               ON extraction.id = queue.extraction_id
+             JOIN attachment_extractor_config AS config
+               ON config.extractor = extraction.extractor
+              AND config.version = extraction.extractor_version
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
+             JOIN attachment_image AS image
+               ON image.attachment_id = attachment.id
+             WHERE queue.state = 'RUNNING'
+               AND queue.started_at <= ?1
+               AND extraction.extractor = ?2
+               AND attachment.deleted_at IS NULL
+             ORDER BY queue.started_at, queue.extraction_id
+             LIMIT ?3",
+        )?
+        .query_map(
+            params![
+                stale_started_at_or_before,
+                IMAGE_OCR_EXTRACTOR,
+                interrupted_limit
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                ))
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (extraction_id, attachment_id, attempt_count) in interrupted {
+        if attempt_count >= MAX_IMAGE_OCR_ATTEMPTS {
+            transaction.execute(
+                "UPDATE attachment_extraction
+                 SET status = 'FAILED', error = ?1, completed_at = ?2
+                 WHERE id = ?3",
+                params![INTERRUPTED_OCR_ERROR, now_ms, &extraction_id],
+            )?;
+            transaction.execute(
+                "UPDATE image_ocr_queue
+                 SET state = 'FAILED',
+                     next_attempt_at = NULL,
+                     started_at = NULL,
+                     last_error = ?1,
+                     updated_at = ?2
+                 WHERE extraction_id = ?3",
+                params![INTERRUPTED_OCR_ERROR, now_ms, &extraction_id],
+            )?;
+            transaction.execute(
+                "UPDATE attachment
+                 SET extraction_state = 'FAILED', updated_at = max(updated_at, ?1)
+                 WHERE id = ?2",
+                params![now_ms, &attachment_id],
+            )?;
+            recovery.terminally_failed += 1;
+        } else {
+            transaction.execute(
+                "UPDATE attachment_extraction
+                 SET status = 'PENDING', error = ?1, completed_at = NULL
+                 WHERE id = ?2",
+                params![INTERRUPTED_OCR_ERROR, &extraction_id],
+            )?;
+            transaction.execute(
+                "UPDATE image_ocr_queue
+                 SET state = 'RETRY_WAIT',
+                     next_attempt_at = ?1,
+                     started_at = NULL,
+                     last_error = ?2,
+                     updated_at = ?1
+                 WHERE extraction_id = ?3",
+                params![now_ms, INTERRUPTED_OCR_ERROR, &extraction_id],
+            )?;
+            recovery.requeued += 1;
+        }
+    }
+    recovery.remaining = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM image_ocr_queue AS queue
+            JOIN attachment_extraction AS extraction
+              ON extraction.id = queue.extraction_id
+            JOIN attachment_extractor_config AS config
+              ON config.extractor = extraction.extractor
+            JOIN attachment
+              ON attachment.id = extraction.attachment_id
+            JOIN attachment_image AS image
+              ON image.attachment_id = attachment.id
+            WHERE extraction.extractor = ?1
+              AND attachment.deleted_at IS NULL
+              AND (
+                   (
+                       NOT (
+                           queue.state = 'FAILED'
+                           AND queue.last_error = ?2
+                       )
+                       AND (
+                           extraction.extractor_version <> config.version
+                           OR extraction.content_hash <> attachment.sha256
+                       )
+                   )
+                   OR (
+                       queue.state = 'RUNNING'
+                       AND queue.started_at <= ?3
+                       AND extraction.extractor_version = config.version
+                       AND extraction.content_hash = attachment.sha256
+                   )
+              )
+         )",
+        params![
+            IMAGE_OCR_EXTRACTOR,
+            STALE_OCR_ERROR,
+            stale_started_at_or_before
+        ],
+        |row| row.get(0),
+    )?;
+    transaction.commit()?;
+    Ok(recovery)
+}
+
+pub(crate) fn image_ocr_diagnostics(main: &Connection) -> Result<ImageOcrDiagnostics> {
+    let mut diagnostics = ImageOcrDiagnostics::default();
+    let mut statement = main.prepare(
+        "SELECT state, count(*)
+         FROM image_ocr_queue
+         GROUP BY state",
+    )?;
+    let counts = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (state, count) in counts {
+        let count = u64::try_from(count).map_err(|_| DatabaseError::Validation {
+            kind: "main",
+            reason: format!("negative image OCR count for {state}"),
+        })?;
+        match ImageOcrStatus::from_db(&state)? {
+            ImageOcrStatus::Pending => diagnostics.pending = count,
+            ImageOcrStatus::Running => diagnostics.running = count,
+            ImageOcrStatus::RetryWait => diagnostics.retry_wait = count,
+            ImageOcrStatus::Ready => diagnostics.ready = count,
+            ImageOcrStatus::Failed => diagnostics.failed = count,
+        }
+    }
+    diagnostics.oldest_eligible_at_ms = main.query_row(
+        "SELECT min(next_attempt_at)
+         FROM image_ocr_queue
+         WHERE state IN ('PENDING', 'RETRY_WAIT')",
+        [],
+        |row| row.get(0),
+    )?;
+    diagnostics.last_error = main
+        .query_row(
+            "SELECT last_error
+             FROM image_ocr_queue
+             WHERE last_error IS NOT NULL
+             ORDER BY updated_at DESC, extraction_id DESC
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(diagnostics)
+}
+
+fn image_ocr_retry_delay(attempt_count: u32) -> Result<i64> {
+    let index = attempt_count
+        .checked_sub(1)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| DatabaseError::InvalidInput("invalid OCR attempt count".into()))?;
+    IMAGE_OCR_RETRY_DELAYS_MS
+        .get(index)
+        .copied()
+        .ok_or_else(|| {
+            DatabaseError::InvalidInput(format!("OCR attempt {attempt_count} has no retry delay"))
+        })
+}
+
+fn truncate_ocr_error(error: &str) -> String {
+    let error = error.trim();
+    let error = if error.is_empty() {
+        "OCR failed without an error"
+    } else {
+        error
+    };
+    error.chars().take(1_000).collect()
+}
+
 impl MediaIntegrityScan {
     pub(crate) fn new(now_ms: i64) -> Result<Self> {
         validate_timestamp(now_ms, "nowMs")?;
@@ -672,13 +1920,26 @@ impl MediaIntegrityScan {
                     };
                     return Ok(MediaIntegrityScanStep::Continue(self));
                 }
-                for (_, id, hash, deleted_at, referenced, leased) in &rows {
-                    let blob_exists: bool = media.query_row(
+                for (_, id, hash, preview_hash, deleted_at, referenced, leased) in &rows {
+                    let original_exists: bool = media.query_row(
                         "SELECT EXISTS(SELECT 1 FROM media_blob WHERE sha256 = ?1)",
                         params![hash],
                         |row| row.get(0),
                     )?;
-                    if (deleted_at.is_none() || *referenced) && !blob_exists {
+                    let preview_exists = preview_hash
+                        .as_deref()
+                        .map(|preview_hash| {
+                            media.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM media_blob WHERE sha256 = ?1)",
+                                params![preview_hash],
+                                |row| row.get::<_, bool>(0),
+                            )
+                        })
+                        .transpose()?
+                        .unwrap_or(true);
+                    if (deleted_at.is_none() || *referenced)
+                        && (!original_exists || !preview_exists)
+                    {
                         record_integrity_finding(
                             &mut self.report,
                             IntegrityFinding::MissingBlobAttachment(id.clone()),
@@ -705,7 +1966,11 @@ impl MediaIntegrityScan {
                 }
                 for (rowid, expected, byte_length) in &rows {
                     let attachment_exists: bool = main.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM attachment WHERE sha256 = ?1)",
+                        "SELECT EXISTS(
+                            SELECT 1 FROM attachment WHERE sha256 = ?1
+                            UNION ALL
+                            SELECT 1 FROM attachment_image WHERE preview_sha256 = ?1
+                         )",
                         params![expected],
                         |row| row.get(0),
                     )?;
@@ -818,7 +2083,15 @@ impl MediaMaintenanceScan {
     }
 }
 
-type IntegrityAttachmentRow = (i64, String, Vec<u8>, Option<i64>, bool, bool);
+type IntegrityAttachmentRow = (
+    i64,
+    String,
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Option<i64>,
+    bool,
+    bool,
+);
 
 fn load_integrity_attachment_batch(
     main: &Connection,
@@ -831,6 +2104,7 @@ fn load_integrity_attachment_batch(
             attachment.rowid,
             attachment.id,
             attachment.sha256,
+            image.preview_sha256,
             attachment.deleted_at,
             EXISTS(
                 SELECT 1 FROM tidbit_revision_attachment AS membership
@@ -858,6 +2132,8 @@ fn load_integrity_attachment_batch(
                 )
             )
          FROM attachment
+         LEFT JOIN attachment_image AS image
+           ON image.attachment_id = attachment.id
          WHERE attachment.rowid > ?2 AND attachment.rowid <= ?3
          ORDER BY attachment.rowid
          LIMIT ?4",
@@ -878,6 +2154,7 @@ fn load_integrity_attachment_batch(
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )?
@@ -1012,16 +2289,85 @@ fn parse_token_payload(payload: &str, role: AttachmentDisplayRole) -> Option<&st
     let id = match role {
         AttachmentDisplayRole::Attachment => payload,
         AttachmentDisplayRole::Inline => {
-            let (id, width) = payload.split_once(";width=")?;
+            let mut fields = payload.split(';');
+            let id = fields.next()?;
+            let width = fields.next()?.strip_prefix("width=")?;
             let width = width.strip_suffix('%')?;
             let parsed = width.parse::<u32>().ok()?;
             if !(10..=100).contains(&parsed) || parsed.to_string() != width {
                 return None;
             }
+            let mut saw_alt = false;
+            let mut saw_caption = false;
+            for field in fields {
+                if let Some(value) = field.strip_prefix("alt=") {
+                    if saw_alt || saw_caption || !valid_encoded_token_field(value, 500) {
+                        return None;
+                    }
+                    saw_alt = true;
+                } else {
+                    let value = field.strip_prefix("caption=")?;
+                    if saw_caption || !valid_encoded_token_field(value, 2_000) {
+                        return None;
+                    }
+                    saw_caption = true;
+                }
+            }
             id
         }
     };
     validate_uuid_v7(id, "attachmentId").is_ok().then_some(id)
+}
+
+fn valid_encoded_token_field(value: &str, max_characters: usize) -> bool {
+    let Some(max_encoded_bytes) = max_characters.checked_mul(12) else {
+        return false;
+    };
+    if value.is_empty() || value.len() > max_encoded_bytes {
+        return false;
+    }
+    let encoded = value.as_bytes();
+    let mut decoded = Vec::with_capacity(encoded.len());
+    let mut index = 0;
+    while index < encoded.len() {
+        let byte = encoded[index];
+        if canonical_token_field_leaves_unescaped(byte) {
+            decoded.push(byte);
+            index += 1;
+            continue;
+        }
+        if byte != b'%' || index + 2 >= encoded.len() {
+            return false;
+        }
+        let Some(high) = canonical_hex_value(encoded[index + 1]) else {
+            return false;
+        };
+        let Some(low) = canonical_hex_value(encoded[index + 2]) else {
+            return false;
+        };
+        let decoded_byte = (high << 4) | low;
+        if canonical_token_field_leaves_unescaped(decoded_byte) {
+            return false;
+        }
+        decoded.push(decoded_byte);
+        index += 3;
+    }
+    let Ok(decoded) = std::str::from_utf8(&decoded) else {
+        return false;
+    };
+    !decoded.is_empty() && decoded.trim() == decoded && decoded.chars().count() <= max_characters
+}
+
+fn canonical_token_field_leaves_unescaped(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.')
+}
+
+fn canonical_hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 pub(crate) fn sync_draft_media_leases(
@@ -1411,6 +2757,60 @@ fn reconcile_and_reap_from(
             params![now_ms],
         )? as u64;
         transaction.execute(
+            "UPDATE attachment_extraction
+             SET status = 'FAILED',
+                 error = ?1,
+                 completed_at = max(coalesce(started_at, created_at), ?2)
+             WHERE extractor = ?3
+               AND id IN (
+                    SELECT queue.extraction_id
+                    FROM image_ocr_queue AS queue
+                    JOIN attachment_extraction AS extraction
+                      ON extraction.id = queue.extraction_id
+                    JOIN attachment
+                      ON attachment.id = extraction.attachment_id
+                    WHERE queue.state IN ('PENDING', 'RUNNING', 'RETRY_WAIT')
+                      AND attachment.deleted_at IS NOT NULL
+               )",
+            params![RETIRED_OCR_ERROR, now_ms, IMAGE_OCR_EXTRACTOR],
+        )?;
+        transaction.execute(
+            "UPDATE image_ocr_queue
+             SET state = 'FAILED',
+                 attempt_count = max(attempt_count, 1),
+                 next_attempt_at = NULL,
+                 started_at = NULL,
+                 last_error = ?1,
+                 updated_at = max(updated_at, ?2)
+             WHERE state IN ('PENDING', 'RUNNING', 'RETRY_WAIT')
+               AND extraction_id IN (
+                    SELECT extraction.id
+                    FROM attachment_extraction AS extraction
+                    JOIN attachment
+                      ON attachment.id = extraction.attachment_id
+                    WHERE extraction.extractor = ?3
+                      AND attachment.deleted_at IS NOT NULL
+               )",
+            params![RETIRED_OCR_ERROR, now_ms, IMAGE_OCR_EXTRACTOR],
+        )?;
+        transaction.execute(
+            "UPDATE attachment
+             SET extraction_state = 'FAILED',
+                 updated_at = max(updated_at, ?1)
+             WHERE deleted_at IS NOT NULL
+               AND EXISTS (
+                    SELECT 1
+                    FROM attachment_extraction AS extraction
+                    JOIN image_ocr_queue AS queue
+                      ON queue.extraction_id = extraction.id
+                    WHERE extraction.attachment_id = attachment.id
+                      AND extraction.extractor = ?2
+                      AND queue.state = 'FAILED'
+                      AND queue.last_error = ?3
+               )",
+            params![now_ms, IMAGE_OCR_EXTRACTOR, RETIRED_OCR_ERROR],
+        )?;
+        transaction.execute(
             "DELETE FROM draft_media_lease
          WHERE media_ingest_lease_id IN (
             SELECT id FROM media_ingest_lease
@@ -1423,6 +2823,15 @@ fn reconcile_and_reap_from(
          WHERE sha256 IN (
             SELECT attachment.sha256
             FROM attachment
+            WHERE attachment.deleted_at IS NULL
+               OR EXISTS (
+                    SELECT 1 FROM tidbit_revision_attachment AS membership
+                    WHERE membership.attachment_id = attachment.id
+               )
+            UNION
+            SELECT image.preview_sha256
+            FROM attachment_image AS image
+            JOIN attachment ON attachment.id = image.attachment_id
             WHERE attachment.deleted_at IS NULL
                OR EXISTS (
                     SELECT 1 FROM tidbit_revision_attachment AS membership
@@ -1482,15 +2891,30 @@ fn reconcile_and_reap_from(
         let main_transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let references: i64 = main_transaction.query_row(
             "SELECT count(*)
-             FROM attachment
-             WHERE sha256 = ?1
-               AND (
-                    deleted_at IS NULL
-                    OR EXISTS (
-                        SELECT 1 FROM tidbit_revision_attachment AS membership
-                        WHERE membership.attachment_id = attachment.id
-                    )
-               )",
+             FROM (
+                SELECT attachment.id
+                FROM attachment
+                WHERE attachment.sha256 = ?1
+                  AND (
+                       attachment.deleted_at IS NULL
+                       OR EXISTS (
+                           SELECT 1 FROM tidbit_revision_attachment AS membership
+                           WHERE membership.attachment_id = attachment.id
+                       )
+                  )
+                UNION ALL
+                SELECT image.attachment_id
+                FROM attachment_image AS image
+                JOIN attachment ON attachment.id = image.attachment_id
+                WHERE image.preview_sha256 = ?1
+                  AND (
+                       attachment.deleted_at IS NULL
+                       OR EXISTS (
+                           SELECT 1 FROM tidbit_revision_attachment AS membership
+                           WHERE membership.attachment_id = attachment.id
+                       )
+                  )
+             )",
             params![&hash],
             |row| row.get(0),
         )?;
@@ -1590,6 +3014,19 @@ fn reconcile_blob_candidate_batch(
                     WHERE sha256 = ?1
                       AND (
                            deleted_at IS NULL
+                           OR EXISTS (
+                               SELECT 1
+                               FROM tidbit_revision_attachment AS membership
+                               WHERE membership.attachment_id = attachment.id
+                           )
+                      )
+                    UNION ALL
+                    SELECT 1
+                    FROM attachment_image AS image
+                    JOIN attachment ON attachment.id = image.attachment_id
+                    WHERE image.preview_sha256 = ?1
+                      AND (
+                           attachment.deleted_at IS NULL
                            OR EXISTS (
                                SELECT 1
                                FROM tidbit_revision_attachment AS membership

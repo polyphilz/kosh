@@ -2,10 +2,12 @@ import { EditorView as CodeMirrorView } from "@codemirror/view";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, createRef } from "react";
-import { TextSelection } from "prosemirror-state";
+import { NodeSelection, TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
+import type { ImageRecord } from "../../src/backend/contracts";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
+import { statusPollDelay } from "../../src/markdown/ImageNodeView";
 import { parseKoshMarkdown, serializeKoshMarkdown } from "../../src/markdown/markdownConversion";
 import { RichTextEditor, type RichTextEditorHandle } from "../../src/markdown/RichTextEditor";
 
@@ -438,6 +440,257 @@ it("sanitizes pasted HTML through the Kosh schema", () => {
   expect(view.state.doc.textContent).toContain("unsafe");
 });
 
+it("round-trips image metadata, resizes from the keyboard, and removes the image", () => {
+  const imageId = "01980c8e-6c00-7000-8000-000000000231";
+  const onChange = vi.fn();
+  const source =
+    `{{kosh:image:${imageId};width=70%;alt=%2ASystem%2A%20%5Fdiagram%5F;` +
+    "caption=%7E%7EChapter%7E%7E%20%28overview%29%21}}";
+  const { getByLabelText, getByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      imageStatus={async () => ({
+        attachmentId: imageId,
+        naturalHeight: 800,
+        naturalWidth: 1_200,
+        nextAttemptAtMs: null,
+        ocrError: null,
+        ocrStatus: "READY",
+      })}
+      onChange={onChange}
+      value={source}
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+  const view = editorView(textbox);
+
+  expect(getByRole("img", { name: "*System* _diagram_" })).toHaveAttribute(
+    "src",
+    `kosh-media://localhost/attachment/${imageId}`,
+  );
+  expect(getByLabelText("Alt text")).toHaveValue("*System* _diagram_");
+  expect(getByLabelText("Caption")).toHaveValue("~~Chapter~~ (overview)!");
+
+  fireEvent.input(getByLabelText("Alt text"), { target: { value: "Updated diagram" } });
+  fireEvent.input(getByLabelText("Caption"), { target: { value: "Updated caption" } });
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 0)));
+  });
+  fireEvent.keyDown(textbox, { altKey: true, key: "ArrowLeft" });
+
+  expect(serializeKoshMarkdown(view.state.doc)).toBe(
+    `{{kosh:image:${imageId};width=65%;alt=Updated%20diagram;caption=Updated%20caption}}`,
+  );
+  fireEvent.click(getByRole("button", { name: "Remove" }));
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("");
+});
+
+it("enables existing image controls when draft loading completes", async () => {
+  const imageId = "01980c8e-6c00-7000-8000-00000000024f";
+  const source = `{{kosh:image:${imageId};width=70%;alt=Loaded%20image;caption=Loaded%20caption}}`;
+  const imageStatus = vi.fn(async () => ({
+    attachmentId: imageId,
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    nextAttemptAtMs: null,
+    ocrError: "Vision unavailable",
+    ocrStatus: "FAILED" as const,
+  }));
+  const retryOcr = vi.fn(async () => ({
+    attachmentId: imageId,
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    nextAttemptAtMs: null,
+    ocrError: null,
+    ocrStatus: "PENDING" as const,
+  }));
+  const result = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      disabled
+      imageStatus={imageStatus}
+      onChange={() => undefined}
+      retryImageOcr={retryOcr}
+      value={source}
+    />,
+  );
+  const altInput = result.getByLabelText("Alt text");
+  const captionInput = result.getByLabelText("Caption");
+  const remove = result.getByRole("button", { name: "Remove" });
+  const retry = await result.findByRole("button", { name: "Retry text recognition" });
+  expect(altInput).toBeDisabled();
+  expect(captionInput).toBeDisabled();
+  expect(remove).toBeDisabled();
+  expect(retry).toBeDisabled();
+
+  result.rerender(
+    <RichTextEditor
+      ariaLabel="Body"
+      imageStatus={imageStatus}
+      onChange={() => undefined}
+      retryImageOcr={retryOcr}
+      value={source}
+    />,
+  );
+
+  expect(result.getByLabelText("Alt text")).toBe(altInput);
+  expect(altInput).toBeEnabled();
+  expect(captionInput).toBeEnabled();
+  expect(remove).toBeEnabled();
+  expect(retry).toBeEnabled();
+});
+
+it("shows a durable pending node while pasted image ingestion completes", async () => {
+  let resolveImage!: (record: ImageRecord) => void;
+  const imagePromise = new Promise<ImageRecord>((resolve) => {
+    resolveImage = resolve;
+  });
+  const onPendingImagesChange = vi.fn();
+  const onChange = vi.fn();
+  const image = imageRecord("01980c8e-6c00-7000-8000-000000000232");
+  const { container, getByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      onChange={onChange}
+      onPendingImagesChange={onPendingImagesChange}
+      pasteImage={() => imagePromise}
+      value=""
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+
+  fireEvent.paste(textbox, {
+    clipboardData: { items: [{ type: "image/png" }] },
+  });
+  expect(getByRole("status", { name: "Processing pasted image" })).toHaveTextContent(
+    "Processing pasted image",
+  );
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(true);
+
+  await act(async () => resolveImage(image));
+  await waitFor(() => {
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      `kosh-media://localhost/attachment/${image.id}`,
+    );
+  });
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:image:${image.id};width=100%}}`);
+});
+
+it("inserts images selected through the native picker action", async () => {
+  const image = imageRecord("01980c8e-6c00-7000-8000-000000000235");
+  const pickImage = vi.fn(async () => image);
+  const { container, getByRole } = render(
+    <RichTextEditor ariaLabel="Body" onChange={() => undefined} pickImage={pickImage} value="" />,
+  );
+
+  fireEvent.click(getByRole("button", { name: "Add image" }));
+
+  expect(pickImage).toHaveBeenCalledOnce();
+  await waitFor(() =>
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      `kosh-media://localhost/attachment/${image.id}`,
+    ),
+  );
+});
+
+it("restores selected content when the native image picker is canceled", async () => {
+  let resolvePick!: (record: ImageRecord | null) => void;
+  const pickPromise = new Promise<ImageRecord | null>((resolve) => {
+    resolvePick = resolve;
+  });
+  const value = "Keep this selected text";
+  const onChange = vi.fn();
+  const { getByRole, queryByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      onChange={onChange}
+      pickImage={() => pickPromise}
+      value={value}
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+  const view = editorView(textbox);
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 5)));
+  });
+
+  fireEvent.click(getByRole("button", { name: "Add image" }));
+  expect(getByRole("status", { name: "Choosing image" })).toBeVisible();
+  expect(onChange).toHaveBeenLastCalledWith(value);
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)).insertText("!"));
+  });
+  expect(onChange).toHaveBeenLastCalledWith(`${value}!`);
+  await act(async () => resolvePick(null));
+
+  await waitFor(() => expect(queryByRole("status", { name: "Choosing image" })).toBeNull());
+  expect(serializeKoshMarkdown(view.state.doc)).toBe(`${value}!`);
+});
+
+it("removes failed image placeholders and supports explicit OCR retry", async () => {
+  const imageId = "01980c8e-6c00-7000-8000-000000000233";
+  const ingestError = new Error("invalid image");
+  const onImageError = vi.fn();
+  const onPendingImagesChange = vi.fn();
+  const retryImageOcr = vi.fn(async () => ({
+    attachmentId: imageId,
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    nextAttemptAtMs: 100,
+    ocrError: null,
+    ocrStatus: "PENDING" as const,
+  }));
+  const { getByRole, queryByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      imageStatus={async () => ({
+        attachmentId: imageId,
+        naturalHeight: 800,
+        naturalWidth: 1_200,
+        nextAttemptAtMs: null,
+        ocrError: "Vision unavailable",
+        ocrStatus: "FAILED",
+      })}
+      onChange={() => undefined}
+      onImageError={onImageError}
+      onPendingImagesChange={onPendingImagesChange}
+      pasteImage={() => Promise.reject(ingestError)}
+      retryImageOcr={retryImageOcr}
+      value={`{{kosh:image:${imageId};width=70%}}`}
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+  await waitFor(() =>
+    expect(getByRole("button", { name: "Retry text recognition" })).toBeVisible(),
+  );
+  fireEvent.click(getByRole("button", { name: "Retry text recognition" }));
+  await waitFor(() => expect(retryImageOcr).toHaveBeenCalledWith(imageId));
+
+  fireEvent.paste(textbox, {
+    clipboardData: { items: [{ type: "image/png" }] },
+  });
+  await waitFor(() => expect(onImageError).toHaveBeenCalledWith(ingestError));
+  expect(queryByRole("status", { name: "Processing pasted image" })).toBeNull();
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
+  expect(serializeKoshMarkdown(editorView(textbox).state.doc)).toBe(
+    `{{kosh:image:${imageId};width=70%}}`,
+  );
+});
+
+it("backs off OCR status polling until a retry is eligible", () => {
+  expect(statusPollDelay({ nextAttemptAtMs: 121_000, ocrStatus: "RETRY_WAIT" }, 1_000)).toBe(
+    120_000,
+  );
+  expect(statusPollDelay({ nextAttemptAtMs: 3_601_000, ocrStatus: "RETRY_WAIT" }, 1_000)).toBe(
+    300_000,
+  );
+  expect(statusPollDelay({ nextAttemptAtMs: null, ocrStatus: "RETRY_WAIT" }, 1_000)).toBe(300_000);
+  expect(statusPollDelay({ nextAttemptAtMs: 1_000, ocrStatus: "PENDING" }, 1_000)).toBe(1_500);
+});
+
 it("does not duplicate transactions in React Strict Mode", () => {
   const onChange = vi.fn();
   const { getByRole } = render(
@@ -459,6 +712,21 @@ function controlledEditor(value: string) {
     ...result,
     textbox,
     view: editorView(textbox),
+  };
+}
+
+function imageRecord(id: string): ImageRecord {
+  return {
+    byteLength: 12_000,
+    displayFilename: "knowledge.png",
+    id,
+    ingestLeaseId: "01980c8e-6c00-7000-8000-000000000234",
+    kind: "IMAGE",
+    mediaType: "image/png",
+    naturalHeight: 800,
+    naturalWidth: 1_200,
+    ocrError: null,
+    ocrStatus: "PENDING",
   };
 }
 

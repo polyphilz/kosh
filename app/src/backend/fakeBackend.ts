@@ -5,6 +5,10 @@ import type {
   DeleteTidbitInput,
   DraftRecord,
   EditTidbitInput,
+  ImageDropIngestResult,
+  ImageOcrDiagnostics,
+  ImageRecord,
+  ImageStatusRecord,
   ListTidbitsInput,
   PassageEmbeddingIndexStatus,
   RuntimeProbe,
@@ -123,6 +127,46 @@ export class FakeBackend implements Backend {
       totalPassages: 0,
       active: ready,
       message: null,
+    };
+  }
+
+  async selectImage(): Promise<string | null> {
+    return null;
+  }
+
+  async ingestSelectedImage(_selectionId: string, _draftId: string): Promise<ImageRecord> {
+    throw new Error("Selected images are unavailable in the browser fixture");
+  }
+
+  async captureClipboardImage(): Promise<string> {
+    throw new Error("Native clipboard images are unavailable in the browser fixture");
+  }
+
+  async ingestClipboardImage(_captureId: string, _draftId: string): Promise<ImageRecord> {
+    throw new Error("Captured clipboard images are unavailable in the browser fixture");
+  }
+
+  async ingestDroppedImages(_dropId: string, _draftId: string): Promise<ImageDropIngestResult> {
+    return { failures: [], images: [] };
+  }
+
+  async imageStatus(attachmentId: string): Promise<ImageStatusRecord> {
+    throw new Error(`image ${attachmentId} was not found`);
+  }
+
+  async retryImageOcr(attachmentId: string): Promise<ImageStatusRecord> {
+    throw new Error(`image ${attachmentId} was not found`);
+  }
+
+  async imageOcrDiagnostics(): Promise<ImageOcrDiagnostics> {
+    return {
+      failed: 0,
+      lastError: null,
+      oldestEligibleAtMs: null,
+      pending: 0,
+      ready: 0,
+      retryWait: 0,
+      running: 0,
     };
   }
 

@@ -19,6 +19,7 @@ import remarkParse from "remark-parse";
 import remarkStringify from "remark-stringify";
 import { unified } from "unified";
 import { normalizeCodeLanguageLabel } from "./languages";
+import { parseKoshMediaToken, serializeKoshImageToken } from "./mediaTokens";
 import { externalHttpUrl } from "./urlPolicy";
 
 const markdownParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkBreaks);
@@ -103,6 +104,23 @@ function blockFromMarkdown(
 ): ProseMirrorNode[] {
   switch (node.type) {
     case "paragraph":
+      if (node.children.length === 1 && node.children[0]?.type === "text") {
+        const media = parseKoshMediaToken(node.children[0].value);
+        if (media?.kind === "image") {
+          return [
+            schema.nodes.kosh_image!.create({
+              altText: media.altText ?? "",
+              attachmentId: media.attachmentId,
+              caption: media.caption ?? "",
+              naturalHeight: null,
+              naturalWidth: null,
+              ocrError: null,
+              ocrStatus: "PENDING",
+              widthPercent: media.widthPercent,
+            }),
+          ];
+        }
+      }
       return [
         schema.nodes.paragraph!.create(
           null,
@@ -392,6 +410,25 @@ function blockToMarkdown(node: ProseMirrorNode): Array<BlockContent | Definition
       ];
     case "table":
       return [tableToMarkdown(node)];
+    case "kosh_image":
+      return [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "text",
+              value: serializeKoshImageToken({
+                altText: node.attrs.altText || undefined,
+                attachmentId: node.attrs.attachmentId,
+                caption: node.attrs.caption || undefined,
+                widthPercent: node.attrs.widthPercent,
+              }),
+            },
+          ],
+        },
+      ];
+    case "kosh_image_pending":
+      return [];
     default:
       throw new Error(`Cannot serialize editor node ${node.type.name}`);
   }

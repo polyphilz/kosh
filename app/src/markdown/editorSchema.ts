@@ -173,6 +173,78 @@ const mathDisplay: NodeSpec = {
   },
 };
 
+const image: NodeSpec = {
+  atom: true,
+  attrs: {
+    altText: { default: "", validate: "string" },
+    attachmentId: { validate: "string" },
+    caption: { default: "", validate: "string" },
+    naturalHeight: { default: null, validate: "number|null" },
+    naturalWidth: { default: null, validate: "number|null" },
+    ocrError: { default: null, validate: "string|null" },
+    ocrStatus: { default: "PENDING", validate: "string" },
+    widthPercent: { default: 100, validate: "number" },
+  },
+  draggable: true,
+  group: "block",
+  parseDOM: [
+    {
+      tag: "figure[data-kosh-image]",
+      getAttrs(dom) {
+        const element = dom as HTMLElement;
+        return {
+          altText: element.dataset.altText ?? "",
+          attachmentId: element.dataset.attachmentId ?? "",
+          caption: element.dataset.caption ?? "",
+          naturalHeight: Number(element.dataset.naturalHeight) || null,
+          naturalWidth: Number(element.dataset.naturalWidth) || null,
+          ocrError: element.dataset.ocrError ?? null,
+          ocrStatus: element.dataset.ocrStatus ?? "PENDING",
+          widthPercent: Number(element.dataset.widthPercent) || 100,
+        };
+      },
+    },
+  ],
+  selectable: true,
+  toDOM(node): DOMOutputSpec {
+    return [
+      "figure",
+      {
+        "data-alt-text": node.attrs.altText,
+        "data-attachment-id": node.attrs.attachmentId,
+        "data-caption": node.attrs.caption,
+        "data-kosh-image": "true",
+        "data-natural-height": node.attrs.naturalHeight,
+        "data-natural-width": node.attrs.naturalWidth,
+        "data-ocr-error": node.attrs.ocrError,
+        "data-ocr-status": node.attrs.ocrStatus,
+        "data-width-percent": node.attrs.widthPercent,
+      },
+    ];
+  },
+};
+
+const pendingImage: NodeSpec = {
+  atom: true,
+  attrs: {
+    label: { default: "Processing image", validate: "string" },
+    requestId: { validate: "string" },
+  },
+  group: "block",
+  selectable: false,
+  toDOM(node): DOMOutputSpec {
+    return [
+      "div",
+      {
+        "aria-label": node.attrs.label,
+        "data-kosh-image-pending": "true",
+        role: "status",
+      },
+      `${node.attrs.label}…`,
+    ];
+  },
+};
+
 const strike: MarkSpec = {
   parseDOM: [{ tag: "del" }, { tag: "s" }, { tag: "strike" }],
   toDOM: (): DOMOutputSpec => ["del", 0],
@@ -235,6 +307,8 @@ nodes = nodes.append(
 );
 nodes = nodes.addBefore("text", "math_inline", mathInline);
 nodes = nodes.addBefore("text", "math_display", mathDisplay);
+nodes = nodes.addBefore("text", "kosh_image", image);
+nodes = nodes.addBefore("text", "kosh_image_pending", pendingImage);
 nodes = nodes.addBefore("text", "markdown_definition", markdownDefinition);
 
 export const koshEditorSchema = new Schema({

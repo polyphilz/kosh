@@ -42,6 +42,14 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         media::media_limits,
         media::media_integrity_scan,
         media::maintain_media,
+        media::select_image,
+        media::ingest_selected_image,
+        media::capture_clipboard_image,
+        media::ingest_clipboard_image,
+        media::ingest_dropped_images,
+        media::image_status,
+        media::retry_image_ocr,
+        media::image_ocr_diagnostics,
         database::commands::create_tidbit,
         database::commands::load_tidbit,
         database::commands::list_tidbits,
@@ -59,9 +67,11 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     with_commands(
-        tauri::Builder::default().register_uri_scheme_protocol("kosh-media", |context, request| {
-            media::protocol_response(context.app_handle(), request)
-        }),
+        tauri::Builder::default()
+            .register_uri_scheme_protocol("kosh-media", |context, request| {
+                media::protocol_response(context.app_handle(), request)
+            })
+            .on_window_event(media::handle_image_drop),
     )
     .setup(|app| {
         let data_dir = select_data_dir(
@@ -82,6 +92,7 @@ pub use database::{
     AttachmentIngestInput, AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator,
     CitationResolution, CitationState, CitationTidbit, ClearDraftInput, Database,
     DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput, Draft, EditTidbitInput,
+    ImageOcrDiagnostics, ImageOcrRecovery, ImageOcrStatus, ImageRecord, ImageStatusRecord,
     LexicalSearchMode, ListTidbitsInput, MediaCleanupResult, MediaIntegrityReport, MediaLimits,
     MediaMaintenanceReport, PassageSearchResult, RestoreTidbitInput, SaveDraftInput,
     SearchExecutionMode, SearchField, SearchHighlight, SearchPassagesInput, SearchPassagesResponse,

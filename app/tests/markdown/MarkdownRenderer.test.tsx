@@ -86,6 +86,36 @@ it("keeps authored HTML, dangerous URLs, remote images, and trusted KaTeX comman
   expect(document.body.children).toHaveLength(1);
 });
 
+it("renders only canonical local image tokens with authored metadata", () => {
+  const imageId = "01980c8e-6c00-7000-8000-000000000241";
+  const source =
+    `{{kosh:image:${imageId};width=65%;alt=%2AArchitecture%2A%20%5Fdiagram%5F;` +
+    "caption=%7E%7EEvidence%7E%7E%20%28chapter%202%29%21}}";
+  const { getByRole, getByText } = render(<MarkdownRenderer source={source} />);
+  const image = getByRole("img", { name: "*Architecture* _diagram_" });
+
+  expect(image).toHaveAttribute("src", `kosh-media://localhost/attachment/${imageId}`);
+  expect(image.closest("figure")).toHaveStyle({ width: "65%" });
+  expect(getByText("~~Evidence~~ (chapter 2)!")).toBeInTheDocument();
+});
+
+it("leaves malformed and nonlocal Kosh-like image references inert", () => {
+  const imageId = "01980c8e-6c00-7000-8000-000000000242";
+  const { container } = render(
+    <MarkdownRenderer
+      source={[
+        `{{kosh:image:${imageId};width=070%}}`,
+        "",
+        `![local-looking](kosh-media://evil.example/attachment/${imageId})`,
+      ].join("\n")}
+    />,
+  );
+
+  expect(container.querySelector("img")).toBeNull();
+  expect(container).toHaveTextContent(`{{kosh:image:${imageId};width=070%}}`);
+  expect(container).toHaveTextContent("local-looking");
+});
+
 it("opens validated HTTP links only through the caller-owned handler", () => {
   const onOpenExternalUrl = vi.fn<(_url: string) => Promise<void>>();
   onOpenExternalUrl.mockResolvedValue();

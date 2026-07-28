@@ -188,6 +188,48 @@ export interface DraftRecord extends SaveDraftInput {
   updatedAtMs: number;
 }
 
+export type ImageOcrStatus = "PENDING" | "RUNNING" | "RETRY_WAIT" | "READY" | "FAILED";
+
+export interface ImageRecord {
+  id: string;
+  ingestLeaseId: string;
+  displayFilename: string;
+  mediaType: string;
+  byteLength: number;
+  kind: "IMAGE";
+  naturalWidth: number;
+  naturalHeight: number;
+  ocrStatus: ImageOcrStatus;
+  ocrError: string | null;
+}
+
+export interface ImageStatusRecord {
+  attachmentId: string;
+  naturalWidth: number;
+  naturalHeight: number;
+  ocrStatus: ImageOcrStatus;
+  ocrError: string | null;
+  nextAttemptAtMs: number | null;
+}
+
+export interface ImageDropIngestResult {
+  images: ImageRecord[];
+  failures: Array<{
+    filename: string;
+    message: string;
+  }>;
+}
+
+export interface ImageOcrDiagnostics {
+  pending: number;
+  running: number;
+  retryWait: number;
+  ready: number;
+  failed: number;
+  oldestEligibleAtMs: number | null;
+  lastError: string | null;
+}
+
 export interface TidbitSource {
   id: string;
   label: string | null;
@@ -251,4 +293,12 @@ export interface Backend {
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;
+  selectImage(): Promise<string | null>;
+  ingestSelectedImage(selectionId: string, draftId: string): Promise<ImageRecord>;
+  captureClipboardImage(): Promise<string>;
+  ingestClipboardImage(captureId: string, draftId: string): Promise<ImageRecord>;
+  ingestDroppedImages(dropId: string, draftId: string): Promise<ImageDropIngestResult>;
+  imageStatus(attachmentId: string): Promise<ImageStatusRecord>;
+  retryImageOcr(attachmentId: string): Promise<ImageStatusRecord>;
+  imageOcrDiagnostics(): Promise<ImageOcrDiagnostics>;
 }

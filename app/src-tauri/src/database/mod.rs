@@ -38,8 +38,9 @@ use rusqlite::Connection;
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use media::{
-    AttachmentIngestInput, AttachmentKind, AttachmentRecord, MediaCleanupResult,
-    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
+    AttachmentIngestInput, AttachmentKind, AttachmentRecord, ImageOcrDiagnostics, ImageOcrRecovery,
+    ImageOcrStatus, ImageRecord, ImageStatusRecord, MediaCleanupResult, MediaIntegrityReport,
+    MediaLimits, MediaMaintenanceReport,
 };
 pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
@@ -306,6 +307,52 @@ fn writer_loop(
             }
             WriterMessage::IngestAttachment { write, reply } => {
                 let _ = reply.send(media::ingest_attachment(&mut main, &mut media, write));
+            }
+            WriterMessage::IngestImage { write, reply } => {
+                let _ = reply.send(media::ingest_image(&mut main, &mut media, write));
+            }
+            WriterMessage::LoadImageStatus {
+                attachment_id,
+                reply,
+            } => {
+                let _ = reply.send(media::load_image_status(&main, &attachment_id));
+            }
+            WriterMessage::ClaimNextImageOcr { now_ms, reply } => {
+                let _ = reply.send(media::claim_next_image_ocr(&mut main, &media, now_ms));
+            }
+            WriterMessage::CompleteImageOcr {
+                job,
+                result,
+                completed_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(media::complete_image_ocr(
+                    &mut main,
+                    &job,
+                    result,
+                    completed_at_ms,
+                ));
+            }
+            WriterMessage::RetryImageOcr {
+                attachment_id,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(media::retry_image_ocr(&mut main, &attachment_id, now_ms));
+            }
+            WriterMessage::RecoverInterruptedImageOcr {
+                stale_started_at_or_before,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(media::recover_interrupted_image_ocr(
+                    &mut main,
+                    stale_started_at_or_before,
+                    now_ms,
+                ));
+            }
+            WriterMessage::ImageOcrDiagnostics { reply } => {
+                let _ = reply.send(media::image_ocr_diagnostics(&main));
             }
             WriterMessage::LoadMediaPayload {
                 attachment_id,

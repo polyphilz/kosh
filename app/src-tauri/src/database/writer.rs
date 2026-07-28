@@ -10,9 +10,10 @@ use super::{
     },
     error::{DatabaseError, Result},
     media::{
-        AttachmentRecord, IngestAttachmentWrite, MediaByteRange, MediaIntegrityReport,
-        MediaIntegrityScan, MediaLimits, MediaMaintenanceReport, MediaMaintenanceScan,
-        MediaPayload,
+        AttachmentRecord, ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion,
+        ImageRecord, ImageStatusRecord, IngestAttachmentWrite, IngestImageWrite, MediaByteRange,
+        MediaIntegrityReport, MediaIntegrityScan, MediaLimits, MediaMaintenanceReport,
+        MediaMaintenanceScan, MediaPayload,
     },
     migrations::MigrationHeads,
     passages::CitationResolution,
@@ -89,6 +90,37 @@ pub(super) enum WriterMessage {
     IngestAttachment {
         write: IngestAttachmentWrite,
         reply: SyncSender<Result<AttachmentRecord>>,
+    },
+    IngestImage {
+        write: IngestImageWrite,
+        reply: SyncSender<Result<ImageRecord>>,
+    },
+    LoadImageStatus {
+        attachment_id: String,
+        reply: SyncSender<Result<ImageStatusRecord>>,
+    },
+    ClaimNextImageOcr {
+        now_ms: i64,
+        reply: SyncSender<Result<Option<ImageOcrJob>>>,
+    },
+    CompleteImageOcr {
+        job: ImageOcrJob,
+        result: std::result::Result<Vec<ImageOcrRegion>, String>,
+        completed_at_ms: i64,
+        reply: SyncSender<Result<()>>,
+    },
+    RetryImageOcr {
+        attachment_id: String,
+        now_ms: i64,
+        reply: SyncSender<Result<ImageStatusRecord>>,
+    },
+    RecoverInterruptedImageOcr {
+        stale_started_at_or_before: i64,
+        now_ms: i64,
+        reply: SyncSender<Result<ImageOcrRecovery>>,
+    },
+    ImageOcrDiagnostics {
+        reply: SyncSender<Result<ImageOcrDiagnostics>>,
     },
     LoadMediaPayload {
         attachment_id: String,
@@ -197,6 +229,105 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::IngestAttachment { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn ingest_image(&self, write: IngestImageWrite) -> Result<ImageRecord> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::IngestImage { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_image_status(&self, attachment_id: String) -> Result<ImageStatusRecord> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadImageStatus {
+                attachment_id,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn claim_next_image_ocr(&self, now_ms: i64) -> Result<Option<ImageOcrJob>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ClaimNextImageOcr { now_ms, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn complete_image_ocr(
+        &self,
+        job: ImageOcrJob,
+        result: std::result::Result<Vec<ImageOcrRegion>, String>,
+        completed_at_ms: i64,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::CompleteImageOcr {
+                job,
+                result,
+                completed_at_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn retry_image_ocr(
+        &self,
+        attachment_id: String,
+        now_ms: i64,
+    ) -> Result<ImageStatusRecord> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RetryImageOcr {
+                attachment_id,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn recover_interrupted_image_ocr(
+        &self,
+        stale_started_at_or_before: i64,
+        now_ms: i64,
+    ) -> Result<ImageOcrRecovery> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RecoverInterruptedImageOcr {
+                stale_started_at_or_before,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn image_ocr_diagnostics(&self) -> Result<ImageOcrDiagnostics> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ImageOcrDiagnostics { reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

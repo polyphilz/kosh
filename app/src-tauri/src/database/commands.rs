@@ -37,6 +37,10 @@ impl CommandError {
             message: format!("database command worker failed: {message}"),
         }
     }
+
+    pub(crate) fn public_message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl From<DatabaseError> for CommandError {

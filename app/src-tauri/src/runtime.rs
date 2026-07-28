@@ -1,6 +1,7 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -50,6 +51,35 @@ pub(crate) struct RuntimeState {
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
     media_limits: MediaLimits,
+    image_ocr: crate::media::ImageOcrCoordinator,
+    pending_clipboard_images: Mutex<HashMap<String, PendingClipboardImage>>,
+    pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
+}
+
+struct PendingClipboardImage {
+    created_at_ms: i64,
+    bytes: Vec<u8>,
+}
+
+struct PendingImageDrop {
+    created_at_ms: i64,
+    paths: Vec<PathBuf>,
+}
+
+const CLIPBOARD_IMAGE_TTL_MS: i64 = 5 * 60 * 1_000;
+const MAX_PENDING_CLIPBOARD_IMAGES: usize = 4;
+const IMAGE_DROP_TTL_MS: i64 = 5 * 60 * 1_000;
+const MAX_PENDING_IMAGE_DROPS: usize = 16;
+const MAX_FILES_PER_IMAGE_DROP: usize = 32;
+
+fn start_optional_image_ocr(client: DatabaseClient) -> crate::media::ImageOcrCoordinator {
+    match crate::media::ImageOcrCoordinator::start(client) {
+        Ok(coordinator) => coordinator,
+        Err(error) => {
+            log::warn!("image OCR is unavailable; Kosh will continue without it: {error}");
+            crate::media::ImageOcrCoordinator::disabled()
+        }
+    }
 }
 
 impl RuntimeState {
@@ -61,6 +91,7 @@ impl RuntimeState {
         let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
+        let image_ocr = start_optional_image_ocr(database.client());
         let media_limits = MediaLimits::default().validate()?;
         let state = Self {
             data_dir,
@@ -70,6 +101,9 @@ impl RuntimeState {
             clock: Arc::new(SystemClock),
             ids: Arc::new(UuidV7Generator),
             media_limits,
+            image_ocr,
+            pending_clipboard_images: Mutex::new(HashMap::new()),
+            pending_image_drops: Mutex::new(HashMap::new()),
         };
         if let Err(error) = state
             .database
@@ -102,6 +136,9 @@ impl RuntimeState {
             clock,
             ids,
             media_limits: MediaLimits::default(),
+            image_ocr: crate::media::ImageOcrCoordinator::disabled(),
+            pending_clipboard_images: Mutex::new(HashMap::new()),
+            pending_image_drops: Mutex::new(HashMap::new()),
         }
     }
 
@@ -138,6 +175,147 @@ impl RuntimeState {
     pub(crate) fn media_staging_directory(&self) -> PathBuf {
         self.data_dir.join("media-staging")
     }
+
+    pub(crate) fn wake_image_ocr(&self) {
+        self.image_ocr.wake();
+    }
+
+    pub(crate) fn register_clipboard_image(
+        &self,
+        bytes: Vec<u8>,
+    ) -> crate::database::Result<String> {
+        if bytes.is_empty() || bytes.len() > crate::media::MAX_SOURCE_IMAGE_BYTES {
+            return Err(crate::database::DatabaseError::InvalidInput(format!(
+                "the pasted image must contain between 1 and {} bytes",
+                crate::media::MAX_SOURCE_IMAGE_BYTES
+            )));
+        }
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_clipboard_images
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, image| {
+            now_ms.saturating_sub(image.created_at_ms) <= CLIPBOARD_IMAGE_TTL_MS
+        });
+        if pending.len() >= MAX_PENDING_CLIPBOARD_IMAGES {
+            return Err(crate::database::DatabaseError::InvalidInput(
+                "too many pasted images are awaiting ingestion".into(),
+            ));
+        }
+        let capture_id = self
+            .next_ids(1)
+            .into_iter()
+            .next()
+            .expect("requested clipboard image capture ID");
+        pending.insert(
+            capture_id.clone(),
+            PendingClipboardImage {
+                created_at_ms: now_ms,
+                bytes,
+            },
+        );
+        Ok(capture_id)
+    }
+
+    pub(crate) fn take_clipboard_image(
+        &self,
+        capture_id: &str,
+    ) -> crate::database::Result<Vec<u8>> {
+        validate_capability_id(capture_id, "captureId")?;
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_clipboard_images
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, image| {
+            now_ms.saturating_sub(image.created_at_ms) <= CLIPBOARD_IMAGE_TTL_MS
+        });
+        pending
+            .remove(capture_id)
+            .map(|image| image.bytes)
+            .ok_or_else(|| crate::database::DatabaseError::NotFound {
+                entity: "clipboard image capture",
+                id: capture_id.into(),
+            })
+    }
+
+    pub(crate) fn register_image_drop(
+        &self,
+        paths: &[PathBuf],
+    ) -> Option<crate::media::ImageDropNotice> {
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_image_drops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, drop| now_ms.saturating_sub(drop.created_at_ms) <= IMAGE_DROP_TTL_MS);
+        if pending.len() >= MAX_PENDING_IMAGE_DROPS {
+            return None;
+        }
+        let paths = paths
+            .iter()
+            .filter(|path| path.is_file())
+            .take(MAX_FILES_PER_IMAGE_DROP)
+            .cloned()
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return None;
+        }
+        let filenames = paths
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Dropped image")
+                    .to_owned()
+            })
+            .collect();
+        let drop_id = self
+            .next_ids(1)
+            .into_iter()
+            .next()
+            .expect("requested image drop ID");
+        pending.insert(
+            drop_id.clone(),
+            PendingImageDrop {
+                created_at_ms: now_ms,
+                paths,
+            },
+        );
+        Some(crate::media::ImageDropNotice { drop_id, filenames })
+    }
+
+    pub(crate) fn take_image_drop(&self, drop_id: &str) -> crate::database::Result<Vec<PathBuf>> {
+        validate_capability_id(drop_id, "dropId")?;
+        let now_ms = self.now_ms();
+        let mut pending = self
+            .pending_image_drops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.retain(|_, drop| now_ms.saturating_sub(drop.created_at_ms) <= IMAGE_DROP_TTL_MS);
+        pending
+            .remove(drop_id)
+            .map(|drop| drop.paths)
+            .ok_or_else(|| crate::database::DatabaseError::NotFound {
+                entity: "image drop",
+                id: drop_id.into(),
+            })
+    }
+}
+
+fn validate_capability_id(id: &str, field: &str) -> crate::database::Result<()> {
+    uuid::Uuid::parse_str(id)
+        .ok()
+        .filter(|parsed| {
+            parsed.get_version_num() == 7 && parsed.hyphenated().to_string().as_str() == id
+        })
+        .map(|_| ())
+        .ok_or_else(|| {
+            crate::database::DatabaseError::InvalidInput(format!(
+                "{field} must be a lowercase UUIDv7"
+            ))
+        })
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -296,6 +474,84 @@ pub(crate) mod deterministic {
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_ocr_recovery_is_deferred_until_after_coordinator_construction() {
+        let directory = tempfile::tempdir().expect("temporary optional OCR database");
+        let database =
+            Database::initialize(DatabasePaths::new(directory.path())).expect("OCR database");
+        let unavailable_client = database.client();
+        database.shutdown().expect("stop OCR database writer");
+
+        let coordinator = start_optional_image_ocr(unavailable_client);
+
+        assert!(!coordinator.is_disabled());
+    }
+
+    #[test]
+    fn native_image_drops_expose_only_opaque_single_use_capabilities() {
+        let directory = tempfile::tempdir().expect("temporary image drop directory");
+        let image = directory.path().join("private shower thought.png");
+        std::fs::write(&image, b"image bytes").expect("image drop fixture");
+        let drop_id = "019f547b-6200-7000-8000-000000000991".to_owned();
+        let state = RuntimeState::deterministic(
+            directory.path().join("data"),
+            Arc::new(deterministic::FixedClock(100)),
+            deterministic::SequenceIds::new([drop_id.clone()]),
+        );
+
+        let notice = state
+            .register_image_drop(&[image.clone(), directory.path().to_owned()])
+            .expect("registered native image drop");
+        assert_eq!(notice.drop_id, drop_id);
+        assert_eq!(notice.filenames, ["private shower thought.png"]);
+        let serialized = serde_json::to_string(&notice).expect("serialize drop notice");
+        assert!(!serialized.contains(directory.path().to_string_lossy().as_ref()));
+        assert_eq!(
+            state.take_image_drop(&drop_id).expect("consume drop"),
+            [image]
+        );
+        assert!(matches!(
+            state.take_image_drop(&drop_id),
+            Err(crate::database::DatabaseError::NotFound { .. })
+        ));
+        assert!(matches!(
+            state.take_image_drop("not-a-capability"),
+            Err(crate::database::DatabaseError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn pasted_images_are_snapshotted_in_opaque_single_use_capabilities() {
+        let directory = tempfile::tempdir().expect("temporary clipboard image directory");
+        let capture_id = "019f547b-6200-7000-8000-000000000992".to_owned();
+        let state = RuntimeState::deterministic(
+            directory.path().join("data"),
+            Arc::new(deterministic::FixedClock(100)),
+            deterministic::SequenceIds::new([capture_id.clone()]),
+        );
+
+        assert_eq!(
+            state
+                .register_clipboard_image(b"first clipboard image".to_vec())
+                .expect("capture pasted image"),
+            capture_id
+        );
+        assert_eq!(
+            state
+                .take_clipboard_image(&capture_id)
+                .expect("consume pasted image"),
+            b"first clipboard image"
+        );
+        assert!(matches!(
+            state.take_clipboard_image(&capture_id),
+            Err(crate::database::DatabaseError::NotFound { .. })
+        ));
+        assert!(matches!(
+            state.take_clipboard_image("not-a-capability"),
+            Err(crate::database::DatabaseError::InvalidInput(_))
+        ));
+    }
 
     #[test]
     fn production_runtime_starts_without_a_resolved_resource_directory() {

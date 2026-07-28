@@ -24,9 +24,12 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { codeLanguageAliases, normalizeCodeLanguageLabel } from "./languages";
+import { parseKoshMediaToken } from "./mediaTokens";
+import { attachmentMediaUrl } from "../media/gateway";
 
 export const remarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [
   remarkInertHtml,
+  remarkKoshImages,
   remarkGfm,
   remarkMath,
   remarkBreaks,
@@ -40,12 +43,12 @@ const sanitizeSchema: SanitizeSchema = {
       ...(defaultSchema.attributes?.code ?? []),
       ["className", "math-inline", "math-display", /^language-[\w+-]+$/u],
     ],
-    img: ["alt", "title"],
+    img: ["alt", "src", "title"],
   },
   protocols: {
     ...defaultSchema.protocols,
     href: ["http", "https"],
-    src: [],
+    src: ["kosh-media"],
   },
 };
 
@@ -97,8 +100,43 @@ export const rehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> =
 
 interface MarkdownAstNode {
   children?: MarkdownAstNode[];
+  alt?: string;
+  title?: string;
   type: string;
+  url?: string;
   value?: string;
+}
+
+function remarkKoshImages() {
+  return (tree: unknown) => {
+    visitKoshImageNodes(tree as MarkdownAstNode);
+  };
+}
+
+function visitKoshImageNodes(node: MarkdownAstNode) {
+  if (!node.children) {
+    return;
+  }
+  for (let index = 0; index < node.children.length; index += 1) {
+    const child = node.children[index]!;
+    if (
+      child.type === "paragraph" &&
+      child.children?.length === 1 &&
+      child.children[0]?.type === "text"
+    ) {
+      const token = parseKoshMediaToken(child.children[0].value ?? "");
+      if (token?.kind === "image") {
+        node.children[index] = {
+          alt: token.altText ?? "",
+          title: `kosh-image:${token.widthPercent}:${encodeURIComponent(token.caption ?? "")}`,
+          type: "image",
+          url: attachmentMediaUrl(token.attachmentId),
+        };
+        continue;
+      }
+    }
+    visitKoshImageNodes(child);
+  }
 }
 
 function remarkInertHtml() {
