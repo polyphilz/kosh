@@ -100,10 +100,11 @@ LLAMA_SERVER=/path/to/llama-server \
 
 `scripts/build-llama-sidecar.sh` checks out the exact pinned llama.cpp
 revision, builds separate arm64 and x86_64 static binaries, combines them into
-a universal macOS sidecar, runs CPU and Metal golden checks on the host, checks
-dynamic dependencies, and writes only to the ignored release staging
-directory. Release packaging is intentionally separate from ordinary and test
-builds:
+a universal macOS sidecar, and explicitly runs both architecture slices through
+CPU and Metal golden checks. The release build therefore requires an Apple
+Silicon Mac with Rosetta installed. It also checks each slice's dynamic
+dependencies and writes only to the ignored release staging directory. Release
+packaging is intentionally separate from ordinary and test builds:
 
 ```bash
 cd app

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 MANIFEST="$ROOT/app/src-tauri/resources/embedding-indexes/jina-v1.json"
 FIXTURES="$ROOT/app/src-tauri/resources/embedding-indexes/jina-v1-golden.json"
 MODEL_FILE=${1:-"$HOME/Library/Application Support/kosh/models/v5-nano-retrieval-Q8_0.gguf"}
@@ -10,11 +10,20 @@ LLAMA_SERVER=${LLAMA_SERVER:-llama-server}
 LLAMA_DEVICE=${LLAMA_DEVICE:-none}
 LLAMA_GPU_LAYERS=${LLAMA_GPU_LAYERS:-0}
 LLAMA_REQUIRE_METAL=${LLAMA_REQUIRE_METAL:-0}
+LLAMA_ARCHITECTURE=${LLAMA_ARCHITECTURE:-}
 
 case "$LLAMA_REQUIRE_METAL" in
   0 | 1) ;;
   *)
     echo "LLAMA_REQUIRE_METAL must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+
+case "$LLAMA_ARCHITECTURE" in
+  "" | arm64 | x86_64) ;;
+  *)
+    echo "LLAMA_ARCHITECTURE must be arm64, x86_64, or empty" >&2
     exit 1
     ;;
 esac
@@ -25,6 +34,29 @@ for command in curl jq shasum "$LLAMA_EMBEDDING" "$LLAMA_SERVER"; do
     exit 1
   }
 done
+
+if test -n "$LLAMA_ARCHITECTURE"; then
+  command -v arch >/dev/null 2>&1 || {
+    echo "required command not found: arch" >&2
+    exit 1
+  }
+fi
+
+run_llama_embedding() {
+  if test -n "$LLAMA_ARCHITECTURE"; then
+    arch "-$LLAMA_ARCHITECTURE" "$LLAMA_EMBEDDING" "$@"
+  else
+    "$LLAMA_EMBEDDING" "$@"
+  fi
+}
+
+run_llama_server() {
+  if test -n "$LLAMA_ARCHITECTURE"; then
+    arch "-$LLAMA_ARCHITECTURE" "$LLAMA_SERVER" "$@"
+  else
+    "$LLAMA_SERVER" "$@"
+  fi
+}
 
 test -f "$MODEL_FILE" || {
   echo "model not found: $MODEL_FILE" >&2
@@ -41,7 +73,7 @@ if test "$LLAMA_REQUIRE_METAL" = 1; then
       ;;
   esac
 
-  "$LLAMA_SERVER" --list-devices 2>&1 \
+  run_llama_server --list-devices 2>&1 \
     | grep -F "  $LLAMA_DEVICE:" >/dev/null || {
       echo "Metal device is unavailable: $LLAMA_DEVICE" >&2
       exit 1
@@ -157,7 +189,7 @@ run_fixture() {
   if test "$LLAMA_REQUIRE_METAL" = 1; then
     set -- "$@" --verbose
   fi
-  if ! "$LLAMA_EMBEDDING" "$@" >"$output" 2>"$log"; then
+  if ! run_llama_embedding "$@" >"$output" 2>"$log"; then
     cat "$log" >&2
     exit 1
   fi
@@ -188,7 +220,11 @@ set -- "$@" \
 if test "$LLAMA_REQUIRE_METAL" = 1; then
   set -- "$@" --verbose
 fi
-"$LLAMA_SERVER" "$@" >"$SERVER_LOG" 2>&1 &
+if test -n "$LLAMA_ARCHITECTURE"; then
+  arch "-$LLAMA_ARCHITECTURE" "$LLAMA_SERVER" "$@" >"$SERVER_LOG" 2>&1 &
+else
+  "$LLAMA_SERVER" "$@" >"$SERVER_LOG" 2>&1 &
+fi
 SERVER_PID=$!
 
 attempt=0

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 PIN="$ROOT/app/src-tauri/resources/sidecars/llama-server-v1.json"
 EMBEDDING_MANIFEST="$ROOT/app/src-tauri/resources/embedding-indexes/jina-v1.json"
 GOLDEN_FIXTURES="$ROOT/app/src-tauri/resources/embedding-indexes/jina-v1-golden.json"
@@ -9,7 +9,7 @@ VERIFY="$ROOT/scripts/verify-jina-v1.sh"
 STAGE="$ROOT/app/src-tauri/resources/release"
 MODEL_FILE=${1:-"$ROOT/models/v5-nano-retrieval-Q8_0.gguf"}
 
-for command in cmake curl file git jq lipo otool shasum; do
+for command in arch cmake curl git jq lipo otool shasum; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required command not found: $command" >&2
     exit 1
@@ -22,9 +22,8 @@ test "$(uname -s)" = Darwin || {
 }
 
 HOST_ARCHITECTURE=$(uname -m)
-jq -e --arg architecture "$HOST_ARCHITECTURE" \
-  '.target.architectures | index($architecture) != null' "$PIN" >/dev/null || {
-  echo "unsupported build host architecture: $HOST_ARCHITECTURE" >&2
+test "$HOST_ARCHITECTURE" = arm64 || {
+  echo "the universal release must be built on Apple Silicon with Rosetta installed" >&2
   exit 1
 }
 
@@ -40,7 +39,6 @@ BINARY_DESTINATION=$(jq -er '.resourceDestinations.binary' "$PIN")
 BINARY_STAGING_PATH=$(jq -er '.stagingPaths.binary' "$PIN")
 MANIFEST_STAGING_PATH=$(jq -er '.stagingPaths.releaseManifest' "$PIN")
 LICENSE_SOURCE=$(jq -er '.licenseNotices[0].sourcePath' "$PIN")
-LICENSE_DESTINATION=$(jq -er '.licenseNotices[0].bundlePath' "$PIN")
 LICENSE_STAGING_PATH=$(jq -er '.stagingPaths.license' "$PIN")
 
 BUILD_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/kosh-llama-release.XXXXXX")
@@ -103,28 +101,14 @@ LLAMA_EMBEDDING="$UNIVERSAL/llama-embedding"
 test -x "$LLAMA_SERVER"
 test -x "$LLAMA_EMBEDDING"
 
-VERSION_OUTPUT=$("$LLAMA_SERVER" --version 2>&1)
-
-LLAMA_DEVICE=none \
-LLAMA_GPU_LAYERS=0 \
-LLAMA_EMBEDDING="$LLAMA_EMBEDDING" \
-LLAMA_SERVER="$LLAMA_SERVER" \
-  "$VERIFY" "$MODEL_FILE"
-
-METAL_DEVICE=MTL0
-LLAMA_DEVICE="$METAL_DEVICE" \
-LLAMA_GPU_LAYERS=all \
-LLAMA_REQUIRE_METAL=1 \
-LLAMA_EMBEDDING="$LLAMA_EMBEDDING" \
-LLAMA_SERVER="$LLAMA_SERVER" \
-  "$VERIFY" "$MODEL_FILE"
-
 for architecture in $(jq -er '.target.architectures[]' "$PIN"); do
-  lipo -archs "$LLAMA_SERVER" | tr ' ' '\n' | grep -Fx "$architecture" >/dev/null || {
-    lipo -info "$LLAMA_SERVER" >&2
-    echo "llama-server is missing the $architecture slice" >&2
-    exit 1
-  }
+  for binary in "$LLAMA_SERVER" "$LLAMA_EMBEDDING"; do
+    lipo -archs "$binary" | tr ' ' '\n' | grep -Fx "$architecture" >/dev/null || {
+      lipo -info "$binary" >&2
+      echo "$(basename "$binary") is missing the $architecture slice" >&2
+      exit 1
+    }
+  done
 done
 
 for architecture in $(jq -er '.target.architectures[]' "$PIN"); do
@@ -135,6 +119,39 @@ for architecture in $(jq -er '.target.architectures[]' "$PIN"); do
     echo "llama-server $architecture has a non-system dynamic dependency" >&2
     exit 1
   fi
+done
+
+VERSION_OUTPUTS="$BUILD_ROOT/version-outputs.json"
+printf '{}\n' >"$VERSION_OUTPUTS"
+METAL_DEVICE=MTL0
+for architecture in $(jq -er '.target.architectures[]' "$PIN"); do
+  if ! version_output=$(arch "-$architecture" "$LLAMA_SERVER" --version 2>&1); then
+    echo "$version_output" >&2
+    echo "could not execute the $architecture llama-server slice; install Rosetta if needed" >&2
+    exit 1
+  fi
+  next_version_outputs="$VERSION_OUTPUTS.tmp"
+  jq \
+    --arg architecture "$architecture" \
+    --arg output "$version_output" \
+    '. + {($architecture): $output}' \
+    "$VERSION_OUTPUTS" >"$next_version_outputs"
+  mv "$next_version_outputs" "$VERSION_OUTPUTS"
+
+  LLAMA_ARCHITECTURE="$architecture" \
+  LLAMA_DEVICE=none \
+  LLAMA_GPU_LAYERS=0 \
+  LLAMA_EMBEDDING="$LLAMA_EMBEDDING" \
+  LLAMA_SERVER="$LLAMA_SERVER" \
+    "$VERIFY" "$MODEL_FILE"
+
+  LLAMA_ARCHITECTURE="$architecture" \
+  LLAMA_DEVICE="$METAL_DEVICE" \
+  LLAMA_GPU_LAYERS=all \
+  LLAMA_REQUIRE_METAL=1 \
+  LLAMA_EMBEDDING="$LLAMA_EMBEDDING" \
+  LLAMA_SERVER="$LLAMA_SERVER" \
+    "$VERIFY" "$MODEL_FILE"
 done
 
 BINARY_SHA256=$(shasum -a 256 "$LLAMA_SERVER" | awk '{print $1}')
@@ -155,7 +172,7 @@ install -m 644 "$SOURCE/$LICENSE_SOURCE" "$STAGE_TEMP/$LICENSE_STAGING_PATH"
 jq \
   --arg binarySha256 "$BINARY_SHA256" \
   --argjson binarySize "$BINARY_SIZE" \
-  --arg versionOutput "$VERSION_OUTPUT" \
+  --slurpfile versionOutputs "$VERSION_OUTPUTS" \
   --arg embeddingManifestSha256 "$MANIFEST_SHA256" \
   --arg goldenFixturesSha256 "$GOLDEN_SHA256" \
   --arg licenseSha256 "$LICENSE_SHA256" \
@@ -164,7 +181,7 @@ jq \
       bundlePath: .resourceDestinations.binary,
       sha256: $binarySha256,
       size: $binarySize,
-      versionOutput: $versionOutput
+      versionOutputByArchitecture: $versionOutputs[0]
     },
     verification: {
       modelBundled: false,
@@ -176,8 +193,14 @@ jq \
         bundlePath: "embedding-indexes/jina-v1-golden.json",
         sha256: $goldenFixturesSha256
       },
-      cpuPassed: true,
-      metalPassed: true
+      architectureChecks: (
+        .target.architectures
+        | map({
+            architecture: .,
+            cpuPassed: true,
+            metalPassed: true
+          })
+      )
     },
     licenseNotices: (
       .licenseNotices
@@ -200,4 +223,4 @@ STAGE_TEMP=
 
 echo "staged $BINARY_DESTINATION"
 echo "sha256 $BINARY_SHA256"
-echo "$VERSION_OUTPUT"
+jq -r 'to_entries[] | "\(.key): \(.value)"' "$VERSION_OUTPUTS"
