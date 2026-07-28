@@ -273,7 +273,12 @@ fn v5_required_migration_preserves_authored_data_without_materializing_vec() {
 fn missing_optional_vector_table_is_recreated_outside_required_migrations() {
     let library = TestLibrary::new();
     let database = Database::initialize(library.paths.clone()).expect("database");
-    let original = create_tidbit(&database.client(), "lexical evidence remains", 10);
+    let client = database.client();
+    let original = create_tidbit(&client, "lexical evidence remains", 10);
+    install_all(&client, 11);
+    assert!(client
+        .activate_passage_embedding_index_if_complete(12)
+        .expect("activate complete index"));
     database.shutdown().expect("shutdown database");
 
     let main =
@@ -285,6 +290,16 @@ fn missing_optional_vector_table_is_recreated_outside_required_migrations() {
 
     let reopened =
         Database::initialize(library.paths.clone()).expect("authored library remains available");
+    let recreated_progress = reopened
+        .client()
+        .passage_embedding_index_progress()
+        .expect("recreated index progress");
+    assert_eq!(recreated_progress.state, PassageEmbeddingIndexState::Dirty);
+    assert_eq!(recreated_progress.indexed_passages, 0);
+    assert!(reopened
+        .client()
+        .passage_embedding_index_needs_reconciliation()
+        .expect("recreated table requires reconciliation"));
     assert_eq!(
         reopened
             .client()
@@ -336,6 +351,12 @@ fn invalid_optional_vector_table_is_quarantined_without_blocking_capture() {
 
     let reopened =
         Database::initialize(library.paths.clone()).expect("authored library remains available");
+    let quarantine_error = reopened
+        .client()
+        .passage_embedding_index_progress()
+        .expect("initial quarantine status")
+        .error
+        .expect("quarantine diagnosis");
     assert_eq!(
         reopened
             .client()
@@ -350,6 +371,7 @@ fn invalid_optional_vector_table_is_quarantined_without_blocking_capture() {
         .passage_embedding_index_progress()
         .expect("quarantined progress");
     assert_eq!(progress.state, PassageEmbeddingIndexState::Failed);
+    assert_eq!(progress.error.as_deref(), Some(quarantine_error.as_str()));
     assert_eq!(progress.indexed_passages, 0);
     assert!(!reopened
         .client()

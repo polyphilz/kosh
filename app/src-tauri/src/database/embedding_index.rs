@@ -22,9 +22,14 @@ pub(crate) fn ensure_vector_table(connection: &Connection) -> Result<()> {
         return Ok(());
     }
     connection.execute_batch(
-        "CREATE VIRTUAL TABLE passage_embedding_vec_jina_v1 USING vec0(
+        "BEGIN IMMEDIATE;
+         CREATE VIRTUAL TABLE passage_embedding_vec_jina_v1 USING vec0(
             embedding float[768] distance_metric=cosine
-         );",
+         );
+         UPDATE index_state
+         SET status = 'DIRTY', cursor = NULL, error = NULL
+         WHERE name = 'PASSAGE_EMBEDDING';
+         COMMIT;",
     )?;
     Ok(())
 }

@@ -125,7 +125,7 @@ BEGIN
             ELSE 'DIRTY'
         END,
         cursor = NULL,
-        error = NULL
+        error = CASE WHEN status = 'FAILED' THEN error ELSE NULL END
     WHERE name = 'PASSAGE_EMBEDDING';
 END;
 
@@ -138,7 +138,7 @@ BEGIN
             ELSE 'DIRTY'
         END,
         cursor = NULL,
-        error = NULL
+        error = CASE WHEN status = 'FAILED' THEN error ELSE NULL END
     WHERE name = 'PASSAGE_EMBEDDING';
 END;
 
@@ -156,7 +156,7 @@ BEGIN
             ELSE 'DIRTY'
         END,
         cursor = NULL,
-        error = NULL
+        error = CASE WHEN status = 'FAILED' THEN error ELSE NULL END
     WHERE name = 'PASSAGE_EMBEDDING';
 END;
 
