@@ -4,7 +4,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{mpsc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -31,7 +31,7 @@ const MAX_RENDERED_PAGE_BYTES: usize = 48 * 1024 * 1024;
 const PDF_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const PDF_STALE_ATTEMPT_AGE: Duration = Duration::from_secs(5 * 60);
 const PDF_DROP_EVENT: &str = "kosh://pdf-drop";
-const MAX_PDF_OPEN_RECOVERY_FILES: usize = 256;
+const MAX_PDF_OPEN_MATERIALIZATIONS: usize = 16;
 const PDF_INSPECTION_WORKER_ARG: &str = "--kosh-pdf-inspection-worker";
 const PDF_EXTRACTION_WORKER_ARG: &str = "--kosh-pdf-extraction-worker";
 const PDF_EXTRACTION_WORKER_TIMEOUT: Duration = Duration::from_secs(2 * 60);
@@ -39,6 +39,7 @@ const MAX_PDF_WORKER_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
 #[cfg(unix)]
 const PDF_WORKER_CPU_SECONDS: libc::rlim_t = 90;
 const PDF_WORKER_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+static PDF_OPEN_DIRECTORY_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(
@@ -224,19 +225,7 @@ pub(crate) async fn open_pdf_external<R: tauri::Runtime>(
                 "only complete PDF attachments can be opened externally".into(),
             ));
         }
-        fs::create_dir_all(&directory)?;
-        let path = directory.join(format!("{attachment_id}.pdf"));
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
-        file.write_all(&payload.bytes)?;
-        file.sync_all()?;
-        Ok::<_, DatabaseError>(path)
+        materialize_pdf_for_external_open(&directory, &attachment_id, &payload.bytes)
     })
     .await
     .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
@@ -289,33 +278,113 @@ pub(crate) fn handle_pdf_drop<R: tauri::Runtime>(
 }
 
 pub(crate) fn recover_pdf_open_directory(path: &Path) -> Result<usize, DatabaseError> {
+    let _guard = PDF_OPEN_DIRECTORY_LOCK
+        .lock()
+        .map_err(|_| DatabaseError::InvalidInput("PDF open directory lock was poisoned".into()))?;
     fs::create_dir_all(path)?;
     let mut removed = 0;
     for entry in fs::read_dir(path)? {
-        if removed >= MAX_PDF_OPEN_RECOVERY_FILES {
-            break;
-        }
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
         }
-        let filename = entry.file_name();
-        let Some(stem) = filename
-            .to_str()
-            .and_then(|filename| filename.strip_suffix(".pdf"))
-        else {
+        let Some(filename) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if uuid::Uuid::parse_str(stem)
-            .ok()
-            .is_none_or(|id| id.get_version_num() != 7 || id.hyphenated().to_string() != stem)
-        {
+        if !is_pdf_open_materialization(&filename) {
             continue;
         }
         fs::remove_file(entry.path())?;
         removed += 1;
     }
     Ok(removed)
+}
+
+fn materialize_pdf_for_external_open(
+    directory: &Path,
+    attachment_id: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, DatabaseError> {
+    let _guard = PDF_OPEN_DIRECTORY_LOCK
+        .lock()
+        .map_err(|_| DatabaseError::InvalidInput("PDF open directory lock was poisoned".into()))?;
+    fs::create_dir_all(directory)?;
+    let path = directory.join(format!("{attachment_id}.pdf"));
+    let temporary_path = directory.join(format!("{attachment_id}.pdf.part"));
+    remove_file_if_present(&path)?;
+    remove_file_if_present(&temporary_path)?;
+    prune_pdf_open_directory(directory, MAX_PDF_OPEN_MATERIALIZATIONS - 1)?;
+
+    let write_result = (|| {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary_path, &path)?;
+        Ok::<_, DatabaseError>(())
+    })();
+    if let Err(error) = write_result {
+        let _ = remove_file_if_present(&temporary_path);
+        return Err(error);
+    }
+    Ok(path)
+}
+
+fn prune_pdf_open_directory(path: &Path, keep: usize) -> Result<(), DatabaseError> {
+    let mut materializations = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Some(filename) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if filename.ends_with(".pdf.part") && is_pdf_open_materialization(&filename) {
+            fs::remove_file(entry.path())?;
+            continue;
+        }
+        if !filename.ends_with(".pdf") || !is_pdf_open_materialization(&filename) {
+            continue;
+        }
+        let modified = entry
+            .metadata()?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        materializations.push((modified, filename, entry.path()));
+    }
+    materializations.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let remove_count = materializations.len().saturating_sub(keep);
+    for (_, _, path) in materializations.into_iter().take(remove_count) {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn remove_file_if_present(path: &Path) -> Result<(), DatabaseError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn is_pdf_open_materialization(filename: &str) -> bool {
+    let Some(stem) = filename
+        .strip_suffix(".pdf.part")
+        .or_else(|| filename.strip_suffix(".pdf"))
+    else {
+        return false;
+    };
+    uuid::Uuid::parse_str(stem)
+        .ok()
+        .is_some_and(|id| id.get_version_num() == 7 && id.hyphenated().to_string() == stem)
 }
 
 fn read_bounded_pdf(path: &Path) -> Result<Vec<u8>, DatabaseError> {
@@ -1013,8 +1082,9 @@ fn open_path(_path: PathBuf) -> Result<(), DatabaseError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        finish_sparse_pdf_page, normalize_pdf_text, read_bounded_pdf, safe_pdf_filename,
-        validate_pdf_document_state, MAX_PDF_BYTES,
+        finish_sparse_pdf_page, materialize_pdf_for_external_open, normalize_pdf_text,
+        read_bounded_pdf, recover_pdf_open_directory, safe_pdf_filename,
+        validate_pdf_document_state, MAX_PDF_BYTES, MAX_PDF_OPEN_MATERIALIZATIONS,
     };
     use crate::database::media::PdfPageSource;
 
@@ -1078,6 +1148,76 @@ mod tests {
         file.set_len(MAX_PDF_BYTES as u64 + 1)
             .expect("sparse PDF fixture");
         assert!(read_bounded_pdf(&path).is_err());
+    }
+
+    #[test]
+    fn external_pdf_materializations_remain_bounded() {
+        let directory = tempfile::tempdir().expect("temporary PDF open directory");
+        let mut latest = None;
+        for index in 0..(MAX_PDF_OPEN_MATERIALIZATIONS + 8) {
+            let attachment_id = format!("019f547b-6200-7000-8000-{index:012x}");
+            latest = Some(
+                materialize_pdf_for_external_open(
+                    directory.path(),
+                    &attachment_id,
+                    b"%PDF-bounded",
+                )
+                .expect("materialize PDF"),
+            );
+        }
+        let materializations = std::fs::read_dir(directory.path())
+            .expect("list PDF open directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(".pdf"))
+            })
+            .count();
+        assert_eq!(materializations, MAX_PDF_OPEN_MATERIALIZATIONS);
+        assert_eq!(
+            std::fs::read(latest.expect("latest PDF path")).expect("read latest PDF"),
+            b"%PDF-bounded"
+        );
+    }
+
+    #[test]
+    fn startup_recovery_drains_every_owned_pdf_materialization() {
+        let directory = tempfile::tempdir().expect("temporary PDF open directory");
+        for index in 0..300 {
+            let attachment_id = format!("019f547b-6200-7000-8000-{index:012x}");
+            std::fs::write(
+                directory.path().join(format!("{attachment_id}.pdf")),
+                b"%PDF",
+            )
+            .expect("write recovered PDF");
+        }
+        std::fs::write(
+            directory
+                .path()
+                .join("019f547b-6200-7000-8000-00000000012c.pdf.part"),
+            b"%PDF-interrupted",
+        )
+        .expect("write interrupted PDF");
+        std::fs::write(directory.path().join("user-file.pdf"), b"keep")
+            .expect("write unrelated file");
+
+        assert_eq!(
+            recover_pdf_open_directory(directory.path()).expect("recover PDF open directory"),
+            301
+        );
+        let remaining = std::fs::read_dir(directory.path())
+            .expect("list recovered PDF directory")
+            .map(|entry| {
+                entry
+                    .expect("directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec!["user-file.pdf"]);
     }
 
     #[cfg(target_os = "macos")]
