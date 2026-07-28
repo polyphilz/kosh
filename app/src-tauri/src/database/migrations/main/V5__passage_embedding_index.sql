@@ -102,6 +102,10 @@ INSERT INTO passage_embedding_settings(
     updated_at
 ) VALUES(1, NULL, 0);
 
+CREATE TABLE passage_embedding_reap_queue (
+    passage_rowid INTEGER PRIMARY KEY CHECK (passage_rowid > 0)
+) STRICT;
+
 CREATE TRIGGER passage_embedding_settings_prevent_delete
 BEFORE DELETE ON passage_embedding_settings
 BEGIN
@@ -111,6 +115,9 @@ END;
 CREATE TRIGGER passage_embedding_invalidate_after_search_delete
 AFTER DELETE ON passage_search_document
 BEGIN
+    INSERT INTO passage_embedding_reap_queue(passage_rowid)
+    VALUES(old.rowid)
+    ON CONFLICT(passage_rowid) DO NOTHING;
     DELETE FROM passage_embedding WHERE passage_id = old.passage_id;
     UPDATE index_state
     SET status = CASE
@@ -139,6 +146,9 @@ CREATE TRIGGER passage_embedding_invalidate_after_search_update
 AFTER UPDATE OF passage_id, body, extracted_text, owner_content_hash
 ON passage_search_document
 BEGIN
+    INSERT INTO passage_embedding_reap_queue(passage_rowid)
+    VALUES(old.rowid)
+    ON CONFLICT(passage_rowid) DO NOTHING;
     DELETE FROM passage_embedding WHERE passage_id = old.passage_id;
     UPDATE index_state
     SET status = CASE

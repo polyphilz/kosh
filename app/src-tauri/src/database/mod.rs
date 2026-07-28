@@ -237,6 +237,9 @@ fn writer_loop(
             WriterMessage::PassageEmbeddingIndexProgress { reply } => {
                 let _ = reply.send(embedding_index::progress(&main));
             }
+            WriterMessage::PassageEmbeddingIndexNeedsReconciliation { reply } => {
+                let _ = reply.send(embedding_index::needs_reconciliation(&main));
+            }
             WriterMessage::ActivatePassageEmbeddingIndexIfComplete {
                 activated_at_ms,
                 reply,

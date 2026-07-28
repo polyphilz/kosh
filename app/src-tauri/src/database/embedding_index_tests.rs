@@ -28,6 +28,9 @@ fn current_passages_are_indexed_newest_first_and_activated_atomically() {
     let client = database.client();
     create_tidbit(&client, "older passage evidence", 10);
     create_tidbit(&client, "newer passage evidence", 20);
+    assert!(client
+        .passage_embedding_index_needs_reconciliation()
+        .expect("dirty state check"));
 
     let first = client
         .load_embedding_reconciliation_batch(1)
@@ -57,6 +60,9 @@ fn current_passages_are_indexed_newest_first_and_activated_atomically() {
     assert!(progress.active);
     assert_eq!(progress.indexed_passages, progress.total_passages);
     assert_eq!(progress.state, PassageEmbeddingIndexState::Idle);
+    assert!(!client
+        .passage_embedding_index_needs_reconciliation()
+        .expect("complete state check"));
 }
 
 #[test]
@@ -345,6 +351,89 @@ fn invalid_optional_vector_table_is_quarantined_without_blocking_capture() {
         .expect("quarantined progress");
     assert_eq!(progress.state, PassageEmbeddingIndexState::Failed);
     assert_eq!(progress.indexed_passages, 0);
+    assert!(!reopened
+        .client()
+        .passage_embedding_index_needs_reconciliation()
+        .expect("quarantined state check"));
+
+    reopened.shutdown().expect("shutdown quarantined database");
+    let main =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("repair writer");
+    main.execute("DROP TABLE passage_embedding_vec_jina_v1", [])
+        .expect("remove incompatible vector table");
+    drop(main);
+    let repaired = Database::initialize(library.paths.clone()).expect("revalidated repair");
+    assert!(repaired
+        .client()
+        .passage_embedding_index_needs_reconciliation()
+        .expect("repair leaves index dirty"));
+}
+
+#[test]
+fn orphan_vector_reaping_is_bounded_and_keeps_work_state_dirty() {
+    let library = TestLibrary::new();
+    let database = Database::initialize(library.paths.clone()).expect("database");
+    let client = database.client();
+    let tidbits = (0..40)
+        .map(|ordinal| create_tidbit(&client, &format!("passage {ordinal}"), 10 + ordinal))
+        .collect::<Vec<_>>();
+    install_all(&client, 100);
+    assert!(client
+        .activate_passage_embedding_index_if_complete(101)
+        .expect("activate indexed corpus"));
+
+    for (ordinal, tidbit) in tidbits.into_iter().enumerate() {
+        client
+            .delete_tidbit(
+                super::DeleteTidbitInput {
+                    id: tidbit.id,
+                    expected_revision_id: tidbit.current_revision_id,
+                },
+                200 + ordinal as i64,
+            )
+            .expect("delete indexed tidbit");
+    }
+    assert!(client
+        .passage_embedding_index_needs_reconciliation()
+        .expect("queued work state"));
+    assert!(client
+        .load_embedding_reconciliation_batch(32)
+        .expect("first bounded reap")
+        .is_empty());
+    assert_eq!(
+        derived_row_count(&database, "passage_embedding_reap_queue"),
+        8
+    );
+    assert_eq!(
+        derived_row_count(&database, "passage_embedding_vec_jina_v1"),
+        8
+    );
+    assert!(!client
+        .activate_passage_embedding_index_if_complete(300)
+        .expect("activation with remaining reap work"));
+    assert!(client
+        .passage_embedding_index_needs_reconciliation()
+        .expect("remaining queue keeps work active"));
+
+    assert!(client
+        .load_embedding_reconciliation_batch(32)
+        .expect("second bounded reap")
+        .is_empty());
+    assert_eq!(
+        derived_row_count(&database, "passage_embedding_reap_queue"),
+        0
+    );
+    assert_eq!(
+        derived_row_count(&database, "passage_embedding_vec_jina_v1"),
+        0
+    );
+    client
+        .activate_passage_embedding_index_if_complete(301)
+        .expect("final activation");
+    assert!(!client
+        .passage_embedding_index_needs_reconciliation()
+        .expect("no remaining work"));
 }
 
 fn create_tidbit(client: &super::DatabaseClient, body: &str, now_ms: i64) -> Tidbit {
@@ -396,6 +485,20 @@ fn active_index_id(database: &Database) -> String {
             |row| row.get(0),
         )
         .expect("active index")
+}
+
+fn derived_row_count(database: &Database, table: &str) -> i64 {
+    assert!(matches!(
+        table,
+        "passage_embedding_reap_queue" | "passage_embedding_vec_jina_v1"
+    ));
+    database
+        .open_main_read_only()
+        .expect("read connection")
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("derived row count")
 }
 
 fn uuid_v7() -> String {

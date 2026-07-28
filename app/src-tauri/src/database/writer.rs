@@ -64,6 +64,9 @@ pub(super) enum WriterMessage {
     PassageEmbeddingIndexProgress {
         reply: SyncSender<Result<PassageEmbeddingIndexProgress>>,
     },
+    PassageEmbeddingIndexNeedsReconciliation {
+        reply: SyncSender<Result<bool>>,
+    },
     ActivatePassageEmbeddingIndexIfComplete {
         activated_at_ms: i64,
         reply: SyncSender<Result<bool>>,
@@ -257,6 +260,16 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::PassageEmbeddingIndexProgress { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn passage_embedding_index_needs_reconciliation(&self) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::PassageEmbeddingIndexNeedsReconciliation { reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

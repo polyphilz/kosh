@@ -25,6 +25,7 @@ const MAIN_TABLES: &[&str] = &[
     "passage",
     "passage_embedding",
     "passage_embedding_index",
+    "passage_embedding_reap_queue",
     "passage_embedding_settings",
     "passage_fts_short",
     "passage_fts_trigram",
@@ -153,13 +154,18 @@ fn validate_optional_embedding_index(connection: &mut Connection) {
         embedding_index::validate_definition(connection)?;
         validate_vec_smoke_test(connection)
     })();
-    if let Err(error) = result {
-        log::warn!("semantic passage index is unavailable at startup: {error}");
-        let _ = embedding_index::quarantine(
-            connection,
-            "semantic passage index is unavailable; repair is required",
-            0,
-        );
+    match result {
+        Ok(()) => {
+            let _ = embedding_index::release_quarantine(connection);
+        }
+        Err(error) => {
+            log::warn!("semantic passage index is unavailable at startup: {error}");
+            let _ = embedding_index::quarantine(
+                connection,
+                "semantic passage index is unavailable; repair is required",
+                0,
+            );
+        }
     }
 }
 

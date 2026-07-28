@@ -103,29 +103,7 @@ pub(crate) fn load_reconciliation_batch(
             reason: "PASSAGE_EMBEDDING index state is missing or incompatible".into(),
         });
     }
-    // trusted_schema stays OFF, so schema triggers cannot safely invoke a
-    // virtual table. Their synchronous metadata deletion makes stale vectors
-    // unreachable; reconciliation reaps the now-unowned vector rows here.
-    connection.execute(
-        "DELETE FROM passage_embedding_vec_jina_v1
-         WHERE rowid IN (
-             SELECT vector.rowid
-             FROM passage_embedding_vec_jina_v1 AS vector
-             WHERE NOT EXISTS (
-                 SELECT 1
-                 FROM passage_search_document AS document
-                 JOIN passage
-                   ON passage.rowid = document.rowid
-                  AND passage.id = document.passage_id
-                 JOIN passage_embedding AS metadata
-                   ON metadata.passage_id = passage.id
-                  AND metadata.embedding_index_id = ?1
-                  AND metadata.passage_content_hash = passage.content_hash
-                 WHERE document.rowid = vector.rowid
-             )
-         )",
-        params![manifest.id.as_str()],
-    )?;
+    reap_invalidated_vectors(connection)?;
 
     let mut statement = connection.prepare(
         "SELECT
@@ -163,6 +141,77 @@ pub(crate) fn load_reconciliation_batch(
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn reap_invalidated_vectors(connection: &mut Connection) -> Result<()> {
+    // trusted_schema stays OFF, so schema triggers queue exact stale rowids
+    // instead of invoking the virtual table. Consume only one bounded batch
+    // on each reconciliation turn to keep the database writer responsive.
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let passage_rowids = {
+        let mut statement = transaction.prepare(
+            "SELECT passage_rowid
+             FROM passage_embedding_reap_queue
+             ORDER BY passage_rowid
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![RECONCILIATION_BATCH_SIZE], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<i64>>>()?
+    };
+    for passage_rowid in passage_rowids {
+        transaction.execute(
+            "DELETE FROM passage_embedding_vec_jina_v1 WHERE rowid = ?1",
+            params![passage_rowid],
+        )?;
+        transaction.execute(
+            "DELETE FROM passage_embedding_reap_queue WHERE passage_rowid = ?1",
+            params![passage_rowid],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn needs_reconciliation(connection: &Connection) -> Result<bool> {
+    let manifest = embedding::jina_v1_manifest();
+    let (version, status, active_index_id) = connection.query_row(
+        "SELECT
+            state.version,
+            state.status,
+            settings.active_embedding_index_id
+         FROM index_state AS state
+         CROSS JOIN passage_embedding_settings AS settings
+         WHERE state.name = 'PASSAGE_EMBEDDING'
+           AND settings.singleton_id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
+    )?;
+    if status == "FAILED" {
+        return Ok(false);
+    }
+    if version != manifest.index_key {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: "PASSAGE_EMBEDDING index state version is incompatible".into(),
+        });
+    }
+    if status != "IDLE" || active_index_id.as_deref() != Some(manifest.id.as_str()) {
+        return Ok(true);
+    }
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM passage_embedding_reap_queue)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
         .map_err(Into::into)
 }
 
@@ -219,6 +268,10 @@ fn install_embedding_in_transaction(
         return Ok(InstallEmbeddingDisposition::Stale);
     }
 
+    transaction.execute(
+        "DELETE FROM passage_embedding_reap_queue WHERE passage_rowid = ?1",
+        params![pending.passage_rowid],
+    )?;
     transaction.execute(
         "DELETE FROM passage_embedding_vec_jina_v1 WHERE rowid = ?1",
         params![pending.passage_rowid],
@@ -325,6 +378,15 @@ pub(crate) fn activate_if_complete(
     }
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let queued_reaps: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM passage_embedding_reap_queue)",
+        [],
+        |row| row.get(0),
+    )?;
+    if queued_reaps {
+        transaction.rollback()?;
+        return Ok(false);
+    }
     let progress = progress(&transaction)?;
     if progress.indexed_passages != progress.total_passages {
         transaction.rollback()?;
@@ -359,6 +421,16 @@ pub(crate) fn record_retryable_failure(
 
 pub(crate) fn quarantine(connection: &Connection, error: &str, failed_at_ms: i64) -> Result<()> {
     record_failure_with_state(connection, error, failed_at_ms, "FAILED")
+}
+
+pub(crate) fn release_quarantine(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "UPDATE index_state
+         SET status = 'DIRTY', cursor = NULL, error = NULL
+         WHERE name = 'PASSAGE_EMBEDDING' AND status = 'FAILED'",
+        [],
+    )?;
+    Ok(())
 }
 
 fn record_failure_with_state(
@@ -438,6 +510,17 @@ pub(crate) fn validate_definition(connection: &Connection) -> Result<()> {
             kind: "main",
             reason: "the Jina v1 passage embedding index does not match the shipped manifest"
                 .into(),
+        });
+    }
+    let state_version: String = connection.query_row(
+        "SELECT version FROM index_state WHERE name = 'PASSAGE_EMBEDDING'",
+        [],
+        |row| row.get(0),
+    )?;
+    if state_version != manifest.index_key {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: "PASSAGE_EMBEDDING state does not match the shipped manifest".into(),
         });
     }
     Ok(())

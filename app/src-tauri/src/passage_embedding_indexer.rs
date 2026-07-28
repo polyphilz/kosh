@@ -143,14 +143,14 @@ impl Drop for PassageEmbeddingIndexer {
 fn worker_loop(database: DatabaseClient, runtime: Arc<EmbeddingRuntime>, shutdown: &Receiver<()>) {
     loop {
         if runtime.status().phase == SemanticRuntimePhase::Ready {
-            match database.passage_embedding_index_progress() {
-                Ok(progress) if reconciliation_required(&progress) => {
+            match database.passage_embedding_index_needs_reconciliation() {
+                Ok(true) => {
                     if let Err(error) = reconcile_batch(&database, &runtime, shutdown) {
                         let _ = database
                             .record_passage_embedding_index_failure(error, timestamp_now_ms());
                     }
                 }
-                Ok(_) => {}
+                Ok(false) => {}
                 Err(error) => {
                     let _ = database.record_passage_embedding_index_failure(
                         error.to_string(),
@@ -164,13 +164,6 @@ fn worker_loop(database: DatabaseClient, runtime: Arc<EmbeddingRuntime>, shutdow
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
-}
-
-fn reconciliation_required(progress: &PassageEmbeddingIndexProgress) -> bool {
-    progress.state != PassageEmbeddingIndexState::Failed
-        && (!progress.active
-            || progress.indexed_passages != progress.total_passages
-            || progress.state != PassageEmbeddingIndexState::Idle)
 }
 
 fn reconcile_batch(
@@ -210,46 +203,4 @@ fn timestamp_now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn complete_active_index_waits_for_explicit_invalidation() {
-        let complete = PassageEmbeddingIndexProgress {
-            embedding_index_id: "index-id".into(),
-            index_key: "index-key".into(),
-            indexed_passages: 12,
-            total_passages: 12,
-            active: true,
-            state: PassageEmbeddingIndexState::Idle,
-            error: None,
-        };
-        assert!(!reconciliation_required(&complete));
-
-        for invalidated in [
-            PassageEmbeddingIndexProgress {
-                state: PassageEmbeddingIndexState::Dirty,
-                error: Some("retryable runtime failure".into()),
-                ..complete.clone()
-            },
-            PassageEmbeddingIndexProgress {
-                indexed_passages: 11,
-                ..complete.clone()
-            },
-            PassageEmbeddingIndexProgress {
-                active: false,
-                ..complete.clone()
-            },
-        ] {
-            assert!(reconciliation_required(&invalidated));
-        }
-        assert!(!reconciliation_required(&PassageEmbeddingIndexProgress {
-            state: PassageEmbeddingIndexState::Failed,
-            error: Some("structural validation failed".into()),
-            ..complete
-        }));
-    }
 }
