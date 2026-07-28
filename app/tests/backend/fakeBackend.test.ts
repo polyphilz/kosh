@@ -343,6 +343,18 @@ describe("FakeBackend semantic runtime", () => {
       verified: true,
       runtimeRunning: true,
     });
+    await backend.createTidbit({
+      title: "Prepared runtime",
+      bodyMarkdown: "The fake search implementation remains lexical.",
+      sources: [],
+    });
+    await expect(
+      backend.searchPassages({ query: "lexical", mode: "DEFAULT", limit: 10 }),
+    ).resolves.toMatchObject({
+      results: [{ citation: { tidbit: { title: "Prepared runtime" } } }],
+      executionMode: "LEXICAL_ONLY",
+      semanticReadiness: "READY",
+    });
     await expect(backend.retrySemanticRuntime()).resolves.toMatchObject({
       phase: "READY",
     });

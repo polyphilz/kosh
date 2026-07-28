@@ -302,8 +302,7 @@ export class FakeBackend implements Backend {
     }
     const atoms = parseSearchAtoms(input.query);
     const semanticReady = this.semanticStatus.phase === "READY";
-    const executionMode =
-      input.mode === "EXACT" ? "EXACT" : semanticReady ? "HYBRID" : "LEXICAL_ONLY";
+    const executionMode = input.mode === "EXACT" ? "EXACT" : "LEXICAL_ONLY";
     const semanticReadiness =
       input.mode === "EXACT" ? "NOT_REQUESTED" : semanticReady ? "READY" : "WAITING_FOR_RUNTIME";
     if (atoms.length === 0) {
