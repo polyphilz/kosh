@@ -40,7 +40,7 @@ export function pdfNodeView(
     void actions.openExternal?.(node.attrs.attachmentId).catch(reportError);
   });
   const retry = button("Retry extraction", () => {
-    if (!actions.retryExtraction) return;
+    if (!view.editable || !actions.retryExtraction) return;
     retry.disabled = true;
     void actions
       .retryExtraction(node.attrs.attachmentId)
@@ -50,7 +50,7 @@ export function pdfNodeView(
       })
       .catch(reportError)
       .finally(() => {
-        retry.disabled = false;
+        retry.disabled = !view.editable;
       });
   });
   const remove = button("Remove", () => {
@@ -68,6 +68,7 @@ export function pdfNodeView(
     status.textContent = statusText(node.attrs);
     status.title = node.attrs.extractionError ?? "";
     retry.hidden = node.attrs.extractionStatus !== "FAILED";
+    retry.disabled = !view.editable || !actions.retryExtraction;
     remove.disabled = !view.editable;
     open.disabled = !actions.openExternal;
   };

@@ -631,6 +631,58 @@ it("inserts a PDF token and exposes extraction status and system-open controls",
   await waitFor(() => expect(openPdfExternal).toHaveBeenCalledWith(pdf.id));
 });
 
+it("disables PDF extraction retries while the editor is disabled", async () => {
+  const pdf = pdfRecord("01980c8e-6c00-7000-8000-000000000237");
+  const retryPdfExtraction = vi.fn(async () => ({
+    attachmentId: pdf.id,
+    displayFilename: pdf.displayFilename,
+    extractedPageCount: 0,
+    extractionError: null,
+    extractionStatus: "PENDING" as const,
+    nextAttemptAtMs: null,
+    pageCount: 3,
+    unavailablePageCount: 0,
+  }));
+  const pdfStatus = vi.fn(async () => ({
+    attachmentId: pdf.id,
+    displayFilename: pdf.displayFilename,
+    extractedPageCount: 0,
+    extractionError: "PDF extraction failed",
+    extractionStatus: "FAILED" as const,
+    nextAttemptAtMs: null,
+    pageCount: 3,
+    unavailablePageCount: 0,
+  }));
+  const result = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      disabled
+      onChange={() => undefined}
+      pdfStatus={pdfStatus}
+      retryPdfExtraction={retryPdfExtraction}
+      value={`{{kosh:pdf:${pdf.id}}}`}
+    />,
+  );
+  const retry = await result.findByRole("button", { name: "Retry extraction" });
+  expect(retry).toBeDisabled();
+  fireEvent.click(retry);
+  expect(retryPdfExtraction).not.toHaveBeenCalled();
+
+  result.rerender(
+    <RichTextEditor
+      ariaLabel="Body"
+      onChange={() => undefined}
+      pdfStatus={pdfStatus}
+      retryPdfExtraction={retryPdfExtraction}
+      value={`{{kosh:pdf:${pdf.id}}}`}
+    />,
+  );
+
+  expect(retry).toBeEnabled();
+  fireEvent.click(retry);
+  await waitFor(() => expect(retryPdfExtraction).toHaveBeenCalledWith(pdf.id));
+});
+
 it("restores selected content when the native image picker is canceled", async () => {
   let resolvePick!: (record: ImageRecord | null) => void;
   const pickPromise = new Promise<ImageRecord | null>((resolve) => {
