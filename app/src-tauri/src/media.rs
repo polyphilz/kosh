@@ -69,9 +69,13 @@ impl ImageOcrCoordinator {
         Ok(coordinator)
     }
 
-    #[cfg(feature = "test-support")]
     pub(crate) fn disabled() -> Self {
         Self { sender: None }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_disabled(&self) -> bool {
+        self.sender.is_none()
     }
 
     pub(crate) fn wake(&self) {
@@ -562,14 +566,14 @@ fn read_clipboard_image_on_main_thread() -> Result<Vec<u8>, DatabaseError> {
         NSPasteboardTypeTIFF
     }] {
         if let Some(data) = pasteboard.dataForType(pasteboard_type) {
-            let bytes = data.to_vec();
-            if bytes.len() > MAX_SOURCE_IMAGE_BYTES {
+            let byte_length = data.len();
+            if byte_length > MAX_SOURCE_IMAGE_BYTES {
                 return Err(DatabaseError::InvalidInput(format!(
                     "the pasted image is larger than {MAX_SOURCE_IMAGE_BYTES} bytes"
                 )));
             }
-            if !bytes.is_empty() {
-                return Ok(bytes);
+            if byte_length > 0 {
+                return Ok(data.to_vec());
             }
         }
     }

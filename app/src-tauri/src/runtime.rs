@@ -64,6 +64,16 @@ const IMAGE_DROP_TTL_MS: i64 = 5 * 60 * 1_000;
 const MAX_PENDING_IMAGE_DROPS: usize = 16;
 const MAX_FILES_PER_IMAGE_DROP: usize = 32;
 
+fn start_optional_image_ocr(client: DatabaseClient) -> crate::media::ImageOcrCoordinator {
+    match crate::media::ImageOcrCoordinator::start(client) {
+        Ok(coordinator) => coordinator,
+        Err(error) => {
+            log::warn!("image OCR is unavailable; Kosh will continue without it: {error}");
+            crate::media::ImageOcrCoordinator::disabled()
+        }
+    }
+}
+
 impl RuntimeState {
     pub(crate) fn production(
         data_dir: PathBuf,
@@ -73,7 +83,7 @@ impl RuntimeState {
         let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
-        let image_ocr = crate::media::ImageOcrCoordinator::start(database.client())?;
+        let image_ocr = start_optional_image_ocr(database.client());
         let media_limits = MediaLimits::default().validate()?;
         let state = Self {
             data_dir,
@@ -389,6 +399,19 @@ pub(crate) mod deterministic {
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_ocr_failure_does_not_block_runtime_construction() {
+        let directory = tempfile::tempdir().expect("temporary optional OCR database");
+        let database =
+            Database::initialize(DatabasePaths::new(directory.path())).expect("OCR database");
+        let unavailable_client = database.client();
+        database.shutdown().expect("stop OCR database writer");
+
+        let coordinator = start_optional_image_ocr(unavailable_client);
+
+        assert!(coordinator.is_disabled());
+    }
 
     #[test]
     fn native_image_drops_expose_only_opaque_single_use_capabilities() {

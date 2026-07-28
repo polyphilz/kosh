@@ -1432,19 +1432,30 @@ pub(crate) fn recover_interrupted_image_ocr(
              FROM image_ocr_queue AS queue
              JOIN attachment_extraction AS extraction
                ON extraction.id = queue.extraction_id
-             JOIN attachment ON attachment.id = extraction.attachment_id
+             JOIN attachment_extractor_config AS config
+               ON config.extractor = extraction.extractor
+              AND config.version = extraction.extractor_version
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
+             JOIN attachment_image AS image
+               ON image.attachment_id = attachment.id
              WHERE queue.state = 'RUNNING'
                AND queue.started_at <= ?1
+               AND extraction.extractor = ?2
                AND attachment.deleted_at IS NULL
              ORDER BY queue.started_at, queue.extraction_id",
         )?
-        .query_map(params![stale_started_at_or_before], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, u32>(2)?,
-            ))
-        })?
+        .query_map(
+            params![stale_started_at_or_before, IMAGE_OCR_EXTRACTOR],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u32>(2)?,
+                ))
+            },
+        )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut recovery = ImageOcrRecovery::default();
     for (extraction_id, attachment_id, attempt_count) in interrupted {

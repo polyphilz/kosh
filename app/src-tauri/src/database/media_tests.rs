@@ -360,6 +360,60 @@ fn image_ocr_recovers_interrupted_work_and_bounds_terminal_retries() {
 }
 
 #[test]
+fn image_ocr_recovery_does_not_requeue_stale_extractor_provenance() {
+    let library = TestLibrary::new();
+    let image = library.ingest_image(
+        (0x78a, 0x78b, 0x78c, 0x78d),
+        b"stale original image",
+        b"stale canonical preview",
+        11,
+    );
+    let client = library.database.client();
+    client
+        .claim_next_image_ocr(12)
+        .expect("claim stale OCR")
+        .expect("stale OCR job");
+    super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("open configured extractor writer")
+    .execute(
+        "UPDATE attachment_extractor_config
+             SET version = '2', updated_at = 13
+             WHERE extractor = 'ocr'",
+        [],
+    )
+    .expect("advance OCR extractor version");
+
+    let recovery = client
+        .recover_interrupted_image_ocr(12, 14)
+        .expect("recover only current OCR provenance");
+
+    assert_eq!(recovery.requeued, 0);
+    assert_eq!(recovery.terminally_failed, 0);
+    let main = library.database.open_main_read_only().expect("main reader");
+    assert_eq!(
+        main.query_row(
+            "SELECT queue.state, extraction.status, attachment.extraction_state
+             FROM image_ocr_queue AS queue
+             JOIN attachment_extraction AS extraction ON extraction.id = queue.extraction_id
+             JOIN attachment ON attachment.id = extraction.attachment_id
+             WHERE attachment.id = ?1",
+            params![image.attachment.id],
+            |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?
+            )),
+        )
+        .expect("stale OCR state"),
+        ("RUNNING".into(), "RUNNING".into(), "PENDING".into())
+    );
+}
+
+#[test]
 fn ingestion_deduplicates_bytes_preserves_metadata_and_bounds_reads() {
     let library = TestLibrary::new();
     let first = library.ingest(

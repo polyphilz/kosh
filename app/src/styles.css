@@ -712,19 +712,23 @@ button {
 }
 
 .search-citation-detail__image > div {
+  display: inline-grid;
   position: relative;
+  max-width: 100%;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--surface);
+  vertical-align: top;
 }
 
 .search-citation-detail__image img {
+  grid-area: 1 / 1;
   display: block;
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: 100%;
   max-height: 420px;
-  object-fit: contain;
 }
 
 .search-citation-detail__image-region {

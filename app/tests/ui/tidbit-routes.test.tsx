@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
-import type { CitationResolution } from "../../src/backend/contracts";
+import type { CitationResolution, ImageRecord } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { createAppRouter } from "../../src/router";
@@ -115,6 +115,46 @@ describe("tidbit capture and editing routes", () => {
     expect(await screen.findByRole("heading", { name: "Search" })).toBeInTheDocument();
     expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toEqual([]);
     expect((await backend.loadTidbit(active.items[0]!.id)).deletedAtMs).not.toBeNull();
+  });
+
+  it("blocks keyboard and programmatic submission while image ingestion is pending", async () => {
+    const backend = new FakeBackend();
+    let resolveImage!: (image: ImageRecord) => void;
+    const pendingImage = new Promise<ImageRecord>((resolve) => {
+      resolveImage = resolve;
+    });
+    vi.spyOn(backend, "ingestClipboardImage").mockReturnValue(pendingImage);
+    const createTidbit = vi.spyOn(backend, "createTidbit");
+    renderRoute(backend, "/add");
+    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+    setEditorText("Do not save before the image.");
+
+    fireEvent.paste(editor, {
+      clipboardData: { items: [{ type: "image/png" }] },
+    });
+    const pendingButton = await screen.findByRole("button", { name: "Adding image…" });
+    expect(pendingButton).toBeDisabled();
+
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+    fireEvent.submit(pendingButton.closest("form")!);
+    await act(async () => Promise.resolve());
+    expect(createTidbit).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveImage({
+        byteLength: 1_024,
+        displayFilename: "pending.png",
+        id: "01980c8e-6c00-7000-8000-000000000261",
+        ingestLeaseId: "01980c8e-6c00-7000-8000-000000000262",
+        kind: "IMAGE",
+        mediaType: "image/png",
+        naturalHeight: 600,
+        naturalWidth: 800,
+        ocrError: null,
+        ocrStatus: "PENDING",
+      });
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save tidbit" })).toBeEnabled());
   });
 
   it("re-resolves an opened citation after saving a new tidbit revision", async () => {

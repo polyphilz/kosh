@@ -69,6 +69,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   const [dropMediaPending, setDropMediaPending] = useState(false);
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
+  const editorMediaPendingRef = useRef(false);
   const mountedRef = useRef(true);
   const pendingDropCountRef = useRef(0);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
@@ -79,6 +80,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   stateRef.current = state;
   readyRef.current = ready;
   const mediaPending = editorMediaPending || dropMediaPending;
+  const mediaIsPending = () => editorMediaPendingRef.current || pendingDropCountRef.current > 0;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -225,7 +227,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
 
   const submit = async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
-    if (busyRef.current) return;
+    if (busyRef.current || mediaIsPending()) return;
     busyRef.current = true;
     setBusy(true);
     setError(null);
@@ -322,7 +324,8 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
           if (
             event.key === "Enter" &&
             (event.metaKey || event.ctrlKey) &&
-            !event.defaultPrevented
+            !event.defaultPrevented &&
+            !mediaIsPending()
           ) {
             event.preventDefault();
             event.currentTarget.requestSubmit();
@@ -355,7 +358,10 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(bodyMarkdown) => markChanged((current) => ({ ...current, bodyMarkdown }))}
           onImageError={(reason) => setError(`Could not add image: ${errorMessage(reason)}`)}
-          onPendingImagesChange={setEditorMediaPending}
+          onPendingImagesChange={(pending) => {
+            editorMediaPendingRef.current = pending;
+            setEditorMediaPending(pending);
+          }}
           pasteImage={async () => {
             const draft = await enqueueDraftSave(stateRef.current);
             return backend.ingestClipboardImage(draft.id);
