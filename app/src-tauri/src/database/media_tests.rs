@@ -513,6 +513,66 @@ fn removed_draft_media_remains_authorized_for_undo_until_expiry() {
 }
 
 #[test]
+fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 10,
+        ..MediaLimits::default()
+    };
+    let attachment = library.ingest(
+        (0x72e, 0x72f, 0x730),
+        "sleep.png",
+        "image/png",
+        b"sleep image",
+        11,
+        limits,
+    );
+    let body = format!("{{{{kosh:image:{};width=90%}}}}", attachment.id);
+    let save = |now_ms| {
+        library.database.client().save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: body.clone(),
+                sources: Vec::new(),
+            },
+            now_ms,
+            draft_id: CAPTURE_DRAFT_ID.into(),
+            media_limits: limits,
+        })
+    };
+    save(12).expect("save short-lived media draft");
+
+    assert_eq!(
+        library
+            .database
+            .client()
+            .load_media_payload(attachment.id.clone(), 23, None, 64)
+            .expect("persisted draft authorizes expired media")
+            .bytes,
+        b"sleep image"
+    );
+    save(23).expect("autosave renews owned expired media");
+    assert_eq!(
+        library
+            .database
+            .open_main_read_only()
+            .expect("main reader")
+            .query_row(
+                "SELECT expires_at
+                 FROM media_ingest_lease
+                 WHERE attachment_id = ?1",
+                params![attachment.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("renewed media expiry"),
+        33
+    );
+}
+
+#[test]
 fn startup_recovery_renews_expired_media_still_referenced_by_a_saved_draft() {
     let library = TestLibrary::new();
     let limits = MediaLimits {

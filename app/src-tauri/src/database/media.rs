@@ -525,6 +525,25 @@ pub(crate) fn load_media_payload(
                           AND lease.state = 'COMMITTED'
                           AND lease.expires_at > ?2
                     )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM media_ingest_lease AS lease
+                        JOIN draft_media_lease AS draft_lease
+                          ON draft_lease.media_ingest_lease_id = lease.id
+                        JOIN draft ON draft.id = draft_lease.draft_id
+                        WHERE lease.attachment_id = attachment.id
+                          AND lease.state = 'COMMITTED'
+                          AND (
+                               instr(
+                                   draft.body_markdown,
+                                   '{{kosh:attachment:' || attachment.id || '}}'
+                               ) > 0
+                               OR instr(
+                                   draft.body_markdown,
+                                   '{{kosh:image:' || attachment.id || ';width='
+                               ) > 0
+                          )
+                    )
                )",
             params![attachment_id, now_ms],
             |row| {
@@ -1019,11 +1038,12 @@ pub(crate) fn sync_draft_media_leases(
                  FROM media_ingest_lease AS lease
                  JOIN draft_media_lease AS draft_lease
                    ON draft_lease.media_ingest_lease_id = lease.id
+                 JOIN attachment ON attachment.id = lease.attachment_id
                  WHERE draft_lease.draft_id = ?1
                    AND lease.attachment_id = ?2
                    AND lease.state = 'COMMITTED'
-                   AND lease.expires_at > ?3",
-                params![draft_id, &reference.id, now_ms],
+                   AND attachment.deleted_at IS NULL",
+                params![draft_id, &reference.id],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
