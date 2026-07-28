@@ -9,6 +9,31 @@ import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry
 import { createAppRouter } from "../../src/router";
 
 describe("tidbit capture and editing routes", () => {
+  it("keeps the composer locked until failed recovery is retried", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    await backend.saveDraft({
+      contextKey: "capture",
+      tidbitId: null,
+      baseRevisionId: null,
+      title: "Do not overwrite",
+      bodyMarkdown: "Recovered only after retry.",
+      sources: [],
+    });
+    vi.spyOn(backend, "loadDraft")
+      .mockRejectedValueOnce(new Error("temporary read failure"))
+      .mockRejectedValueOnce(new Error("temporary read failure"));
+
+    renderRoute(backend, "/add");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Draft recovery failed");
+    expect(screen.getByRole("textbox", { name: /^Title/u })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save tidbit" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Retry draft recovery" }));
+    expect(await screen.findByRole("textbox", { name: /^Title/u })).toHaveValue("Do not overwrite");
+    expect(screen.getByRole("textbox", { name: /^Title/u })).toBeEnabled();
+  });
+
   it("restores an interrupted draft, autosaves changes, and explicitly discards it", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();

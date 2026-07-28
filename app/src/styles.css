@@ -337,6 +337,14 @@ button {
   line-height: 1.5;
 }
 
+.capture-card__error p {
+  margin: 0;
+}
+
+.capture-card__error .kosh-button {
+  margin-top: 8px;
+}
+
 .capture-card label,
 .catalog-field > span,
 .source-fields legend {

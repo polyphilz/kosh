@@ -57,6 +57,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   const [cancelIntent, setCancelIntent] = useState<CancelIntent>(null);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
@@ -72,6 +73,8 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   useEffect(() => {
     let active = true;
     setReady(false);
+    setDraftStatus("idle");
+    setError(null);
     void backend
       .loadDraft(contextKey)
       .then((draft) => {
@@ -83,19 +86,17 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
           setDirty(true);
           setDraftStatus("saved");
         }
+        setReady(true);
       })
       .catch((reason: unknown) => {
         if (!active) return;
         setDraftStatus("failed");
         setError(`Draft recovery failed: ${errorMessage(reason)}`);
-      })
-      .finally(() => {
-        if (active) setReady(true);
       });
     return () => {
       active = false;
     };
-  }, [backend, contextKey]);
+  }, [backend, contextKey, recoveryAttempt]);
 
   const draftInput = useCallback(
     (snapshot: ComposerState): SaveDraftInput => ({
@@ -364,9 +365,18 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
         </fieldset>
 
         {error && (
-          <p className="capture-card__error" role="alert">
-            {error}
-          </p>
+          <div className="capture-card__error" role="alert">
+            <p>{error}</p>
+            {!ready && draftStatus === "failed" && (
+              <Button
+                onClick={() => setRecoveryAttempt((attempt) => attempt + 1)}
+                size="compact"
+                variant="ghost"
+              >
+                Retry draft recovery
+              </Button>
+            )}
+          </div>
         )}
 
         <footer>
