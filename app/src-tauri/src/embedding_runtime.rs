@@ -34,6 +34,7 @@ const SIDECAR_OVERRIDE_ENV: &str = "KOSH_LLAMA_SERVER_PATH";
 const LLAMA_DEVICE_ENV: &str = "KOSH_LLAMA_DEVICE";
 const LLAMA_GPU_LAYERS_ENV: &str = "KOSH_LLAMA_GPU_LAYERS";
 const BUNDLED_SIDECAR_PATH: &str = "bin/llama-server";
+const BUNDLED_RELEASE_MANIFEST_PATH: &str = "release/llama-server.json";
 const LIFECYCLE_LOCK_FILE: &str = "semantic-search.lock";
 const VERIFICATION_RECEIPT_FILE: &str = "semantic-search-verification.json";
 const VERIFICATION_RECEIPT_VERSION: u32 = 1;
@@ -126,6 +127,7 @@ struct EmbeddingRuntimeInner {
     model_path: PathBuf,
     model_override: Option<PathBuf>,
     sidecar_path: Option<PathBuf>,
+    sidecar_expectation: Option<BundledSidecarExpectation>,
     runtime_settings: LlamaRuntimeSettings,
     data_root: PathBuf,
     http: Client,
@@ -173,7 +175,34 @@ struct VerificationReceipt {
     sidecar_pin_sha256: String,
     model: VerificationFileFingerprint,
     sidecar: VerificationFileFingerprint,
+    bundled_sidecar: Option<BundledSidecarExpectation>,
     runtime: LlamaRuntimeSettings,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BundledSidecarExpectation {
+    sha256: String,
+    size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundledReleaseManifest {
+    binary: BundledReleaseBinary,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundledReleaseBinary {
+    bundle_path: String,
+    sha256: String,
+    size: u64,
+}
+
+struct ResolvedSidecar {
+    path: PathBuf,
+    expectation: Option<BundledSidecarExpectation>,
 }
 
 pub struct EmbeddingRuntime {
@@ -182,12 +211,20 @@ pub struct EmbeddingRuntime {
 }
 
 impl EmbeddingRuntime {
-    pub fn new(data_root: &Path, resource_dir: &Path) -> Self {
+    pub fn new(data_root: &Path, resource_dir: Option<&Path>) -> Self {
+        let (sidecar_path, sidecar_expectation, sidecar_resolution_error) =
+            match resolve_sidecar_artifact(resource_dir) {
+                Ok(Some(sidecar)) => (Some(sidecar.path), sidecar.expectation, None),
+                Ok(None) => (None, None, None),
+                Err(error) => (None, None, Some(error.public_message())),
+            };
         Self::start(RuntimeConfiguration {
             contract: jina_contract(),
             data_root: data_root.to_owned(),
             model_override: development_path_override(MODEL_OVERRIDE_ENV),
-            sidecar_path: resolve_sidecar_path(resource_dir),
+            sidecar_path,
+            sidecar_expectation,
+            sidecar_resolution_error,
             runtime_settings: LlamaRuntimeSettings {
                 device: development_string_override(LLAMA_DEVICE_ENV),
                 gpu_layers: development_string_override(LLAMA_GPU_LAYERS_ENV).unwrap_or_else(
@@ -215,6 +252,8 @@ impl EmbeddingRuntime {
             data_root: data_root.to_owned(),
             model_override: None,
             sidecar_path: None,
+            sidecar_expectation: None,
+            sidecar_resolution_error: None,
             runtime_settings: LlamaRuntimeSettings {
                 device: None,
                 gpu_layers: "0".into(),
@@ -234,6 +273,8 @@ impl EmbeddingRuntime {
             data_root,
             model_override,
             sidecar_path,
+            sidecar_expectation,
+            sidecar_resolution_error,
             runtime_settings,
             idle_timeout,
             startup_timeout,
@@ -261,10 +302,8 @@ impl EmbeddingRuntime {
         } else {
             SemanticRuntimePhase::NotDownloaded
         };
-        let initial_message = lifecycle_lock
-            .as_ref()
-            .err()
-            .map(redacted_runtime_error)
+        let initial_message = sidecar_resolution_error
+            .or_else(|| lifecycle_lock.as_ref().err().map(redacted_runtime_error))
             .or_else(|| {
                 sidecar_path
                     .is_none()
@@ -275,6 +314,7 @@ impl EmbeddingRuntime {
             model_path,
             model_override,
             sidecar_path,
+            sidecar_expectation,
             runtime_settings,
             data_root: data_root.to_owned(),
             http,
@@ -477,6 +517,8 @@ struct RuntimeConfiguration {
     data_root: PathBuf,
     model_override: Option<PathBuf>,
     sidecar_path: Option<PathBuf>,
+    sidecar_expectation: Option<BundledSidecarExpectation>,
+    sidecar_resolution_error: Option<String>,
     runtime_settings: LlamaRuntimeSettings,
     idle_timeout: Duration,
     startup_timeout: Duration,
@@ -778,17 +820,7 @@ fn verify_artifact(
             manifest.config.model_file_size
         )));
     }
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    let observed = hex(&digest.finalize());
+    let observed = sha256_file(path)?;
     if observed != manifest.model_file_sha256 {
         return Err(SemanticRuntimeError::InvalidArtifact(format!(
             "{} has SHA-256 {observed}; expected {}",
@@ -799,19 +831,69 @@ fn verify_artifact(
     Ok(())
 }
 
+fn verify_bundled_sidecar_artifact(
+    inner: &EmbeddingRuntimeInner,
+    path: &Path,
+) -> Result<(), SemanticRuntimeError> {
+    let Some(expectation) = inner.sidecar_expectation.as_ref() else {
+        return Ok(());
+    };
+    let metadata = path.metadata().map_err(|error| {
+        SemanticRuntimeError::InvalidArtifact(format!(
+            "cannot inspect bundled llama-server: {error}"
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(SemanticRuntimeError::InvalidArtifact(
+            "bundled llama-server is not a file".into(),
+        ));
+    }
+    if metadata.len() != expectation.size {
+        return Err(SemanticRuntimeError::InvalidArtifact(format!(
+            "bundled llama-server has {} bytes; expected {}",
+            metadata.len(),
+            expectation.size
+        )));
+    }
+    let observed = sha256_file(path)?;
+    if observed != expectation.sha256 {
+        return Err(SemanticRuntimeError::InvalidArtifact(format!(
+            "bundled llama-server has SHA-256 {observed}; expected {}",
+            expectation.sha256
+        )));
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, SemanticRuntimeError> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex(&digest.finalize()))
+}
+
 fn build_verification_receipt(
     inner: &EmbeddingRuntimeInner,
     model_path: &Path,
     sidecar_path: &Path,
 ) -> Result<VerificationReceipt, SemanticRuntimeError> {
-    build_verification_receipt_for_inputs(
+    let mut receipt = build_verification_receipt_for_inputs(
         &inner.runtime_settings,
         &inner.contract.manifest_json,
         &inner.contract.golden_json,
         LLAMA_SERVER_V1_PIN_JSON,
         model_path,
         sidecar_path,
-    )
+    )?;
+    receipt.bundled_sidecar = inner.sidecar_expectation.clone();
+    Ok(receipt)
 }
 
 fn build_verification_receipt_for_inputs(
@@ -829,6 +911,7 @@ fn build_verification_receipt_for_inputs(
         sidecar_pin_sha256: sha256_text(sidecar_pin_json),
         model: verification_file_fingerprint(model_path)?,
         sidecar: verification_file_fingerprint(sidecar_path)?,
+        bundled_sidecar: None,
         runtime: runtime_settings.clone(),
     })
 }
@@ -1149,20 +1232,8 @@ fn ensure_sidecar(
     let sidecar_path = inner.sidecar_path.as_deref().ok_or_else(|| {
         SemanticRuntimeError::RuntimeUnavailable("no llama-server executable was found".into())
     })?;
-    let (model_fingerprint, sidecar_fingerprint) = if require_verified_inputs {
-        let expected = build_verification_receipt(inner, model_path, sidecar_path)?;
-        if !verification_receipt_matches(&inner.data_root, &expected) {
-            return Err(SemanticRuntimeError::InvalidArtifact(
-                "the verified model or llama-server changed; retry verification".into(),
-            ));
-        }
-        (expected.model, expected.sidecar)
-    } else {
-        (
-            verification_file_fingerprint(model_path)?,
-            verification_file_fingerprint(sidecar_path)?,
-        )
-    };
+    let (model_fingerprint, sidecar_fingerprint) =
+        sidecar_launch_fingerprints(inner, model_path, sidecar_path, require_verified_inputs)?;
     let mut runtime = lock(&inner.runtime);
     if let Some(child) = runtime.child.as_mut() {
         if child.try_wait()?.is_none()
@@ -1179,7 +1250,11 @@ fn ensure_sidecar(
         }
         stop_runtime(&mut runtime, &inner.data_root);
     }
+    drop(runtime);
 
+    verify_bundled_sidecar_artifact(inner, sidecar_path)?;
+    let (model_fingerprint, sidecar_fingerprint) =
+        sidecar_launch_fingerprints(inner, model_path, sidecar_path, require_verified_inputs)?;
     sweep_stale_sidecar(&inner.data_root, sidecar_path, model_path);
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -1222,6 +1297,7 @@ fn ensure_sidecar(
         command.process_group(0);
     }
     let mut child = command.spawn()?;
+    let mut runtime = lock(&inner.runtime);
     let log_threads = match start_sidecar_log_pumps(&mut child, log_writer) {
         Ok(threads) => threads,
         Err(error) => {
@@ -1292,6 +1368,28 @@ fn ensure_sidecar(
         "llama-server did not become healthy; see {}",
         log_path.display()
     )))
+}
+
+fn sidecar_launch_fingerprints(
+    inner: &EmbeddingRuntimeInner,
+    model_path: &Path,
+    sidecar_path: &Path,
+    require_verified_inputs: bool,
+) -> Result<(VerificationFileFingerprint, VerificationFileFingerprint), SemanticRuntimeError> {
+    if require_verified_inputs {
+        let expected = build_verification_receipt(inner, model_path, sidecar_path)?;
+        if !verification_receipt_matches(&inner.data_root, &expected) {
+            return Err(SemanticRuntimeError::InvalidArtifact(
+                "the verified model or llama-server changed; retry verification".into(),
+            ));
+        }
+        Ok((expected.model, expected.sidecar))
+    } else {
+        Ok((
+            verification_file_fingerprint(model_path)?,
+            verification_file_fingerprint(sidecar_path)?,
+        ))
+    }
 }
 
 fn reap_idle_sidecar(inner: &EmbeddingRuntimeInner) {
@@ -1742,14 +1840,34 @@ fn remove_pidfile_if_owned(data_root: &Path, expected_pid: u32) {
     }
 }
 
-fn resolve_sidecar_path(resource_dir: &Path) -> Option<PathBuf> {
+fn resolve_sidecar_artifact(
+    resource_dir: Option<&Path>,
+) -> Result<Option<ResolvedSidecar>, SemanticRuntimeError> {
+    let Some(resource_dir) = resource_dir else {
+        return Ok(None);
+    };
+
     #[cfg(debug_assertions)]
     if let Some(path) = development_path_override(SIDECAR_OVERRIDE_ENV) {
-        return path.is_file().then_some(path);
+        return if path.is_file() {
+            Ok(Some(ResolvedSidecar {
+                path,
+                expectation: None,
+            }))
+        } else {
+            Err(SemanticRuntimeError::RuntimeUnavailable(format!(
+                "{SIDECAR_OVERRIDE_ENV} does not point to a file"
+            )))
+        };
     }
 
-    if let Some(bundled) = resolve_bundled_sidecar_path(resource_dir) {
-        return Some(bundled);
+    let bundled = resource_dir.join(BUNDLED_SIDECAR_PATH);
+    if bundled.is_file() {
+        let expectation = read_bundled_sidecar_expectation(resource_dir)?;
+        return Ok(Some(ResolvedSidecar {
+            path: bundled,
+            expectation: Some(expectation),
+        }));
     }
 
     #[cfg(debug_assertions)]
@@ -1761,9 +1879,13 @@ fn resolve_sidecar_path(resource_dir: &Path) -> Option<PathBuf> {
         {
             candidates.push(sibling);
         }
-        candidates
+        Ok(candidates
             .into_iter()
             .find(|candidate| candidate.is_file())
+            .map(|path| ResolvedSidecar {
+                path,
+                expectation: None,
+            })
             .or_else(|| {
                 Command::new("which")
                     .arg("llama-server")
@@ -1772,20 +1894,62 @@ fn resolve_sidecar_path(resource_dir: &Path) -> Option<PathBuf> {
                     .filter(|output| output.status.success())
                     .and_then(|output| {
                         let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                        (!value.is_empty()).then(|| PathBuf::from(value))
+                        let path = PathBuf::from(value);
+                        path.is_file().then_some(ResolvedSidecar {
+                            path,
+                            expectation: None,
+                        })
                     })
-            })
+            }))
     }
 
     #[cfg(not(debug_assertions))]
     {
-        None
+        Ok(None)
     }
 }
 
-fn resolve_bundled_sidecar_path(resource_dir: &Path) -> Option<PathBuf> {
-    let path = resource_dir.join(BUNDLED_SIDECAR_PATH);
-    path.is_file().then_some(path)
+fn read_bundled_sidecar_expectation(
+    resource_dir: &Path,
+) -> Result<BundledSidecarExpectation, SemanticRuntimeError> {
+    let manifest_path = resource_dir.join(BUNDLED_RELEASE_MANIFEST_PATH);
+    let manifest: BundledReleaseManifest =
+        serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| {
+            SemanticRuntimeError::InvalidArtifact(format!(
+                "cannot read bundled llama-server release manifest: {error}"
+            ))
+        })?)
+        .map_err(|error| {
+            SemanticRuntimeError::InvalidArtifact(format!(
+                "cannot parse bundled llama-server release manifest: {error}"
+            ))
+        })?;
+    let binary = manifest.binary;
+    if binary.bundle_path != BUNDLED_SIDECAR_PATH {
+        return Err(SemanticRuntimeError::InvalidArtifact(format!(
+            "bundled llama-server release manifest names unexpected path {}",
+            binary.bundle_path
+        )));
+    }
+    if binary.size == 0 {
+        return Err(SemanticRuntimeError::InvalidArtifact(
+            "bundled llama-server release manifest declares an empty binary".into(),
+        ));
+    }
+    if binary.sha256.len() != 64
+        || !binary
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(SemanticRuntimeError::InvalidArtifact(
+            "bundled llama-server release manifest has an invalid SHA-256".into(),
+        ));
+    }
+    Ok(BundledSidecarExpectation {
+        sha256: binary.sha256,
+        size: binary.size,
+    })
 }
 
 #[cfg(debug_assertions)]
@@ -2050,6 +2214,8 @@ mod tests {
             data_root: data_root.to_owned(),
             model_override,
             sidecar_path,
+            sidecar_expectation: None,
+            sidecar_resolution_error: None,
             runtime_settings: LlamaRuntimeSettings {
                 device: None,
                 gpu_layers: "0".into(),
@@ -2682,21 +2848,136 @@ mod tests {
     }
 
     #[test]
-    fn bundled_sidecar_uses_the_release_resource_path() {
+    fn bundled_sidecar_is_bound_to_the_staged_release_manifest() {
+        let resources = tempfile::tempdir().expect("temporary resources");
+        let binary_directory = resources.path().join("bin");
+        let release_directory = resources.path().join("release");
+        fs::create_dir(&binary_directory).expect("binary resource directory");
+        fs::create_dir(&release_directory).expect("release resource directory");
+        let sidecar = binary_directory.join("llama-server");
+        let sidecar_bytes = b"sidecar";
+        fs::write(&sidecar, sidecar_bytes).expect("sidecar fixture");
+        let sidecar_sha256 = hex(&Sha256::digest(sidecar_bytes));
+        fs::write(
+            release_directory.join("llama-server.json"),
+            serde_json::json!({
+                "binary": {
+                    "bundlePath": BUNDLED_SIDECAR_PATH,
+                    "sha256": sidecar_sha256,
+                    "size": sidecar_bytes.len(),
+                    "versionOutputByArchitecture": {
+                        "arm64": "fixture",
+                        "x86_64": "fixture"
+                    }
+                },
+                "verification": {
+                    "modelBundled": false
+                }
+            })
+            .to_string(),
+        )
+        .expect("release manifest fixture");
+
+        let resolved = resolve_sidecar_artifact(Some(resources.path()))
+            .expect("bundled sidecar resolution")
+            .expect("bundled sidecar");
+        assert_eq!(resolved.path, sidecar);
+        assert_eq!(
+            resolved.expectation,
+            Some(BundledSidecarExpectation {
+                sha256: sidecar_sha256,
+                size: sidecar_bytes.len() as u64,
+            })
+        );
+
+        let data_root = tempfile::tempdir().expect("runtime data root");
+        let runtime = EmbeddingRuntime::new(data_root.path(), Some(resources.path()));
+        verify_bundled_sidecar_artifact(&runtime.inner, &sidecar)
+            .expect("matching bundled sidecar");
+        fs::write(&sidecar, b"sidocar").expect("tampered sidecar fixture");
+        assert!(matches!(
+            verify_bundled_sidecar_artifact(&runtime.inner, &sidecar),
+            Err(SemanticRuntimeError::InvalidArtifact(message))
+                if message.contains("SHA-256")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundled_sidecar_hash_mismatch_is_rejected_before_process_spawn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("runtime directory");
+        let model_path = directory.path().join("model.gguf");
+        let sidecar_path = directory.path().join("llama-server");
+        let marker_path = directory.path().join("sidecar-started");
+        fs::write(&model_path, b"0123456789").expect("model fixture");
+        fs::write(
+            &sidecar_path,
+            b"#!/bin/sh\nprintf started > \"$KOSH_MARKER\"\nexit 1\n",
+        )
+        .expect("sidecar fixture");
+        let mut permissions = sidecar_path
+            .metadata()
+            .expect("sidecar metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&sidecar_path, permissions).expect("executable sidecar");
+        let mut configuration = test_configuration(
+            directory.path(),
+            Some(sidecar_path.clone()),
+            Some(model_path),
+            test_contract(b"0123456789", "http://127.0.0.1:1/model".into()),
+            Duration::from_secs(60),
+        );
+        configuration.sidecar_expectation = Some(BundledSidecarExpectation {
+            sha256: "0".repeat(64),
+            size: sidecar_path.metadata().expect("sidecar metadata").len(),
+        });
+        configuration.sidecar_environment.insert(
+            "KOSH_MARKER".into(),
+            marker_path.to_string_lossy().into_owned(),
+        );
+        let runtime = EmbeddingRuntime::start(configuration);
+
+        assert!(matches!(
+            runtime.prepare(),
+            Err(SemanticRuntimeError::InvalidArtifact(message))
+                if message.contains("SHA-256")
+        ));
+        assert!(!marker_path.exists());
+        assert!(!runtime.status().runtime_running);
+    }
+
+    #[test]
+    fn invalid_bundled_release_manifest_only_disables_semantic_search() {
         let resources = tempfile::tempdir().expect("temporary resources");
         let binary_directory = resources.path().join("bin");
         fs::create_dir(&binary_directory).expect("binary resource directory");
-        let sidecar = binary_directory.join("llama-server");
-        fs::write(&sidecar, b"sidecar").expect("sidecar fixture");
+        fs::write(binary_directory.join("llama-server"), b"sidecar").expect("sidecar fixture");
+        let data_root = tempfile::tempdir().expect("runtime data root");
 
-        assert_eq!(
-            resolve_bundled_sidecar_path(resources.path()),
-            Some(sidecar)
-        );
-        assert_eq!(
-            resolve_bundled_sidecar_path(&resources.path().join("missing")),
-            None
-        );
+        let runtime = EmbeddingRuntime::new(data_root.path(), Some(resources.path()));
+        let status = runtime.status();
+
+        assert_eq!(status.phase, SemanticRuntimePhase::Unavailable);
+        assert!(status
+            .message
+            .is_some_and(|message| message.contains("release manifest")));
+        assert!(!data_root.path().join("models").exists());
+    }
+
+    #[test]
+    fn missing_resource_directory_keeps_semantic_search_optional() {
+        let data_root = tempfile::tempdir().expect("runtime data root");
+
+        let runtime = EmbeddingRuntime::new(data_root.path(), None);
+        let status = runtime.status();
+
+        assert_eq!(status.phase, SemanticRuntimePhase::Unavailable);
+        assert!(!status.runtime_running);
+        assert!(!status.verified);
+        assert!(!data_root.path().join("models").exists());
     }
 
     #[test]
@@ -2901,6 +3182,16 @@ mod tests {
         assert!(!verification_receipt_matches(
             directory.path(),
             &changed_sidecar_pin
+        ));
+
+        let mut changed_bundled_sidecar = changed_sidecar;
+        changed_bundled_sidecar.bundled_sidecar = Some(BundledSidecarExpectation {
+            sha256: "0".repeat(64),
+            size: 1,
+        });
+        assert!(!verification_receipt_matches(
+            directory.path(),
+            &changed_bundled_sidecar
         ));
     }
 

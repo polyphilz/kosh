@@ -59,7 +59,7 @@ pub fn run() {
                 std::env::var_os(DATA_DIR_ENV).map(PathBuf::from),
                 cfg!(debug_assertions),
             );
-            let resource_dir = app.path().resource_dir()?;
+            let resource_dir = app.path().resource_dir().ok();
             std::fs::create_dir_all(&data_dir)?;
             app.manage(RuntimeState::production(data_dir, resource_dir)?);
             Ok(())

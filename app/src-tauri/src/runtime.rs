@@ -52,11 +52,11 @@ pub(crate) struct RuntimeState {
 impl RuntimeState {
     pub(crate) fn production(
         data_dir: PathBuf,
-        resource_dir: PathBuf,
+        resource_dir: Option<PathBuf>,
     ) -> crate::database::Result<Self> {
         let database = Database::initialize(DatabasePaths::new(&data_dir))?;
         Ok(Self {
-            embedding_runtime: Arc::new(EmbeddingRuntime::new(&data_dir, &resource_dir)),
+            embedding_runtime: Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref())),
             data_dir,
             database: Arc::new(database),
             clock: Arc::new(SystemClock),
@@ -239,5 +239,25 @@ pub(crate) mod deterministic {
                 .pop_front()
                 .expect("deterministic ID sequence exhausted")
         }
+    }
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_runtime_starts_without_a_resolved_resource_directory() {
+        let directory = tempfile::tempdir().expect("temporary production data directory");
+
+        let state =
+            RuntimeState::production(directory.path().to_owned(), None).expect("runtime state");
+
+        assert!(directory.path().join("kosh.sqlite3").is_file());
+        assert!(directory.path().join("media.sqlite3").is_file());
+        assert_eq!(
+            state.embedding_runtime.status().phase,
+            crate::embedding_runtime::SemanticRuntimePhase::Unavailable
+        );
     }
 }
