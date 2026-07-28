@@ -138,6 +138,7 @@ describe("tidbit capture and editing routes", () => {
     expect(captureClipboardImage).toHaveBeenCalledOnce();
     const pendingButton = await screen.findByRole("button", { name: "Adding image…" });
     expect(pendingButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
 
     fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
     fireEvent.submit(pendingButton.closest("form")!);

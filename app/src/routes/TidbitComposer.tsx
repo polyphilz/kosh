@@ -210,10 +210,15 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
     return () => window.clearTimeout(timer);
   }, [busy, dirty, enqueueDraftSave, ready, state]);
 
-  const shouldBlock = useCallback(() => dirtyRef.current && !busyRef.current, []);
+  const shouldBlock = useCallback(
+    () =>
+      (dirtyRef.current || editorMediaPendingRef.current || pendingDropCountRef.current > 0) &&
+      !busyRef.current,
+    [],
+  );
   const blocker = useBlocker({
-    disabled: !dirty,
-    enableBeforeUnload: dirty,
+    disabled: !dirty && !mediaPending,
+    enableBeforeUnload: dirty || mediaPending,
     shouldBlockFn: shouldBlock,
     withResolver: true,
   });
@@ -271,7 +276,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   };
 
   const discardDraft = async () => {
-    if (busyRef.current) return false;
+    if (busyRef.current || mediaIsPending()) return false;
     busyRef.current = true;
     setBusy(true);
     setError(null);
@@ -304,6 +309,7 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
   };
 
   const confirmDiscard = async () => {
+    if (mediaIsPending()) return;
     const discarded = await discardDraft();
     if (!discarded) return;
     setCancelIntent(null);
@@ -468,9 +474,9 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
 
         <footer>
           <Button
-            disabled={!ready || busy}
+            disabled={!ready || busy || mediaPending}
             onClick={() => {
-              if (dirtyRef.current) setCancelIntent("button");
+              if (dirtyRef.current || mediaIsPending()) setCancelIntent("button");
               else cancelWithoutChanges();
             }}
             variant="ghost"
@@ -509,8 +515,12 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
             >
               Keep editing
             </Button>
-            <Button disabled={busy} onClick={() => void confirmDiscard()} variant="danger">
-              {busy ? "Discarding…" : "Discard draft"}
+            <Button
+              disabled={busy || mediaPending}
+              onClick={() => void confirmDiscard()}
+              variant="danger"
+            >
+              {mediaPending ? "Adding image…" : busy ? "Discarding…" : "Discard draft"}
             </Button>
           </>
         }
@@ -522,7 +532,11 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
         open={discardDialogOpen}
         title="Discard this draft?"
       >
-        <p>Your changes cannot be recovered after they are discarded.</p>
+        <p>
+          {mediaPending
+            ? "Wait for pending images to finish before discarding this draft."
+            : "Your changes cannot be recovered after they are discarded."}
+        </p>
       </Dialog>
     </>
   );
