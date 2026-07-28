@@ -19,9 +19,9 @@ use super::{
         PdfExtractionStatus, PdfPageExtraction, PdfPageSource, StagedAttachment,
         MEDIA_RECONCILE_BATCH_SIZE,
     },
-    tidbits::CreateTidbitWrite,
+    tidbits::{CreateTidbitWrite, EditTidbitWrite},
     AttachmentIngestInput, AttachmentKind, CitationLocator, ClearDraftInput, Database,
-    DatabaseError, DatabasePaths, LexicalSearchMode, MediaLimits, SaveDraftInput,
+    DatabaseError, DatabasePaths, EditTidbitInput, LexicalSearchMode, MediaLimits, SaveDraftInput,
     SearchPassagesInput, SourceDraft, TidbitDraft,
 };
 
@@ -266,7 +266,7 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
         pdf.attachment.id
     );
     library.save_capture(&body, 12);
-    library
+    let created = library
         .database
         .client()
         .create_tidbit(CreateTidbitWrite {
@@ -362,6 +362,39 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
         })
         .expect("unavailable page error is not evidence")
         .is_empty());
+
+    client
+        .edit_tidbit(EditTidbitWrite {
+            input: EditTidbitInput {
+                id: created.id,
+                expected_revision_id: created.current_revision_id,
+                title: Some("PDF knowledge, revised".into()),
+                body_markdown: format!(
+                    "Revised chapter notes.\n\n{{{{kosh:attachment:{}}}}}",
+                    pdf.attachment.id
+                ),
+                sources: vec![SourceDraft {
+                    label: Some("Unrelated later source".into()),
+                    url: Some("https://example.com/later".into()),
+                }],
+            },
+            now_ms: 16,
+            revision_id: id(0x907),
+            source_ids: vec![id(0x908)],
+        })
+        .expect("edit PDF-backed tidbit");
+    let result = client
+        .search_passages(SearchPassagesInput {
+            query: "first_page_exact_evidence".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search PDF evidence after source edit");
+    assert_eq!(
+        result[0].citation.sources[0].url.as_deref(),
+        Some("https://example.com/reader"),
+        "attachment citations stay bound to the revision that established their provenance"
+    );
 }
 
 #[test]

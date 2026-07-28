@@ -506,9 +506,12 @@ fn extract_pdf_pages(
             if ocr_pages >= MAX_OCR_PAGES {
                 pages.push(PdfPageExtraction {
                     page_number,
-                    result: Err(format!(
-                        "OCR was skipped after the {MAX_OCR_PAGES}-page safety limit"
-                    )),
+                    result: finish_sparse_pdf_page(
+                        native,
+                        Err(format!(
+                            "OCR was skipped after the {MAX_OCR_PAGES}-page safety limit"
+                        )),
+                    ),
                 });
                 continue;
             }
@@ -519,18 +522,24 @@ fn extract_pdf_pages(
             let Some(data) = thumbnail.TIFFRepresentation() else {
                 pages.push(PdfPageExtraction {
                     page_number,
-                    result: Err("PDFKit could not render this page for OCR".into()),
+                    result: finish_sparse_pdf_page(
+                        native,
+                        Err("PDFKit could not render this page for OCR".into()),
+                    ),
                 });
                 continue;
             };
             if data.len() > MAX_RENDERED_PAGE_BYTES {
                 pages.push(PdfPageExtraction {
                     page_number,
-                    result: Err("rendered PDF page exceeded the OCR memory limit".into()),
+                    result: finish_sparse_pdf_page(
+                        native,
+                        Err("rendered PDF page exceeded the OCR memory limit".into()),
+                    ),
                 });
                 continue;
             }
-            let result = crate::media::recognize_image_text(&data.to_vec())
+            let ocr_result = crate::media::recognize_image_text(&data.to_vec())
                 .map(|mut regions| {
                     regions.sort_by(|left, right| {
                         right
@@ -550,12 +559,12 @@ fn extract_pdf_pages(
                     if text.is_empty() {
                         Err("Vision found no searchable text on this page".into())
                     } else {
-                        Ok((PdfPageSource::Ocr, text))
+                        Ok(text)
                     }
                 });
             pages.push(PdfPageExtraction {
                 page_number,
-                result,
+                result: finish_sparse_pdf_page(native, ocr_result),
             });
         }
         Ok(pages)
@@ -568,6 +577,26 @@ fn extract_pdf_pages(
     _job: &PdfExtractionJob,
 ) -> std::result::Result<Vec<PdfPageExtraction>, String> {
     Err("native PDF extraction is available only on macOS".into())
+}
+
+fn finish_sparse_pdf_page(
+    native: String,
+    ocr_result: std::result::Result<String, String>,
+) -> std::result::Result<(PdfPageSource, String), String> {
+    match ocr_result {
+        Ok(ocr) => {
+            let text = if native.is_empty() || ocr.contains(&native) {
+                ocr
+            } else if native.contains(&ocr) {
+                native
+            } else {
+                format!("{native}\n{ocr}")
+            };
+            Ok((PdfPageSource::Ocr, text))
+        }
+        Err(error) if native.is_empty() => Err(error),
+        Err(_) => Ok((PdfPageSource::NativeText, native)),
+    }
 }
 
 fn normalize_pdf_text(value: &str) -> String {
@@ -692,15 +721,34 @@ fn open_path(_path: PathBuf) -> Result<(), DatabaseError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_pdf_text, read_bounded_pdf, safe_pdf_filename, validate_pdf_document_state,
-        MAX_PDF_BYTES,
+        finish_sparse_pdf_page, normalize_pdf_text, read_bounded_pdf, safe_pdf_filename,
+        validate_pdf_document_state, MAX_PDF_BYTES,
     };
+    use crate::database::media::PdfPageSource;
 
     #[test]
     fn normalization_is_stable_and_preserves_nonempty_lines() {
         assert_eq!(
             normalize_pdf_text("  First   line\r\n\r\n Second\tline "),
             "First line\nSecond line"
+        );
+    }
+
+    #[test]
+    fn sparse_native_text_survives_ocr_failure_and_augments_ocr_success() {
+        assert_eq!(
+            finish_sparse_pdf_page("p. 7".into(), Err("OCR safety limit".into()))
+                .expect("native fallback"),
+            (PdfPageSource::NativeText, "p. 7".into())
+        );
+        assert_eq!(
+            finish_sparse_pdf_page("p. 7".into(), Ok("diagram label".into()))
+                .expect("augmented OCR"),
+            (PdfPageSource::Ocr, "p. 7\ndiagram label".into())
+        );
+        assert_eq!(
+            finish_sparse_pdf_page(String::new(), Err("no text".into())),
+            Err("no text".into())
         );
     }
 

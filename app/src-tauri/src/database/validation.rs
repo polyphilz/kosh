@@ -17,6 +17,7 @@ const MAIN_TABLES: &[&str] = &[
     "attachment_extractor_config",
     "attachment_image",
     "attachment_pdf",
+    "attachment_passage_revision",
     "attachment_segment",
     "draft",
     "draft_context",

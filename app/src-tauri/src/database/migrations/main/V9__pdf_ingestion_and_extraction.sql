@@ -168,3 +168,99 @@ BEFORE DELETE ON pdf_page_extraction
 BEGIN
     SELECT RAISE(ABORT, 'PDF page extraction outcomes are retained');
 END;
+
+CREATE TABLE attachment_passage_revision (
+    passage_id TEXT PRIMARY KEY,
+    tidbit_revision_id TEXT NOT NULL,
+    FOREIGN KEY (passage_id) REFERENCES passage(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (tidbit_revision_id) REFERENCES tidbit_revision(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+) STRICT, WITHOUT ROWID;
+
+CREATE TRIGGER attachment_passage_revision_validate_insert
+BEFORE INSERT ON attachment_passage_revision
+BEGIN
+    SELECT RAISE(ABORT, 'attachment passage revision does not own the cited attachment')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM passage
+        JOIN attachment_segment AS segment
+          ON segment.id = passage.attachment_segment_id
+        JOIN attachment_extraction AS extraction
+          ON extraction.id = segment.extraction_id
+        JOIN tidbit_revision_attachment AS membership
+          ON membership.attachment_id = extraction.attachment_id
+         AND membership.tidbit_revision_id = new.tidbit_revision_id
+        WHERE passage.id = new.passage_id
+          AND passage.owner_kind = 'ATTACHMENT'
+    );
+END;
+
+CREATE TRIGGER attachment_passage_revision_prevent_update
+BEFORE UPDATE ON attachment_passage_revision
+BEGIN
+    SELECT RAISE(ABORT, 'attachment passage revision provenance is immutable');
+END;
+
+CREATE TRIGGER attachment_passage_revision_prevent_delete
+BEFORE DELETE ON attachment_passage_revision
+BEGIN
+    SELECT RAISE(ABORT, 'attachment passage revision provenance is retained');
+END;
+
+CREATE TRIGGER attachment_passage_revision_after_membership
+AFTER INSERT ON tidbit_revision_attachment
+BEGIN
+    INSERT OR IGNORE INTO attachment_passage_revision(passage_id, tidbit_revision_id)
+    SELECT passage.id, new.tidbit_revision_id
+    FROM passage
+    JOIN attachment_segment AS segment
+      ON segment.id = passage.attachment_segment_id
+    JOIN attachment_extraction AS extraction
+      ON extraction.id = segment.extraction_id
+    WHERE passage.owner_kind = 'ATTACHMENT'
+      AND extraction.attachment_id = new.attachment_id;
+END;
+
+CREATE TRIGGER attachment_passage_revision_after_passage
+AFTER INSERT ON passage
+WHEN new.owner_kind = 'ATTACHMENT'
+BEGIN
+    INSERT OR IGNORE INTO attachment_passage_revision(passage_id, tidbit_revision_id)
+    SELECT new.id, membership.tidbit_revision_id
+    FROM attachment_segment AS segment
+    JOIN attachment_extraction AS extraction
+      ON extraction.id = segment.extraction_id
+    JOIN tidbit_revision_attachment AS membership
+      ON membership.attachment_id = extraction.attachment_id
+    JOIN tidbit_revision AS revision
+      ON revision.id = membership.tidbit_revision_id
+    WHERE segment.id = new.attachment_segment_id
+    ORDER BY revision.created_at, revision.id
+    LIMIT 1;
+END;
+
+INSERT INTO attachment_passage_revision(passage_id, tidbit_revision_id)
+SELECT
+    passage.id,
+    (
+        SELECT membership.tidbit_revision_id
+        FROM tidbit_revision_attachment AS membership
+        JOIN tidbit_revision AS revision
+          ON revision.id = membership.tidbit_revision_id
+        WHERE membership.attachment_id = extraction.attachment_id
+        ORDER BY revision.created_at, revision.id
+        LIMIT 1
+    )
+FROM passage
+JOIN attachment_segment AS segment
+  ON segment.id = passage.attachment_segment_id
+JOIN attachment_extraction AS extraction
+  ON extraction.id = segment.extraction_id
+WHERE passage.owner_kind = 'ATTACHMENT'
+  AND EXISTS (
+      SELECT 1
+      FROM tidbit_revision_attachment AS membership
+      WHERE membership.attachment_id = extraction.attachment_id
+  );

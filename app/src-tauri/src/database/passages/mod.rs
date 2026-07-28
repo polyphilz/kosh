@@ -628,7 +628,7 @@ fn resolve_attachment_citation(
         ));
     }
     let locator = attachment_locator(&passage)?;
-    let sources = load_attachment_sources(connection, &attachment_id)?;
+    let sources = load_attachment_sources(connection, &passage.id)?;
     Ok(CitationResolution {
         passage_id: passage.id,
         excerpt: passage.content,
@@ -652,22 +652,17 @@ fn resolve_attachment_citation(
     })
 }
 
-fn load_attachment_sources(
-    connection: &Connection,
-    attachment_id: &str,
-) -> Result<Vec<TidbitSource>> {
+fn load_attachment_sources(connection: &Connection, passage_id: &str) -> Result<Vec<TidbitSource>> {
     let mut statement = connection.prepare(
         "SELECT source.id, source.label, source.normalized_url
-         FROM tidbit_revision_attachment AS attachment_membership
+         FROM attachment_passage_revision AS provenance
          JOIN tidbit_revision_source AS source_membership
-           ON source_membership.tidbit_revision_id =
-              attachment_membership.tidbit_revision_id
+           ON source_membership.tidbit_revision_id = provenance.tidbit_revision_id
          JOIN source ON source.id = source_membership.source_id
-         WHERE attachment_membership.attachment_id = ?1
-         GROUP BY source.id, source.label, source.normalized_url
-         ORDER BY source.id",
+         WHERE provenance.passage_id = ?1
+         ORDER BY source_membership.sort_order",
     )?;
-    let sources = statement.query_map(params![attachment_id], |row| {
+    let sources = statement.query_map(params![passage_id], |row| {
         Ok(TidbitSource {
             id: row.get(0)?,
             label: row.get(1)?,
