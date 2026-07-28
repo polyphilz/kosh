@@ -956,105 +956,162 @@ pub(crate) fn claim_next_image_ocr(
     now_ms: i64,
 ) -> Result<Option<ImageOcrJob>> {
     validate_timestamp(now_ms, "nowMs")?;
-    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let pending = transaction
-        .query_row(
-            "SELECT
-                extraction.id,
-                extraction.attachment_id,
-                extraction.extractor_version,
-                extraction.content_hash,
-                queue.attempt_count,
-                image.preview_sha256,
-                image.preview_byte_length
-             FROM image_ocr_queue AS queue
-             JOIN attachment_extraction AS extraction
-               ON extraction.id = queue.extraction_id
-             JOIN attachment_extractor_config AS config
-               ON config.extractor = extraction.extractor
-              AND config.version = extraction.extractor_version
-             JOIN attachment
-               ON attachment.id = extraction.attachment_id
-              AND attachment.sha256 = extraction.content_hash
-              AND attachment.deleted_at IS NULL
-             JOIN attachment_image AS image
-               ON image.attachment_id = attachment.id
-             WHERE queue.state IN ('PENDING', 'RETRY_WAIT')
-               AND queue.next_attempt_at <= ?1
-               AND extraction.extractor = ?2
-             ORDER BY queue.next_attempt_at, extraction.created_at, extraction.id
-             LIMIT 1",
-            params![now_ms, IMAGE_OCR_EXTRACTOR],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, u32>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
-                    row.get::<_, i64>(6)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((
-        extraction_id,
-        attachment_id,
-        extractor_version,
-        content_hash,
-        attempt_count,
-        preview_hash,
-        preview_byte_length,
-    )) = pending
-    else {
+    loop {
+        let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let pending = transaction
+            .query_row(
+                "SELECT
+                    extraction.id,
+                    extraction.attachment_id,
+                    extraction.extractor_version,
+                    extraction.content_hash,
+                    queue.attempt_count,
+                    image.preview_sha256,
+                    image.preview_byte_length
+                 FROM image_ocr_queue AS queue
+                 JOIN attachment_extraction AS extraction
+                   ON extraction.id = queue.extraction_id
+                 JOIN attachment_extractor_config AS config
+                   ON config.extractor = extraction.extractor
+                  AND config.version = extraction.extractor_version
+                 JOIN attachment
+                   ON attachment.id = extraction.attachment_id
+                  AND attachment.sha256 = extraction.content_hash
+                  AND attachment.deleted_at IS NULL
+                 JOIN attachment_image AS image
+                   ON image.attachment_id = attachment.id
+                 WHERE queue.state IN ('PENDING', 'RETRY_WAIT')
+                   AND queue.next_attempt_at <= ?1
+                   AND extraction.extractor = ?2
+                 ORDER BY queue.next_attempt_at, extraction.created_at, extraction.id
+                 LIMIT 1",
+                params![now_ms, IMAGE_OCR_EXTRACTOR],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, u32>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            extraction_id,
+            attachment_id,
+            extractor_version,
+            content_hash,
+            attempt_count,
+            preview_hash,
+            preview_byte_length,
+        )) = pending
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let next_attempt =
+            attempt_count
+                .checked_add(1)
+                .ok_or_else(|| DatabaseError::Validation {
+                    kind: "main",
+                    reason: format!("OCR attempt counter overflow for {attachment_id}"),
+                })?;
+        let preview_bytes = match load_media_blob_bytes(
+            media,
+            &preview_hash,
+            preview_byte_length,
+            &attachment_id,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error @ DatabaseError::Validation { .. }) => {
+                let error = truncate_ocr_error(&error.to_string());
+                quarantine_unreadable_image_ocr(
+                    &transaction,
+                    &extraction_id,
+                    &attachment_id,
+                    &error,
+                    now_ms,
+                )?;
+                transaction.commit()?;
+                log::warn!("quarantined image OCR job for {attachment_id}: {error}");
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let updated = transaction.execute(
+            "UPDATE image_ocr_queue
+             SET state = 'RUNNING',
+                 attempt_count = ?1,
+                 next_attempt_at = NULL,
+                 started_at = ?2,
+                 updated_at = ?2
+             WHERE extraction_id = ?3
+               AND state IN ('PENDING', 'RETRY_WAIT')
+               AND attempt_count = ?4",
+            params![next_attempt, now_ms, &extraction_id, attempt_count],
+        )?;
+        if updated != 1 {
+            return Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("OCR claim raced for image {attachment_id}"),
+            });
+        }
+        transaction.execute(
+            "UPDATE attachment_extraction
+             SET status = 'RUNNING',
+                 error = NULL,
+                 started_at = coalesce(started_at, ?1),
+                 completed_at = NULL
+             WHERE id = ?2",
+            params![now_ms, &extraction_id],
+        )?;
         transaction.commit()?;
-        return Ok(None);
-    };
-    let next_attempt = attempt_count
-        .checked_add(1)
-        .ok_or_else(|| DatabaseError::Validation {
-            kind: "main",
-            reason: format!("OCR attempt counter overflow for {attachment_id}"),
-        })?;
-    let preview_bytes =
-        load_media_blob_bytes(media, &preview_hash, preview_byte_length, &attachment_id)?;
-    let updated = transaction.execute(
-        "UPDATE image_ocr_queue
-         SET state = 'RUNNING',
-             attempt_count = ?1,
-             next_attempt_at = NULL,
-             started_at = ?2,
-             updated_at = ?2
-         WHERE extraction_id = ?3
-           AND state IN ('PENDING', 'RETRY_WAIT')
-           AND attempt_count = ?4",
-        params![next_attempt, now_ms, &extraction_id, attempt_count],
-    )?;
-    if updated != 1 {
-        return Err(DatabaseError::Validation {
-            kind: "main",
-            reason: format!("OCR claim raced for image {attachment_id}"),
-        });
+        return Ok(Some(ImageOcrJob {
+            extraction_id,
+            attachment_id,
+            extractor_version,
+            content_hash,
+            attempt_count: next_attempt,
+            preview_bytes,
+        }));
     }
+}
+
+fn quarantine_unreadable_image_ocr(
+    transaction: &Transaction<'_>,
+    extraction_id: &str,
+    attachment_id: &str,
+    error: &str,
+    now_ms: i64,
+) -> Result<()> {
     transaction.execute(
         "UPDATE attachment_extraction
-         SET status = 'RUNNING',
-             error = NULL,
-             started_at = coalesce(started_at, ?1),
-             completed_at = NULL
-         WHERE id = ?2",
-        params![now_ms, &extraction_id],
+         SET status = 'FAILED', error = ?1, completed_at = ?2
+         WHERE id = ?3",
+        params![error, now_ms, extraction_id],
     )?;
-    transaction.commit()?;
-    Ok(Some(ImageOcrJob {
-        extraction_id,
-        attachment_id,
-        extractor_version,
-        content_hash,
-        attempt_count: next_attempt,
-        preview_bytes,
-    }))
+    transaction.execute(
+        "UPDATE image_ocr_queue
+         SET state = 'FAILED',
+             attempt_count = max(attempt_count, 1),
+             next_attempt_at = NULL,
+             started_at = NULL,
+             last_error = ?1,
+             updated_at = ?2
+         WHERE extraction_id = ?3",
+        params![error, now_ms, extraction_id],
+    )?;
+    transaction.execute(
+        "UPDATE attachment
+         SET extraction_state = 'FAILED',
+             updated_at = max(updated_at, ?1)
+         WHERE id = ?2",
+        params![now_ms, attachment_id],
+    )?;
+    Ok(())
 }
 
 fn load_media_blob_bytes(

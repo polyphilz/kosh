@@ -539,6 +539,34 @@ it("inserts images selected through the native picker action", async () => {
   );
 });
 
+it("restores selected content when the native image picker is canceled", async () => {
+  let resolvePick!: (record: ImageRecord | null) => void;
+  const pickPromise = new Promise<ImageRecord | null>((resolve) => {
+    resolvePick = resolve;
+  });
+  const value = "Keep this selected text";
+  const { getByRole, queryByRole } = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      onChange={() => undefined}
+      pickImage={() => pickPromise}
+      value={value}
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+  const view = editorView(textbox);
+  act(() => {
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 5)));
+  });
+
+  fireEvent.click(getByRole("button", { name: "Add image" }));
+  expect(getByRole("status", { name: "Choosing image" })).toBeVisible();
+  await act(async () => resolvePick(null));
+
+  await waitFor(() => expect(queryByRole("status", { name: "Choosing image" })).toBeNull());
+  expect(serializeKoshMarkdown(view.state.doc)).toBe(value);
+});
+
 it("removes failed image placeholders and supports explicit OCR retry", async () => {
   const imageId = "01980c8e-6c00-7000-8000-000000000233";
   const ingestError = new Error("invalid image");
@@ -584,7 +612,9 @@ it("removes failed image placeholders and supports explicit OCR retry", async ()
   await waitFor(() => expect(onImageError).toHaveBeenCalledWith(ingestError));
   expect(queryByRole("status", { name: "Processing pasted image" })).toBeNull();
   expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
-  expect(serializeKoshMarkdown(editorView(textbox).state.doc)).toBe("");
+  expect(serializeKoshMarkdown(editorView(textbox).state.doc)).toBe(
+    `{{kosh:image:${imageId};width=70%}}`,
+  );
 });
 
 it("backs off OCR status polling until a retry is eligible", () => {

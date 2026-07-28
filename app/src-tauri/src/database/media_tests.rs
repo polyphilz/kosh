@@ -306,6 +306,69 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
 }
 
 #[test]
+fn image_ocr_quarantines_a_corrupt_preview_and_claims_the_next_job() {
+    let library = TestLibrary::new();
+    let corrupt_preview = b"corrupt OCR preview";
+    let corrupt = library.ingest_image(
+        (0x79c, 0x79d, 0x79e, 0x79f),
+        b"first original image",
+        corrupt_preview,
+        11,
+    );
+    let healthy_preview = b"healthy OCR preview";
+    let healthy = library.ingest_image(
+        (0x7a0, 0x7a1, 0x7a2, 0x7a3),
+        b"second original image",
+        healthy_preview,
+        12,
+    );
+
+    let media = Connection::open(&library.paths.media).expect("media writer");
+    let corrupt_preview_hash = digest(corrupt_preview);
+    let corrupt_rowid = media
+        .query_row(
+            "SELECT rowid FROM media_blob WHERE sha256 = ?1",
+            params![&corrupt_preview_hash],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("corrupt preview rowid");
+    let mut blob = media
+        .blob_open(MAIN_DB, "media_blob", "bytes", corrupt_rowid, false)
+        .expect("writable preview blob");
+    blob.seek(SeekFrom::Start(0)).expect("seek preview blob");
+    blob.write_all(b"X").expect("corrupt preview blob");
+    drop(blob);
+    drop(media);
+
+    let client = library.database.client();
+    let job = client
+        .claim_next_image_ocr(13)
+        .expect("claim past corrupt preview")
+        .expect("healthy OCR job");
+    assert_eq!(job.attachment_id, healthy.attachment.id);
+    assert_eq!(job.preview_bytes, healthy_preview);
+    let failed = client
+        .load_image_status(corrupt.attachment.id)
+        .expect("corrupt image status");
+    assert_eq!(failed.ocr_status, ImageOcrStatus::Failed);
+    assert!(failed
+        .ocr_error
+        .as_deref()
+        .is_some_and(|error| error.contains("preview is corrupt")));
+
+    client
+        .complete_image_ocr(job, Ok(Vec::new()), 14)
+        .expect("complete healthy OCR");
+    let diagnostics = client.image_ocr_diagnostics().expect("OCR diagnostics");
+    assert_eq!(diagnostics.failed, 1);
+    assert_eq!(diagnostics.running, 0);
+    assert!(client
+        .claim_next_image_ocr(15)
+        .expect("inspect drained queue")
+        .is_none());
+}
+
+#[test]
 fn draft_only_image_ocr_never_enters_search_and_remains_hidden_after_discard() {
     let library = TestLibrary::new();
     let image = library.ingest_image(

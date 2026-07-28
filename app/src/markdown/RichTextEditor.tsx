@@ -24,7 +24,7 @@ import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from "prosemirror-schema-list";
 import { EditorState, NodeSelection, Selection, type Command } from "prosemirror-state";
 import { tableEditing } from "prosemirror-tables";
-import { insertPoint, liftTarget } from "prosemirror-transform";
+import { insertPoint, liftTarget, Mapping, StepMap } from "prosemirror-transform";
 import {
   EditorView,
   type DirectEditorProps,
@@ -388,8 +388,42 @@ function beginImageIngest(
   pendingImageSequence += 1;
   const requestId = `kosh-image-${pendingImageSequence}`;
   const pending = koshEditorSchema.nodes.kosh_image_pending!.create({ label, requestId });
-  view.dispatch(view.state.tr.replaceSelectionWith(pending, false).scrollIntoView());
+  const replacedSelection = view.state.selection.content();
+  const replacement = view.state.tr.replaceSelectionWith(pending, false).scrollIntoView();
+  const rollbackSteps = replacement.steps
+    .map((step, index) => step.invert(replacement.docs[index]!))
+    .reverse();
+  const initialPendingPosition = pendingImagePosition(replacement.doc, requestId);
+  view.dispatch(replacement);
   notifyPendingImages(view.state.doc, onPendingRef.current);
+
+  const restoreSelection = () => {
+    const position = pendingImagePosition(view.state.doc, requestId);
+    if (position === null) {
+      return;
+    }
+    const pendingNode = view.state.doc.nodeAt(position);
+    if (!pendingNode) {
+      return;
+    }
+    if (initialPendingPosition !== null) {
+      const offset = StepMap.offset(position - initialPendingPosition);
+      const transaction = view.state.tr;
+      const restored = rollbackSteps.every((step) => {
+        const mapped = step.map(new Mapping([offset]));
+        return mapped !== null && !transaction.maybeStep(mapped).failed;
+      });
+      if (restored) {
+        view.dispatch(transaction.scrollIntoView());
+        return;
+      }
+    }
+    view.dispatch(
+      view.state.tr
+        .replaceRange(position, position + pendingNode.nodeSize, replacedSelection)
+        .scrollIntoView(),
+    );
+  };
 
   void ingest()
     .then((record) => {
@@ -405,7 +439,7 @@ function beginImageIngest(
         return;
       }
       if (!record) {
-        view.dispatch(view.state.tr.delete(position, position + pendingNode.nodeSize));
+        restoreSelection();
         return;
       }
       const image = imageNode(record, view.dom.clientWidth);
@@ -417,11 +451,7 @@ function beginImageIngest(
     })
     .catch((error: unknown) => {
       if (!view.isDestroyed) {
-        const position = pendingImagePosition(view.state.doc, requestId);
-        const pendingNode = position === null ? null : view.state.doc.nodeAt(position);
-        if (position !== null && pendingNode) {
-          view.dispatch(view.state.tr.delete(position, position + pendingNode.nodeSize));
-        }
+        restoreSelection();
       }
       onErrorRef.current?.(error);
     })
