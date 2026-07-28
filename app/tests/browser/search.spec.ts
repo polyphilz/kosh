@@ -149,6 +149,27 @@ test("a citation edited after search opens as historical and focuses its exact p
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
+test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
+  await page.goto("/#/");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const status = backend.semanticRuntimeStatus.bind(backend);
+    let polls = 0;
+    backend.semanticRuntimeStatus = async () => {
+      polls += 1;
+      return status();
+    };
+    Object.defineProperty(window, "__KOSH_SEMANTIC_POLL_COUNT__", {
+      configurable: true,
+      get: () => polls,
+    });
+  });
+
+  await page.waitForTimeout(1_700);
+  expect(await page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_POLL_COUNT__"))).toBe(1);
+});
+
 async function seedTidbit(page: Page, input: TidbitDraft): Promise<TidbitRecord> {
   return page.evaluate(async (draft) => {
     const backend = window.__KOSH_FAKE_BACKEND__;

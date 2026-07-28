@@ -424,14 +424,18 @@ function useSemanticSearchStatus() {
 
   useEffect(() => {
     active.current = true;
-    const poll = () => {
-      if (!active.current) return;
-      void refresh().finally(() => {
-        if (active.current) window.setTimeout(poll, 1_500);
-      });
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const poll = async () => {
+      await refresh();
+      if (!cancelled) {
+        timeoutId = window.setTimeout(() => void poll(), 1_500);
+      }
     };
-    poll();
+    void poll();
     return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       active.current = false;
       statusRequest.current += 1;
     };
