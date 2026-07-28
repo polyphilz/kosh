@@ -18,7 +18,7 @@ use super::{
         IngestAttachmentMetadata, IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite,
         MediaByteRange, MediaRangeRequest, PdfExtractionStatus, PdfPageExtraction, PdfPageSource,
         StagedAttachment, MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS,
-        PDF_PASSAGE_OVERLAP_CHARS,
+        PDF_PASSAGE_OVERLAP_CHARS, PDF_RECOVERY_BATCH_SIZE,
     },
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     AttachmentIngestInput, AttachmentKind, CitationLocator, ClearDraftInput, Database,
@@ -143,11 +143,22 @@ impl TestLibrary {
         page_count: u32,
         now_ms: i64,
     ) -> super::PdfRecord {
+        self.ingest_pdf_with_limits(suffixes, bytes, page_count, now_ms, MediaLimits::default())
+    }
+
+    fn ingest_pdf_with_limits(
+        &self,
+        suffixes: (u64, u64, u64, u64),
+        bytes: &[u8],
+        page_count: u32,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> super::PdfRecord {
         let staged = StagedAttachment::from_reader(
             Cursor::new(bytes),
             &self.staging,
             &id(suffixes.2),
-            MediaLimits::default().max_attachment_bytes,
+            limits.max_attachment_bytes,
         )
         .expect("stage PDF");
         self.database
@@ -160,7 +171,7 @@ impl TestLibrary {
                     display_filename: "chapter.pdf".into(),
                     media_type: "application/pdf".into(),
                     now_ms,
-                    limits: MediaLimits::default(),
+                    limits,
                 }),
                 extraction_id: id(suffixes.3),
                 page_count,
@@ -479,6 +490,60 @@ fn pdf_recovery_rebuilds_stale_extractor_provenance() {
         .expect("replacement PDF job");
     assert_eq!(job.extractor_version, "2");
     assert_eq!(job.attempt_count, 1);
+}
+
+#[test]
+fn pdf_recovery_exposes_full_batches_until_the_stale_backlog_is_queued() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        max_attachments_per_draft: 128,
+        ..MediaLimits::default()
+    };
+    for index in 0..(PDF_RECOVERY_BATCH_SIZE + 1) {
+        let base = 0xa000 + (index as u64 * 4);
+        library.ingest_pdf_with_limits(
+            (base, base + 1, base + 2, base + 3),
+            b"%PDF-1.7 recovery batch fixture",
+            1,
+            11,
+            limits,
+        );
+    }
+    let writer = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("open extractor configuration writer");
+    writer
+        .execute(
+            "UPDATE attachment_extractor_config
+             SET version = '2', updated_at = 12
+             WHERE extractor = 'pdf-text'",
+            [],
+        )
+        .expect("advance PDF extractor version");
+    drop(writer);
+
+    let client = library.database.client();
+    assert_eq!(
+        client
+            .recover_interrupted_pdf_extraction(12, 13)
+            .expect("queue first PDF recovery batch"),
+        PDF_RECOVERY_BATCH_SIZE as u64
+    );
+    assert_eq!(
+        client
+            .recover_interrupted_pdf_extraction(12, 13)
+            .expect("queue remaining PDF recovery"),
+        1
+    );
+    assert_eq!(
+        client
+            .recover_interrupted_pdf_extraction(12, 13)
+            .expect("finish PDF recovery"),
+        0
+    );
 }
 
 #[test]

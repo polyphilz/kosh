@@ -24,6 +24,7 @@ const INTEGRITY_ATTACHMENT_BATCH_SIZE: u32 = 64;
 const INTEGRITY_BLOB_BATCH_SIZE: u32 = 1;
 const MAX_INTEGRITY_DIAGNOSTICS: usize = 256;
 pub(crate) const MEDIA_RECONCILE_BATCH_SIZE: u32 = 64;
+pub(crate) const PDF_RECOVERY_BATCH_SIZE: usize = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
 const PDF_TOKEN_PREFIX: &str = "{{kosh:pdf:";
@@ -1806,9 +1807,8 @@ pub(crate) fn recover_interrupted_pdf_extraction(
            )",
         params![now_ms, PDF_TEXT_EXTRACTOR],
     )?;
-    let replacements = transaction
-        .prepare(
-            "SELECT attachment.id, attachment.sha256, config.version
+    let replacement_query = format!(
+        "SELECT attachment.id, attachment.sha256, config.version
              FROM attachment
              JOIN attachment_pdf AS pdf ON pdf.attachment_id = attachment.id
              JOIN attachment_extractor_config AS config ON config.extractor = ?1
@@ -1824,8 +1824,10 @@ pub(crate) fn recover_interrupted_pdf_extraction(
                       AND extraction.content_hash = attachment.sha256
                )
              ORDER BY attachment.id
-             LIMIT 64",
-        )?
+             LIMIT {PDF_RECOVERY_BATCH_SIZE}"
+    );
+    let replacements = transaction
+        .prepare(&replacement_query)?
         .query_map(params![PDF_TEXT_EXTRACTOR], |row| {
             Ok((
                 row.get::<_, String>(0)?,

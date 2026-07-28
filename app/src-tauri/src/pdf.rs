@@ -16,7 +16,7 @@ use crate::{
     database::{
         media::{
             IngestAttachmentMetadata, IngestPdfWrite, PdfExtractionJob, PdfPageExtraction,
-            PdfPageSource, StagedAttachment,
+            PdfPageSource, StagedAttachment, PDF_RECOVERY_BATCH_SIZE,
         },
         DatabaseClient, DatabaseError, PdfRecord, PdfStatusRecord,
     },
@@ -452,11 +452,22 @@ fn pdf_worker(client: DatabaseClient, receiver: mpsc::Receiver<PdfWorkerSignal>)
         };
         let stale_before = now_ms
             .saturating_sub(i64::try_from(PDF_STALE_ATTEMPT_AGE.as_millis()).unwrap_or(i64::MAX));
-        if let Err(error) = client.recover_interrupted_pdf_extraction(stale_before, now_ms) {
-            log::error!("could not recover interrupted PDF extraction: {error}");
-        }
+        reconcile_pdf_extractions(&client, stale_before, now_ms);
         last_reconciliation = Some(std::time::Instant::now());
         drain_pdf_queue(&client);
+    }
+}
+
+fn reconcile_pdf_extractions(client: &DatabaseClient, stale_before: i64, now_ms: i64) {
+    loop {
+        match client.recover_interrupted_pdf_extraction(stale_before, now_ms) {
+            Ok(recovered) if recovered >= PDF_RECOVERY_BATCH_SIZE as u64 => {}
+            Ok(_) => return,
+            Err(error) => {
+                log::error!("could not recover interrupted PDF extraction: {error}");
+                return;
+            }
+        }
     }
 }
 

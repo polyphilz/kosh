@@ -288,26 +288,26 @@ pub(crate) fn handle_image_drop<R: tauri::Runtime>(
     let Some(state) = window.try_state::<RuntimeState>() else {
         return;
     };
-    let image_paths = paths
-        .iter()
-        .filter(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    matches!(
-                        extension.to_ascii_lowercase().as_str(),
-                        "gif" | "jpeg" | "jpg" | "png" | "tif" | "tiff" | "webp"
-                    )
-                })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let image_paths = image_drop_candidates(paths);
     let Some(notice) = state.register_image_drop(&image_paths) else {
         return;
     };
     if let Err(error) = window.emit(IMAGE_DROP_EVENT, notice) {
         log::warn!("could not notify the editor about a native image drop: {error}");
     }
+}
+
+fn image_drop_candidates(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|path| {
+            !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        })
+        .cloned()
+        .collect()
 }
 
 async fn ingest_image_path(
@@ -968,6 +968,24 @@ mod tests {
             ".._chapter_image.png"
         );
         assert_eq!(safe_image_filename(" \n ", ImageFormat::WebP), "Image.webp");
+    }
+
+    #[test]
+    fn image_drop_candidates_preserve_content_sniffing_and_exclude_declared_pdfs() {
+        let paths = [
+            PathBuf::from("extensionless"),
+            PathBuf::from("camera-export.bin"),
+            PathBuf::from("chapter.pdf"),
+            PathBuf::from("appendix.PDF"),
+        ];
+
+        assert_eq!(
+            image_drop_candidates(&paths),
+            [
+                PathBuf::from("extensionless"),
+                PathBuf::from("camera-export.bin")
+            ]
+        );
     }
 
     #[test]
