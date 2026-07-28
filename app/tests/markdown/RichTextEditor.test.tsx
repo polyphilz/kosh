@@ -76,6 +76,48 @@ it("replaces an external value without recreating the editor or echoing onChange
   expect(onChange).not.toHaveBeenCalled();
 });
 
+it("resets undo history when replacing the controlled document", () => {
+  const onChange = vi.fn();
+  const { getByRole, rerender } = render(
+    <RichTextEditor ariaLabel="Body" onChange={onChange} value="first tidbit" />,
+  );
+  const textbox = getByRole("textbox", { name: "Body" });
+  const view = editorView(textbox);
+  act(() => {
+    view.dispatch(view.state.tr.insertText(" edited", view.state.doc.content.size - 1));
+  });
+
+  rerender(<RichTextEditor ariaLabel="Body" onChange={onChange} value="second tidbit" />);
+  fireEvent.keyDown(textbox, { key: "z", metaKey: true });
+
+  expect(serializeKoshMarkdown(view.state.doc)).toBe("second tidbit");
+});
+
+it("updates the mounted textbox label and placeholder", () => {
+  const { getByRole, rerender } = render(
+    <RichTextEditor
+      ariaLabel="Original body"
+      onChange={() => undefined}
+      placeholder="Original hint"
+      value=""
+    />,
+  );
+  const textbox = getByRole("textbox", { name: "Original body" });
+  expect(textbox).toHaveAttribute("data-placeholder", "Original hint");
+
+  rerender(
+    <RichTextEditor
+      ariaLabel="Updated body"
+      onChange={() => undefined}
+      placeholder="Updated hint"
+      value=""
+    />,
+  );
+
+  expect(getByRole("textbox", { name: "Updated body" })).toBe(textbox);
+  expect(textbox).toHaveAttribute("data-placeholder", "Updated hint");
+});
+
 it("supports imperative focus and disabled state without replacing the view", () => {
   const ref = createRef<RichTextEditorHandle>();
   const { getByRole, rerender } = render(

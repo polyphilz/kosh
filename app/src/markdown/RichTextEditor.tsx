@@ -76,7 +76,6 @@ interface LinkDialogState {
   href: string;
 }
 
-const externalValueUpdate = "kosh-external-value-update";
 let codeBlockNodeViewPromise: Promise<NodeViewConstructor> | null = null;
 
 export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(
@@ -133,13 +132,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       });
 
       const props: DirectEditorProps = {
-        attributes: {
-          ...KOSH_WRITING_ASSISTANCE_ATTRIBUTES,
-          "aria-label": initialAriaLabelRef.current,
-          "aria-multiline": "true",
-          class: "kosh-rich-text-content",
-          role: "textbox",
-        },
+        attributes: editorAttributes(initialAriaLabelRef.current, disabledRef.current),
         dispatchTransaction(transaction) {
           const view = viewRef.current;
           if (!view) {
@@ -150,7 +143,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           updateEmptyState(view);
           void installCodeBlockNodeView(view);
           renderToolbar();
-          if (transaction.docChanged && transaction.getMeta(externalValueUpdate) !== true) {
+          if (transaction.docChanged) {
             onChangeRef.current(serializeKoshMarkdown(nextState.doc));
           }
         },
@@ -184,15 +177,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       if (!view) {
         return;
       }
-      view.setProps({ editable: () => !disabled });
-      view.dom.setAttribute("aria-disabled", String(disabled));
+      view.setProps({
+        attributes: editorAttributes(ariaLabel, disabled),
+        editable: () => !disabled,
+      });
+      view.dom.dataset.placeholder = placeholder ?? "";
       view.dom.dispatchEvent(new Event(KOSH_EDITOR_EDITABLE_EVENT));
       if (disabled) {
         setMathDialog(null);
         setLinkDialog(null);
       }
       renderToolbar();
-    }, [disabled]);
+    }, [ariaLabel, disabled, placeholder]);
 
     useEffect(() => {
       const view = viewRef.current;
@@ -207,11 +203,16 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       if (view.state.doc.eq(replacement)) {
         return;
       }
-      const transaction = view.state.tr
-        .replaceWith(0, view.state.doc.content.size, replacement.content)
-        .setMeta(externalValueUpdate, true)
-        .setMeta("addToHistory", false);
-      view.dispatch(transaction);
+      view.updateState(
+        EditorState.create({
+          doc: replacement,
+          plugins: view.state.plugins,
+          schema: koshEditorSchema,
+        }),
+      );
+      updateEmptyState(view);
+      void installCodeBlockNodeView(view);
+      renderToolbar();
     }, [value]);
 
     const view = viewRef.current;
@@ -262,6 +263,17 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
     );
   },
 );
+
+function editorAttributes(ariaLabel: string, disabled: boolean): Record<string, string> {
+  return {
+    ...KOSH_WRITING_ASSISTANCE_ATTRIBUTES,
+    "aria-disabled": String(disabled),
+    "aria-label": ariaLabel,
+    "aria-multiline": "true",
+    class: "kosh-rich-text-content",
+    role: "textbox",
+  };
+}
 
 function editorKeyBindings(openLink: (view: EditorView) => void): Record<string, Command> {
   const listItem = koshEditorSchema.nodes.list_item!;
