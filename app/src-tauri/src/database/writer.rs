@@ -5,6 +5,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     drafts::{ClearDraftInput, Draft, SaveDraftWrite},
+    embedding_index::{
+        InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
+    },
     error::{DatabaseError, Result},
     migrations::MigrationHeads,
     passages::CitationResolution,
@@ -48,6 +51,31 @@ pub(super) enum WriterMessage {
         reply: SyncSender<Result<()>>,
     },
     ReconcileAuthorPassageBatch,
+    LoadEmbeddingReconciliationBatch {
+        limit: u32,
+        reply: SyncSender<Result<Vec<PendingPassageEmbedding>>>,
+    },
+    InstallPassageEmbedding {
+        pending: PendingPassageEmbedding,
+        embedding: Vec<f32>,
+        created_at_ms: i64,
+        reply: SyncSender<Result<InstallEmbeddingDisposition>>,
+    },
+    PassageEmbeddingIndexProgress {
+        reply: SyncSender<Result<PassageEmbeddingIndexProgress>>,
+    },
+    PassageEmbeddingIndexNeedsReconciliation {
+        reply: SyncSender<Result<bool>>,
+    },
+    ActivatePassageEmbeddingIndexIfComplete {
+        activated_at_ms: i64,
+        reply: SyncSender<Result<bool>>,
+    },
+    RecordPassageEmbeddingIndexFailure {
+        error: String,
+        failed_at_ms: i64,
+        reply: SyncSender<Result<()>>,
+    },
     ReapMediaBlob {
         sha256: Vec<u8>,
         now: i64,
@@ -193,6 +221,93 @@ impl DatabaseClient {
         self.sender
             .send(WriterMessage::ReconcileAuthorPassageBatch)
             .map_err(|_| DatabaseError::WriterUnavailable)
+    }
+
+    pub(crate) fn load_embedding_reconciliation_batch(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<PendingPassageEmbedding>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadEmbeddingReconciliationBatch { limit, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn install_passage_embedding(
+        &self,
+        pending: PendingPassageEmbedding,
+        embedding: Vec<f32>,
+        created_at_ms: i64,
+    ) -> Result<InstallEmbeddingDisposition> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::InstallPassageEmbedding {
+                pending,
+                embedding,
+                created_at_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn passage_embedding_index_progress(&self) -> Result<PassageEmbeddingIndexProgress> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::PassageEmbeddingIndexProgress { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn passage_embedding_index_needs_reconciliation(&self) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::PassageEmbeddingIndexNeedsReconciliation { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn activate_passage_embedding_index_if_complete(
+        &self,
+        activated_at_ms: i64,
+    ) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ActivatePassageEmbeddingIndexIfComplete {
+                activated_at_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn record_passage_embedding_index_failure(
+        &self,
+        error: String,
+        failed_at_ms: i64,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RecordPassageEmbeddingIndexFailure {
+                error,
+                failed_at_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
     pub(crate) fn create_tidbit(&self, write: CreateTidbitWrite) -> Result<Tidbit> {

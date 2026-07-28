@@ -1,6 +1,7 @@
 pub(crate) mod commands;
 mod connection;
 mod drafts;
+pub(crate) mod embedding_index;
 mod error;
 mod migrations;
 pub(crate) mod passages;
@@ -12,6 +13,8 @@ mod writer;
 
 #[cfg(test)]
 mod drafts_tests;
+#[cfg(test)]
+mod embedding_index_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -112,6 +115,9 @@ impl Database {
         if main_status.pending {
             migrations::run_main(&mut main)?;
         }
+        if let Err(error) = embedding_index::ensure_vector_table(&main) {
+            log::warn!("could not materialize the optional semantic vector table: {error}");
+        }
         // Reap capabilities never persist across launches. The single writer
         // creates and consumes them in one transaction after a live main-
         // database reference check.
@@ -211,6 +217,48 @@ fn writer_loop(
                 {
                     let _ = sender.send(WriterMessage::ReconcileAuthorPassageBatch);
                 }
+            }
+            WriterMessage::LoadEmbeddingReconciliationBatch { limit, reply } => {
+                let _ = reply.send(embedding_index::load_reconciliation_batch(&mut main, limit));
+            }
+            WriterMessage::InstallPassageEmbedding {
+                pending,
+                embedding,
+                created_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(embedding_index::install_embedding(
+                    &mut main,
+                    &pending,
+                    &embedding,
+                    created_at_ms,
+                ));
+            }
+            WriterMessage::PassageEmbeddingIndexProgress { reply } => {
+                let _ = reply.send(embedding_index::progress(&main));
+            }
+            WriterMessage::PassageEmbeddingIndexNeedsReconciliation { reply } => {
+                let _ = reply.send(embedding_index::needs_reconciliation(&main));
+            }
+            WriterMessage::ActivatePassageEmbeddingIndexIfComplete {
+                activated_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(embedding_index::activate_if_complete(
+                    &mut main,
+                    activated_at_ms,
+                ));
+            }
+            WriterMessage::RecordPassageEmbeddingIndexFailure {
+                error,
+                failed_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(embedding_index::record_retryable_failure(
+                    &main,
+                    &error,
+                    failed_at_ms,
+                ));
             }
             WriterMessage::ReapMediaBlob {
                 sha256,

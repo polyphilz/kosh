@@ -12,6 +12,7 @@ use crate::{
     embedding_runtime::{
         EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimeStatus,
     },
+    passage_embedding_indexer::{PassageEmbeddingIndexStatus, PassageEmbeddingIndexer},
 };
 
 pub(crate) trait Clock: Send + Sync {
@@ -43,6 +44,7 @@ impl IdGenerator for UuidV7Generator {
 
 pub(crate) struct RuntimeState {
     data_dir: PathBuf,
+    passage_embedding_indexer: PassageEmbeddingIndexer,
     database: Arc<Database>,
     embedding_runtime: Arc<EmbeddingRuntime>,
     clock: Arc<dyn Clock>,
@@ -55,10 +57,14 @@ impl RuntimeState {
         resource_dir: Option<PathBuf>,
     ) -> crate::database::Result<Self> {
         let database = Database::initialize(DatabasePaths::new(&data_dir))?;
+        let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
+        let passage_embedding_indexer =
+            PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
         Ok(Self {
-            embedding_runtime: Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref())),
             data_dir,
+            passage_embedding_indexer,
             database: Arc::new(database),
+            embedding_runtime,
             clock: Arc::new(SystemClock),
             ids: Arc::new(UuidV7Generator),
         })
@@ -75,6 +81,7 @@ impl RuntimeState {
         Self {
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
+            passage_embedding_indexer: PassageEmbeddingIndexer::disabled(),
             database: Arc::new(database),
             clock,
             ids,
@@ -87,6 +94,16 @@ impl RuntimeState {
 
     pub(crate) fn embedding_runtime(&self) -> Arc<EmbeddingRuntime> {
         Arc::clone(&self.embedding_runtime)
+    }
+
+    pub(crate) fn passage_embedding_index_status(
+        &self,
+    ) -> crate::database::Result<PassageEmbeddingIndexStatus> {
+        let progress = self.database.client().passage_embedding_index_progress()?;
+        let runtime = self.embedding_runtime.status();
+        Ok(self
+            .passage_embedding_indexer
+            .status(progress, runtime.phase, runtime.message))
     }
 
     pub(crate) fn now_ms(&self) -> i64 {
@@ -153,6 +170,15 @@ type SemanticCommandResult<T> = Result<T, SemanticRuntimeCommandError>;
 #[tauri::command]
 pub(crate) fn semantic_runtime_status(state: State<'_, RuntimeState>) -> SemanticRuntimeStatus {
     state.embedding_runtime.status()
+}
+
+#[tauri::command]
+pub(crate) fn passage_embedding_index_status(
+    state: State<'_, RuntimeState>,
+) -> Result<PassageEmbeddingIndexStatus, String> {
+    state
+        .passage_embedding_index_status()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

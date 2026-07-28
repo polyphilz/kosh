@@ -29,6 +29,18 @@ export interface SemanticRuntimeLogs {
   truncated: boolean;
 }
 
+export type PassageEmbeddingIndexPhase = "WAITING_FOR_RUNTIME" | "INDEXING" | "READY" | "FAILED";
+
+export interface PassageEmbeddingIndexStatus {
+  phase: PassageEmbeddingIndexPhase;
+  embeddingIndexId: string;
+  indexKey: string;
+  indexedPassages: number;
+  totalPassages: number;
+  active: boolean;
+  message: string | null;
+}
+
 export interface SourceDraft {
   label: string | null;
   url: string | null;
@@ -212,6 +224,7 @@ export interface Backend {
   retrySemanticRuntime(): Promise<SemanticRuntimeStatus>;
   repairSemanticRuntime(): Promise<SemanticRuntimeStatus>;
   semanticRuntimeLogs(): Promise<SemanticRuntimeLogs>;
+  passageEmbeddingIndexStatus(): Promise<PassageEmbeddingIndexStatus>;
   createTidbit(input: TidbitDraft): Promise<TidbitRecord>;
   loadTidbit(id: string): Promise<TidbitRecord>;
   listTidbits(input: ListTidbitsInput): Promise<TidbitListPage>;

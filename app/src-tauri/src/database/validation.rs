@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
     connection::{self, DatabaseKind},
+    embedding_index,
     error::{DatabaseError, Result},
     migrations,
 };
@@ -19,11 +20,13 @@ const MAIN_TABLES: &[&str] = &[
     "draft_context",
     "draft_media_lease",
     "draft_source",
-    "embedding_index",
     "index_state",
     "media_ingest_lease",
     "passage",
     "passage_embedding",
+    "passage_embedding_index",
+    "passage_embedding_reap_queue",
+    "passage_embedding_settings",
     "passage_fts_short",
     "passage_fts_trigram",
     "passage_fts_word",
@@ -59,13 +62,13 @@ pub fn validate_migrated_pair(
     validate_strict_tables(
         main,
         DatabaseKind::Main,
-        MAIN_TABLES
-            .iter()
-            .copied()
-            .filter(|table| !table.starts_with("passage_fts_")),
+        MAIN_TABLES.iter().copied().filter(|table| {
+            !table.starts_with("passage_fts_") && *table != embedding_index::JINA_V1_VEC_TABLE
+        }),
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
     recover_interrupted_derived_work(main)?;
+    validate_optional_embedding_index(main);
     validate_foreign_keys(main, DatabaseKind::Main)?;
     validate_foreign_keys(media, DatabaseKind::Media)?;
     validate_media_relationship(main, media)?;
@@ -128,6 +131,72 @@ fn validate_required_features(connection: &Connection) -> Result<()> {
         connection.query_row("SELECT json_valid('{\"ok\":true}')", [], |row| row.get(0))?;
     if json != 1 {
         return invalid(DatabaseKind::Main, "bundled SQLite lacks JSON".into());
+    }
+    Ok(())
+}
+
+fn validate_optional_embedding_index(connection: &mut Connection) {
+    let result = (|| {
+        let vec_version: String =
+            connection.query_row("SELECT vec_version()", [], |row| row.get(0))?;
+        if vec_version != "v0.1.9" {
+            return invalid(
+                DatabaseKind::Main,
+                format!("sqlite-vec version is {vec_version}, expected v0.1.9"),
+            );
+        }
+        if !table_exists(connection, embedding_index::JINA_V1_VEC_TABLE)? {
+            return invalid(
+                DatabaseKind::Main,
+                "the Jina v1 vector table is missing".into(),
+            );
+        }
+        embedding_index::validate_definition(connection)?;
+        validate_vec_smoke_test(connection)
+    })();
+    match result {
+        Ok(()) => {
+            let _ = embedding_index::release_quarantine(connection);
+        }
+        Err(error) => {
+            log::warn!("semantic passage index is unavailable at startup: {error}");
+            let _ = embedding_index::quarantine(
+                connection,
+                "semantic passage index is unavailable; repair is required",
+                0,
+            );
+        }
+    }
+}
+
+fn validate_vec_smoke_test(connection: &mut Connection) -> Result<()> {
+    let manifest = embedding_index::manifest();
+    let mut vector = vec![0.0_f32; manifest.dimension as usize];
+    vector[0] = 1.0;
+    let vector_json = serde_json::to_string(&vector)?;
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute(
+        "DELETE FROM passage_embedding_vec_jina_v1 WHERE rowid = -1",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT INTO passage_embedding_vec_jina_v1(rowid, embedding) VALUES(-1, ?1)",
+        params![vector_json.as_str()],
+    )?;
+    let rowid: i64 = transaction.query_row(
+        "SELECT rowid
+         FROM passage_embedding_vec_jina_v1
+         WHERE embedding MATCH ?1 AND k = 1",
+        params![vector_json.as_str()],
+        |row| row.get(0),
+    )?;
+    transaction.rollback()?;
+    if rowid != -1 {
+        return invalid(
+            DatabaseKind::Main,
+            "sqlite-vec smoke test returned an unexpected row".into(),
+        );
     }
     Ok(())
 }
