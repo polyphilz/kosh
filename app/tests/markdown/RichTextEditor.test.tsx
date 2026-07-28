@@ -467,8 +467,8 @@ it("round-trips image metadata, resizes from the keyboard, and removes the image
   expect(getByLabelText("Alt text")).toHaveValue("System diagram");
   expect(getByLabelText("Caption")).toHaveValue("Chapter overview");
 
-  fireEvent.change(getByLabelText("Alt text"), { target: { value: "Updated diagram" } });
-  fireEvent.change(getByLabelText("Caption"), { target: { value: "Updated caption" } });
+  fireEvent.input(getByLabelText("Alt text"), { target: { value: "Updated diagram" } });
+  fireEvent.input(getByLabelText("Caption"), { target: { value: "Updated caption" } });
   act(() => {
     view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 0)));
   });

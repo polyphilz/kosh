@@ -363,8 +363,9 @@ export function TidbitComposer({ onCancel, onSaved, tidbit }: TidbitComposerProp
             setEditorMediaPending(pending);
           }}
           pasteImage={async () => {
+            const captureId = await backend.captureClipboardImage();
             const draft = await enqueueDraftSave(stateRef.current);
-            return backend.ingestClipboardImage(draft.id);
+            return backend.ingestClipboardImage(captureId, draft.id);
           }}
           pickImage={async () => {
             const draft = await enqueueDraftSave(stateRef.current);

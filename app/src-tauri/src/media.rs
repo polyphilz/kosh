@@ -28,7 +28,7 @@ use crate::{
 
 const MAX_STAGING_RECOVERY_FILES: usize = 1_024;
 const MEDIA_PATH_PREFIX: &str = "/attachment/";
-const MAX_SOURCE_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_SOURCE_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DECODED_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_DECODED_IMAGE_ALLOCATION: u64 = 256 * 1024 * 1024;
 const MAX_CANONICAL_IMAGE_EDGE: u32 = 1_600;
@@ -174,12 +174,21 @@ pub(crate) async fn pick_image<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub(crate) async fn ingest_clipboard_image<R: tauri::Runtime>(
+pub(crate) async fn capture_clipboard_image<R: tauri::Runtime>(
     app: AppHandle<R>,
     state: State<'_, RuntimeState>,
-    draft_id: String,
-) -> Result<ImageRecord, crate::database::commands::CommandError> {
+) -> Result<String, crate::database::commands::CommandError> {
     let raw = read_clipboard_image(&app).await?;
+    state.register_clipboard_image(raw).map_err(Into::into)
+}
+
+#[tauri::command]
+pub(crate) async fn ingest_clipboard_image(
+    state: State<'_, RuntimeState>,
+    draft_id: String,
+    capture_id: String,
+) -> Result<ImageRecord, crate::database::commands::CommandError> {
+    let raw = state.take_clipboard_image(&capture_id)?;
     ingest_image_bytes(&state, draft_id, "Pasted image", raw).await
 }
 

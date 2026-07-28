@@ -43,6 +43,7 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         media::media_integrity_scan,
         media::maintain_media,
         media::pick_image,
+        media::capture_clipboard_image,
         media::ingest_clipboard_image,
         media::ingest_dropped_images,
         media::image_status,

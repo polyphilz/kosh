@@ -123,6 +123,9 @@ describe("tidbit capture and editing routes", () => {
     const pendingImage = new Promise<ImageRecord>((resolve) => {
       resolveImage = resolve;
     });
+    const captureClipboardImage = vi
+      .spyOn(backend, "captureClipboardImage")
+      .mockResolvedValue("01980c8e-6c00-7000-8000-000000000260");
     vi.spyOn(backend, "ingestClipboardImage").mockReturnValue(pendingImage);
     const createTidbit = vi.spyOn(backend, "createTidbit");
     renderRoute(backend, "/add");
@@ -132,6 +135,7 @@ describe("tidbit capture and editing routes", () => {
     fireEvent.paste(editor, {
       clipboardData: { items: [{ type: "image/png" }] },
     });
+    expect(captureClipboardImage).toHaveBeenCalledOnce();
     const pendingButton = await screen.findByRole("button", { name: "Adding image…" });
     expect(pendingButton).toBeDisabled();
 
@@ -155,6 +159,53 @@ describe("tidbit capture and editing routes", () => {
       });
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save tidbit" })).toBeEnabled());
+  });
+
+  it("captures paste bytes before draft I/O and saves unblurred image metadata", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const callOrder: string[] = [];
+    vi.spyOn(backend, "captureClipboardImage").mockImplementation(async () => {
+      callOrder.push("capture");
+      return "01980c8e-6c00-7000-8000-000000000263";
+    });
+    const originalSaveDraft = backend.saveDraft.bind(backend);
+    vi.spyOn(backend, "saveDraft").mockImplementation(async (input) => {
+      callOrder.push("draft");
+      return originalSaveDraft(input);
+    });
+    vi.spyOn(backend, "ingestClipboardImage").mockImplementation(async () => {
+      callOrder.push("ingest");
+      return {
+        byteLength: 1_024,
+        displayFilename: "snapshot.png",
+        id: "01980c8e-6c00-7000-8000-000000000264",
+        ingestLeaseId: "01980c8e-6c00-7000-8000-000000000265",
+        kind: "IMAGE",
+        mediaType: "image/png",
+        naturalHeight: 600,
+        naturalWidth: 800,
+        ocrError: null,
+        ocrStatus: "PENDING",
+      };
+    });
+    const createTidbit = vi.spyOn(backend, "createTidbit");
+    renderRoute(backend, "/add");
+    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+
+    fireEvent.paste(editor, {
+      clipboardData: { items: [{ type: "image/png" }] },
+    });
+    const altInput = await screen.findByLabelText("Alt text");
+    await user.click(altInput);
+    fireEvent.input(altInput, { target: { value: "Diagram from the clipboard" } });
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    await waitFor(() => expect(createTidbit).toHaveBeenCalledOnce());
+    expect(callOrder.slice(0, 3)).toEqual(["capture", "draft", "ingest"]);
+    expect(createTidbit.mock.calls[0]![0].bodyMarkdown).toContain(
+      "alt=Diagram%20from%20the%20clipboard",
+    );
   });
 
   it("re-resolves an opened citation after saving a new tidbit revision", async () => {

@@ -134,8 +134,12 @@ export class FakeBackend implements Backend {
     return null;
   }
 
-  async ingestClipboardImage(_draftId: string): Promise<ImageRecord> {
+  async captureClipboardImage(): Promise<string> {
     throw new Error("Native clipboard images are unavailable in the browser fixture");
+  }
+
+  async ingestClipboardImage(_captureId: string, _draftId: string): Promise<ImageRecord> {
+    throw new Error("Captured clipboard images are unavailable in the browser fixture");
   }
 
   async ingestDroppedImages(_dropId: string, _draftId: string): Promise<ImageDropIngestResult> {

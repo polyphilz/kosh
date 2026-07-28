@@ -293,7 +293,8 @@ export interface Backend {
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;
   pickImage(draftId: string): Promise<ImageRecord | null>;
-  ingestClipboardImage(draftId: string): Promise<ImageRecord>;
+  captureClipboardImage(): Promise<string>;
+  ingestClipboardImage(captureId: string, draftId: string): Promise<ImageRecord>;
   ingestDroppedImages(dropId: string, draftId: string): Promise<ImageDropIngestResult>;
   imageStatus(attachmentId: string): Promise<ImageStatusRecord>;
   retryImageOcr(attachmentId: string): Promise<ImageStatusRecord>;

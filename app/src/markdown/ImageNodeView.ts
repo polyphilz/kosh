@@ -117,19 +117,19 @@ export function imageNodeView(
   };
 
   const commitAlt = () => {
-    const altText = altInput.value.trim();
+    const altText = altInput.value;
     if (altText !== node.attrs.altText) {
       updateAttributes({ altText });
     }
   };
   const commitCaption = () => {
-    const caption = captionInput.value.trim();
+    const caption = captionInput.value;
     if (caption !== node.attrs.caption) {
       updateAttributes({ caption });
     }
   };
-  altInput.addEventListener("change", commitAlt);
-  captionInput.addEventListener("change", commitCaption);
+  altInput.addEventListener("input", commitAlt);
+  captionInput.addEventListener("input", commitCaption);
 
   const removeImage = () => {
     if (!view.editable) {
@@ -285,8 +285,8 @@ export function imageNodeView(
       if (pollTimer !== undefined) {
         window.clearTimeout(pollTimer);
       }
-      altInput.removeEventListener("change", commitAlt);
-      captionInput.removeEventListener("change", commitCaption);
+      altInput.removeEventListener("input", commitAlt);
+      captionInput.removeEventListener("input", commitCaption);
       remove.removeEventListener("click", removeImage);
       retry.removeEventListener("click", retryRecognition);
       resizeHandle.removeEventListener("pointerdown", beginResize);
