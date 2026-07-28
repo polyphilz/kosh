@@ -2,7 +2,7 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    Tidbit,
+    Draft, Tidbit,
 };
 
 fn invoke(
@@ -35,6 +35,7 @@ fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
             "019f547b-6200-7000-8000-000000002001".to_owned(),
             "019f547b-6200-7000-8000-000000002002".to_owned(),
             "019f547b-6200-7000-8000-000000002003".to_owned(),
+            "019f547b-6200-7000-8000-000000002004".to_owned(),
         ],
     );
     let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -71,6 +72,44 @@ fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
     .deserialize::<Tidbit>()
     .expect("loaded tidbit payload");
     assert_eq!(loaded, created);
+
+    let draft = invoke(
+        &window,
+        "save_draft",
+        serde_json::json!({
+            "input": {
+                "contextKey": "capture",
+                "tidbitId": null,
+                "baseRevisionId": null,
+                "title": "Recovered",
+                "bodyMarkdown": "",
+                "sources": [{ "label": null, "url": "" }]
+            }
+        }),
+    )
+    .deserialize::<Draft>()
+    .expect("saved draft payload");
+    let loaded_draft = invoke(
+        &window,
+        "load_draft",
+        serde_json::json!({ "contextKey": "capture" }),
+    )
+    .deserialize::<Option<Draft>>()
+    .expect("loaded draft payload");
+    assert_eq!(loaded_draft, Some(draft.clone()));
+    let cleared = invoke(
+        &window,
+        "clear_draft",
+        serde_json::json!({
+            "input": {
+                "contextKey": "capture",
+                "expectedUpdatedAtMs": draft.updated_at_ms
+            }
+        }),
+    )
+    .deserialize::<bool>()
+    .expect("cleared draft payload");
+    assert!(cleared);
     assert!(!data_root
         .path()
         .to_string_lossy()

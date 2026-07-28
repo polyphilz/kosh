@@ -460,7 +460,7 @@ function EditorToolbar({
       className="kosh-rich-text-toolbar"
       onKeyDown={handleToolbarKeys}
       role="toolbar"
-      tabIndex={-1}
+      tabIndex={0}
     >
       <BlockTypeControl disabled={disabled} view={view} />
       {commandButton(

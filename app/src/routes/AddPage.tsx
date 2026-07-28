@@ -1,8 +1,9 @@
-import { Button } from "../components/Button";
-import { Input } from "../components/Input";
+import { useNavigate } from "@tanstack/react-router";
 import { Status } from "../components/Status";
+import { TidbitComposer } from "./TidbitComposer";
 
 export function AddPage() {
+  const navigate = useNavigate();
   return (
     <main className="page page--narrow">
       <header className="page-header">
@@ -13,29 +14,15 @@ export function AddPage() {
         </div>
         <Status>Draft stays local</Status>
       </header>
-      <form className="capture-card" onSubmit={(event) => event.preventDefault()}>
-        <label htmlFor="tidbit-title">
-          Title <span>optional</span>
-        </label>
-        <Input id="tidbit-title" placeholder="A useful handle" />
-        <label htmlFor="tidbit-body">Tidbit</label>
-        <textarea
-          className="kosh-textarea"
-          id="tidbit-body"
-          placeholder="Drop the knowledge here…"
-          rows={12}
-        />
-        <label htmlFor="tidbit-source">
-          Source URL <span>optional</span>
-        </label>
-        <Input id="tidbit-source" placeholder="https://…" type="url" />
-        <footer>
-          <Button variant="ghost">Attach</Button>
-          <Button type="submit" variant="accent">
-            Save tidbit
-          </Button>
-        </footer>
-      </form>
+      <TidbitComposer
+        onCancel={() => void navigate({ to: "/" })}
+        onSaved={(tidbit) =>
+          navigate({
+            to: "/tidbits/$tidbitId",
+            params: { tidbitId: tidbit.id },
+          })
+        }
+      />
     </main>
   );
 }

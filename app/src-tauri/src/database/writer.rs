@@ -3,6 +3,7 @@ use std::sync::mpsc::{self, Sender, SyncSender};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{
+    drafts::{ClearDraftInput, Draft, SaveDraftWrite},
     error::{DatabaseError, Result},
     migrations::MigrationHeads,
     tidbits::{
@@ -57,6 +58,18 @@ pub(super) enum WriterMessage {
         input: DeleteTidbitInput,
         now_ms: i64,
         reply: SyncSender<Result<Tidbit>>,
+    },
+    SaveDraft {
+        write: SaveDraftWrite,
+        reply: SyncSender<Result<Draft>>,
+    },
+    LoadDraft {
+        context_key: String,
+        reply: SyncSender<Result<Option<Draft>>>,
+    },
+    ClearDraft {
+        input: ClearDraftInput,
+        reply: SyncSender<Result<bool>>,
     },
     Shutdown,
 }
@@ -164,6 +177,36 @@ impl DatabaseClient {
                 now_ms,
                 reply,
             })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn save_draft(&self, write: SaveDraftWrite) -> Result<Draft> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::SaveDraft { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_draft(&self, context_key: String) -> Result<Option<Draft>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadDraft { context_key, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn clear_draft(&self, input: ClearDraftInput) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ClearDraft { input, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

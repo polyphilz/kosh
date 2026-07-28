@@ -47,9 +47,9 @@
   --surface: rgba(35, 33, 31, 0.9);
   --surface-solid: #242220;
   --surface-raised: #2b2825;
-  --accent: #e0835f;
+  --accent: #e58a67;
   --accent-hover: #ee9673;
-  --accent-soft: rgba(224, 131, 95, 0.12);
+  --accent-soft: rgba(229, 138, 103, 0.12);
   --danger: #e17878;
   --warning: #d7a253;
   --success: #78b88c;
@@ -69,9 +69,9 @@
     --surface: rgba(35, 33, 31, 0.9);
     --surface-solid: #242220;
     --surface-raised: #2b2825;
-    --accent: #e0835f;
+    --accent: #e58a67;
     --accent-hover: #ee9673;
-    --accent-soft: rgba(224, 131, 95, 0.12);
+    --accent-soft: rgba(229, 138, 103, 0.12);
     --danger: #e17878;
     --warning: #d7a253;
     --success: #78b88c;
@@ -319,8 +319,27 @@ button {
   box-shadow: var(--shadow);
 }
 
+.capture-card__status {
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 9px;
+  text-align: right;
+}
+
+.capture-card__error {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .capture-card label,
-.catalog-field > span {
+.catalog-field > span,
+.source-fields legend {
   margin-top: 7px;
   color: var(--ink);
   font-size: 10px;
@@ -332,11 +351,88 @@ button {
   font-weight: 520;
 }
 
+.source-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 8px 0 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.source-fields legend {
+  padding: 0 5px;
+}
+
+.source-fields legend span {
+  color: var(--muted);
+  font-weight: 520;
+}
+
+.source-fields__row {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.7fr) minmax(190px, 1.3fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.source-fields__row label {
+  margin: 0;
+}
+
 .capture-card footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   padding-top: 8px;
+}
+
+.tidbit-page__header {
+  align-items: flex-end;
+}
+
+.tidbit-page__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tidbit-page__content,
+.tidbit-page__sources {
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.tidbit-page__sources {
+  margin-top: 16px;
+}
+
+.tidbit-page__sources h2 {
+  margin: 0 0 14px;
+  font-size: 12px;
+}
+
+.tidbit-page__sources ol {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.tidbit-page__sources li {
+  padding-left: 4px;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.tidbit-page__sources small {
+  display: block;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .settings-list {
@@ -449,6 +545,14 @@ button {
   .catalog-grid,
   .catalog-states {
     grid-template-columns: 1fr;
+  }
+
+  .source-fields__row {
+    grid-template-columns: 1fr;
+  }
+
+  .source-fields__row .kosh-button {
+    justify-self: start;
   }
 }
 

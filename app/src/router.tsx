@@ -12,6 +12,7 @@ import { ResearchPage } from "./routes/ResearchPage";
 import { RuntimePage } from "./routes/RuntimePage";
 import { SearchPage } from "./routes/SearchPage";
 import { SettingsPage } from "./routes/SettingsPage";
+import { TidbitPage } from "./routes/TidbitPage";
 
 const rootRoute = createRootRoute({ component: App });
 const indexRoute = createRoute({
@@ -44,6 +45,11 @@ const runtimeRoute = createRoute({
   path: "/runtime",
   component: RuntimePage,
 });
+const tidbitRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/tidbits/$tidbitId",
+  component: TidbitPage,
+});
 const routeTree = rootRoute.addChildren([
   indexRoute,
   addRoute,
@@ -51,6 +57,7 @@ const routeTree = rootRoute.addChildren([
   settingsRoute,
   catalogRoute,
   runtimeRoute,
+  tidbitRoute,
 ]);
 
 export function createAppRouter(history: RouterHistory = createHashHistory()) {

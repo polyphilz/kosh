@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Backend,
+  ClearDraftInput,
   DeleteTidbitInput,
+  DraftRecord,
   EditTidbitInput,
   ListTidbitsInput,
   RuntimeProbe,
+  SaveDraftInput,
   TidbitDraft,
   TidbitListPage,
   TidbitRecord,
@@ -17,4 +20,7 @@ export const tauriBackend: Backend = {
   listTidbits: (input: ListTidbitsInput) => invoke<TidbitListPage>("list_tidbits", { input }),
   editTidbit: (input: EditTidbitInput) => invoke<TidbitRecord>("edit_tidbit", { input }),
   deleteTidbit: (input: DeleteTidbitInput) => invoke<TidbitRecord>("delete_tidbit", { input }),
+  saveDraft: (input: SaveDraftInput) => invoke<DraftRecord>("save_draft", { input }),
+  loadDraft: (contextKey: string) => invoke<DraftRecord | null>("load_draft", { contextKey }),
+  clearDraft: (input: ClearDraftInput) => invoke<boolean>("clear_draft", { input }),
 };
