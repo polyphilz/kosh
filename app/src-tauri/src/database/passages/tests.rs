@@ -393,10 +393,12 @@ fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
     connection
         .execute_batch(
             "BEGIN;
-             INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+             INSERT INTO tidbit(
+                id, created_at, updated_at, deleted_at, current_revision_id
+             )
              VALUES(
                 '019f547b-6200-7000-8000-000000002301',
-                10, 10, '019f547b-6200-7000-8000-000000002302'
+                10, 11, 11, '019f547b-6200-7000-8000-000000002302'
              );
              INSERT INTO tidbit_revision(
                 id, tidbit_id, revision_number, created_at, body_markdown, content_hash
@@ -404,6 +406,20 @@ fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
                 '019f547b-6200-7000-8000-000000002302',
                 '019f547b-6200-7000-8000-000000002301',
                 1, 10, '', zeroblob(32)
+             );
+             INSERT INTO tidbit(
+                id, created_at, updated_at, deleted_at, current_revision_id
+             )
+             VALUES(
+                '019f547b-6200-7000-8000-000000002303',
+                20, 21, 21, '019f547b-6200-7000-8000-000000002304'
+             );
+             INSERT INTO tidbit_revision(
+                id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000002304',
+                '019f547b-6200-7000-8000-000000002303',
+                1, 20, 'Valid evidence behind the malformed revision.', zeroblob(32)
              );
              COMMIT;",
         )
@@ -430,6 +446,43 @@ fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
         .expect("passage build status");
     assert_eq!(status, "FAILED");
     assert!(error.is_some_and(|message| message.contains("did not produce")));
+
+    let restored_valid = opened
+        .client()
+        .restore_tidbit(
+            RestoreTidbitInput {
+                id: "019f547b-6200-7000-8000-000000002303".into(),
+                expected_revision_id: "019f547b-6200-7000-8000-000000002304".into(),
+            },
+            22,
+        )
+        .expect("valid revision restores with on-demand passages");
+    assert_eq!(restored_valid.deleted_at_ms, None);
+    let restored_malformed = opened
+        .client()
+        .restore_tidbit(
+            RestoreTidbitInput {
+                id: "019f547b-6200-7000-8000-000000002301".into(),
+                expected_revision_id: "019f547b-6200-7000-8000-000000002302".into(),
+            },
+            23,
+        )
+        .expect("malformed revision restores without derived passages");
+    assert_eq!(restored_malformed.deleted_at_ms, None);
+    let (valid_active, malformed_active): (i64, i64) = opened
+        .open_main_read_only()
+        .expect("read restored active passages")
+        .query_row(
+            "SELECT
+                (SELECT count(*) FROM active_passage
+                 WHERE tidbit_id = '019f547b-6200-7000-8000-000000002303'),
+                (SELECT count(*) FROM active_passage
+                 WHERE tidbit_id = '019f547b-6200-7000-8000-000000002301')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("restored passage counts");
+    assert_eq!((valid_active, malformed_active), (1, 0));
 }
 
 #[test]

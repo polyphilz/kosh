@@ -334,7 +334,11 @@ pub(super) fn restore_tidbit(
             actual_revision_id: current.revision_id,
         });
     }
-    passages::replace_active_author_passages(&transaction, &input.id, &input.expected_revision_id)?;
+    passages::activate_author_passages_on_restore(
+        &transaction,
+        &input.id,
+        &input.expected_revision_id,
+    )?;
     transaction.commit()?;
 
     load_tidbit(connection, &input.id)

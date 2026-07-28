@@ -377,6 +377,45 @@ pub(super) fn replace_active_author_passages(
     Ok(())
 }
 
+pub(super) fn activate_author_passages_on_restore(
+    transaction: &Transaction<'_>,
+    tidbit_id: &str,
+    tidbit_revision_id: &str,
+) -> Result<bool> {
+    let has_passages = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM passage
+            WHERE owner_kind = 'AUTHOR'
+              AND tidbit_revision_id = ?1
+              AND construction_version = ?2
+         )",
+        params![tidbit_revision_id, CONSTRUCTION_VERSION],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !has_passages {
+        let (body_markdown, created_at_ms) = transaction.query_row(
+            "SELECT body_markdown, created_at
+             FROM tidbit_revision
+             WHERE id = ?1",
+            params![tidbit_revision_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        if body_markdown.trim().is_empty() {
+            deactivate_tidbit(transaction, tidbit_id)?;
+            return Ok(false);
+        }
+        insert_author_passages(
+            transaction,
+            tidbit_revision_id,
+            &body_markdown,
+            created_at_ms,
+        )?;
+    }
+    replace_active_author_passages(transaction, tidbit_id, tidbit_revision_id)?;
+    Ok(true)
+}
+
 pub(super) fn deactivate_tidbit(transaction: &Transaction<'_>, tidbit_id: &str) -> Result<()> {
     transaction.execute(
         "DELETE FROM active_passage WHERE tidbit_id = ?1",

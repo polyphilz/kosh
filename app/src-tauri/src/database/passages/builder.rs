@@ -68,6 +68,11 @@ struct Capture {
     source_start_byte: usize,
 }
 
+struct SuspendedCapture {
+    end_tag: TagEnd,
+    nested_depth: usize,
+}
+
 pub(super) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
     let blocks = parse_source_blocks(markdown);
     let mut pending = Vec::new();
@@ -126,12 +131,33 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
 
     let mut blocks = Vec::new();
     let mut capture: Option<Capture> = None;
+    let mut suspended_capture: Option<SuspendedCapture> = None;
     let mut headings: Vec<Option<String>> = vec![None; 6];
     let parser = Parser::new_ext(markdown, options).into_offset_iter();
 
     for (event, range) in parser {
         match event {
             Event::Start(tag) => {
+                let starts_nested_code = matches!(&tag, Tag::CodeBlock(_))
+                    && capture
+                        .as_ref()
+                        .is_some_and(|active| active.kind == BlockKind::Prose);
+                if starts_nested_code {
+                    let outer = capture.take().expect("captured list item");
+                    suspended_capture = Some(SuspendedCapture {
+                        end_tag: outer.end_tag,
+                        nested_depth: outer.nested_depth,
+                    });
+                    finish_capture(outer, range.start, &mut headings, &mut blocks);
+                    capture = Some(Capture {
+                        kind: BlockKind::Code,
+                        end_tag: tag.to_end(),
+                        nested_depth: 0,
+                        content: String::new(),
+                        source_start_byte: range.start,
+                    });
+                    continue;
+                }
                 if let Some(active) = capture.as_mut() {
                     active.nested_depth += 1;
                     continue;
@@ -155,7 +181,19 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
                     active.nested_depth -= 1;
                 } else if active.end_tag == tag {
                     let finished = capture.take().expect("active Markdown capture");
+                    let resumes_outer = finished.kind == BlockKind::Code;
                     finish_capture(finished, range.end, &mut headings, &mut blocks);
+                    if resumes_outer {
+                        if let Some(suspended) = suspended_capture.take() {
+                            capture = Some(Capture {
+                                kind: BlockKind::Prose,
+                                end_tag: suspended.end_tag,
+                                nested_depth: suspended.nested_depth,
+                                content: String::new(),
+                                source_start_byte: range.end,
+                            });
+                        }
+                    }
                 }
             }
             Event::DisplayMath(formula) if capture.is_none() => {
@@ -688,6 +726,47 @@ mod tests {
                 pair[1].locator.start_line.expect("next line")
                     <= pair[0].locator.end_line.expect("prior line"),
                 "large code passages overlap complete lines"
+            );
+        }
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn nested_list_code_preserves_indentation_and_splits_by_line() {
+        let code = std::iter::once("def retained_indentation():".to_owned())
+            .chain((0..160).map(|index| format!("    value_{index} = {index}")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let nested_code = code
+            .lines()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let markdown =
+            format!("- Python evidence:\n\n  ```python\n{nested_code}\n  ```\n\n  Closing prose.");
+        let passages = build_markdown_passages(&markdown);
+        let code_passages = passages
+            .iter()
+            .filter(|passage| passage.locator.start_line.is_some())
+            .collect::<Vec<_>>();
+
+        assert!(code_passages.len() > 1);
+        assert!(passages
+            .iter()
+            .any(|passage| passage.content == "Python evidence:"));
+        assert!(passages
+            .iter()
+            .any(|passage| passage.content == "Closing prose."));
+        for passage in code_passages {
+            let start = passage.locator.start_line.expect("nested code start");
+            let end = passage.locator.end_line.expect("nested code end");
+            assert_eq!(
+                code.lines()
+                    .skip(start as usize - 1)
+                    .take((end - start + 1) as usize)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                passage.content
             );
         }
         assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
