@@ -30,6 +30,15 @@ pub(crate) struct CommandError {
     message: String,
 }
 
+impl CommandError {
+    pub(crate) fn worker(message: String) -> Self {
+        Self {
+            code: CommandErrorCode::DatabaseUnavailable,
+            message: format!("database command worker failed: {message}"),
+        }
+    }
+}
+
 impl From<DatabaseError> for CommandError {
     fn from(error: DatabaseError) -> Self {
         let code = match &error {
@@ -218,6 +227,7 @@ pub(crate) async fn save_draft(
             .into_iter()
             .next()
             .expect("requested draft ID"),
+        media_lease_duration_ms: state.media_limits().draft_lease_duration_ms,
     };
     run_writer(move || client.save_draft(write)).await
 }
@@ -237,7 +247,8 @@ pub(crate) async fn clear_draft(
     input: ClearDraftInput,
 ) -> CommandResult<bool> {
     let client = state.database_client();
-    run_writer(move || client.clear_draft(input)).await
+    let now_ms = state.now_ms();
+    run_writer(move || client.clear_draft_at(input, now_ms)).await
 }
 
 async fn run_writer<T, F>(operation: F) -> CommandResult<T>
@@ -247,9 +258,6 @@ where
 {
     tauri::async_runtime::spawn_blocking(operation)
         .await
-        .map_err(|error| CommandError {
-            code: CommandErrorCode::DatabaseUnavailable,
-            message: format!("database command worker failed: {error}"),
-        })?
+        .map_err(|error| CommandError::worker(error.to_string()))?
         .map_err(Into::into)
 }

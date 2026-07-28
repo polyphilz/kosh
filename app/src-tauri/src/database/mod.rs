@@ -1,8 +1,9 @@
 pub(crate) mod commands;
 mod connection;
-mod drafts;
+pub(crate) mod drafts;
 pub(crate) mod embedding_index;
 mod error;
+pub(crate) mod media;
 mod migrations;
 pub(crate) mod passages;
 mod paths;
@@ -15,6 +16,8 @@ mod writer;
 mod drafts_tests;
 #[cfg(test)]
 mod embedding_index_tests;
+#[cfg(test)]
+mod media_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -33,6 +36,10 @@ use rusqlite::Connection;
 
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
+pub use media::{
+    AttachmentKind, AttachmentRecord, MediaCleanupResult, MediaIntegrityReport, MediaLimits,
+    MediaMaintenanceReport,
+};
 pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
 };
@@ -264,14 +271,42 @@ fn writer_loop(
                     failed_at_ms,
                 ));
             }
-            WriterMessage::ReapMediaBlob {
-                sha256,
-                now,
-                reason,
+            WriterMessage::IngestAttachment { write, reply } => {
+                let _ = reply.send(media::ingest_attachment(&mut main, &mut media, write));
+            }
+            WriterMessage::LoadMediaPayload {
+                attachment_id,
+                now_ms,
+                requested_range,
+                max_response_bytes,
                 reply,
             } => {
-                let _ = reply.send(writer::reap_media_blob(
-                    &mut main, &mut media, sha256, now, reason,
+                let _ = reply.send(media::load_media_payload(
+                    &main,
+                    &media,
+                    &attachment_id,
+                    now_ms,
+                    requested_range,
+                    max_response_bytes,
+                ));
+            }
+            WriterMessage::MediaIntegrityReport { now_ms, reply } => {
+                let _ = reply.send(media::integrity_report(&main, &media, now_ms));
+            }
+            WriterMessage::MaintainMedia {
+                now_ms,
+                limits,
+                reply,
+            } => {
+                let _ = reply.send(media::maintain_media(&mut main, &mut media, now_ms, limits));
+            }
+            WriterMessage::RecoverMediaLifecycle {
+                now_ms,
+                limits,
+                reply,
+            } => {
+                let _ = reply.send(media::recover_media_lifecycle(
+                    &mut main, &mut media, now_ms, limits,
                 ));
             }
             WriterMessage::CreateTidbit { write, reply } => {
@@ -336,8 +371,12 @@ fn writer_loop(
             WriterMessage::LoadDraft { context_key, reply } => {
                 let _ = reply.send(drafts::load_draft(&main, &context_key));
             }
-            WriterMessage::ClearDraft { input, reply } => {
-                let _ = reply.send(drafts::clear_draft(&mut main, input));
+            WriterMessage::ClearDraft {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(drafts::clear_draft(&mut main, input, now_ms));
             }
             WriterMessage::Shutdown => break,
         }

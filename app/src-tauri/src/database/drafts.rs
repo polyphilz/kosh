@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{DatabaseError, Result, SourceDraft};
+use super::{media, DatabaseError, Result, SourceDraft};
 
 const CAPTURE_CONTEXT: &str = "capture";
 const EDIT_CONTEXT_PREFIX: &str = "edit:";
@@ -44,6 +44,7 @@ pub(crate) struct SaveDraftWrite {
     pub input: SaveDraftInput,
     pub now_ms: i64,
     pub draft_id: String,
+    pub media_lease_duration_ms: i64,
 }
 
 pub(super) fn save_draft(connection: &mut Connection, write: SaveDraftWrite) -> Result<Draft> {
@@ -132,6 +133,13 @@ pub(super) fn save_draft(connection: &mut Connection, write: SaveDraftWrite) -> 
             params![&draft_id, position, &source.label, &source.url],
         )?;
     }
+    media::sync_draft_media_leases(
+        &transaction,
+        &draft_id,
+        &write.input.body_markdown,
+        updated_at_ms,
+        write.media_lease_duration_ms,
+    )?;
     transaction.commit()?;
 
     load_draft(connection, &write.input.context_key)?.ok_or_else(|| {
@@ -194,21 +202,32 @@ pub(super) fn load_draft(connection: &Connection, context_key: &str) -> Result<O
     .transpose()
 }
 
-pub(super) fn clear_draft(connection: &mut Connection, input: ClearDraftInput) -> Result<bool> {
+pub(super) fn clear_draft(
+    connection: &mut Connection,
+    input: ClearDraftInput,
+    now_ms: i64,
+) -> Result<bool> {
     validate_context_key(&input.context_key)?;
     validate_timestamp(input.expected_updated_at_ms)?;
+    validate_timestamp(now_ms)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let deleted = transaction.execute(
-        "DELETE FROM draft
-         WHERE id = (
-             SELECT d.id
+    let draft_id = transaction
+        .query_row(
+            "SELECT d.id
              FROM draft d
              JOIN draft_context dc ON dc.draft_id = d.id
              WHERE dc.context_key = ?1
-               AND d.updated_at = ?2
-         )",
-        params![&input.context_key, input.expected_updated_at_ms],
-    )?;
+               AND d.updated_at = ?2",
+            params![&input.context_key, input.expected_updated_at_ms],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(draft_id) = draft_id else {
+        transaction.rollback()?;
+        return Ok(false);
+    };
+    media::abandon_draft_media_leases(&transaction, &input.context_key, now_ms)?;
+    let deleted = transaction.execute("DELETE FROM draft WHERE id = ?1", params![draft_id])?;
     transaction.commit()?;
     Ok(deleted == 1)
 }

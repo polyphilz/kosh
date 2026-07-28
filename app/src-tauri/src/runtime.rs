@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    database::{Database, DatabaseClient, DatabasePaths},
+    database::{Database, DatabaseClient, DatabasePaths, MediaLimits},
     embedding_runtime::{
         EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimeStatus,
     },
@@ -49,6 +49,7 @@ pub(crate) struct RuntimeState {
     embedding_runtime: Arc<EmbeddingRuntime>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
+    media_limits: MediaLimits,
 }
 
 impl RuntimeState {
@@ -60,14 +61,29 @@ impl RuntimeState {
         let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
-        Ok(Self {
+        let media_limits = MediaLimits::default().validate()?;
+        let state = Self {
             data_dir,
             passage_embedding_indexer,
             database: Arc::new(database),
             embedding_runtime,
             clock: Arc::new(SystemClock),
             ids: Arc::new(UuidV7Generator),
-        })
+            media_limits,
+        };
+        if let Err(error) = state
+            .database
+            .client()
+            .recover_media_lifecycle(state.clock.now_ms(), state.media_limits)
+        {
+            log::warn!("startup media lifecycle recovery could not complete: {error}");
+        }
+        if let Err(error) =
+            crate::media::recover_staging_directory(&state.media_staging_directory())
+        {
+            log::warn!("startup media staging recovery could not complete: {error}");
+        }
+        Ok(state)
     }
 
     #[cfg(feature = "test-support")]
@@ -85,6 +101,7 @@ impl RuntimeState {
             database: Arc::new(database),
             clock,
             ids,
+            media_limits: MediaLimits::default(),
         }
     }
 
@@ -112,6 +129,14 @@ impl RuntimeState {
 
     pub(crate) fn next_ids(&self, count: usize) -> Vec<String> {
         (0..count).map(|_| self.ids.next_id()).collect()
+    }
+
+    pub(crate) fn media_limits(&self) -> MediaLimits {
+        self.media_limits
+    }
+
+    pub(crate) fn media_staging_directory(&self) -> PathBuf {
+        self.data_dir.join("media-staging")
     }
 }
 

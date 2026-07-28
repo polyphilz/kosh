@@ -1,6 +1,7 @@
 mod database;
 mod embedding;
 mod embedding_runtime;
+mod media;
 mod passage_embedding_indexer;
 pub mod relevance;
 mod runtime;
@@ -38,6 +39,10 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         runtime::retry_semantic_runtime,
         runtime::repair_semantic_runtime,
         runtime::semantic_runtime_logs,
+        media::media_limits,
+        media::ingest_attachment,
+        media::media_integrity_scan,
+        media::maintain_media,
         database::commands::create_tidbit,
         database::commands::load_tidbit,
         database::commands::list_tidbits,
@@ -54,26 +59,31 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    with_commands(tauri::Builder::default())
-        .setup(|app| {
-            let data_dir = select_data_dir(
-                app.path().app_data_dir()?,
-                std::env::var_os(DATA_DIR_ENV).map(PathBuf::from),
-                cfg!(debug_assertions),
-            );
-            let resource_dir = app.path().resource_dir().ok();
-            std::fs::create_dir_all(&data_dir)?;
-            app.manage(RuntimeState::production(data_dir, resource_dir)?);
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running Kosh");
+    with_commands(
+        tauri::Builder::default().register_uri_scheme_protocol("kosh-media", |context, request| {
+            media::protocol_response(context.app_handle(), request)
+        }),
+    )
+    .setup(|app| {
+        let data_dir = select_data_dir(
+            app.path().app_data_dir()?,
+            std::env::var_os(DATA_DIR_ENV).map(PathBuf::from),
+            cfg!(debug_assertions),
+        );
+        let resource_dir = app.path().resource_dir().ok();
+        std::fs::create_dir_all(&data_dir)?;
+        app.manage(RuntimeState::production(data_dir, resource_dir)?);
+        Ok(())
+    })
+    .run(tauri::generate_context!())
+    .expect("error while running Kosh");
 }
 
 pub use database::{
-    CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
-    ClearDraftInput, Database, DatabaseDiagnostics, DatabaseError, DatabasePaths,
-    DeleteTidbitInput, Draft, EditTidbitInput, LexicalSearchMode, ListTidbitsInput,
+    AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator, CitationResolution,
+    CitationState, CitationTidbit, ClearDraftInput, Database, DatabaseDiagnostics, DatabaseError,
+    DatabasePaths, DeleteTidbitInput, Draft, EditTidbitInput, LexicalSearchMode, ListTidbitsInput,
+    MediaCleanupResult, MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
     PassageSearchResult, RestoreTidbitInput, SaveDraftInput, SearchExecutionMode, SearchField,
     SearchHighlight, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
     SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage,

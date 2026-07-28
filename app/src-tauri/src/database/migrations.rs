@@ -51,8 +51,17 @@ pub fn inspect_media(connection: &mut Connection) -> Result<MigrationStatus> {
 }
 
 pub fn run_main(connection: &mut Connection) -> Result<()> {
-    main_runner().run(connection)?;
-    Ok(())
+    // SQLite cannot rebuild a referenced parent table while foreign-key
+    // enforcement is enabled. Refinery still wraps the checksummed migration
+    // set in one transaction; validation runs immediately after enforcement
+    // is restored.
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = main_runner().run(connection).map_err(DatabaseError::from);
+    let restore = connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(DatabaseError::from);
+    migration?;
+    restore
 }
 
 pub fn run_media(connection: &mut Connection) -> Result<()> {
