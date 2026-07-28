@@ -6,8 +6,8 @@ use crate::runtime::RuntimeState;
 use super::{
     drafts::SaveDraftWrite,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    ClearDraftInput, DatabaseError, DeleteTidbitInput, Draft, EditTidbitInput, ListTidbitsInput,
-    SaveDraftInput, Tidbit, TidbitDraft, TidbitListPage,
+    CitationResolution, ClearDraftInput, DatabaseError, DeleteTidbitInput, Draft, EditTidbitInput,
+    ListTidbitsInput, RestoreTidbitInput, SaveDraftInput, Tidbit, TidbitDraft, TidbitListPage,
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -110,6 +110,25 @@ pub(crate) async fn delete_tidbit(
     let client = state.database_client();
     let now_ms = state.now_ms();
     run_writer(move || client.delete_tidbit(input, now_ms)).await
+}
+
+#[tauri::command]
+pub(crate) async fn restore_tidbit(
+    state: State<'_, RuntimeState>,
+    input: RestoreTidbitInput,
+) -> CommandResult<Tidbit> {
+    let client = state.database_client();
+    let now_ms = state.now_ms();
+    run_writer(move || client.restore_tidbit(input, now_ms)).await
+}
+
+#[tauri::command]
+pub(crate) async fn resolve_citation(
+    state: State<'_, RuntimeState>,
+    passage_id: String,
+) -> CommandResult<CitationResolution> {
+    let client = state.database_client();
+    run_writer(move || client.resolve_citation(passage_id)).await
 }
 
 #[tauri::command]

@@ -23,14 +23,20 @@ impl TestPair {
 
 #[test]
 fn initial_migration_checksums_remain_stable() {
-    assert_eq!(
-        migrations::main_runner().get_migrations()[0].checksum(),
-        1_893_190_742_697_353_014
-    );
-    assert_eq!(
-        migrations::media_runner().get_migrations()[0].checksum(),
-        14_137_568_078_953_250_380
-    );
+    let main_v1 = migrations::main_runner()
+        .get_migrations()
+        .iter()
+        .find(|migration| migration.version() == 1)
+        .expect("main V1 migration")
+        .checksum();
+    let media_v1 = migrations::media_runner()
+        .get_migrations()
+        .iter()
+        .find(|migration| migration.version() == 1)
+        .expect("media V1 migration")
+        .checksum();
+    assert_eq!(main_v1, 1_893_190_742_697_353_014);
+    assert_eq!(media_v1, 14_137_568_078_953_250_380);
 }
 
 #[test]

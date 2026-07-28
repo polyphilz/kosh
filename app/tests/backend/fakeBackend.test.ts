@@ -132,6 +132,63 @@ describe("FakeBackend tidbits", () => {
 
     expect(edited.sources[0]?.id).toBe(first.sources[0]?.id);
   });
+
+  it("keeps revision-bound citations historical through edits and deletion", async () => {
+    const backend = new FakeBackend();
+    const created = await backend.createTidbit({
+      title: "First",
+      bodyMarkdown: "Original evidence.",
+      sources: [{ label: "Original source", url: "https://example.com/original" }],
+    });
+    const originalPassageId = `fake-passage:${created.currentRevisionId}`;
+    await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
+      state: "CURRENT",
+      excerpt: "Original evidence.",
+      tidbit: { revisionId: created.currentRevisionId, deleted: false },
+      sources: [{ label: "Original source" }],
+    });
+
+    const edited = await backend.editTidbit({
+      id: created.id,
+      expectedRevisionId: created.currentRevisionId,
+      title: "Second",
+      bodyMarkdown: "Replacement evidence.",
+      sources: [{ label: "Replacement source", url: null }],
+    });
+    const replacementPassageId = `fake-passage:${edited.currentRevisionId}`;
+    await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
+      state: "HISTORICAL",
+      excerpt: "Original evidence.",
+      tidbit: { revisionId: created.currentRevisionId, deleted: false },
+      sources: [{ label: "Original source" }],
+    });
+    await expect(backend.resolveCitation(replacementPassageId)).resolves.toMatchObject({
+      state: "CURRENT",
+      excerpt: "Replacement evidence.",
+      sources: [{ label: "Replacement source" }],
+    });
+
+    const deleted = await backend.deleteTidbit({
+      id: edited.id,
+      expectedRevisionId: edited.currentRevisionId,
+    });
+    await expect(backend.resolveCitation(replacementPassageId)).resolves.toMatchObject({
+      state: "HISTORICAL",
+      tidbit: { deleted: true },
+    });
+
+    await backend.restoreTidbit({
+      id: deleted.id,
+      expectedRevisionId: deleted.currentRevisionId,
+    });
+    await expect(backend.resolveCitation(replacementPassageId)).resolves.toMatchObject({
+      state: "CURRENT",
+      tidbit: { deleted: false },
+    });
+    await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
+      state: "HISTORICAL",
+    });
+  });
 });
 
 describe("FakeBackend drafts", () => {

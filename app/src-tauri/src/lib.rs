@@ -33,6 +33,8 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         database::commands::list_tidbits,
         database::commands::edit_tidbit,
         database::commands::delete_tidbit,
+        database::commands::restore_tidbit,
+        database::commands::resolve_citation,
         database::commands::save_draft,
         database::commands::load_draft,
         database::commands::clear_draft,
@@ -57,9 +59,11 @@ pub fn run() {
 }
 
 pub use database::{
+    CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
     ClearDraftInput, Database, DatabaseDiagnostics, DatabaseError, DatabasePaths,
-    DeleteTidbitInput, Draft, EditTidbitInput, ListTidbitsInput, SaveDraftInput, SourceDraft,
-    Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
+    DeleteTidbitInput, Draft, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput,
+    SaveDraftInput, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem,
+    TidbitListPage, TidbitSource,
 };
 pub use runtime::RuntimeProbe;
 

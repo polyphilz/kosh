@@ -6,9 +6,10 @@ use super::{
     drafts::{ClearDraftInput, Draft, SaveDraftWrite},
     error::{DatabaseError, Result},
     migrations::MigrationHeads,
+    passages::CitationResolution,
     tidbits::{
-        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput, Tidbit,
-        TidbitListPage,
+        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput,
+        RestoreTidbitInput, Tidbit, TidbitListPage,
     },
 };
 
@@ -32,6 +33,10 @@ pub(super) enum WriterMessage {
     ReconcileFts {
         reply: SyncSender<Result<bool>>,
     },
+    ReconcileAuthorPassages {
+        reply: SyncSender<Result<()>>,
+    },
+    ReconcileAuthorPassageBatch,
     ReapMediaBlob {
         sha256: Vec<u8>,
         now: i64,
@@ -58,6 +63,15 @@ pub(super) enum WriterMessage {
         input: DeleteTidbitInput,
         now_ms: i64,
         reply: SyncSender<Result<Tidbit>>,
+    },
+    RestoreTidbit {
+        input: RestoreTidbitInput,
+        now_ms: i64,
+        reply: SyncSender<Result<Tidbit>>,
+    },
+    ResolveCitation {
+        passage_id: String,
+        reply: SyncSender<Result<CitationResolution>>,
     },
     SaveDraft {
         write: SaveDraftWrite,
@@ -129,6 +143,22 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
+    pub fn reconcile_author_passages(&self) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ReconcileAuthorPassages { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(super) fn schedule_author_passage_reconciliation(&self) -> Result<()> {
+        self.sender
+            .send(WriterMessage::ReconcileAuthorPassageBatch)
+            .map_err(|_| DatabaseError::WriterUnavailable)
+    }
+
     pub(crate) fn create_tidbit(&self, write: CreateTidbitWrite) -> Result<Tidbit> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
@@ -177,6 +207,30 @@ impl DatabaseClient {
                 now_ms,
                 reply,
             })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn restore_tidbit(&self, input: RestoreTidbitInput, now_ms: i64) -> Result<Tidbit> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RestoreTidbit {
+                input,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn resolve_citation(&self, passage_id: String) -> Result<CitationResolution> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ResolveCitation { passage_id, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

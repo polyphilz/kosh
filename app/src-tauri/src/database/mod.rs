@@ -3,6 +3,7 @@ mod connection;
 mod drafts;
 mod error;
 mod migrations;
+mod passages;
 mod paths;
 mod tidbits;
 mod validation;
@@ -28,10 +29,13 @@ use rusqlite::Connection;
 
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
+pub use passages::{
+    CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
+};
 pub use paths::DatabasePaths;
 pub use tidbits::{
-    DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, SourceDraft, Tidbit, TidbitDraft,
-    TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
+    DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
+    TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
 };
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
@@ -110,19 +114,21 @@ impl Database {
         validation::validate_migrated_pair(&mut main, &mut media, &paths.main, &paths.media)?;
 
         let (sender, receiver) = mpsc::channel();
-        let client = DatabaseClient::new(sender);
+        let client = DatabaseClient::new(sender.clone());
         let writer_thread = thread::Builder::new()
             .name("kosh-database-writer".into())
-            .spawn(move || writer_loop(main, media, receiver))?;
+            .spawn(move || writer_loop(main, media, receiver, sender))?;
 
-        Ok(Self {
+        let database = Self {
             paths,
             client,
             ownership: Mutex::new(DatabaseOwnership {
                 writer_thread: Some(writer_thread),
                 library_lock: Some(ownership_lock),
             }),
-        })
+        };
+        database.client.schedule_author_passage_reconciliation()?;
+        Ok(database)
     }
 
     pub fn paths(&self) -> &DatabasePaths {
@@ -170,7 +176,12 @@ impl Drop for Database {
     }
 }
 
-fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<WriterMessage>) {
+fn writer_loop(
+    mut main: Connection,
+    mut media: Connection,
+    receiver: Receiver<WriterMessage>,
+    sender: mpsc::Sender<WriterMessage>,
+) {
     while let Ok(message) = receiver.recv() {
         match message {
             WriterMessage::Diagnostics { reply } => {
@@ -181,6 +192,20 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
             }
             WriterMessage::ReconcileFts { reply } => {
                 let _ = reply.send(validation::reconcile_fts(&mut main));
+            }
+            WriterMessage::ReconcileAuthorPassages { reply } => {
+                let result = passages::reconcile_author_passages(&mut main);
+                let _ = reply.send(result);
+            }
+            WriterMessage::ReconcileAuthorPassageBatch => {
+                if passages::reconcile_author_passage_batch(
+                    &mut main,
+                    passages::BACKGROUND_RECONCILE_BATCH_SIZE,
+                )
+                .is_ok_and(|has_more| has_more)
+                {
+                    let _ = sender.send(WriterMessage::ReconcileAuthorPassageBatch);
+                }
             }
             WriterMessage::ReapMediaBlob {
                 sha256,
@@ -210,6 +235,16 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
                 reply,
             } => {
                 let _ = reply.send(tidbits::delete_tidbit(&mut main, input, now_ms));
+            }
+            WriterMessage::RestoreTidbit {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(tidbits::restore_tidbit(&mut main, input, now_ms));
+            }
+            WriterMessage::ResolveCitation { passage_id, reply } => {
+                let _ = reply.send(passages::resolve_citation(&main, &passage_id));
             }
             WriterMessage::SaveDraft { write, reply } => {
                 let _ = reply.send(drafts::save_draft(&mut main, write));

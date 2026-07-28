@@ -9,6 +9,7 @@ use super::{
 };
 
 const MAIN_TABLES: &[&str] = &[
+    "active_passage",
     "app_settings",
     "attachment",
     "attachment_extraction",

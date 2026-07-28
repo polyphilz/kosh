@@ -5,6 +5,7 @@ import type {
   DeleteTidbitInput,
   EditTidbitInput,
   ListTidbitsInput,
+  RestoreTidbitInput,
   SaveDraftInput,
   TidbitDraft,
 } from "../../src/backend/contracts";
@@ -35,6 +36,7 @@ describe("tauriBackend tidbit gateway", () => {
       id: "tidbit-1",
       expectedRevisionId: "revision-2",
     };
+    const restoration: RestoreTidbitInput = { ...deletion };
     const list: ListTidbitsInput = {
       limit: 50,
       cursor: { updatedAtMs: 42, id: "tidbit-1" },
@@ -55,6 +57,8 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.listTidbits(list);
     await tauriBackend.editTidbit(edit);
     await tauriBackend.deleteTidbit(deletion);
+    await tauriBackend.restoreTidbit(restoration);
+    await tauriBackend.resolveCitation("passage-1");
     await tauriBackend.saveDraft(savedDraft);
     await tauriBackend.loadDraft("capture");
     await tauriBackend.clearDraft(clearDraft);
@@ -65,6 +69,8 @@ describe("tauriBackend tidbit gateway", () => {
       ["list_tidbits", { input: list }],
       ["edit_tidbit", { input: edit }],
       ["delete_tidbit", { input: deletion }],
+      ["restore_tidbit", { input: restoration }],
+      ["resolve_citation", { passageId: "passage-1" }],
       ["save_draft", { input: savedDraft }],
       ["load_draft", { contextKey: "capture" }],
       ["clear_draft", { input: clearDraft }],
