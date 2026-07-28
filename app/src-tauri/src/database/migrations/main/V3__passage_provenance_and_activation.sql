@@ -51,3 +51,6 @@ BEFORE UPDATE ON active_passage
 BEGIN
     SELECT RAISE(ABORT, 'active passage mappings are replaced, never updated');
 END;
+
+INSERT INTO index_state(name, version, status, cursor, updated_at, error)
+VALUES('PASSAGE_BUILD', 'markdown-blocks-v1', 'DIRTY', NULL, 0, NULL);

@@ -107,7 +107,6 @@ impl Database {
         if main_status.pending {
             migrations::run_main(&mut main)?;
         }
-        passages::reconcile_author_passages(&mut main)?;
         // Reap capabilities never persist across launches. The single writer
         // creates and consumes them in one transaction after a live main-
         // database reference check.
@@ -120,14 +119,16 @@ impl Database {
             .name("kosh-database-writer".into())
             .spawn(move || writer_loop(main, media, receiver))?;
 
-        Ok(Self {
+        let database = Self {
             paths,
             client,
             ownership: Mutex::new(DatabaseOwnership {
                 writer_thread: Some(writer_thread),
                 library_lock: Some(ownership_lock),
             }),
-        })
+        };
+        database.client.schedule_author_passage_reconciliation()?;
+        Ok(database)
     }
 
     pub fn paths(&self) -> &DatabasePaths {
@@ -186,6 +187,12 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
             }
             WriterMessage::ReconcileFts { reply } => {
                 let _ = reply.send(validation::reconcile_fts(&mut main));
+            }
+            WriterMessage::ReconcileAuthorPassages { reply } => {
+                let result = passages::reconcile_author_passages(&mut main);
+                if let Some(reply) = reply {
+                    let _ = reply.send(result);
+                }
             }
             WriterMessage::ReapMediaBlob {
                 sha256,

@@ -148,10 +148,53 @@ pub(super) fn insert_author_passages(
             ],
         )?;
     }
+    let state_updated = transaction.execute(
+        "UPDATE index_state
+         SET status = 'DIRTY',
+             cursor = NULL,
+             updated_at = max(updated_at, ?1),
+             error = NULL
+         WHERE name = 'PASSAGE_FTS'",
+        params![created_at_ms],
+    )?;
+    if state_updated != 1 {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: "PASSAGE_FTS index state is missing".into(),
+        });
+    }
     Ok(passages.len())
 }
 
 pub(super) fn reconcile_author_passages(connection: &mut Connection) -> Result<()> {
+    let state_updated = connection.execute(
+        "UPDATE index_state
+         SET status = 'RUNNING', cursor = NULL, error = NULL
+         WHERE name = 'PASSAGE_BUILD'",
+        [],
+    )?;
+    if state_updated != 1 {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: "PASSAGE_BUILD index state is missing".into(),
+        });
+    }
+    match reconcile_author_passages_transaction(connection) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let message = error.to_string();
+            let _ = connection.execute(
+                "UPDATE index_state
+                 SET status = 'FAILED', cursor = NULL, error = ?1
+                 WHERE name = 'PASSAGE_BUILD'",
+                params![message],
+            );
+            Err(error)
+        }
+    }
+}
+
+fn reconcile_author_passages_transaction(connection: &mut Connection) -> Result<()> {
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let missing = {
@@ -230,6 +273,18 @@ pub(super) fn reconcile_author_passages(connection: &mut Connection) -> Result<(
             params![CONSTRUCTION_VERSION],
         )?;
     }
+    transaction.execute(
+        "UPDATE index_state
+         SET status = 'IDLE',
+             cursor = NULL,
+             updated_at = max(
+                 updated_at,
+                 coalesce((SELECT max(created_at) FROM tidbit_revision), 0)
+             ),
+             error = NULL
+         WHERE name = 'PASSAGE_BUILD'",
+        [],
+    )?;
     transaction.commit()?;
     Ok(())
 }

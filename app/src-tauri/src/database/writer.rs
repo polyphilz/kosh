@@ -33,6 +33,9 @@ pub(super) enum WriterMessage {
     ReconcileFts {
         reply: SyncSender<Result<bool>>,
     },
+    ReconcileAuthorPassages {
+        reply: Option<SyncSender<Result<()>>>,
+    },
     ReapMediaBlob {
         sha256: Vec<u8>,
         now: i64,
@@ -137,6 +140,22 @@ impl DatabaseClient {
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn reconcile_author_passages(&self) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ReconcileAuthorPassages { reply: Some(reply) })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(super) fn schedule_author_passage_reconciliation(&self) -> Result<()> {
+        self.sender
+            .send(WriterMessage::ReconcileAuthorPassages { reply: None })
+            .map_err(|_| DatabaseError::WriterUnavailable)
     }
 
     pub(crate) fn create_tidbit(&self, write: CreateTidbitWrite) -> Result<Tidbit> {

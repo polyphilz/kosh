@@ -80,6 +80,17 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             deterministic_passage_id(first_revision_id, 1).expect("second deterministic ID"),
         ]
     );
+    let fts_status: String = library
+        .database
+        .open_main_read_only()
+        .expect("read FTS state")
+        .query_row(
+            "SELECT status FROM index_state WHERE name = 'PASSAGE_FTS'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("FTS status");
+    assert_eq!(fts_status, "DIRTY");
 
     let heading = library
         .database
@@ -323,7 +334,11 @@ fn startup_reconciles_preexisting_revisions_and_retains_old_builder_versions() {
         .expect("preexisting revision and legacy passage");
     drop(connection);
 
-    let upgraded = Database::initialize(paths).expect("reconciled library");
+    let upgraded = Database::initialize(paths).expect("library opens before reconciliation");
+    upgraded
+        .client()
+        .reconcile_author_passages()
+        .expect("reconcile passage versions");
     let active_ids = {
         let connection = upgraded
             .open_main_read_only()
@@ -366,4 +381,53 @@ fn startup_reconciles_preexisting_revisions_and_retains_old_builder_versions() {
             .state,
         CitationState::Historical
     );
+}
+
+#[test]
+fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
+    let root = tempfile::tempdir().expect("temporary recoverable library");
+    let paths = DatabasePaths::new(root.path());
+    drop(Database::initialize(paths.clone()).expect("initial schema"));
+    let connection = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+        .expect("legacy writer");
+    connection
+        .execute_batch(
+            "BEGIN;
+             INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
+             VALUES(
+                '019f547b-6200-7000-8000-000000002301',
+                10, 10, '019f547b-6200-7000-8000-000000002302'
+             );
+             INSERT INTO tidbit_revision(
+                id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+             ) VALUES(
+                '019f547b-6200-7000-8000-000000002302',
+                '019f547b-6200-7000-8000-000000002301',
+                1, 10, '', zeroblob(32)
+             );
+             COMMIT;",
+        )
+        .expect("malformed legacy revision");
+    drop(connection);
+
+    let opened = Database::initialize(paths).expect("authored library remains available");
+    let tidbit = opened
+        .client()
+        .load_tidbit("019f547b-6200-7000-8000-000000002301".into())
+        .expect("authored content loads");
+    assert_eq!(tidbit.body_markdown, "");
+    assert!(opened.client().reconcile_author_passages().is_err());
+    let (status, error): (String, Option<String>) = opened
+        .open_main_read_only()
+        .expect("read passage build state")
+        .query_row(
+            "SELECT status, error
+             FROM index_state
+             WHERE name = 'PASSAGE_BUILD'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("passage build status");
+    assert_eq!(status, "FAILED");
+    assert!(error.is_some_and(|message| message.contains("did not produce")));
 }
