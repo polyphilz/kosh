@@ -19,6 +19,7 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: SearchPage,
+  validateSearch: librarySearch,
 });
 const addRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -49,6 +50,7 @@ const tidbitRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/tidbits/$tidbitId",
   component: TidbitPage,
+  validateSearch: passageSearch,
 });
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -70,4 +72,28 @@ declare module "@tanstack/react-router" {
   interface Register {
     router: ReturnType<typeof createAppRouter>;
   }
+}
+
+function passageSearch(search: Record<string, unknown>): { passage?: string } {
+  const passage =
+    typeof search.passage === "string" && search.passage.length <= 256 ? search.passage : undefined;
+  return passage ? { passage } : {};
+}
+
+function librarySearch(search: Record<string, unknown>): {
+  exact?: true;
+  passage?: string;
+  q?: string;
+} {
+  const passage = passageSearch(search).passage;
+  const q =
+    typeof search.q === "string" && [...search.q].length <= 512 && search.q.trim()
+      ? search.q
+      : undefined;
+  const exact = search.exact === true || search.exact === "true" ? true : undefined;
+  return {
+    ...(q ? { q } : {}),
+    ...(exact ? { exact } : {}),
+    ...(passage ? { passage } : {}),
+  };
 }

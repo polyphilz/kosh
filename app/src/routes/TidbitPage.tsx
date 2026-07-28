@@ -1,19 +1,26 @@
-import { useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 import { useBackend } from "../backend/context";
-import type { TidbitRecord } from "../backend/contracts";
+import type { CitationResolution, TidbitRecord } from "../backend/contracts";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { ErrorState, LoadingState } from "../components/States";
 import { Status } from "../components/Status";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
+import { citationLocation } from "../search/presentation";
 import { TidbitComposer } from "./TidbitComposer";
 
 export function TidbitPage() {
   const backend = useBackend();
   const navigate = useNavigate();
   const { tidbitId } = useParams({ from: "/tidbits/$tidbitId" });
+  const { passage } = useSearch({ from: "/tidbits/$tidbitId" });
+  const citationRef = useRef<HTMLElement>(null);
   const [tidbit, setTidbit] = useState<TidbitRecord | null>(null);
+  const [citation, setCitation] = useState<CitationResolution | null>(null);
+  const [citationRefresh, setCitationRefresh] = useState(0);
+  const [citationLoading, setCitationLoading] = useState(false);
+  const [citationError, setCitationError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -40,6 +47,36 @@ export function TidbitPage() {
       active = false;
     };
   }, [backend, tidbitId]);
+
+  useEffect(() => {
+    let active = true;
+    setCitation(null);
+    setCitationError(null);
+    if (!passage) {
+      setCitationLoading(false);
+      return;
+    }
+    setCitationLoading(true);
+    void backend
+      .resolveCitation(passage)
+      .then((resolved) => {
+        if (!active) return;
+        if (resolved.tidbit?.id !== tidbitId) {
+          throw new Error("The citation does not belong to this tidbit.");
+        }
+        setCitation(resolved);
+        window.requestAnimationFrame(() => citationRef.current?.focus());
+      })
+      .catch((reason: unknown) => {
+        if (active) setCitationError(errorMessage(reason));
+      })
+      .finally(() => {
+        if (active) setCitationLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [backend, citationRefresh, passage, tidbitId]);
 
   if (loading) {
     return (
@@ -88,6 +125,7 @@ export function TidbitPage() {
           onCancel={() => setEditing(false)}
           onSaved={(saved) => {
             setTidbit(saved);
+            setCitationRefresh((value) => value + 1);
             setEditing(false);
           }}
           tidbit={tidbit}
@@ -113,6 +151,45 @@ export function TidbitPage() {
           </Button>
         </div>
       </header>
+
+      {passage && citationLoading && (
+        <p className="tidbit-citation-focus__loading" role="status">
+          Resolving cited passage…
+        </p>
+      )}
+      {citationError && (
+        <p className="capture-card__error" role="alert">
+          Could not open the cited passage: {citationError}
+        </p>
+      )}
+      {citation && (
+        <section
+          aria-labelledby="tidbit-citation-title"
+          className="tidbit-citation-focus"
+          ref={citationRef}
+          tabIndex={-1}
+        >
+          <header>
+            <div>
+              <p className="page-kicker">Cited passage</p>
+              <h2 id="tidbit-citation-title">
+                {citation.headingContext.at(-1) ?? citation.tidbit?.displayTitle ?? "Passage"}
+              </h2>
+            </div>
+            <Status tone={citation.state === "CURRENT" ? "success" : "warning"}>
+              {citation.state === "CURRENT" ? "Current revision" : "Historical revision"}
+            </Status>
+          </header>
+          <p>{citationLocation(citation)}</p>
+          <blockquote>{citation.excerpt}</blockquote>
+          {citation.state === "HISTORICAL" && (
+            <small>
+              This immutable excerpt came from revision {citation.tidbit?.revisionNumber}. The
+              current note appears below for comparison.
+            </small>
+          )}
+        </section>
+      )}
 
       <article className="tidbit-page__content">
         <MarkdownRenderer source={tidbit.bodyMarkdown} />
