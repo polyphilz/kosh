@@ -189,25 +189,32 @@ fn blob_count(database: &Database) -> i64 {
 fn media_tokens_require_canonical_syntax_and_preserve_authored_order() {
     let first = id(0x705);
     let second = id(0x706);
+    let third = id(0x707);
     let markdown = format!(
         "{{{{kosh:attachment:{first}}}}}\n\
          {{{{kosh:image:{second};width=70%;alt=%2AArchitecture%2A%20%5Fdiagram%5F;caption=Chapter%20%7E%7E2%7E%7E}}}}\n\
+         {{{{kosh:pdf:{third}}}}}\n\
          {{{{kosh:image:{first};width=100%}}}}\n\
          {{{{kosh:image:{};width=070%}}}}\n\
          {{{{kosh:image:{};width=70%;alt=%41}}}}\n\
          {{{{kosh:image:{};width=70%;alt=%ff}}}}\n\
          {{{{kosh:image:{};width=70%;alt=*raw*}}}}",
-        id(0x707),
         id(0x708),
         id(0x709),
-        id(0x70a)
+        id(0x70a),
+        id(0x70b)
     );
     let references = referenced_attachments(&markdown);
-    assert_eq!(references.len(), 2);
+    assert_eq!(references.len(), 3);
     assert_eq!(references[0].id, first);
     assert_eq!(references[0].display_role, AttachmentDisplayRole::Inline);
     assert_eq!(references[1].id, second);
     assert_eq!(references[1].display_role, AttachmentDisplayRole::Inline);
+    assert_eq!(references[2].id, third);
+    assert_eq!(
+        references[2].display_role,
+        AttachmentDisplayRole::Attachment
+    );
 
     let unicode_caption = "%C3%A9".repeat(2_000);
     let unicode_markdown =
@@ -262,10 +269,7 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
         11,
     );
     assert_eq!(pdf.extraction_status, PdfExtractionStatus::Pending);
-    let body = format!(
-        "Chapter notes.\n\n{{{{kosh:attachment:{}}}}}",
-        pdf.attachment.id
-    );
+    let body = format!("Chapter notes.\n\n{{{{kosh:pdf:{}}}}}", pdf.attachment.id);
     library.save_capture(&body, 12);
     let created = library
         .database
@@ -378,7 +382,7 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
                 expected_revision_id: created.current_revision_id,
                 title: Some("PDF knowledge, revised".into()),
                 body_markdown: format!(
-                    "Revised chapter notes.\n\n{{{{kosh:attachment:{}}}}}",
+                    "Revised chapter notes.\n\n{{{{kosh:pdf:{}}}}}",
                     pdf.attachment.id
                 ),
                 sources: vec![SourceDraft {

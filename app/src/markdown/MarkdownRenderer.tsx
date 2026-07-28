@@ -65,6 +65,13 @@ function rendererComponents(
           </figure>
         );
       }
+      if (attachmentId && title === "kosh-attachment") {
+        return (
+          <a className="kosh-markdown__attachment" download href={src}>
+            {alt ?? "Attachment"}
+          </a>
+        );
+      }
       const metadata = parseImageTitle(title);
       if (attachmentId && metadata) {
         return (

@@ -7,29 +7,11 @@ use std::{
 
 #[test]
 fn isolated_pdf_worker_extracts_a_bounded_response() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kosh"))
-        .arg("--kosh-pdf-extraction-worker")
-        .arg("1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn PDF extraction worker");
-    child
-        .stdin
-        .take()
-        .expect("worker stdin")
-        .write_all(&single_page_pdf("Hi"))
-        .expect("send PDF fixture");
-    let output = child.wait_with_output().expect("wait for PDF worker");
-    assert!(
-        output.status.success(),
-        "worker failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let response = run_worker(
+        &["--kosh-pdf-extraction-worker", "1"],
+        &single_page_pdf("Hi"),
     );
-    assert!(output.stdout.len() < 32 * 1024 * 1024);
-    let response: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("worker JSON response");
+    assert_eq!(response["operation"], "EXTRACTION");
     let pages = response["result"]["Ok"]
         .as_array()
         .unwrap_or_else(|| panic!("worker returned an extraction error: {response}"));
@@ -42,6 +24,37 @@ fn isolated_pdf_worker_extracts_a_bounded_response() {
             .contains("Hi"),
         "short native text must survive the isolated extraction path"
     );
+}
+
+#[test]
+fn isolated_pdf_worker_inspects_untrusted_input() {
+    let response = run_worker(&["--kosh-pdf-inspection-worker"], &single_page_pdf("Hi"));
+    assert_eq!(response["operation"], "INSPECTION");
+    assert_eq!(response["result"]["Ok"], 1);
+}
+
+fn run_worker(arguments: &[&str], pdf: &[u8]) -> serde_json::Value {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kosh"))
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn PDF extraction worker");
+    child
+        .stdin
+        .take()
+        .expect("worker stdin")
+        .write_all(pdf)
+        .expect("send PDF fixture");
+    let output = child.wait_with_output().expect("wait for PDF worker");
+    assert!(
+        output.status.success(),
+        "worker failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.len() < 32 * 1024 * 1024);
+    serde_json::from_slice(&output.stdout).expect("worker JSON response")
 }
 
 fn single_page_pdf(text: &str) -> Vec<u8> {

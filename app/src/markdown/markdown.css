@@ -588,6 +588,18 @@
   font-size: 0.84em;
 }
 
+.kosh-markdown__attachment {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--accent);
+  text-decoration: none;
+}
+
 .kosh-markdown blockquote {
   padding-left: 1em;
   border-left: 3px solid var(--line);

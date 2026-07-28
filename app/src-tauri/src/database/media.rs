@@ -26,6 +26,7 @@ const MAX_INTEGRITY_DIAGNOSTICS: usize = 256;
 pub(crate) const MEDIA_RECONCILE_BATCH_SIZE: u32 = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
+const PDF_TOKEN_PREFIX: &str = "{{kosh:pdf:";
 const TOKEN_SUFFIX: &str = "}}";
 const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
 const IMAGE_OCR_EXTRACTOR: &str = "ocr";
@@ -3163,17 +3164,15 @@ pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference>
                 AttachmentDisplayRole::Attachment,
             )
         });
-        let next = match (next_image, next_attachment) {
-            (Some(image), Some(attachment)) => {
-                if image.0 <= attachment.0 {
-                    image
-                } else {
-                    attachment
-                }
-            }
-            (Some(image), None) => image,
-            (None, Some(attachment)) => attachment,
-            (None, None) => break,
+        let next_pdf = remainder
+            .find(PDF_TOKEN_PREFIX)
+            .map(|offset| (offset, PDF_TOKEN_PREFIX, AttachmentDisplayRole::Attachment));
+        let Some(next) = [next_image, next_attachment, next_pdf]
+            .into_iter()
+            .flatten()
+            .min_by_key(|candidate| candidate.0)
+        else {
+            break;
         };
         let payload_start = cursor + next.0 + next.1.len();
         let payload = &markdown[payload_start..];

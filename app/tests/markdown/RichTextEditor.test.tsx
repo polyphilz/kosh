@@ -626,7 +626,7 @@ it("inserts a PDF token and exposes extraction status and system-open controls",
   expect(pickPdf).toHaveBeenCalledOnce();
   await waitFor(() => expect(getByText("chapter.pdf")).toBeVisible());
   expect(getByText("3 pages · 2 searchable · 1 unavailable")).toBeVisible();
-  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${pdf.id}}}`);
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:pdf:${pdf.id}}}`);
   fireEvent.click(getByRole("button", { name: "Open original" }));
   await waitFor(() => expect(openPdfExternal).toHaveBeenCalledWith(pdf.id));
 });

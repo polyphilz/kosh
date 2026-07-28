@@ -19,11 +19,7 @@ import remarkParse from "remark-parse";
 import remarkStringify from "remark-stringify";
 import { unified } from "unified";
 import { normalizeCodeLanguageLabel } from "./languages";
-import {
-  parseKoshMediaToken,
-  serializeKoshAttachmentToken,
-  serializeKoshImageToken,
-} from "./mediaTokens";
+import { parseKoshMediaToken, serializeKoshImageToken, serializeKoshPdfToken } from "./mediaTokens";
 import { externalHttpUrl } from "./urlPolicy";
 
 const markdownParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkBreaks);
@@ -124,7 +120,7 @@ function blockFromMarkdown(
             }),
           ];
         }
-        if (media?.kind === "attachment") {
+        if (media?.kind === "pdf") {
           return [
             schema.nodes.kosh_attachment!.create({
               attachmentId: media.attachmentId,
@@ -454,7 +450,7 @@ function blockToMarkdown(node: ProseMirrorNode): Array<BlockContent | Definition
           children: [
             {
               type: "text",
-              value: serializeKoshAttachmentToken(node.attrs.attachmentId),
+              value: serializeKoshPdfToken(node.attrs.attachmentId),
             },
           ],
         },
