@@ -7,7 +7,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::database::{Database, DatabaseClient, DatabasePaths};
+use crate::{
+    database::{Database, DatabaseClient, DatabasePaths},
+    embedding_runtime::{
+        EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimeStatus,
+    },
+};
 
 pub(crate) trait Clock: Send + Sync {
     fn now_ms(&self) -> i64;
@@ -39,14 +44,19 @@ impl IdGenerator for UuidV7Generator {
 pub(crate) struct RuntimeState {
     data_dir: PathBuf,
     database: Arc<Database>,
+    embedding_runtime: Arc<EmbeddingRuntime>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
 }
 
 impl RuntimeState {
-    pub(crate) fn production(data_dir: PathBuf) -> crate::database::Result<Self> {
+    pub(crate) fn production(
+        data_dir: PathBuf,
+        resource_dir: PathBuf,
+    ) -> crate::database::Result<Self> {
         let database = Database::initialize(DatabasePaths::new(&data_dir))?;
         Ok(Self {
+            embedding_runtime: Arc::new(EmbeddingRuntime::new(&data_dir, &resource_dir)),
             data_dir,
             database: Arc::new(database),
             clock: Arc::new(SystemClock),
@@ -63,6 +73,7 @@ impl RuntimeState {
         let database =
             Database::initialize(DatabasePaths::new(&data_dir)).expect("temporary Kosh database");
         Self {
+            embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
             database: Arc::new(database),
             clock,
@@ -72,6 +83,10 @@ impl RuntimeState {
 
     pub(crate) fn database_client(&self) -> DatabaseClient {
         self.database.client()
+    }
+
+    pub(crate) fn embedding_runtime(&self) -> Arc<EmbeddingRuntime> {
+        Arc::clone(&self.embedding_runtime)
     }
 
     pub(crate) fn now_ms(&self) -> i64 {
@@ -98,6 +113,93 @@ pub(crate) fn runtime_probe(state: State<'_, RuntimeState>) -> RuntimeProbe {
         now_ms: state.clock.now_ms(),
         request_id: state.ids.next_id(),
     }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum SemanticRuntimeErrorCode {
+    Unavailable,
+    InvalidArtifact,
+    OperationInProgress,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SemanticRuntimeCommandError {
+    code: SemanticRuntimeErrorCode,
+    message: String,
+}
+
+impl From<SemanticRuntimeError> for SemanticRuntimeCommandError {
+    fn from(error: SemanticRuntimeError) -> Self {
+        let code = match &error {
+            SemanticRuntimeError::RuntimeUnavailable(_) => SemanticRuntimeErrorCode::Unavailable,
+            SemanticRuntimeError::InvalidArtifact(_) => SemanticRuntimeErrorCode::InvalidArtifact,
+            SemanticRuntimeError::OperationInProgress => {
+                SemanticRuntimeErrorCode::OperationInProgress
+            }
+            _ => SemanticRuntimeErrorCode::Failed,
+        };
+        Self {
+            code,
+            message: error.public_message(),
+        }
+    }
+}
+
+type SemanticCommandResult<T> = Result<T, SemanticRuntimeCommandError>;
+
+#[tauri::command]
+pub(crate) fn semantic_runtime_status(state: State<'_, RuntimeState>) -> SemanticRuntimeStatus {
+    state.embedding_runtime.status()
+}
+
+#[tauri::command]
+pub(crate) async fn prepare_semantic_runtime(
+    state: State<'_, RuntimeState>,
+) -> SemanticCommandResult<SemanticRuntimeStatus> {
+    let runtime = state.embedding_runtime();
+    run_semantic_operation(move || runtime.prepare()).await
+}
+
+#[tauri::command]
+pub(crate) async fn retry_semantic_runtime(
+    state: State<'_, RuntimeState>,
+) -> SemanticCommandResult<SemanticRuntimeStatus> {
+    let runtime = state.embedding_runtime();
+    run_semantic_operation(move || runtime.retry()).await
+}
+
+#[tauri::command]
+pub(crate) async fn repair_semantic_runtime(
+    state: State<'_, RuntimeState>,
+) -> SemanticCommandResult<SemanticRuntimeStatus> {
+    let runtime = state.embedding_runtime();
+    run_semantic_operation(move || runtime.repair()).await
+}
+
+#[tauri::command]
+pub(crate) async fn semantic_runtime_logs(
+    state: State<'_, RuntimeState>,
+) -> SemanticCommandResult<SemanticRuntimeLogs> {
+    let runtime = state.embedding_runtime();
+    run_semantic_operation(move || runtime.logs()).await
+}
+
+async fn run_semantic_operation<T>(
+    operation: impl FnOnce() -> Result<T, SemanticRuntimeError> + Send + 'static,
+) -> SemanticCommandResult<T>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| SemanticRuntimeCommandError {
+            code: SemanticRuntimeErrorCode::Failed,
+            message: format!("semantic runtime command worker failed: {error}"),
+        })?
+        .map_err(Into::into)
 }
 
 #[cfg(feature = "test-support")]

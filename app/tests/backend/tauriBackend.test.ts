@@ -84,4 +84,22 @@ describe("tauriBackend tidbit gateway", () => {
       ["clear_draft", { input: clearDraft }],
     ]);
   });
+
+  it("uses explicit semantic runtime lifecycle commands", async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+
+    await tauriBackend.semanticRuntimeStatus();
+    await tauriBackend.prepareSemanticRuntime();
+    await tauriBackend.retrySemanticRuntime();
+    await tauriBackend.repairSemanticRuntime();
+    await tauriBackend.semanticRuntimeLogs();
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["semantic_runtime_status"],
+      ["prepare_semantic_runtime"],
+      ["retry_semantic_runtime"],
+      ["repair_semantic_runtime"],
+      ["semantic_runtime_logs"],
+    ]);
+  });
 });

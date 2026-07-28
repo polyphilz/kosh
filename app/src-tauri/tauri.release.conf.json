@@ -1,0 +1,19 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "resources": {
+      "resources/release/bin/llama-server": "bin/llama-server",
+      "resources/release/llama-server.json": "release/llama-server.json",
+      "resources/release/licenses/llama.cpp-LICENSE": "licenses/llama.cpp-LICENSE",
+      "resources/embedding-indexes/jina-v1.json": "embedding-indexes/jina-v1.json",
+      "resources/embedding-indexes/jina-v1-golden.json": "embedding-indexes/jina-v1-golden.json"
+    },
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "-",
+      "hardenedRuntime": false
+    }
+  }
+}

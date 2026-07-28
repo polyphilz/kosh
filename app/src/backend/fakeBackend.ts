@@ -12,6 +12,8 @@ import type {
   SaveDraftInput,
   SearchField,
   SearchPassagesInput,
+  SemanticRuntimeLogs,
+  SemanticRuntimeStatus,
   SourceDraft,
   TidbitDraft,
   TidbitListPage,
@@ -31,6 +33,15 @@ export const browserRuntimeProbe: RuntimeProbe = {
 
 export class FakeBackend implements Backend {
   private readonly probe: RuntimeProbe;
+  private semanticStatus: SemanticRuntimeStatus = {
+    phase: "NOT_DOWNLOADED",
+    downloadedBytes: 0,
+    modelBytes: 232_883_776,
+    modelDiskUsageBytes: 0,
+    runtimeRunning: false,
+    verified: false,
+    message: null,
+  };
   private readonly drafts = new Map<string, DraftRecord>();
   private readonly revisionOwners = new Map<string, string>();
   private readonly citations = new Map<string, FakeCitationSnapshot>();
@@ -61,6 +72,44 @@ export class FakeBackend implements Backend {
 
   async runtimeProbe(): Promise<RuntimeProbe> {
     return { ...this.probe };
+  }
+
+  async semanticRuntimeStatus(): Promise<SemanticRuntimeStatus> {
+    return { ...this.semanticStatus };
+  }
+
+  async prepareSemanticRuntime(): Promise<SemanticRuntimeStatus> {
+    this.semanticStatus = {
+      ...this.semanticStatus,
+      phase: "READY",
+      downloadedBytes: this.semanticStatus.modelBytes,
+      modelDiskUsageBytes: this.semanticStatus.modelBytes,
+      runtimeRunning: true,
+      verified: true,
+      message: null,
+    };
+    return { ...this.semanticStatus };
+  }
+
+  async retrySemanticRuntime(): Promise<SemanticRuntimeStatus> {
+    return this.prepareSemanticRuntime();
+  }
+
+  async repairSemanticRuntime(): Promise<SemanticRuntimeStatus> {
+    this.semanticStatus = {
+      ...this.semanticStatus,
+      phase: "NOT_DOWNLOADED",
+      downloadedBytes: 0,
+      modelDiskUsageBytes: 0,
+      runtimeRunning: false,
+      verified: false,
+      message: null,
+    };
+    return this.prepareSemanticRuntime();
+  }
+
+  async semanticRuntimeLogs(): Promise<SemanticRuntimeLogs> {
+    return { text: "", truncated: false };
   }
 
   async createTidbit(input: TidbitDraft): Promise<TidbitRecord> {

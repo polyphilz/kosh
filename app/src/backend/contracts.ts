@@ -4,6 +4,31 @@ export interface RuntimeProbe {
   requestId: string;
 }
 
+export type SemanticRuntimePhase =
+  | "NOT_DOWNLOADED"
+  | "VERIFICATION_REQUIRED"
+  | "DOWNLOADING"
+  | "VERIFYING"
+  | "STARTING"
+  | "READY"
+  | "UNAVAILABLE"
+  | "FAILED";
+
+export interface SemanticRuntimeStatus {
+  phase: SemanticRuntimePhase;
+  downloadedBytes: number;
+  modelBytes: number;
+  modelDiskUsageBytes: number;
+  runtimeRunning: boolean;
+  verified: boolean;
+  message: string | null;
+}
+
+export interface SemanticRuntimeLogs {
+  text: string;
+  truncated: boolean;
+}
+
 export interface SourceDraft {
   label: string | null;
   url: string | null;
@@ -182,6 +207,11 @@ export interface TidbitListPage {
 
 export interface Backend {
   runtimeProbe(): Promise<RuntimeProbe>;
+  semanticRuntimeStatus(): Promise<SemanticRuntimeStatus>;
+  prepareSemanticRuntime(): Promise<SemanticRuntimeStatus>;
+  retrySemanticRuntime(): Promise<SemanticRuntimeStatus>;
+  repairSemanticRuntime(): Promise<SemanticRuntimeStatus>;
+  semanticRuntimeLogs(): Promise<SemanticRuntimeLogs>;
   createTidbit(input: TidbitDraft): Promise<TidbitRecord>;
   loadTidbit(id: string): Promise<TidbitRecord>;
   listTidbits(input: ListTidbitsInput): Promise<TidbitListPage>;
