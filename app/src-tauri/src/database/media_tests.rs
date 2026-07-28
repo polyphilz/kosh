@@ -157,14 +157,16 @@ fn media_tokens_require_canonical_syntax_and_preserve_authored_order() {
     let second = id(0x706);
     let markdown = format!(
         "{{{{kosh:attachment:{first}}}}}\n\
-         {{{{kosh:image:{second};width=70%;alt=Architecture%20diagram;caption=Chapter%202}}}}\n\
+         {{{{kosh:image:{second};width=70%;alt=%2AArchitecture%2A%20%5Fdiagram%5F;caption=Chapter%20%7E%7E2%7E%7E}}}}\n\
          {{{{kosh:image:{first};width=100%}}}}\n\
          {{{{kosh:image:{};width=070%}}}}\n\
          {{{{kosh:image:{};width=70%;alt=%41}}}}\n\
-         {{{{kosh:image:{};width=70%;alt=%ff}}}}",
+         {{{{kosh:image:{};width=70%;alt=%ff}}}}\n\
+         {{{{kosh:image:{};width=70%;alt=*raw*}}}}",
         id(0x707),
         id(0x708),
-        id(0x709)
+        id(0x709),
+        id(0x70a)
     );
     let references = referenced_attachments(&markdown);
     assert_eq!(references.len(), 2);

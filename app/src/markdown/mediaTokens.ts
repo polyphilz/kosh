@@ -4,6 +4,7 @@ const imagePattern = new RegExp(
   "u",
 );
 const attachmentPattern = new RegExp(`^\\{\\{kosh:attachment:(${UUID_V7})\\}\\}$`, "u");
+const markdownDelimiterPattern = /[!'()*_~]/gu;
 
 export interface KoshImageToken {
   attachmentId: string;
@@ -57,8 +58,8 @@ export function serializeKoshImageToken(token: Omit<KoshImageToken, "kind">): st
   const caption = normalizedField(token.caption, 2_000, "image caption");
   return [
     `{{kosh:image:${token.attachmentId};width=${token.widthPercent}%`,
-    altText ? `;alt=${encodeURIComponent(altText)}` : "",
-    caption ? `;caption=${encodeURIComponent(caption)}` : "",
+    altText ? `;alt=${encodeCanonicalField(altText)}` : "",
+    caption ? `;caption=${encodeCanonicalField(caption)}` : "",
     "}}",
   ].join("");
 }
@@ -88,8 +89,15 @@ function decodeCanonicalField(value: string | undefined): string | undefined | n
   }
   try {
     const decoded = decodeURIComponent(value);
-    return decoded && encodeURIComponent(decoded) === value ? decoded : null;
+    return decoded && encodeCanonicalField(decoded) === value ? decoded : null;
   } catch {
     return null;
   }
+}
+
+function encodeCanonicalField(value: string): string {
+  return encodeURIComponent(value).replace(markdownDelimiterPattern, (character) => {
+    const hex = character.codePointAt(0)!.toString(16).toUpperCase();
+    return `%${hex}`;
+  });
 }

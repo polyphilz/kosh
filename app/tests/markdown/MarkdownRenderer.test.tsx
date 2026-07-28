@@ -89,14 +89,14 @@ it("keeps authored HTML, dangerous URLs, remote images, and trusted KaTeX comman
 it("renders only canonical local image tokens with authored metadata", () => {
   const imageId = "01980c8e-6c00-7000-8000-000000000241";
   const source =
-    `{{kosh:image:${imageId};width=65%;alt=Architecture%20diagram;` +
-    "caption=Evidence%20from%20chapter%202}}";
+    `{{kosh:image:${imageId};width=65%;alt=%2AArchitecture%2A%20%5Fdiagram%5F;` +
+    "caption=%7E%7EEvidence%7E%7E%20%28chapter%202%29%21}}";
   const { getByRole, getByText } = render(<MarkdownRenderer source={source} />);
-  const image = getByRole("img", { name: "Architecture diagram" });
+  const image = getByRole("img", { name: "*Architecture* _diagram_" });
 
   expect(image).toHaveAttribute("src", `kosh-media://localhost/attachment/${imageId}`);
   expect(image.closest("figure")).toHaveStyle({ width: "65%" });
-  expect(getByText("Evidence from chapter 2")).toBeInTheDocument();
+  expect(getByText("~~Evidence~~ (chapter 2)!")).toBeInTheDocument();
 });
 
 it("leaves malformed and nonlocal Kosh-like image references inert", () => {

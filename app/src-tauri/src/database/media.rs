@@ -2331,7 +2331,7 @@ fn valid_encoded_token_field(value: &str, max_characters: usize) -> bool {
     let mut index = 0;
     while index < encoded.len() {
         let byte = encoded[index];
-        if encode_uri_component_leaves_unescaped(byte) {
+        if canonical_token_field_leaves_unescaped(byte) {
             decoded.push(byte);
             index += 1;
             continue;
@@ -2346,7 +2346,7 @@ fn valid_encoded_token_field(value: &str, max_characters: usize) -> bool {
             return false;
         };
         let decoded_byte = (high << 4) | low;
-        if encode_uri_component_leaves_unescaped(decoded_byte) {
+        if canonical_token_field_leaves_unescaped(decoded_byte) {
             return false;
         }
         decoded.push(decoded_byte);
@@ -2358,12 +2358,8 @@ fn valid_encoded_token_field(value: &str, max_characters: usize) -> bool {
     !decoded.is_empty() && decoded.trim() == decoded && decoded.chars().count() <= max_characters
 }
 
-fn encode_uri_component_leaves_unescaped(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
-        || matches!(
-            byte,
-            b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
-        )
+fn canonical_token_field_leaves_unescaped(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.')
 }
 
 fn canonical_hex_value(byte: u8) -> Option<u8> {

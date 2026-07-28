@@ -52,4 +52,26 @@ describe("reserved Kosh media tokens", () => {
       }),
     ).toThrow("integer from 10 to 100");
   });
+
+  it("percent-encodes Markdown delimiters in authored image fields", () => {
+    const image = serializeKoshImageToken({
+      attachmentId: imageId,
+      widthPercent: 80,
+      altText: "*System* _diagram_",
+      caption: "~~Draft~~ (v1)!",
+    });
+
+    expect(image).toBe(
+      `{{kosh:image:${imageId};width=80%;alt=%2ASystem%2A%20%5Fdiagram%5F;` +
+        "caption=%7E%7EDraft%7E%7E%20%28v1%29%21}}",
+    );
+    expect(parseKoshMediaToken(image)).toEqual({
+      attachmentId: imageId,
+      kind: "image",
+      widthPercent: 80,
+      altText: "*System* _diagram_",
+      caption: "~~Draft~~ (v1)!",
+    });
+    expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=80%;alt=*System*}}`)).toBeNull();
+  });
 });

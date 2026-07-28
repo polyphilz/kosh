@@ -443,7 +443,9 @@ it("sanitizes pasted HTML through the Kosh schema", () => {
 it("round-trips image metadata, resizes from the keyboard, and removes the image", () => {
   const imageId = "01980c8e-6c00-7000-8000-000000000231";
   const onChange = vi.fn();
-  const source = `{{kosh:image:${imageId};width=70%;alt=System%20diagram;caption=Chapter%20overview}}`;
+  const source =
+    `{{kosh:image:${imageId};width=70%;alt=%2ASystem%2A%20%5Fdiagram%5F;` +
+    "caption=%7E%7EChapter%7E%7E%20%28overview%29%21}}";
   const { getByLabelText, getByRole } = render(
     <RichTextEditor
       ariaLabel="Body"
@@ -462,12 +464,12 @@ it("round-trips image metadata, resizes from the keyboard, and removes the image
   const textbox = getByRole("textbox", { name: "Body" });
   const view = editorView(textbox);
 
-  expect(getByRole("img", { name: "System diagram" })).toHaveAttribute(
+  expect(getByRole("img", { name: "*System* _diagram_" })).toHaveAttribute(
     "src",
     `kosh-media://localhost/attachment/${imageId}`,
   );
-  expect(getByLabelText("Alt text")).toHaveValue("System diagram");
-  expect(getByLabelText("Caption")).toHaveValue("Chapter overview");
+  expect(getByLabelText("Alt text")).toHaveValue("*System* _diagram_");
+  expect(getByLabelText("Caption")).toHaveValue("~~Chapter~~ (overview)!");
 
   fireEvent.input(getByLabelText("Alt text"), { target: { value: "Updated diagram" } });
   fireEvent.input(getByLabelText("Caption"), { target: { value: "Updated caption" } });
