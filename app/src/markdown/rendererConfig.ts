@@ -145,7 +145,7 @@ function visitKoshImageNodes(node: MarkdownAstNode) {
       }
       if (token?.kind === "attachment") {
         node.children[index] = {
-          alt: "Attachment",
+          alt: token.caption ?? "Attachment",
           title: "kosh-attachment",
           type: "image",
           url: attachmentMediaUrl(token.attachmentId),

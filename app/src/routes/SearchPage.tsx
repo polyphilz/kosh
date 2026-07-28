@@ -347,6 +347,7 @@ export function SearchPage() {
             error={citationError}
             focusRef={detailRef}
             loading={citationLoading}
+            onOpenAttachment={(attachmentId) => backend.openAttachmentExternal(attachmentId)}
             result={selectedResult}
           />
         </div>

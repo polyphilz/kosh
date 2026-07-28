@@ -10,7 +10,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, State};
 
 use crate::{
     database::{
@@ -30,7 +30,6 @@ const MIN_NATIVE_TEXT_CHARS: usize = 24;
 const MAX_RENDERED_PAGE_BYTES: usize = 48 * 1024 * 1024;
 const PDF_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const PDF_STALE_ATTEMPT_AGE: Duration = Duration::from_secs(5 * 60);
-const PDF_DROP_EVENT: &str = "kosh://pdf-drop";
 const MAX_PDF_OPEN_MATERIALIZATIONS: usize = 16;
 const PDF_INSPECTION_WORKER_ARG: &str = "--kosh-pdf-inspection-worker";
 const PDF_EXTRACTION_WORKER_ARG: &str = "--kosh-pdf-extraction-worker";
@@ -54,19 +53,6 @@ enum PdfWorkerResponse {
     Extraction {
         result: std::result::Result<Vec<PdfPageExtraction>, String>,
     },
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PdfDropNotice {
-    pub selections: Vec<PdfDropSelection>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PdfDropSelection {
-    pub selection_id: String,
-    pub filename: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,7 +103,7 @@ pub(crate) async fn select_pdf<R: tauri::Runtime>(
         return Ok(None);
     };
     state
-        .register_pdf_selection(path)
+        .register_file_selection(path)
         .map(Some)
         .map_err(Into::into)
 }
@@ -128,7 +114,7 @@ pub(crate) async fn ingest_selected_pdf(
     draft_id: String,
     selection_id: String,
 ) -> Result<PdfRecord, crate::database::commands::CommandError> {
-    let path = state.take_pdf_selection(&selection_id)?;
+    let path = state.take_file_selection(&selection_id)?;
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -138,6 +124,15 @@ pub(crate) async fn ingest_selected_pdf(
         .await
         .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
         .map_err(crate::database::commands::CommandError::from)?;
+    ingest_pdf_bytes(&state, draft_id, &filename, raw).await
+}
+
+pub(crate) async fn ingest_pdf_bytes(
+    state: &RuntimeState,
+    draft_id: String,
+    filename: &str,
+    raw: Vec<u8>,
+) -> Result<PdfRecord, crate::database::commands::CommandError> {
     let client = state.database_client();
     let now_ms = state.now_ms();
     let limits = state.media_limits();
@@ -147,6 +142,7 @@ pub(crate) async fn ingest_selected_pdf(
     let attachment_id = ids.next().expect("requested PDF attachment ID");
     let ingest_lease_id = ids.next().expect("requested PDF lease ID");
     let extraction_id = ids.next().expect("requested PDF extraction ID");
+    let filename = filename.to_owned();
     let record = tauri::async_runtime::spawn_blocking(move || {
         let page_count = inspect_pdf_isolated(&raw)?;
         let staged = StagedAttachment::from_reader(
@@ -174,21 +170,6 @@ pub(crate) async fn ingest_selected_pdf(
     .map_err(crate::database::commands::CommandError::from)?;
     state.wake_pdf_extraction();
     Ok(record)
-}
-
-#[tauri::command]
-pub(crate) fn set_pdf_drop_consumer_active(state: State<'_, RuntimeState>, active: bool) {
-    state.set_pdf_drop_consumer_active(active);
-}
-
-#[tauri::command]
-pub(crate) fn discard_pdf_drop_selections(
-    state: State<'_, RuntimeState>,
-    selection_ids: Vec<String>,
-) -> Result<(), crate::database::commands::CommandError> {
-    state
-        .discard_pdf_drop_selections(&selection_ids)
-        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -246,60 +227,6 @@ pub(crate) async fn open_pdf_external<R: tauri::Runtime>(
     .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
     .map_err(crate::database::commands::CommandError::from)?;
     open_path_on_main_thread(&app, path).await
-}
-
-pub(crate) fn handle_pdf_drop<R: tauri::Runtime>(
-    window: &tauri::Window<R>,
-    event: &tauri::WindowEvent,
-) {
-    let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event else {
-        return;
-    };
-    let Some(state) = window.try_state::<RuntimeState>() else {
-        return;
-    };
-    if !state.pdf_drop_consumer_active() {
-        return;
-    }
-    let selections = paths
-        .iter()
-        .filter(|path| {
-            path.extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-        })
-        .take(8)
-        .filter_map(|path| {
-            let selection_id = match state.register_dropped_pdf_selection(path.clone()) {
-                Ok(id) => id,
-                Err(error) => {
-                    log::warn!("could not register a dropped PDF: {error}");
-                    return None;
-                }
-            };
-            Some(PdfDropSelection {
-                selection_id,
-                filename: path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("Dropped PDF")
-                    .to_owned(),
-            })
-        })
-        .collect::<Vec<_>>();
-    if selections.is_empty() {
-        return;
-    }
-    let selection_ids = selections
-        .iter()
-        .map(|selection| selection.selection_id.clone())
-        .collect::<Vec<_>>();
-    if let Err(error) = window.emit(PDF_DROP_EVENT, PdfDropNotice { selections }) {
-        if let Err(discard_error) = state.discard_pdf_drop_selections(&selection_ids) {
-            log::warn!("could not revoke an undelivered PDF drop: {discard_error}");
-        }
-        log::warn!("could not notify the editor about a native PDF drop: {error}");
-    }
 }
 
 pub(crate) fn recover_pdf_open_directory(path: &Path) -> Result<usize, DatabaseError> {

@@ -6,6 +6,7 @@ import type {
   DeleteTidbitInput,
   DraftRecord,
   EditTidbitInput,
+  GenericAttachmentStatusRecord,
   ImageDropIngestResult,
   ImageOcrDiagnostics,
   ImageRecord,
@@ -15,6 +16,7 @@ import type {
   PdfRecord,
   PdfStatusRecord,
   RuntimeProbe,
+  SelectedAttachmentRecord,
   RestoreTidbitInput,
   SaveDraftInput,
   SearchPassagesInput,
@@ -64,10 +66,19 @@ export const tauriBackend: Backend = {
   selectPdf: () => invoke<string | null>("select_pdf"),
   ingestSelectedPdf: (selectionId: string, draftId: string) =>
     invoke<PdfRecord>("ingest_selected_pdf", { selectionId, draftId }),
-  setPdfDropConsumerActive: (active: boolean) =>
-    invoke<void>("set_pdf_drop_consumer_active", { active }),
-  discardPdfDropSelections: (selectionIds: string[]) =>
-    invoke<void>("discard_pdf_drop_selections", { selectionIds }),
+  selectAttachment: () => invoke<string | null>("select_attachment"),
+  ingestSelectedAttachment: (selectionId: string, draftId: string) =>
+    invoke<SelectedAttachmentRecord>("ingest_selected_attachment", { selectionId, draftId }),
+  attachmentStatus: (attachmentId: string) =>
+    invoke<GenericAttachmentStatusRecord>("attachment_status", { attachmentId }),
+  openAttachmentExternal: (attachmentId: string) =>
+    invoke<void>("open_attachment_external", { attachmentId }),
+  revealAttachmentInFinder: (attachmentId: string) =>
+    invoke<void>("reveal_attachment_in_finder", { attachmentId }),
+  setFileDropConsumerActive: (active: boolean) =>
+    invoke<void>("set_file_drop_consumer_active", { active }),
+  discardFileDropSelections: (selectionIds: string[]) =>
+    invoke<void>("discard_file_drop_selections", { selectionIds }),
   pdfStatus: (attachmentId: string) => invoke<PdfStatusRecord>("pdf_status", { attachmentId }),
   retryPdfExtraction: (attachmentId: string) =>
     invoke<PdfStatusRecord>("retry_pdf_extraction", { attachmentId }),

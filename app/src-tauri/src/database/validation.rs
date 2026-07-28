@@ -295,7 +295,7 @@ pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
         "passage_fts_trigram",
         "passage_fts_short",
     ];
-    const VERSION: &str = "lexical-v1";
+    const VERSION: &str = "lexical-v2";
     let existing_version = connection
         .query_row(
             "SELECT version FROM index_state WHERE name = 'PASSAGE_FTS'",

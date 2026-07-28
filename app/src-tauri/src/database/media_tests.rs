@@ -15,15 +15,16 @@ use super::{
     media::{
         recover_media_lifecycle_batch, referenced_attachments, split_pdf_page_passages,
         AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
-        IngestAttachmentMetadata, IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite,
-        MediaByteRange, MediaRangeRequest, PdfExtractionStatus, PdfPageExtraction, PdfPageSource,
-        StagedAttachment, MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS,
-        PDF_PASSAGE_OVERLAP_CHARS, PDF_RECOVERY_BATCH_SIZE,
+        IngestAttachmentMetadata, IngestAttachmentWrite, IngestGenericAttachmentWrite,
+        IngestImageWrite, IngestPdfWrite, MediaByteRange, MediaRangeRequest, PdfExtractionStatus,
+        PdfPageExtraction, PdfPageSource, StagedAttachment, TextFileSegment,
+        MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
+        PDF_RECOVERY_BATCH_SIZE,
     },
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    AttachmentIngestInput, AttachmentKind, CitationLocator, ClearDraftInput, Database,
-    DatabaseError, DatabasePaths, EditTidbitInput, LexicalSearchMode, MediaLimits, SaveDraftInput,
-    SearchPassagesInput, SourceDraft, TidbitDraft,
+    AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CitationLocator,
+    ClearDraftInput, Database, DatabaseError, DatabasePaths, EditTidbitInput, LexicalSearchMode,
+    MediaLimits, SaveDraftInput, SearchPassagesInput, SourceDraft, TidbitDraft,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -178,6 +179,40 @@ impl TestLibrary {
             })
             .expect("ingest PDF")
     }
+
+    fn ingest_generic(
+        &self,
+        suffixes: (u64, u64, u64, u64),
+        filename: &str,
+        media_type: &str,
+        bytes: &[u8],
+        extraction: Option<std::result::Result<Vec<TextFileSegment>, String>>,
+        now_ms: i64,
+    ) -> super::GenericAttachmentRecord {
+        let staged = StagedAttachment::from_reader(
+            Cursor::new(bytes),
+            &self.staging,
+            &id(suffixes.2),
+            MediaLimits::default().max_attachment_bytes,
+        )
+        .expect("stage generic attachment");
+        self.database
+            .client()
+            .ingest_generic_attachment(IngestGenericAttachmentWrite {
+                attachment: staged.write(IngestAttachmentMetadata {
+                    attachment_id: id(suffixes.0),
+                    ingest_lease_id: id(suffixes.1),
+                    draft_id: CAPTURE_DRAFT_ID.into(),
+                    display_filename: filename.into(),
+                    media_type: media_type.into(),
+                    now_ms,
+                    limits: MediaLimits::default(),
+                }),
+                extraction_id: id(suffixes.3),
+                extraction,
+            })
+            .expect("ingest generic attachment")
+    }
 }
 
 fn id(suffix: u64) -> String {
@@ -242,6 +277,215 @@ fn media_tokens_require_canonical_syntax_and_preserve_authored_order() {
         "{{{{kosh:image:{first};width=70%;caption={oversized_caption}}}}}"
     ))
     .is_empty());
+    let caption_references = referenced_attachments(&format!(
+        "{{{{kosh:attachment:{third};caption=Useful%20appendix}}}}"
+    ));
+    assert_eq!(caption_references.len(), 1);
+    assert_eq!(caption_references[0].id, third);
+    assert!(referenced_attachments(&format!(
+        "{{{{kosh:attachment:{third};caption=raw space}}}}"
+    ))
+    .is_empty());
+}
+
+#[test]
+fn text_attachments_create_exact_line_evidence_with_revision_bound_sources() {
+    let library = TestLibrary::new();
+    let attachment = library.ingest_generic(
+        (0x720, 0x721, 0x722, 0x723),
+        "chapter-notes.md",
+        "text/markdown",
+        b"one\ntwo\nthree\nfour",
+        Some(Ok(vec![
+            TextFileSegment {
+                start_line: 1,
+                end_line: 2,
+                content: "one\ntwo".into(),
+            },
+            TextFileSegment {
+                start_line: 3,
+                end_line: 4,
+                content: "three exact_attachment_evidence\nfour".into(),
+            },
+        ])),
+        11,
+    );
+    assert_eq!(
+        attachment.extraction_status,
+        AttachmentExtractionStatus::Ready
+    );
+    assert_eq!(attachment.extracted_line_count, 4);
+    let body = format!(
+        "Course notes.\n\n{{{{kosh:attachment:{};caption=Useful%20appendix}}}}",
+        attachment.attachment.id
+    );
+    library.save_capture(&body, 12);
+    library
+        .database
+        .client()
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: Some("Text attachment".into()),
+                body_markdown: body,
+                sources: vec![SourceDraft {
+                    label: Some("Course source".into()),
+                    url: Some("https://example.com/text".into()),
+                }],
+            },
+            now_ms: 13,
+            tidbit_id: id(0x724),
+            revision_id: id(0x725),
+            source_ids: vec![id(0x726)],
+        })
+        .expect("create text-backed tidbit");
+
+    let client = library.database.client();
+    let results = client
+        .search_passages(SearchPassagesInput {
+            query: "exact_attachment_evidence".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search text attachment");
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].citation.locator,
+        CitationLocator::TextLines {
+            start_line: 3,
+            end_line: 4,
+        }
+    );
+    assert_eq!(
+        results[0]
+            .citation
+            .attachment
+            .as_ref()
+            .expect("attachment citation")
+            .display_filename,
+        "chapter-notes.md"
+    );
+    assert_eq!(
+        results[0].citation.sources[0].url.as_deref(),
+        Some("https://example.com/text")
+    );
+    let status = client
+        .load_generic_attachment_status(attachment.attachment.id)
+        .expect("text attachment status");
+    assert_eq!(status.extraction_status, AttachmentExtractionStatus::Ready);
+    assert_eq!(status.extracted_line_count, 4);
+}
+
+#[test]
+fn opaque_and_failed_text_attachments_remain_available_without_false_evidence() {
+    let library = TestLibrary::new();
+    let opaque = library.ingest_generic(
+        (0x727, 0x728, 0x729, 0x72a),
+        "raw-shower-thought.bin",
+        "application/octet-stream",
+        b"\0opaque payload",
+        None,
+        11,
+    );
+    let failed = library.ingest_generic(
+        (0x72b, 0x72c, 0x72d, 0x72e),
+        "invalid-notes.txt",
+        "text/plain",
+        &[0xff, 0xfe, 0x00],
+        Some(Err(
+            "The UTF-16 text file has an incomplete code unit".into()
+        )),
+        12,
+    );
+    assert_eq!(
+        opaque.extraction_status,
+        AttachmentExtractionStatus::NotApplicable
+    );
+    assert_eq!(failed.extraction_status, AttachmentExtractionStatus::Failed);
+    assert!(failed.extraction_error.is_some());
+    let body = format!(
+        "{{{{kosh:attachment:{};caption=Shower%20thought%20archive}}}}\n\n\
+         {{{{kosh:attachment:{}}}}}",
+        opaque.attachment.id, failed.attachment.id
+    );
+    library.save_capture(&body, 13);
+    library
+        .database
+        .client()
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: Some("Opaque files".into()),
+                body_markdown: body,
+                sources: Vec::new(),
+            },
+            now_ms: 14,
+            tidbit_id: id(0x72f),
+            revision_id: id(0x730),
+            source_ids: Vec::new(),
+        })
+        .expect("create opaque-backed tidbit");
+    let client = library.database.client();
+    assert!(client
+        .search_passages(SearchPassagesInput {
+            query: "opaque payload".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("opaque bytes are not indexed")
+        .is_empty());
+    let filename_results = client
+        .search_passages(SearchPassagesInput {
+            query: "raw-shower-thought.bin".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("filename metadata is searchable");
+    assert_eq!(filename_results.len(), 1);
+    assert_eq!(
+        client
+            .search_passages(SearchPassagesInput {
+                query: "application/octet-stream".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("opaque MIME type is searchable")
+            .len(),
+        1
+    );
+    assert_eq!(
+        client
+            .search_passages(SearchPassagesInput {
+                query: "Shower thought archive".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("attachment caption is searchable")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn duplicate_generic_files_share_bytes_but_keep_independent_provenance() {
+    let library = TestLibrary::new();
+    let bytes = b"same attachment bytes";
+    let first = library.ingest_generic(
+        (0x731, 0x732, 0x733, 0x734),
+        "first.bin",
+        "application/octet-stream",
+        bytes,
+        None,
+        11,
+    );
+    let second = library.ingest_generic(
+        (0x735, 0x736, 0x737, 0x738),
+        "second.bin",
+        "application/octet-stream",
+        bytes,
+        None,
+        12,
+    );
+    assert_ne!(first.attachment.id, second.attachment.id);
+    assert_eq!(blob_count(&library.database), 1);
 }
 
 #[test]

@@ -23,7 +23,7 @@ const AGREEMENT_RRF_WEIGHT: f64 = 0.20;
 const PHRASE_RRF_WEIGHT: f64 = 0.15;
 const TITLE_HEADING_RRF_WEIGHT: f64 = 0.10;
 const SEMANTIC_EXPANSION_RANK_LIMIT: usize = 1;
-pub(super) const FTS_VERSION: &str = "lexical-v1";
+pub(super) const FTS_VERSION: &str = "lexical-v2";
 
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
     result_limit
@@ -725,7 +725,10 @@ pub(super) fn replace_tidbit_documents(
             ),
             coalesce(
                 (
-                    SELECT group_concat(attachment.display_filename, char(10))
+                    SELECT group_concat(
+                        attachment.display_filename || char(10) || attachment.media_type,
+                        char(10)
+                    )
                     FROM tidbit_revision_attachment AS membership
                     JOIN attachment ON attachment.id = membership.attachment_id
                     WHERE membership.tidbit_revision_id = revision.id
@@ -812,7 +815,7 @@ pub(super) fn replace_attachment_documents_in_transaction(
             '',
             '',
             '',
-            attachment.display_filename,
+            attachment.display_filename || char(10) || attachment.media_type,
             passage.content,
             passage.content_hash,
             attachment.updated_at
@@ -878,7 +881,10 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
             ),
             coalesce(
                 (
-                    SELECT group_concat(attachment.display_filename, char(10))
+                    SELECT group_concat(
+                        attachment.display_filename || char(10) || attachment.media_type,
+                        char(10)
+                    )
                     FROM tidbit_revision_attachment AS membership
                     JOIN attachment ON attachment.id = membership.attachment_id
                     WHERE membership.tidbit_revision_id = revision.id
@@ -932,7 +938,7 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
             '',
             '',
             '',
-            attachment.display_filename,
+            attachment.display_filename || char(10) || attachment.media_type,
             passage.content,
             passage.content_hash,
             attachment.updated_at
@@ -1078,7 +1084,10 @@ fn load_search_documents(
             ),
             coalesce(
                 (
-                    SELECT group_concat(attachment.display_filename, char(10))
+                    SELECT group_concat(
+                        attachment.display_filename || char(10) || attachment.media_type,
+                        char(10)
+                    )
                     FROM tidbit_revision_attachment AS membership
                     JOIN attachment ON attachment.id = membership.attachment_id
                     WHERE membership.tidbit_revision_id = revision.id
@@ -1123,7 +1132,7 @@ fn load_search_documents(
             '',
             '',
             '',
-            attachment.display_filename,
+            attachment.display_filename || char(10) || attachment.media_type,
             passage.content,
             candidate.word_rank,
             candidate.trigram_rank,

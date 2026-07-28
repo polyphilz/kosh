@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode, createRef } from "react";
 import { NodeSelection, TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
-import type { ImageRecord, PdfRecord } from "../../src/backend/contracts";
+import type { GenericAttachmentRecord, ImageRecord, PdfRecord } from "../../src/backend/contracts";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { statusPollDelay } from "../../src/markdown/ImageNodeView";
@@ -631,6 +631,62 @@ it("inserts a PDF token and exposes extraction status and system-open controls",
   await waitFor(() => expect(openPdfExternal).toHaveBeenCalledWith(pdf.id));
 });
 
+it("inserts, captions, opens, reveals, and replaces a generic attachment", async () => {
+  const first = genericAttachmentRecord("01980c8e-6c00-7000-8000-000000000238", "notes.md");
+  const second = genericAttachmentRecord(
+    "01980c8e-6c00-7000-8000-000000000239",
+    "archive.zip",
+    "BINARY",
+  );
+  const pickAttachment = vi
+    .fn()
+    .mockResolvedValueOnce({ record: first, recordKind: "GENERIC" })
+    .mockResolvedValueOnce({ record: second, recordKind: "GENERIC" });
+  const openAttachmentExternal = vi.fn(async () => undefined);
+  const revealAttachmentInFinder = vi.fn(async () => undefined);
+  const onChange = vi.fn();
+  const result = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      attachmentStatus={async (attachmentId) => {
+        const record = attachmentId === first.id ? first : second;
+        return {
+          attachmentId,
+          byteLength: record.byteLength,
+          displayFilename: record.displayFilename,
+          extractedLineCount: record.extractedLineCount,
+          extractionError: record.extractionError,
+          extractionStatus: record.extractionStatus,
+          kind: record.kind,
+          mediaType: record.mediaType,
+        };
+      }}
+      onChange={onChange}
+      openAttachmentExternal={openAttachmentExternal}
+      pickAttachment={pickAttachment}
+      revealAttachmentInFinder={revealAttachmentInFinder}
+      value=""
+    />,
+  );
+
+  fireEvent.click(result.getByRole("button", { name: "Add attachment" }));
+  await result.findByText("notes.md");
+  expect(result.getByText(/17 lines searchable/u)).toBeVisible();
+
+  await userEvent.type(result.getByRole("textbox", { name: "Attachment caption" }), "Key notes");
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${first.id};caption=Key%20notes}}`);
+  fireEvent.click(result.getByRole("button", { name: "Open" }));
+  fireEvent.click(result.getByRole("button", { name: "Reveal" }));
+  await waitFor(() => {
+    expect(openAttachmentExternal).toHaveBeenCalledWith(first.id);
+    expect(revealAttachmentInFinder).toHaveBeenCalledWith(first.id);
+  });
+
+  fireEvent.click(result.getByRole("button", { name: "Replace" }));
+  await result.findByText("archive.zip");
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${second.id}}}`);
+});
+
 it("disables PDF extraction retries while the editor is disabled", async () => {
   const pdf = pdfRecord("01980c8e-6c00-7000-8000-000000000237");
   const retryPdfExtraction = vi.fn(async () => ({
@@ -828,6 +884,24 @@ function pdfRecord(id: string): PdfRecord {
     kind: "PDF",
     mediaType: "application/pdf",
     pageCount: 3,
+  };
+}
+
+function genericAttachmentRecord(
+  id: string,
+  displayFilename: string,
+  kind: "TEXT" | "BINARY" = "TEXT",
+): GenericAttachmentRecord {
+  return {
+    byteLength: kind === "TEXT" ? 4_096 : 10_240,
+    displayFilename,
+    extractedLineCount: kind === "TEXT" ? 17 : 0,
+    extractionError: null,
+    extractionStatus: kind === "TEXT" ? "READY" : "NOT_APPLICABLE",
+    id,
+    ingestLeaseId: "01980c8e-6c00-7000-8000-000000000240",
+    kind,
+    mediaType: kind === "TEXT" ? "text/markdown" : "application/zip",
   };
 }
 

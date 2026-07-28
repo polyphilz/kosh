@@ -12,7 +12,7 @@ use image::{
     imageops::FilterType, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits,
 };
 use serde::Serialize;
-use tauri::{http, AppHandle, Emitter, Manager, State};
+use tauri::{http, AppHandle, Manager, State};
 
 use crate::{
     database::{
@@ -35,7 +35,6 @@ const MAX_CANONICAL_IMAGE_EDGE: u32 = 1_600;
 const WEBP_QUALITY: f32 = 80.0;
 const OCR_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const OCR_STALE_ATTEMPT_AGE: Duration = Duration::from_secs(2 * 60);
-const IMAGE_DROP_EVENT: &str = "kosh://image-drop";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -278,38 +277,6 @@ pub(crate) async fn image_ocr_diagnostics(
         .map_err(Into::into)
 }
 
-pub(crate) fn handle_image_drop<R: tauri::Runtime>(
-    window: &tauri::Window<R>,
-    event: &tauri::WindowEvent,
-) {
-    let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event else {
-        return;
-    };
-    let Some(state) = window.try_state::<RuntimeState>() else {
-        return;
-    };
-    let image_paths = image_drop_candidates(paths);
-    let Some(notice) = state.register_image_drop(&image_paths) else {
-        return;
-    };
-    if let Err(error) = window.emit(IMAGE_DROP_EVENT, notice) {
-        log::warn!("could not notify the editor about a native image drop: {error}");
-    }
-}
-
-fn image_drop_candidates(paths: &[PathBuf]) -> Vec<PathBuf> {
-    paths
-        .iter()
-        .filter(|path| {
-            !path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-        })
-        .cloned()
-        .collect()
-}
-
 async fn ingest_image_path(
     state: &RuntimeState,
     draft_id: String,
@@ -327,7 +294,7 @@ async fn ingest_image_path(
     ingest_image_bytes(state, draft_id, &filename, raw).await
 }
 
-async fn ingest_image_bytes(
+pub(crate) async fn ingest_image_bytes(
     state: &RuntimeState,
     draft_id: String,
     filename: &str,
@@ -464,6 +431,19 @@ fn canonicalize_image(bytes: &[u8]) -> Result<ProcessedImage, DatabaseError> {
             natural_width,
             natural_height,
         },
+    })
+}
+
+pub(crate) fn is_supported_image(bytes: &[u8]) -> bool {
+    image::guess_format(bytes).is_ok_and(|format| {
+        matches!(
+            format,
+            ImageFormat::Gif
+                | ImageFormat::Jpeg
+                | ImageFormat::Png
+                | ImageFormat::Tiff
+                | ImageFormat::WebP
+        )
     })
 }
 
@@ -968,24 +948,6 @@ mod tests {
             ".._chapter_image.png"
         );
         assert_eq!(safe_image_filename(" \n ", ImageFormat::WebP), "Image.webp");
-    }
-
-    #[test]
-    fn image_drop_candidates_preserve_content_sniffing_and_exclude_declared_pdfs() {
-        let paths = [
-            PathBuf::from("extensionless"),
-            PathBuf::from("camera-export.bin"),
-            PathBuf::from("chapter.pdf"),
-            PathBuf::from("appendix.PDF"),
-        ];
-
-        assert_eq!(
-            image_drop_candidates(&paths),
-            [
-                PathBuf::from("extensionless"),
-                PathBuf::from("camera-export.bin")
-            ]
-        );
     }
 
     #[test]

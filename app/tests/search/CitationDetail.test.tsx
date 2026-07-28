@@ -1,6 +1,6 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CitationResolution } from "../../src/backend/contracts";
 import { CitationDetail } from "../../src/search/CitationDetail";
 
@@ -59,6 +59,41 @@ describe("image citation detail", () => {
     expect(queryByLabelText("Cited image region")).toBeNull();
     expect(getByText("OCR evidence from the full image")).toBeInTheDocument();
   });
+});
+
+it("labels exact text line evidence and opens its validated attachment", async () => {
+  const onOpenAttachment = vi.fn(async () => undefined);
+  const citation: CitationResolution = {
+    attachment: {
+      deleted: false,
+      displayFilename: "chapter-notes.md",
+      extractionId: "01980c8e-6c00-7000-8000-000000000254",
+      id: attachmentId,
+      mediaType: "text/markdown",
+    },
+    constructionVersion: "text-lines-v1",
+    excerpt: "Exact text attachment evidence",
+    headingContext: [],
+    locator: { endLine: 9, kind: "TEXT_LINES", startLine: 7 },
+    passageId: "01980c8e-6c00-7000-8000-000000000255",
+    sources: [],
+    state: "CURRENT",
+    tidbit: null,
+  };
+  const { getByRole, getByText } = render(
+    <CitationDetail
+      citation={citation}
+      error={null}
+      focusRef={createRef<HTMLElement>()}
+      loading={false}
+      onOpenAttachment={onOpenAttachment}
+      result={undefined}
+    />,
+  );
+
+  expect(getByText("lines 7–9 · Attachment · Current")).toBeVisible();
+  fireEvent.click(getByRole("button", { name: "Open attachment" }));
+  await waitFor(() => expect(onOpenAttachment).toHaveBeenCalledWith(attachmentId));
 });
 
 function imageCitation(region: unknown): CitationResolution {

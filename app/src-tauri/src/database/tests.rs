@@ -1236,5 +1236,5 @@ fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("maintained index state");
-    assert_eq!(state, ("IDLE".into(), "lexical-v1".into()));
+    assert_eq!(state, ("IDLE".into(), "lexical-v2".into()));
 }

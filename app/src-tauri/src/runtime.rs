@@ -58,8 +58,8 @@ pub(crate) struct RuntimeState {
     pdf_extraction: crate::pdf::PdfExtractionCoordinator,
     pending_clipboard_images: Mutex<HashMap<String, PendingClipboardImage>>,
     pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
-    pending_pdf_selections: Mutex<HashMap<String, PendingPdfSelection>>,
-    pdf_drop_consumer_active: AtomicBool,
+    pending_file_selections: Mutex<HashMap<String, PendingFileSelection>>,
+    file_drop_consumer_active: AtomicBool,
 }
 
 struct PendingClipboardImage {
@@ -72,7 +72,7 @@ struct PendingImageDrop {
     paths: Vec<PathBuf>,
 }
 
-struct PendingPdfSelection {
+struct PendingFileSelection {
     created_at_ms: i64,
     dropped: bool,
     path: PathBuf,
@@ -83,8 +83,8 @@ const MAX_PENDING_CLIPBOARD_IMAGES: usize = 4;
 const IMAGE_DROP_TTL_MS: i64 = 5 * 60 * 1_000;
 const MAX_PENDING_IMAGE_DROPS: usize = 16;
 const MAX_FILES_PER_IMAGE_DROP: usize = 32;
-const PDF_SELECTION_TTL_MS: i64 = 5 * 60 * 1_000;
-const MAX_PENDING_PDF_SELECTIONS: usize = 8;
+const FILE_SELECTION_TTL_MS: i64 = 5 * 60 * 1_000;
+const MAX_PENDING_FILE_SELECTIONS: usize = 8;
 
 fn start_optional_image_ocr(client: DatabaseClient) -> crate::media::ImageOcrCoordinator {
     match crate::media::ImageOcrCoordinator::start(client) {
@@ -130,8 +130,8 @@ impl RuntimeState {
             pdf_extraction,
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
-            pending_pdf_selections: Mutex::new(HashMap::new()),
-            pdf_drop_consumer_active: AtomicBool::new(false),
+            pending_file_selections: Mutex::new(HashMap::new()),
+            file_drop_consumer_active: AtomicBool::new(false),
         };
         if let Err(error) = state
             .database
@@ -147,6 +147,11 @@ impl RuntimeState {
         }
         if let Err(error) = crate::pdf::recover_pdf_open_directory(&state.pdf_open_directory()) {
             log::warn!("startup PDF materialization recovery could not complete: {error}");
+        }
+        if let Err(error) = crate::attachments::recover_attachment_open_directory(
+            &state.attachment_open_directory(),
+        ) {
+            log::warn!("startup attachment materialization recovery could not complete: {error}");
         }
         Ok(state)
     }
@@ -171,8 +176,8 @@ impl RuntimeState {
             pdf_extraction: crate::pdf::PdfExtractionCoordinator::disabled(),
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
-            pending_pdf_selections: Mutex::new(HashMap::new()),
-            pdf_drop_consumer_active: AtomicBool::new(false),
+            pending_file_selections: Mutex::new(HashMap::new()),
+            file_drop_consumer_active: AtomicBool::new(false),
         }
     }
 
@@ -220,6 +225,10 @@ impl RuntimeState {
 
     pub(crate) fn pdf_open_directory(&self) -> PathBuf {
         self.data_dir.join("pdf-open")
+    }
+
+    pub(crate) fn attachment_open_directory(&self) -> PathBuf {
+        self.data_dir.join("attachment-open")
     }
 
     pub(crate) fn register_clipboard_image(
@@ -345,58 +354,58 @@ impl RuntimeState {
             })
     }
 
-    pub(crate) fn register_pdf_selection(&self, path: PathBuf) -> crate::database::Result<String> {
-        self.register_pdf_selection_with_origin(path, false)
+    pub(crate) fn register_file_selection(&self, path: PathBuf) -> crate::database::Result<String> {
+        self.register_file_selection_with_origin(path, false)
     }
 
-    pub(crate) fn register_dropped_pdf_selection(
+    pub(crate) fn register_dropped_file_selection(
         &self,
         path: PathBuf,
     ) -> crate::database::Result<String> {
-        if !self.pdf_drop_consumer_active() {
+        if !self.file_drop_consumer_active() {
             return Err(crate::database::DatabaseError::InvalidInput(
-                "no editor is accepting dropped PDFs".into(),
+                "no editor is accepting dropped files".into(),
             ));
         }
-        self.register_pdf_selection_with_origin(path, true)
+        self.register_file_selection_with_origin(path, true)
     }
 
-    fn register_pdf_selection_with_origin(
+    fn register_file_selection_with_origin(
         &self,
         path: PathBuf,
         dropped: bool,
     ) -> crate::database::Result<String> {
         if !path.is_file() {
             return Err(crate::database::DatabaseError::InvalidInput(
-                "the selected PDF is not a regular file".into(),
+                "the selected file is not a regular file".into(),
             ));
         }
         let now_ms = self.now_ms();
         let mut pending = self
-            .pending_pdf_selections
+            .pending_file_selections
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pending.retain(|_, selection| {
-            now_ms.saturating_sub(selection.created_at_ms) <= PDF_SELECTION_TTL_MS
+            now_ms.saturating_sub(selection.created_at_ms) <= FILE_SELECTION_TTL_MS
         });
-        if dropped && !self.pdf_drop_consumer_active() {
+        if dropped && !self.file_drop_consumer_active() {
             return Err(crate::database::DatabaseError::InvalidInput(
-                "no editor is accepting dropped PDFs".into(),
+                "no editor is accepting dropped files".into(),
             ));
         }
-        if pending.len() >= MAX_PENDING_PDF_SELECTIONS {
+        if pending.len() >= MAX_PENDING_FILE_SELECTIONS {
             return Err(crate::database::DatabaseError::InvalidInput(
-                "too many PDFs are awaiting ingestion".into(),
+                "too many files are awaiting ingestion".into(),
             ));
         }
         let selection_id = self
             .next_ids(1)
             .into_iter()
             .next()
-            .expect("requested PDF selection ID");
+            .expect("requested file selection ID");
         pending.insert(
             selection_id.clone(),
-            PendingPdfSelection {
+            PendingFileSelection {
                 created_at_ms: now_ms,
                 dropped,
                 path,
@@ -405,37 +414,37 @@ impl RuntimeState {
         Ok(selection_id)
     }
 
-    pub(crate) fn set_pdf_drop_consumer_active(&self, active: bool) {
-        self.pdf_drop_consumer_active
+    pub(crate) fn set_file_drop_consumer_active(&self, active: bool) {
+        self.file_drop_consumer_active
             .store(active, Ordering::Release);
         if active {
             return;
         }
         let mut pending = self
-            .pending_pdf_selections
+            .pending_file_selections
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pending.retain(|_, selection| !selection.dropped);
     }
 
-    pub(crate) fn pdf_drop_consumer_active(&self) -> bool {
-        self.pdf_drop_consumer_active.load(Ordering::Acquire)
+    pub(crate) fn file_drop_consumer_active(&self) -> bool {
+        self.file_drop_consumer_active.load(Ordering::Acquire)
     }
 
-    pub(crate) fn discard_pdf_drop_selections(
+    pub(crate) fn discard_file_drop_selections(
         &self,
         selection_ids: &[String],
     ) -> crate::database::Result<()> {
-        if selection_ids.len() > MAX_PENDING_PDF_SELECTIONS {
+        if selection_ids.len() > MAX_PENDING_FILE_SELECTIONS {
             return Err(crate::database::DatabaseError::InvalidInput(
-                "too many PDF selections were provided".into(),
+                "too many file selections were provided".into(),
             ));
         }
         for selection_id in selection_ids {
             validate_capability_id(selection_id, "selectionId")?;
         }
         let mut pending = self
-            .pending_pdf_selections
+            .pending_file_selections
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for selection_id in selection_ids {
@@ -449,24 +458,24 @@ impl RuntimeState {
         Ok(())
     }
 
-    pub(crate) fn take_pdf_selection(
+    pub(crate) fn take_file_selection(
         &self,
         selection_id: &str,
     ) -> crate::database::Result<PathBuf> {
         validate_capability_id(selection_id, "selectionId")?;
         let now_ms = self.now_ms();
         let mut pending = self
-            .pending_pdf_selections
+            .pending_file_selections
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pending.retain(|_, selection| {
-            now_ms.saturating_sub(selection.created_at_ms) <= PDF_SELECTION_TTL_MS
+            now_ms.saturating_sub(selection.created_at_ms) <= FILE_SELECTION_TTL_MS
         });
         pending
             .remove(selection_id)
             .map(|selection| selection.path)
             .ok_or_else(|| crate::database::DatabaseError::NotFound {
-                entity: "PDF selection",
+                entity: "file selection",
                 id: selection_id.into(),
             })
     }
@@ -690,12 +699,12 @@ mod tests {
     }
 
     #[test]
-    fn pdf_drop_capabilities_require_and_follow_an_active_consumer() {
-        let directory = tempfile::tempdir().expect("temporary PDF drop directory");
+    fn file_drop_capabilities_require_and_follow_an_active_consumer() {
+        let directory = tempfile::tempdir().expect("temporary file drop directory");
         let picker_pdf = directory.path().join("picker.pdf");
-        let dropped_pdf = directory.path().join("dropped.pdf");
-        std::fs::write(&picker_pdf, b"%PDF-picker").expect("picker PDF fixture");
-        std::fs::write(&dropped_pdf, b"%PDF-drop").expect("dropped PDF fixture");
+        let dropped_pdf = directory.path().join("dropped.txt");
+        std::fs::write(&picker_pdf, b"%PDF-picker").expect("picker file fixture");
+        std::fs::write(&dropped_pdf, b"dropped text").expect("dropped file fixture");
         let picker_id = "019f547b-6200-7000-8000-000000000993".to_owned();
         let dropped_id = "019f547b-6200-7000-8000-000000000994".to_owned();
         let state = RuntimeState::deterministic(
@@ -705,32 +714,32 @@ mod tests {
         );
 
         assert!(matches!(
-            state.register_dropped_pdf_selection(dropped_pdf.clone()),
+            state.register_dropped_file_selection(dropped_pdf.clone()),
             Err(crate::database::DatabaseError::InvalidInput(_))
         ));
         assert_eq!(
             state
-                .register_pdf_selection(picker_pdf.clone())
+                .register_file_selection(picker_pdf.clone())
                 .expect("picker selection"),
             picker_id
         );
-        state.set_pdf_drop_consumer_active(true);
+        state.set_file_drop_consumer_active(true);
         assert_eq!(
             state
-                .register_dropped_pdf_selection(dropped_pdf)
+                .register_dropped_file_selection(dropped_pdf)
                 .expect("dropped selection"),
             dropped_id
         );
 
-        state.set_pdf_drop_consumer_active(false);
+        state.set_file_drop_consumer_active(false);
         assert_eq!(
             state
-                .take_pdf_selection(&picker_id)
+                .take_file_selection(&picker_id)
                 .expect("picker survives"),
             picker_pdf
         );
         assert!(matches!(
-            state.take_pdf_selection(&dropped_id),
+            state.take_file_selection(&dropped_id),
             Err(crate::database::DatabaseError::NotFound { .. })
         ));
     }

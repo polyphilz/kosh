@@ -51,10 +51,13 @@ import {
   type MouseEvent,
 } from "react";
 import type {
+  GenericAttachmentRecord,
+  GenericAttachmentStatusRecord,
   ImageRecord,
   ImageStatusRecord,
   PdfRecord,
   PdfStatusRecord,
+  SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { Button } from "../components/Button";
 import { Input } from "../components/Input";
@@ -74,23 +77,29 @@ import {
   resizeSelectedImage,
 } from "./ImageNodeView";
 import { pdfNodeView } from "./PdfNodeView";
+import { attachmentNodeView } from "./AttachmentNodeView";
 
 export interface RichTextEditorHandle {
   focus: () => void;
+  insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
   insertPdfs: (pdfs: PdfRecord[]) => void;
 }
 
 interface RichTextEditorProps {
   ariaLabel: string;
+  attachmentStatus?: (attachmentId: string) => Promise<GenericAttachmentStatusRecord>;
   disabled?: boolean;
   imageStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
   pdfStatus?: (attachmentId: string) => Promise<PdfStatusRecord>;
+  openAttachmentExternal?: (attachmentId: string) => Promise<void>;
   openPdfExternal?: (attachmentId: string) => Promise<void>;
   onImageError?: (error: unknown) => void;
   onPendingImagesChange?: (pending: boolean) => void;
+  pickAttachment?: () => Promise<SelectedAttachmentRecord | null>;
   pickImage?: () => Promise<ImageRecord | null>;
   pickPdf?: () => Promise<PdfRecord | null>;
+  revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   pasteImage?: () => Promise<ImageRecord>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
   retryPdfExtraction?: (attachmentId: string) => Promise<PdfStatusRecord>;
@@ -115,17 +124,21 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
   function RichTextEditor(
     {
       ariaLabel,
+      attachmentStatus,
       disabled = false,
       imageStatus,
       pdfStatus,
+      openAttachmentExternal,
       openPdfExternal,
       onChange,
       onImageError,
       onPendingImagesChange,
       pasteImage,
+      pickAttachment,
       pickImage,
       pickPdf,
       placeholder,
+      revealAttachmentInFinder,
       retryImageOcr,
       retryPdfExtraction,
       value,
@@ -136,14 +149,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
     const viewRef = useRef<EditorView | null>(null);
     const onChangeRef = useRef(onChange);
     const disabledRef = useRef(disabled);
+    const attachmentStatusRef = useRef(attachmentStatus);
     const imageStatusRef = useRef(imageStatus);
     const pdfStatusRef = useRef(pdfStatus);
+    const openAttachmentExternalRef = useRef(openAttachmentExternal);
     const openPdfExternalRef = useRef(openPdfExternal);
     const onImageErrorRef = useRef(onImageError);
     const onPendingImagesChangeRef = useRef(onPendingImagesChange);
     const pasteImageRef = useRef(pasteImage);
+    const pickAttachmentRef = useRef(pickAttachment);
     const pickImageRef = useRef(pickImage);
     const pickPdfRef = useRef(pickPdf);
+    const revealAttachmentInFinderRef = useRef(revealAttachmentInFinder);
     const retryImageOcrRef = useRef(retryImageOcr);
     const retryPdfExtractionRef = useRef(retryPdfExtraction);
     const openMathDialogRef = useRef(
@@ -159,14 +176,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
 
     onChangeRef.current = onChange;
     disabledRef.current = disabled;
+    attachmentStatusRef.current = attachmentStatus;
     imageStatusRef.current = imageStatus;
     pdfStatusRef.current = pdfStatus;
+    openAttachmentExternalRef.current = openAttachmentExternal;
     openPdfExternalRef.current = openPdfExternal;
     onImageErrorRef.current = onImageError;
     onPendingImagesChangeRef.current = onPendingImagesChange;
     pasteImageRef.current = pasteImage;
+    pickAttachmentRef.current = pickAttachment;
     pickImageRef.current = pickImage;
     pickPdfRef.current = pickPdf;
+    revealAttachmentInFinderRef.current = revealAttachmentInFinder;
     retryImageOcrRef.current = retryImageOcr;
     retryPdfExtractionRef.current = retryPdfExtraction;
     openMathDialogRef.current = (display, formula, position) => {
@@ -185,6 +206,12 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
       ref,
       () => ({
         focus: () => viewRef.current?.focus(),
+        insertAttachments: (attachments) => {
+          const view = viewRef.current;
+          if (view && !disabledRef.current) {
+            insertSelectedAttachmentRecords(view, attachments);
+          }
+        },
         insertImages: (images) => {
           const view = viewRef.current;
           if (view && !disabledRef.current) {
@@ -290,6 +317,26 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
                 ? (attachmentId) => retryPdfExtractionRef.current!(attachmentId)
                 : undefined,
             }),
+          kosh_file_attachment: (node, editorView, getPos) =>
+            attachmentNodeView(node, editorView, getPos, {
+              loadStatus: attachmentStatusRef.current
+                ? (attachmentId) => attachmentStatusRef.current!(attachmentId)
+                : undefined,
+              openExternal: openAttachmentExternalRef.current
+                ? (attachmentId) => openAttachmentExternalRef.current!(attachmentId)
+                : undefined,
+              pickReplacement: pickAttachmentRef.current
+                ? async () => {
+                    const record = await pickAttachmentRef.current!();
+                    return record
+                      ? selectedAttachmentNode(record, editorView.dom.clientWidth)
+                      : null;
+                  }
+                : undefined,
+              revealInFinder: revealAttachmentInFinderRef.current
+                ? (attachmentId) => revealAttachmentInFinderRef.current!(attachmentId)
+                : undefined,
+            }),
           list_item: taskListItemNodeView,
           math_display: (node, editorView, getPos) =>
             mathNodeView(node, editorView, getPos, openMathDialogRef.current),
@@ -369,6 +416,18 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
         <EditorToolbar
           ariaLabel={ariaLabel}
           disabled={disabled}
+          onAttachment={() => {
+            const ingest = pickAttachmentRef.current;
+            if (view && ingest) {
+              beginAttachmentIngest(
+                view,
+                "Choosing attachment",
+                ingest,
+                onImageErrorRef,
+                onPendingImagesChangeRef,
+              );
+            }
+          }}
           onLink={() => view && openLinkDialogRef.current(view)}
           onImage={() => {
             const ingest = pickImageRef.current;
@@ -479,6 +538,23 @@ function beginPdfIngest(
   onPendingRef: { current: ((pending: boolean) => void) | undefined },
 ) {
   beginMediaIngest(view, label, ingest, pdfNode, onErrorRef, onPendingRef);
+}
+
+function beginAttachmentIngest(
+  view: EditorView,
+  label: string,
+  ingest: () => Promise<SelectedAttachmentRecord | null>,
+  onErrorRef: { current: ((error: unknown) => void) | undefined },
+  onPendingRef: { current: ((pending: boolean) => void) | undefined },
+) {
+  beginMediaIngest(
+    view,
+    label,
+    ingest,
+    (record) => selectedAttachmentNode(record, view.dom.clientWidth),
+    onErrorRef,
+    onPendingRef,
+  );
 }
 
 function beginMediaIngest<T>(
@@ -631,6 +707,31 @@ function insertImageRecords(view: EditorView, records: ImageRecord[]) {
   view.focus();
 }
 
+function insertSelectedAttachmentRecords(view: EditorView, records: SelectedAttachmentRecord[]) {
+  for (const record of records) {
+    view.dispatch(
+      view.state.tr
+        .replaceSelectionWith(selectedAttachmentNode(record, view.dom.clientWidth), false)
+        .scrollIntoView(),
+    );
+  }
+  view.focus();
+}
+
+function selectedAttachmentNode(
+  record: SelectedAttachmentRecord,
+  editorWidth: number,
+): ProseMirrorNode {
+  switch (record.recordKind) {
+    case "IMAGE":
+      return imageNode(record.record, editorWidth);
+    case "PDF":
+      return pdfNode(record.record);
+    case "GENERIC":
+      return genericAttachmentNode(record.record);
+  }
+}
+
 function imageNode(record: ImageRecord, editorWidth: number): ProseMirrorNode {
   return koshEditorSchema.nodes.kosh_image!.create({
     altText: "",
@@ -654,6 +755,20 @@ function pdfNode(record: PdfRecord): ProseMirrorNode {
     nextAttemptAtMs: null,
     pageCount: record.pageCount,
     unavailablePageCount: 0,
+  });
+}
+
+function genericAttachmentNode(record: GenericAttachmentRecord): ProseMirrorNode {
+  return koshEditorSchema.nodes.kosh_file_attachment!.create({
+    attachmentId: record.id,
+    byteLength: record.byteLength,
+    caption: "",
+    displayFilename: record.displayFilename,
+    extractedLineCount: record.extractedLineCount,
+    extractionError: record.extractionError,
+    extractionStatus: record.extractionStatus,
+    kind: record.kind,
+    mediaType: record.mediaType,
   });
 }
 
@@ -832,6 +947,7 @@ function insertHardBreak(): Command {
 function EditorToolbar({
   ariaLabel,
   disabled,
+  onAttachment,
   onLink,
   onImage,
   onPdf,
@@ -840,6 +956,7 @@ function EditorToolbar({
 }: {
   ariaLabel: string;
   disabled: boolean;
+  onAttachment: () => void;
   onLink: () => void;
   onImage: () => void;
   onPdf: () => void;
@@ -915,6 +1032,9 @@ function EditorToolbar({
       </ToolbarButton>
       <ToolbarButton disabled={disabled || !view} label="Add PDF" onPress={onPdf}>
         PDF
+      </ToolbarButton>
+      <ToolbarButton disabled={disabled || !view} label="Add attachment" onPress={onAttachment}>
+        File
       </ToolbarButton>
       <span aria-hidden="true" className="kosh-rich-text-toolbar__divider" />
       {commandButton(

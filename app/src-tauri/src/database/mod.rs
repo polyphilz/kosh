@@ -38,7 +38,8 @@ use rusqlite::Connection;
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use media::{
-    AttachmentIngestInput, AttachmentKind, AttachmentRecord, ImageOcrDiagnostics, ImageOcrRecovery,
+    AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, AttachmentRecord,
+    GenericAttachmentRecord, GenericAttachmentStatusRecord, ImageOcrDiagnostics, ImageOcrRecovery,
     ImageOcrStatus, ImageRecord, ImageStatusRecord, MediaCleanupResult, MediaIntegrityReport,
     MediaLimits, MediaMaintenanceReport, PdfExtractionStatus, PdfRecord, PdfStatusRecord,
 };
@@ -307,6 +308,17 @@ fn writer_loop(
             }
             WriterMessage::IngestAttachment { write, reply } => {
                 let _ = reply.send(media::ingest_attachment(&mut main, &mut media, write));
+            }
+            WriterMessage::IngestGenericAttachment { write, reply } => {
+                let _ = reply.send(media::ingest_generic_attachment(
+                    &mut main, &mut media, write,
+                ));
+            }
+            WriterMessage::LoadGenericAttachmentStatus {
+                attachment_id,
+                reply,
+            } => {
+                let _ = reply.send(media::load_generic_attachment_status(&main, &attachment_id));
             }
             WriterMessage::IngestImage { write, reply } => {
                 let _ = reply.send(media::ingest_image(&mut main, &mut media, write));

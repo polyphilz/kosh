@@ -3,7 +3,10 @@ const imagePattern = new RegExp(
   `^\\{\\{kosh:image:(${UUID_V7});width=(100|[1-9][0-9])%(?:;alt=([^;]+))?(?:;caption=([^;]+))?\\}\\}$`,
   "u",
 );
-const attachmentPattern = new RegExp(`^\\{\\{kosh:attachment:(${UUID_V7})\\}\\}$`, "u");
+const attachmentPattern = new RegExp(
+  `^\\{\\{kosh:attachment:(${UUID_V7})(?:;caption=([^;]+))?\\}\\}$`,
+  "u",
+);
 const pdfPattern = new RegExp(`^\\{\\{kosh:pdf:(${UUID_V7})\\}\\}$`, "u");
 const markdownDelimiterPattern = /[!'()*_~]/gu;
 
@@ -18,6 +21,7 @@ export interface KoshImageToken {
 export interface KoshAttachmentToken {
   attachmentId: string;
   kind: "attachment";
+  caption?: string;
 }
 
 export interface KoshPdfToken {
@@ -52,7 +56,18 @@ export function parseKoshMediaToken(value: string): KoshMediaToken | null {
     return { attachmentId: pdf[1]!, kind: "pdf" };
   }
   const attachment = attachmentPattern.exec(value);
-  return attachment ? { attachmentId: attachment[1]!, kind: "attachment" } : null;
+  if (!attachment) {
+    return null;
+  }
+  const caption = decodeCanonicalField(attachment[2]);
+  if (caption === null) {
+    return null;
+  }
+  return {
+    attachmentId: attachment[1]!,
+    kind: "attachment",
+    ...(caption === undefined ? {} : { caption }),
+  };
 }
 
 export function serializeKoshImageToken(token: Omit<KoshImageToken, "kind">): string {
@@ -74,9 +89,12 @@ export function serializeKoshImageToken(token: Omit<KoshImageToken, "kind">): st
   ].join("");
 }
 
-export function serializeKoshAttachmentToken(attachmentId: string): string {
+export function serializeKoshAttachmentToken(attachmentId: string, caption?: string): string {
   assertUuidV7(attachmentId);
-  return `{{kosh:attachment:${attachmentId}}}`;
+  const normalizedCaption = normalizedField(caption, 2_000, "attachment caption");
+  return `{{kosh:attachment:${attachmentId}${
+    normalizedCaption ? `;caption=${encodeCanonicalField(normalizedCaption)}` : ""
+  }}}`;
 }
 
 export function serializeKoshPdfToken(attachmentId: string): string {
