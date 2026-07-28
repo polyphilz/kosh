@@ -6,9 +6,10 @@ use super::{
     drafts::{ClearDraftInput, Draft, SaveDraftWrite},
     error::{DatabaseError, Result},
     migrations::MigrationHeads,
+    passages::CitationResolution,
     tidbits::{
-        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput, Tidbit,
-        TidbitListPage,
+        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput,
+        RestoreTidbitInput, Tidbit, TidbitListPage,
     },
 };
 
@@ -58,6 +59,15 @@ pub(super) enum WriterMessage {
         input: DeleteTidbitInput,
         now_ms: i64,
         reply: SyncSender<Result<Tidbit>>,
+    },
+    RestoreTidbit {
+        input: RestoreTidbitInput,
+        now_ms: i64,
+        reply: SyncSender<Result<Tidbit>>,
+    },
+    ResolveCitation {
+        passage_id: String,
+        reply: SyncSender<Result<CitationResolution>>,
     },
     SaveDraft {
         write: SaveDraftWrite,
@@ -177,6 +187,30 @@ impl DatabaseClient {
                 now_ms,
                 reply,
             })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn restore_tidbit(&self, input: RestoreTidbitInput, now_ms: i64) -> Result<Tidbit> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RestoreTidbit {
+                input,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn resolve_citation(&self, passage_id: String) -> Result<CitationResolution> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ResolveCitation { passage_id, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

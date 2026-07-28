@@ -3,6 +3,7 @@ mod connection;
 mod drafts;
 mod error;
 mod migrations;
+mod passages;
 mod paths;
 mod tidbits;
 mod validation;
@@ -28,10 +29,13 @@ use rusqlite::Connection;
 
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
+pub use passages::{
+    CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
+};
 pub use paths::DatabasePaths;
 pub use tidbits::{
-    DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, SourceDraft, Tidbit, TidbitDraft,
-    TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
+    DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
+    TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
 };
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
@@ -103,6 +107,7 @@ impl Database {
         if main_status.pending {
             migrations::run_main(&mut main)?;
         }
+        passages::reconcile_author_passages(&mut main)?;
         // Reap capabilities never persist across launches. The single writer
         // creates and consumes them in one transaction after a live main-
         // database reference check.
@@ -210,6 +215,16 @@ fn writer_loop(mut main: Connection, mut media: Connection, receiver: Receiver<W
                 reply,
             } => {
                 let _ = reply.send(tidbits::delete_tidbit(&mut main, input, now_ms));
+            }
+            WriterMessage::RestoreTidbit {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(tidbits::restore_tidbit(&mut main, input, now_ms));
+            }
+            WriterMessage::ResolveCitation { passage_id, reply } => {
+                let _ = reply.send(passages::resolve_citation(&main, &passage_id));
             }
             WriterMessage::SaveDraft { write, reply } => {
                 let _ = reply.send(drafts::save_draft(&mut main, write));

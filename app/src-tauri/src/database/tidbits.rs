@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use super::{DatabaseError, Result};
+use super::{passages, DatabaseError, Result};
 
 const MAX_LIST_LIMIT: u32 = 100;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
@@ -43,6 +43,13 @@ pub struct EditTidbitInput {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteTidbitInput {
+    pub id: String,
+    pub expected_revision_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreTidbitInput {
     pub id: String,
     pub expected_revision_id: String,
 }
@@ -161,6 +168,13 @@ pub(super) fn create_tidbit(
         &prepared,
         &write.source_ids,
     )?;
+    passages::insert_author_passages(
+        &transaction,
+        &write.revision_id,
+        &prepared.body_markdown,
+        write.now_ms,
+    )?;
+    passages::replace_active_author_passages(&transaction, &write.tidbit_id, &write.revision_id)?;
     transaction.commit()?;
 
     load_tidbit(connection, &write.tidbit_id)
@@ -205,6 +219,12 @@ pub(super) fn edit_tidbit(connection: &mut Connection, write: EditTidbitWrite) -
         &prepared,
         &write.source_ids,
     )?;
+    passages::insert_author_passages(
+        &transaction,
+        &write.revision_id,
+        &prepared.body_markdown,
+        updated_at_ms,
+    )?;
     let changed = transaction.execute(
         "UPDATE tidbit
          SET current_revision_id = ?1, updated_at = ?2
@@ -225,6 +245,7 @@ pub(super) fn edit_tidbit(connection: &mut Connection, write: EditTidbitWrite) -
             actual_revision_id: current.revision_id,
         });
     }
+    passages::replace_active_author_passages(&transaction, &write.input.id, &write.revision_id)?;
     transaction.commit()?;
 
     load_tidbit(connection, &write.input.id)
@@ -267,6 +288,53 @@ pub(super) fn delete_tidbit(
             actual_revision_id: current.revision_id,
         });
     }
+    passages::deactivate_tidbit(&transaction, &input.id)?;
+    transaction.commit()?;
+
+    load_tidbit(connection, &input.id)
+}
+
+pub(super) fn restore_tidbit(
+    connection: &mut Connection,
+    input: RestoreTidbitInput,
+    now_ms: i64,
+) -> Result<Tidbit> {
+    validate_timestamp(now_ms, "nowMs")?;
+    validate_uuid_v7(&input.id, "id")?;
+    validate_uuid_v7(&input.expected_revision_id, "expectedRevisionId")?;
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current = load_current_revision(&transaction, &input.id)?;
+    if current.deleted_at_ms.is_none() {
+        return Err(DatabaseError::InvalidInput(format!(
+            "tidbit {} is not deleted",
+            input.id
+        )));
+    }
+    if current.revision_id != input.expected_revision_id {
+        return Err(DatabaseError::StaleTidbit {
+            id: input.id,
+            expected_revision_id: input.expected_revision_id,
+            actual_revision_id: current.revision_id,
+        });
+    }
+    let updated_at_ms = next_timestamp(current.updated_at_ms, now_ms)?;
+    let changed = transaction.execute(
+        "UPDATE tidbit
+         SET deleted_at = NULL, updated_at = ?1
+         WHERE id = ?2
+           AND current_revision_id = ?3
+           AND deleted_at IS NOT NULL",
+        params![updated_at_ms, input.id, input.expected_revision_id],
+    )?;
+    if changed != 1 {
+        return Err(DatabaseError::StaleTidbit {
+            id: input.id,
+            expected_revision_id: input.expected_revision_id,
+            actual_revision_id: current.revision_id,
+        });
+    }
+    passages::replace_active_author_passages(&transaction, &input.id, &input.expected_revision_id)?;
     transaction.commit()?;
 
     load_tidbit(connection, &input.id)
@@ -515,7 +583,10 @@ fn insert_revision(
     Ok(())
 }
 
-fn load_sources(connection: &Connection, revision_id: &str) -> Result<Vec<TidbitSource>> {
+pub(super) fn load_sources(
+    connection: &Connection,
+    revision_id: &str,
+) -> Result<Vec<TidbitSource>> {
     let mut statement = connection.prepare(
         "SELECT source.id, source.label, source.normalized_url
          FROM tidbit_revision_source AS membership
@@ -651,7 +722,7 @@ fn hash_text(hasher: &mut Sha256, value: &str) {
     hasher.update(value.as_bytes());
 }
 
-fn derive_display_title(title: Option<&str>, body_markdown: &str) -> String {
+pub(super) fn derive_display_title(title: Option<&str>, body_markdown: &str) -> String {
     if let Some(title) = title {
         return truncate(title, DISPLAY_TITLE_LIMIT);
     }

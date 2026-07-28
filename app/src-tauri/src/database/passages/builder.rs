@@ -1,0 +1,716 @@
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v1";
+
+const TARGET_PASSAGE_CHARS: usize = 700;
+const MAX_PROSE_SEGMENT_CHARS: usize = 1_000;
+const PROSE_OVERLAP_CHARS: usize = 100;
+const MAX_ATOMIC_CODE_CHARS: usize = 1_600;
+const CODE_TARGET_CHARS: usize = 1_200;
+const CODE_OVERLAP_LINES: usize = 3;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkdownLocator {
+    pub start: u32,
+    pub end: u32,
+    #[serde(default)]
+    pub source_start_byte: u64,
+    #[serde(default)]
+    pub source_end_byte: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_char: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_char: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BuiltPassage {
+    pub ordinal: u32,
+    pub content: String,
+    pub content_hash: [u8; 32],
+    pub heading_context: Vec<String>,
+    pub locator: MarkdownLocator,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BlockKind {
+    Code,
+    DisplayMath,
+    Heading(u8),
+    Html,
+    Prose,
+    Rule,
+    Table,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceBlock {
+    ordinal: u32,
+    kind: BlockKind,
+    content: String,
+    heading_context: Vec<String>,
+    source_start_byte: usize,
+    source_end_byte: usize,
+}
+
+struct Capture {
+    kind: BlockKind,
+    end_tag: TagEnd,
+    nested_depth: usize,
+    content: String,
+    source_start_byte: usize,
+}
+
+pub(super) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
+    let blocks = parse_source_blocks(markdown);
+    let mut pending = Vec::new();
+    let mut passages = Vec::new();
+
+    for block in blocks {
+        match block.kind {
+            BlockKind::Code => {
+                flush_group(&mut pending, &mut passages);
+                passages.extend(split_code_block(block));
+            }
+            BlockKind::DisplayMath
+            | BlockKind::Heading(_)
+            | BlockKind::Html
+            | BlockKind::Rule
+            | BlockKind::Table => {
+                flush_group(&mut pending, &mut passages);
+                passages.push(single_block_passage(block));
+            }
+            BlockKind::Prose if char_count(&block.content) > MAX_PROSE_SEGMENT_CHARS => {
+                flush_group(&mut pending, &mut passages);
+                passages.extend(split_prose_block(block));
+            }
+            BlockKind::Prose => {
+                let projected = pending
+                    .iter()
+                    .map(|candidate: &SourceBlock| char_count(&candidate.content))
+                    .sum::<usize>()
+                    + pending.len().saturating_mul(2)
+                    + char_count(&block.content);
+                let heading_changed = pending
+                    .first()
+                    .is_some_and(|candidate| candidate.heading_context != block.heading_context);
+                if projected > TARGET_PASSAGE_CHARS || heading_changed {
+                    flush_group(&mut pending, &mut passages);
+                }
+                pending.push(block);
+            }
+        }
+    }
+    flush_group(&mut pending, &mut passages);
+
+    for (ordinal, passage) in passages.iter_mut().enumerate() {
+        passage.ordinal = u32::try_from(ordinal).expect("passage count fits in u32");
+    }
+    passages
+}
+
+fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_MATH);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+
+    let mut blocks = Vec::new();
+    let mut capture: Option<Capture> = None;
+    let mut headings: Vec<Option<String>> = vec![None; 6];
+    let parser = Parser::new_ext(markdown, options).into_offset_iter();
+
+    for (event, range) in parser {
+        match event {
+            Event::Start(tag) => {
+                if let Some(active) = capture.as_mut() {
+                    active.nested_depth += 1;
+                    continue;
+                }
+                if let Some(kind) = captured_block_kind(&tag) {
+                    capture = Some(Capture {
+                        kind,
+                        end_tag: tag.to_end(),
+                        nested_depth: 0,
+                        content: String::new(),
+                        source_start_byte: range.start,
+                    });
+                }
+            }
+            Event::End(tag) => {
+                let Some(active) = capture.as_mut() else {
+                    continue;
+                };
+                append_end_separator(active, tag);
+                if active.nested_depth > 0 {
+                    active.nested_depth -= 1;
+                } else if active.end_tag == tag {
+                    let finished = capture.take().expect("active Markdown capture");
+                    finish_capture(finished, range.end, &mut headings, &mut blocks);
+                }
+            }
+            Event::DisplayMath(formula) if capture.is_none() => {
+                let content = format!("$${formula}$$");
+                push_standalone_block(
+                    BlockKind::DisplayMath,
+                    content,
+                    range.start,
+                    range.end,
+                    &headings,
+                    &mut blocks,
+                );
+            }
+            Event::Rule if capture.is_none() => {
+                push_standalone_block(
+                    BlockKind::Rule,
+                    "—".into(),
+                    range.start,
+                    range.end,
+                    &headings,
+                    &mut blocks,
+                );
+            }
+            event => {
+                if let Some(active) = capture.as_mut() {
+                    append_event_content(active, event);
+                }
+            }
+        }
+    }
+
+    if let Some(active) = capture {
+        finish_capture(active, markdown.len(), &mut headings, &mut blocks);
+    }
+    if blocks.is_empty() {
+        let content = markdown.trim();
+        if !content.is_empty() {
+            blocks.push(SourceBlock {
+                ordinal: 0,
+                kind: BlockKind::Prose,
+                content: content.into(),
+                heading_context: Vec::new(),
+                source_start_byte: markdown.find(content).unwrap_or(0),
+                source_end_byte: markdown
+                    .find(content)
+                    .map_or(markdown.len(), |start| start + content.len()),
+            });
+        }
+    }
+    blocks
+}
+
+fn captured_block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
+    match tag {
+        Tag::Paragraph => Some(BlockKind::Prose),
+        Tag::Heading { level, .. } => Some(BlockKind::Heading(heading_level(*level))),
+        Tag::CodeBlock(_) => Some(BlockKind::Code),
+        Tag::HtmlBlock => Some(BlockKind::Html),
+        Tag::Item => Some(BlockKind::Prose),
+        Tag::Table(_) => Some(BlockKind::Table),
+        _ => None,
+    }
+}
+
+fn append_event_content(capture: &mut Capture, event: Event<'_>) {
+    match event {
+        Event::Text(value) | Event::Code(value) => capture.content.push_str(&value),
+        Event::InlineMath(value) => {
+            capture.content.push('$');
+            capture.content.push_str(&value);
+            capture.content.push('$');
+        }
+        Event::DisplayMath(value) => {
+            if capture.kind == BlockKind::Prose && capture.content.trim().is_empty() {
+                capture.kind = BlockKind::DisplayMath;
+            }
+            capture.content.push_str("$$");
+            capture.content.push_str(&value);
+            capture.content.push_str("$$");
+        }
+        Event::Html(value) => capture.content.push_str(&value),
+        Event::InlineHtml(_) => {}
+        Event::FootnoteReference(value) => {
+            capture.content.push_str("[^");
+            capture.content.push_str(&value);
+            capture.content.push(']');
+        }
+        Event::SoftBreak | Event::HardBreak => capture.content.push('\n'),
+        Event::Rule => capture.content.push('—'),
+        Event::TaskListMarker(checked) => {
+            capture
+                .content
+                .push_str(if checked { "[x] " } else { "[ ] " });
+        }
+        Event::Start(_) | Event::End(_) => {}
+    }
+}
+
+fn append_end_separator(capture: &mut Capture, tag: TagEnd) {
+    if capture.kind != BlockKind::Table {
+        return;
+    }
+    match tag {
+        TagEnd::TableCell => capture.content.push('\t'),
+        TagEnd::TableHead | TagEnd::TableRow => capture.content.push('\n'),
+        _ => {}
+    }
+}
+
+fn finish_capture(
+    capture: Capture,
+    source_end_byte: usize,
+    headings: &mut [Option<String>],
+    blocks: &mut Vec<SourceBlock>,
+) {
+    let content = normalize_block_content(&capture.content, capture.kind);
+    if content.is_empty() {
+        return;
+    }
+    let heading_context = current_heading_context(headings);
+    let heading_update = match capture.kind {
+        BlockKind::Heading(level) => Some((level, content.clone())),
+        _ => None,
+    };
+    let ordinal = u32::try_from(blocks.len()).expect("Markdown block count fits in u32");
+    blocks.push(SourceBlock {
+        ordinal,
+        kind: capture.kind,
+        content,
+        heading_context,
+        source_start_byte: capture.source_start_byte,
+        source_end_byte,
+    });
+    if let Some((level, heading)) = heading_update {
+        let level_index = usize::from(level.saturating_sub(1));
+        for value in headings.iter_mut().skip(level_index) {
+            *value = None;
+        }
+        headings[level_index] = Some(heading);
+    }
+}
+
+fn push_standalone_block(
+    kind: BlockKind,
+    content: String,
+    source_start_byte: usize,
+    source_end_byte: usize,
+    headings: &[Option<String>],
+    blocks: &mut Vec<SourceBlock>,
+) {
+    let ordinal = u32::try_from(blocks.len()).expect("Markdown block count fits in u32");
+    blocks.push(SourceBlock {
+        ordinal,
+        kind,
+        content,
+        heading_context: current_heading_context(headings),
+        source_start_byte,
+        source_end_byte,
+    });
+}
+
+fn normalize_block_content(content: &str, kind: BlockKind) -> String {
+    if kind == BlockKind::Code {
+        return content.trim_matches('\n').to_owned();
+    }
+    let mut normalized = Vec::new();
+    let mut prior_blank = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            if !prior_blank && !normalized.is_empty() {
+                normalized.push(String::new());
+            }
+            prior_blank = true;
+        } else {
+            normalized.push(line.to_owned());
+            prior_blank = false;
+        }
+    }
+    while normalized.last().is_some_and(String::is_empty) {
+        normalized.pop();
+    }
+    normalized.join("\n")
+}
+
+fn current_heading_context(headings: &[Option<String>]) -> Vec<String> {
+    headings.iter().filter_map(Clone::clone).collect()
+}
+
+fn heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+fn flush_group(pending: &mut Vec<SourceBlock>, passages: &mut Vec<BuiltPassage>) {
+    if pending.is_empty() {
+        return;
+    }
+    let first = pending.first().expect("nonempty passage group");
+    let last = pending.last().expect("nonempty passage group");
+    passages.push(finish_passage(
+        pending
+            .iter()
+            .map(|block| block.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        first.heading_context.clone(),
+        MarkdownLocator {
+            start: first.ordinal,
+            end: last.ordinal,
+            source_start_byte: u64::try_from(first.source_start_byte)
+                .expect("source offset fits in u64"),
+            source_end_byte: u64::try_from(last.source_end_byte)
+                .expect("source offset fits in u64"),
+            start_char: None,
+            end_char: None,
+            start_line: None,
+            end_line: None,
+        },
+    ));
+    pending.clear();
+}
+
+fn single_block_passage(block: SourceBlock) -> BuiltPassage {
+    let locator = block_locator(&block, None, None, None, None);
+    finish_passage(block.content, block.heading_context, locator)
+}
+
+fn split_prose_block(block: SourceBlock) -> Vec<BuiltPassage> {
+    let characters = block.content.chars().collect::<Vec<_>>();
+    let ranges = prose_ranges(&characters);
+    ranges
+        .into_iter()
+        .map(|(start, end)| {
+            let content = characters[start..end].iter().collect::<String>();
+            finish_passage(
+                content,
+                block.heading_context.clone(),
+                block_locator(
+                    &block,
+                    Some(u32::try_from(start).expect("character offset fits in u32")),
+                    Some(u32::try_from(end).expect("character offset fits in u32")),
+                    None,
+                    None,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn prose_ranges(characters: &[char]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < characters.len() {
+        let remaining = characters.len() - start;
+        let raw_end = if remaining <= MAX_PROSE_SEGMENT_CHARS {
+            characters.len()
+        } else {
+            prose_boundary(characters, start)
+        };
+        let mut trimmed_start = start;
+        while trimmed_start < raw_end && characters[trimmed_start].is_whitespace() {
+            trimmed_start += 1;
+        }
+        let mut trimmed_end = raw_end;
+        while trimmed_end > trimmed_start && characters[trimmed_end - 1].is_whitespace() {
+            trimmed_end -= 1;
+        }
+        if trimmed_start < trimmed_end {
+            ranges.push((trimmed_start, trimmed_end));
+        }
+        if raw_end == characters.len() {
+            break;
+        }
+        let overlap_target = raw_end.saturating_sub(PROSE_OVERLAP_CHARS);
+        let next = (overlap_target..raw_end)
+            .find(|position| characters[*position].is_whitespace())
+            .map_or(overlap_target, |position| position + 1);
+        start = next.max(start + 1);
+    }
+    ranges
+}
+
+fn prose_boundary(characters: &[char], start: usize) -> usize {
+    let target = (start + TARGET_PASSAGE_CHARS).min(characters.len());
+    let maximum = (start + MAX_PROSE_SEGMENT_CHARS).min(characters.len());
+    let minimum = (start + TARGET_PASSAGE_CHARS / 2).min(maximum);
+    let sentence = (minimum..maximum)
+        .filter(|position| is_sentence_boundary(characters, *position))
+        .min_by_key(|position| position.abs_diff(target));
+    if let Some(position) = sentence {
+        return position;
+    }
+    (target..maximum)
+        .rev()
+        .find(|position| characters[*position].is_whitespace())
+        .unwrap_or(maximum)
+}
+
+fn is_sentence_boundary(characters: &[char], position: usize) -> bool {
+    position > 0
+        && position < characters.len()
+        && matches!(characters[position - 1], '.' | '!' | '?' | '\n')
+        && characters[position].is_whitespace()
+}
+
+fn split_code_block(block: SourceBlock) -> Vec<BuiltPassage> {
+    if char_count(&block.content) <= MAX_ATOMIC_CODE_CHARS {
+        return vec![single_block_passage(block)];
+    }
+    let lines = block.content.split('\n').collect::<Vec<_>>();
+    let mut passages = Vec::new();
+    let mut start = 0;
+    while start < lines.len() {
+        let mut end = start;
+        let mut length = 0;
+        while end < lines.len() {
+            let projected = length + lines[end].chars().count() + usize::from(end > start);
+            if end > start && projected > CODE_TARGET_CHARS {
+                break;
+            }
+            length = projected;
+            end += 1;
+        }
+        if end == start {
+            end += 1;
+        }
+        passages.push(finish_passage(
+            lines[start..end].join("\n"),
+            block.heading_context.clone(),
+            block_locator(
+                &block,
+                None,
+                None,
+                Some(u32::try_from(start + 1).expect("line offset fits in u32")),
+                Some(u32::try_from(end).expect("line offset fits in u32")),
+            ),
+        ));
+        if end == lines.len() {
+            break;
+        }
+        start = end.saturating_sub(CODE_OVERLAP_LINES).max(start + 1);
+    }
+    passages
+}
+
+fn block_locator(
+    block: &SourceBlock,
+    start_char: Option<u32>,
+    end_char: Option<u32>,
+    start_line: Option<u32>,
+    end_line: Option<u32>,
+) -> MarkdownLocator {
+    MarkdownLocator {
+        start: block.ordinal,
+        end: block.ordinal,
+        source_start_byte: u64::try_from(block.source_start_byte)
+            .expect("source offset fits in u64"),
+        source_end_byte: u64::try_from(block.source_end_byte).expect("source offset fits in u64"),
+        start_char,
+        end_char,
+        start_line,
+        end_line,
+    }
+}
+
+fn finish_passage(
+    content: String,
+    heading_context: Vec<String>,
+    locator: MarkdownLocator,
+) -> BuiltPassage {
+    let content_hash = Sha256::digest(content.as_bytes()).into();
+    BuiltPassage {
+        ordinal: 0,
+        content,
+        content_hash,
+        heading_context,
+        locator,
+    }
+}
+
+fn char_count(value: &str) -> usize {
+    value.chars().count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_markdown_passages, char_count, MarkdownLocator, CONSTRUCTION_VERSION,
+        MAX_ATOMIC_CODE_CHARS, MAX_PROSE_SEGMENT_CHARS,
+    };
+
+    #[test]
+    fn semantic_blocks_group_only_within_the_same_heading_context() {
+        let markdown = [
+            "# Thermodynamics",
+            "",
+            "Heat is impatient motion.",
+            "",
+            "Temperature measures a distribution.",
+            "",
+            "## Equations",
+            "",
+            "$$E = mc^2$$",
+            "",
+            "After the equation.",
+        ]
+        .join("\n");
+
+        let first = build_markdown_passages(&markdown);
+        let second = build_markdown_passages(&markdown);
+
+        assert_eq!(first, second);
+        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v1");
+        assert_eq!(first.len(), 5);
+        assert_eq!(first[0].content, "Thermodynamics");
+        assert_eq!(
+            first[1].content,
+            "Heat is impatient motion.\n\nTemperature measures a distribution."
+        );
+        assert_eq!(first[1].heading_context, vec!["Thermodynamics"]);
+        assert_eq!(first[2].content, "Equations");
+        assert_eq!(first[2].heading_context, vec!["Thermodynamics"]);
+        assert_eq!(first[3].content, "$$E = mc^2$$");
+        assert_eq!(
+            first[3].heading_context,
+            vec!["Thermodynamics", "Equations"]
+        );
+        assert_eq!(
+            first
+                .iter()
+                .map(|passage| passage.ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert_valid_source_ranges(&markdown, first.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn long_prose_splits_at_sentence_boundaries_with_bounded_overlap() {
+        let sentence = "A deterministic sentence carries exact evidence. ";
+        let markdown = sentence.repeat(40);
+        let passages = build_markdown_passages(&markdown);
+
+        assert!(passages.len() > 1);
+        for passage in &passages {
+            assert!(char_count(&passage.content) <= MAX_PROSE_SEGMENT_CHARS);
+            assert_eq!(passage.locator.start, 0);
+            assert_eq!(passage.locator.end, 0);
+            let start = passage.locator.start_char.expect("split start character");
+            let end = passage.locator.end_char.expect("split end character");
+            assert!(start < end);
+            assert_eq!(
+                markdown
+                    .chars()
+                    .skip(start as usize)
+                    .take((end - start) as usize)
+                    .collect::<String>(),
+                passage.content
+            );
+        }
+        for pair in passages.windows(2) {
+            assert!(
+                pair[1].locator.start_char.expect("next start")
+                    < pair[0].locator.end_char.expect("prior end"),
+                "long prose passages retain limited overlap"
+            );
+        }
+    }
+
+    #[test]
+    fn modest_code_is_atomic_and_large_code_splits_on_exact_line_ranges() {
+        let modest = "```rust\nfn answer() -> i32 { 42 }\n```";
+        let modest_passages = build_markdown_passages(modest);
+        assert_eq!(modest_passages.len(), 1);
+        assert_eq!(modest_passages[0].content, "fn answer() -> i32 { 42 }");
+        assert_eq!(modest_passages[0].locator.start_line, None);
+
+        let line = "let exact_identifier = compute_retrieval_evidence();";
+        let code = std::iter::repeat_n(line, MAX_ATOMIC_CODE_CHARS / line.len() + 20)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let markdown = format!("# Implementation\n\n```rust\n{code}\n```");
+        let passages = build_markdown_passages(&markdown);
+        let code_passages = &passages[1..];
+        assert!(code_passages.len() > 1);
+        for passage in code_passages {
+            assert_eq!(passage.heading_context, vec!["Implementation"]);
+            let start = passage.locator.start_line.expect("code start line");
+            let end = passage.locator.end_line.expect("code end line");
+            assert!(start <= end);
+            assert_eq!(
+                code.lines()
+                    .skip(start as usize - 1)
+                    .take((end - start + 1) as usize)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                passage.content
+            );
+        }
+        for pair in code_passages.windows(2) {
+            assert!(
+                pair[1].locator.start_line.expect("next line")
+                    <= pair[0].locator.end_line.expect("prior line"),
+                "large code passages overlap complete lines"
+            );
+        }
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn tables_tasks_and_unicode_have_stable_locator_json() {
+        let markdown = [
+            "## Δ observations",
+            "",
+            "- [x] measured",
+            "- [ ] verify",
+            "",
+            "| Symbol | Meaning |",
+            "| --- | --- |",
+            "| λ | wavelength |",
+        ]
+        .join("\n");
+        let passages = build_markdown_passages(&markdown);
+
+        assert!(passages
+            .iter()
+            .any(|passage| passage.content.contains("[x]")));
+        assert!(passages
+            .iter()
+            .any(|passage| passage.content.contains("wavelength")));
+        for passage in &passages {
+            let encoded = serde_json::to_string(&passage.locator).expect("serialize locator");
+            let decoded: MarkdownLocator =
+                serde_json::from_str(&encoded).expect("deserialize locator");
+            assert_eq!(decoded, passage.locator);
+        }
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    fn assert_valid_source_ranges<'a>(
+        markdown: &str,
+        locators: impl IntoIterator<Item = &'a MarkdownLocator>,
+    ) {
+        for locator in locators {
+            let start = usize::try_from(locator.source_start_byte).expect("start byte");
+            let end = usize::try_from(locator.source_end_byte).expect("end byte");
+            assert!(start < end);
+            assert!(markdown.get(start..end).is_some());
+        }
+    }
+}

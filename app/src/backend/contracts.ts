@@ -25,6 +25,69 @@ export interface DeleteTidbitInput {
   expectedRevisionId: string;
 }
 
+export interface RestoreTidbitInput {
+  id: string;
+  expectedRevisionId: string;
+}
+
+export type CitationState = "CURRENT" | "HISTORICAL";
+
+export type CitationLocator =
+  | {
+      kind: "MARKDOWN_BLOCKS";
+      startBlock: number;
+      endBlock: number;
+      sourceStartByte: number;
+      sourceEndByte: number;
+      startChar: number | null;
+      endChar: number | null;
+      startLine: number | null;
+      endLine: number | null;
+    }
+  | {
+      kind: "PDF_PAGE";
+      page: number;
+    }
+  | {
+      kind: "OCR_REGION";
+      page: number | null;
+      region: unknown;
+    }
+  | {
+      kind: "TEXT_LINES";
+      startLine: number;
+      endLine: number;
+    };
+
+export interface CitationTidbit {
+  id: string;
+  revisionId: string;
+  revisionNumber: number;
+  title: string | null;
+  displayTitle: string;
+  deleted: boolean;
+}
+
+export interface CitationAttachment {
+  id: string;
+  extractionId: string;
+  displayFilename: string;
+  mediaType: string;
+  deleted: boolean;
+}
+
+export interface CitationResolution {
+  passageId: string;
+  excerpt: string;
+  headingContext: string[];
+  constructionVersion: string;
+  state: CitationState;
+  locator: CitationLocator;
+  tidbit: CitationTidbit | null;
+  attachment: CitationAttachment | null;
+  sources: TidbitSource[];
+}
+
 export interface SaveDraftInput extends TidbitDraft {
   contextKey: string;
   tidbitId: string | null;
@@ -93,6 +156,8 @@ export interface Backend {
   listTidbits(input: ListTidbitsInput): Promise<TidbitListPage>;
   editTidbit(input: EditTidbitInput): Promise<TidbitRecord>;
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
+  restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord>;
+  resolveCitation(passageId: string): Promise<CitationResolution>;
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;

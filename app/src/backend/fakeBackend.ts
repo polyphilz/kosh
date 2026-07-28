@@ -1,11 +1,13 @@
 import type {
   Backend,
+  CitationResolution,
   ClearDraftInput,
   DeleteTidbitInput,
   DraftRecord,
   EditTidbitInput,
   ListTidbitsInput,
   RuntimeProbe,
+  RestoreTidbitInput,
   SaveDraftInput,
   SourceDraft,
   TidbitDraft,
@@ -13,6 +15,10 @@ import type {
   TidbitRecord,
   TidbitSource,
 } from "./contracts";
+
+interface FakeCitationSnapshot {
+  revision: TidbitRecord;
+}
 
 export const browserRuntimeProbe: RuntimeProbe = {
   dataDir: "/tmp/kosh-browser-fixture",
@@ -24,6 +30,7 @@ export class FakeBackend implements Backend {
   private readonly probe: RuntimeProbe;
   private readonly drafts = new Map<string, DraftRecord>();
   private readonly revisionOwners = new Map<string, string>();
+  private readonly citations = new Map<string, FakeCitationSnapshot>();
   private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
   private sequence = 0;
@@ -33,6 +40,7 @@ export class FakeBackend implements Backend {
     for (const tidbit of tidbits) {
       this.tidbits.set(tidbit.id, cloneTidbit(tidbit));
       this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
+      this.registerCitation(tidbit);
       this.sequence = Math.max(
         this.sequence,
         generatedIdSequence(tidbit.id),
@@ -71,6 +79,7 @@ export class FakeBackend implements Backend {
     };
     this.tidbits.set(tidbit.id, tidbit);
     this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
+    this.registerCitation(tidbit);
     return cloneTidbit(tidbit);
   }
 
@@ -140,6 +149,7 @@ export class FakeBackend implements Backend {
     };
     this.tidbits.set(updated.id, updated);
     this.revisionOwners.set(updated.currentRevisionId, updated.id);
+    this.registerCitation(updated);
     return cloneTidbit(updated);
   }
 
@@ -159,6 +169,62 @@ export class FakeBackend implements Backend {
     };
     this.tidbits.set(deleted.id, deleted);
     return cloneTidbit(deleted);
+  }
+
+  async restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord> {
+    const current = this.requireTidbit(input.id);
+    if (current.deletedAtMs === null) {
+      throw new Error(`tidbit ${input.id} is not deleted`);
+    }
+    if (current.currentRevisionId !== input.expectedRevisionId) {
+      throw new Error(`tidbit ${input.id} is stale`);
+    }
+    const restored = {
+      ...current,
+      updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + this.nextSequence()),
+      deletedAtMs: null,
+    };
+    this.tidbits.set(restored.id, restored);
+    return cloneTidbit(restored);
+  }
+
+  async resolveCitation(passageId: string): Promise<CitationResolution> {
+    const snapshot = this.citations.get(passageId);
+    if (!snapshot) {
+      throw new Error(`passage ${passageId} was not found`);
+    }
+    const current = this.requireTidbit(snapshot.revision.id);
+    const isCurrent =
+      current.deletedAtMs === null &&
+      current.currentRevisionId === snapshot.revision.currentRevisionId;
+    return {
+      passageId,
+      excerpt: snapshot.revision.bodyMarkdown,
+      headingContext: [],
+      constructionVersion: "fake-markdown-blocks-v1",
+      state: isCurrent ? "CURRENT" : "HISTORICAL",
+      locator: {
+        kind: "MARKDOWN_BLOCKS",
+        startBlock: 0,
+        endBlock: 0,
+        sourceStartByte: 0,
+        sourceEndByte: new TextEncoder().encode(snapshot.revision.bodyMarkdown).length,
+        startChar: null,
+        endChar: null,
+        startLine: null,
+        endLine: null,
+      },
+      tidbit: {
+        id: snapshot.revision.id,
+        revisionId: snapshot.revision.currentRevisionId,
+        revisionNumber: snapshot.revision.revisionNumber,
+        title: snapshot.revision.title,
+        displayTitle: snapshot.revision.displayTitle,
+        deleted: current.deletedAtMs !== null,
+      },
+      attachment: null,
+      sources: snapshot.revision.sources.map((source) => ({ ...source })),
+    };
   }
 
   async saveDraft(input: SaveDraftInput): Promise<DraftRecord> {
@@ -203,6 +269,13 @@ export class FakeBackend implements Backend {
   private nextSequence(): number {
     this.sequence += 1;
     return this.sequence;
+  }
+
+  private registerCitation(revision: TidbitRecord): void {
+    const passageId = `fake-passage:${revision.currentRevisionId}`;
+    this.citations.set(passageId, {
+      revision: cloneTidbit(revision),
+    });
   }
 
   private requireTidbit(id: string): TidbitRecord {
