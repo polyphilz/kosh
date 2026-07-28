@@ -136,6 +136,7 @@ pub fn run_relevance_suite(
         let metrics = calculate_query_metrics(query, &hits);
         let passed = metrics.recall_at_10 > 0.0
             && metrics.citation_locator_correct
+            && metrics.exact_phrase_success != Some(false)
             && metrics.forbidden_hits_at_10.is_empty();
         query_reports.push(QueryReport {
             query_id: query.id.clone(),
@@ -509,6 +510,41 @@ mod tests {
         }
     }
 
+    struct DemotedPhraseRetriever {
+        relevant_passage_id: String,
+        irrelevant_passage_id: String,
+    }
+
+    impl Retriever for DemotedPhraseRetriever {
+        fn name(&self) -> &str {
+            "demoted-phrase-test"
+        }
+
+        fn retrieve(
+            &mut self,
+            _request: &RetrievalRequest,
+            corpus: &[EvaluationPassage],
+            _limit: usize,
+        ) -> std::result::Result<Vec<RetrievalHit>, String> {
+            let hit_for = |passage_id: &str, score| {
+                let passage = corpus
+                    .iter()
+                    .find(|passage| passage.id == passage_id)
+                    .expect("configured test passage");
+                RetrievalHit {
+                    passage_id: passage.id.clone(),
+                    score,
+                    locator: passage.locator.clone(),
+                    matched_fields: vec!["test".into()],
+                }
+            };
+            Ok(vec![
+                hit_for(&self.irrelevant_passage_id, 1.0),
+                hit_for(&self.relevant_passage_id, 0.5),
+            ])
+        }
+    }
+
     #[test]
     fn empty_retrieval_produces_a_valid_failing_report() {
         let fixture = fixture();
@@ -542,6 +578,42 @@ mod tests {
         assert_eq!(report.summary.ndcg_at_10, 1.0);
         assert_eq!(report.summary.citation_locator_accuracy, 1.0);
         assert_eq!(report.summary.forbidden_hits_at_10, 0);
+    }
+
+    #[test]
+    fn exact_or_phrase_query_fails_when_the_relevant_result_is_not_first() {
+        let mut fixture = fixture();
+        fixture.queries.truncate(1);
+        let query = fixture.queries.first().expect("phrase query");
+        let relevant_passage_id = query
+            .relevance
+            .first()
+            .expect("relevant passage")
+            .passage_id
+            .clone();
+        let irrelevant_passage_id = fixture
+            .corpus
+            .iter()
+            .find(|passage| {
+                passage.id != relevant_passage_id && !query.must_not_rank.contains(&passage.id)
+            })
+            .expect("safe irrelevant passage")
+            .id
+            .clone();
+        let mut retriever = DemotedPhraseRetriever {
+            relevant_passage_id,
+            irrelevant_passage_id,
+        };
+
+        let report =
+            run_relevance_suite(&fixture, &mut retriever).expect("demoted phrase report runs");
+
+        assert!(!report.passed);
+        assert_eq!(report.summary.passed_query_count, 0);
+        assert_eq!(report.queries[0].metrics.exact_phrase_success, Some(false));
+        assert!(report.queries[0].metrics.recall_at_10 > 0.0);
+        assert!(report.queries[0].metrics.citation_locator_correct);
+        assert!(report.queries[0].metrics.forbidden_hits_at_10.is_empty());
     }
 
     #[test]

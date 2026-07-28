@@ -152,12 +152,18 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
             requested_formula,
             random.next(),
         );
+        let mut title = (!index.is_multiple_of(4)).then(|| generated_title(index));
+        let mut sources = generated_sources(index);
+        let mut attachments = generated_attachments(options.seed, index);
         let mut exact_duplicate_of = None;
         let mut near_duplicate_of = None;
         if index > 0 && index.is_multiple_of(50) {
             let previous = &tidbits[index - 1];
+            title.clone_from(&previous.title);
             body_markdown.clone_from(&previous.body_markdown);
             length_class = previous.length_class;
+            sources.clone_from(&previous.sources);
+            attachments.clone_from(&previous.attachments);
             exact_duplicate_of = Some(previous.id.clone());
             stats.exact_duplicate_count += 1;
         } else if index > 0 && index.is_multiple_of(37) {
@@ -172,8 +178,6 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
             stats.near_duplicate_count += 1;
         }
 
-        let sources = generated_sources(index);
-        let attachments = generated_attachments(options.seed, index);
         let with_code = body_markdown.contains("```");
         let with_formula = body_markdown.contains("$$");
         stats.tidbit_count += 1;
@@ -192,7 +196,7 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
             id: deterministic_uuid(options.seed, index, 0),
             revision_id: deterministic_uuid(options.seed, index, 1),
             created_at_ms: BASE_TIMESTAMP_MS + index as u64,
-            title: (!index.is_multiple_of(4)).then(|| generated_title(index)),
+            title,
             body_markdown,
             length_class,
             sources,
@@ -457,6 +461,8 @@ impl SplitMix64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use uuid::{Uuid, Version};
 
     use super::{
@@ -505,7 +511,7 @@ mod tests {
         assert!(corpus.stats.near_duplicate_count > 100);
         assert!(corpus.stats.with_code_count > 800);
         assert!(corpus.stats.with_formula_count > 700);
-        assert_eq!(corpus.stats.with_attachment_count, 2_000);
+        assert_eq!(corpus.stats.with_attachment_count, 1_801);
         assert!(corpus
             .tidbits
             .iter()
@@ -515,6 +521,31 @@ mod tests {
             .iter()
             .flat_map(|tidbit| &tidbit.attachments)
             .any(|attachment| attachment.media_type == "application/pdf"));
+
+        let tidbits_by_id = corpus
+            .tidbits
+            .iter()
+            .map(|tidbit| (tidbit.id.as_str(), tidbit))
+            .collect::<HashMap<_, _>>();
+        for duplicate in corpus
+            .tidbits
+            .iter()
+            .filter(|tidbit| tidbit.exact_duplicate_of.is_some())
+        {
+            let original = tidbits_by_id
+                .get(
+                    duplicate
+                        .exact_duplicate_of
+                        .as_deref()
+                        .expect("exact duplicate reference"),
+                )
+                .expect("referenced exact duplicate");
+            assert_eq!(duplicate.title, original.title);
+            assert_eq!(duplicate.body_markdown, original.body_markdown);
+            assert_eq!(duplicate.length_class, original.length_class);
+            assert_eq!(duplicate.sources, original.sources);
+            assert_eq!(duplicate.attachments, original.attachments);
+        }
     }
 
     #[test]
