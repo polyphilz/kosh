@@ -19,7 +19,7 @@ pub(crate) fn ensure_vector_table(connection: &Connection) -> Result<()> {
         .optional()?
         .is_some()
     {
-        return Ok(());
+        return validate_vector_table_definition(connection);
     }
     connection.execute_batch(
         "BEGIN IMMEDIATE;
@@ -528,7 +528,46 @@ pub(crate) fn validate_definition(connection: &Connection) -> Result<()> {
             reason: "PASSAGE_EMBEDDING state does not match the shipped manifest".into(),
         });
     }
+    validate_vector_table_definition(connection)?;
     Ok(())
+}
+
+fn validate_vector_table_definition(connection: &Connection) -> Result<()> {
+    let manifest = embedding::jina_v1_manifest();
+    let actual_sql = connection
+        .query_row(
+            "SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = ?1",
+            params![JINA_V1_VEC_TABLE],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| DatabaseError::Validation {
+            kind: "main",
+            reason: "the Jina v1 vector table is missing".into(),
+        })?;
+    let expected_sql = format!(
+        "CREATE VIRTUAL TABLE {JINA_V1_VEC_TABLE} USING vec0(
+            embedding float[{}] distance_metric={}
+         )",
+        manifest.dimension, manifest.distance_metric
+    );
+    if canonical_schema_sql(&actual_sql) != canonical_schema_sql(&expected_sql) {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: "the Jina v1 vector table does not match the shipped schema".into(),
+        });
+    }
+    Ok(())
+}
+
+fn canonical_schema_sql(sql: &str) -> String {
+    sql.trim_end_matches(';')
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
 }
 
 pub(crate) fn validate_embedding(vector: &[f32], dimension: usize) -> Result<()> {

@@ -4,7 +4,9 @@ use tempfile::TempDir;
 
 use super::{
     connection::{self, DatabaseKind, FileState},
-    embedding_index::{InstallEmbeddingDisposition, PassageEmbeddingIndexState},
+    embedding_index::{
+        self, InstallEmbeddingDisposition, PassageEmbeddingIndexState, JINA_V1_VEC_TABLE,
+    },
     migrations, Database, DatabasePaths, EditTidbitInput, Tidbit, TidbitDraft,
 };
 
@@ -390,6 +392,41 @@ fn invalid_optional_vector_table_is_quarantined_without_blocking_capture() {
         .client()
         .passage_embedding_index_needs_reconciliation()
         .expect("repair leaves index dirty"));
+}
+
+#[test]
+fn incompatible_vector_table_contracts_are_quarantined() {
+    for definition in [
+        "embedding float[384] distance_metric=cosine",
+        "embedding float[768] distance_metric=l2",
+    ] {
+        let library = TestLibrary::new();
+        let database = Database::initialize(library.paths.clone()).expect("database");
+        database.shutdown().expect("shutdown database");
+
+        let main =
+            connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+                .expect("main writer");
+        main.execute(&format!("DROP TABLE {JINA_V1_VEC_TABLE}"), [])
+            .expect("drop shipped table");
+        main.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE {JINA_V1_VEC_TABLE} USING vec0({definition});"
+        ))
+        .expect("install incompatible vector table");
+        assert!(embedding_index::validate_definition(&main).is_err());
+        drop(main);
+
+        let reopened =
+            Database::initialize(library.paths.clone()).expect("authored database remains usable");
+        assert_eq!(
+            reopened
+                .client()
+                .passage_embedding_index_progress()
+                .expect("quarantined progress")
+                .state,
+            PassageEmbeddingIndexState::Failed
+        );
+    }
 }
 
 #[test]
