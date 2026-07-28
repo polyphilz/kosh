@@ -3,12 +3,13 @@ use std::{
     io::{Cursor, Read, Write},
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::mpsc,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
@@ -31,6 +32,18 @@ const PDF_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const PDF_STALE_ATTEMPT_AGE: Duration = Duration::from_secs(5 * 60);
 const PDF_DROP_EVENT: &str = "kosh://pdf-drop";
 const MAX_PDF_OPEN_RECOVERY_FILES: usize = 256;
+const PDF_EXTRACTION_WORKER_ARG: &str = "--kosh-pdf-extraction-worker";
+const PDF_EXTRACTION_WORKER_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const MAX_PDF_WORKER_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
+#[cfg(unix)]
+const PDF_WORKER_CPU_SECONDS: libc::rlim_t = 90;
+const PDF_WORKER_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PdfExtractionWorkerResponse {
+    result: std::result::Result<Vec<PdfPageExtraction>, String>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -385,7 +398,7 @@ fn drain_pdf_queue(client: &DatabaseClient) {
                 return;
             }
         };
-        let result = catch_unwind(AssertUnwindSafe(|| extract_pdf_pages(&job)))
+        let result = catch_unwind(AssertUnwindSafe(|| extract_pdf_pages_isolated(&job)))
             .unwrap_or_else(|_| Err("the PDF extractor panicked".into()));
         let completed_at_ms = match system_now_ms() {
             Ok(value) => value,
@@ -400,6 +413,216 @@ fn drain_pdf_queue(client: &DatabaseClient) {
             return;
         }
     }
+}
+
+fn extract_pdf_pages_isolated(
+    job: &PdfExtractionJob,
+) -> std::result::Result<Vec<PdfPageExtraction>, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("could not locate the PDF extraction helper: {error}"))?;
+    let mut child = Command::new(executable)
+        .arg(PDF_EXTRACTION_WORKER_ARG)
+        .arg(job.page_count.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("could not start the isolated PDF extractor: {error}"))?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "isolated PDF extractor stdin was unavailable".to_owned())
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(&job.pdf_bytes)
+                .map_err(|error| format!("could not send the PDF to its extractor: {error}"))
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "isolated PDF extractor stdout was unavailable".to_owned())?;
+    let output_reader = thread::Builder::new()
+        .name("kosh-pdf-extractor-output".into())
+        .spawn(move || {
+            let mut output = Vec::new();
+            stdout
+                .take(MAX_PDF_WORKER_OUTPUT_BYTES + 1)
+                .read_to_end(&mut output)
+                .map(|_| output)
+        })
+        .map_err(|error| format!("could not read isolated PDF extraction output: {error}"))?;
+
+    let deadline = Instant::now() + PDF_EXTRACTION_WORKER_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                match pdf_worker_physical_footprint(child.id()) {
+                    Ok(bytes) if bytes > PDF_WORKER_MEMORY_BYTES => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("isolated PDF extraction exceeded its memory limit".into());
+                    }
+                    Ok(_) => thread::sleep(Duration::from_millis(25)),
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("isolated PDF extraction exceeded its time limit".into());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "could not monitor the isolated PDF extractor: {error}"
+                ));
+            }
+        }
+    };
+    let output = output_reader
+        .join()
+        .map_err(|_| "isolated PDF extraction output reader panicked".to_owned())?
+        .map_err(|error| format!("could not read isolated PDF extraction output: {error}"))?;
+    if output.len() as u64 > MAX_PDF_WORKER_OUTPUT_BYTES {
+        return Err("isolated PDF extraction exceeded its output limit".into());
+    }
+    if !status.success() {
+        return Err(format!(
+            "isolated PDF extraction stopped safely with status {status}"
+        ));
+    }
+    serde_json::from_slice::<PdfExtractionWorkerResponse>(&output)
+        .map_err(|error| format!("isolated PDF extraction returned invalid output: {error}"))?
+        .result
+}
+
+pub(crate) fn run_extraction_worker_if_requested() -> Option<i32> {
+    let mut arguments = std::env::args();
+    let _executable = arguments.next();
+    if arguments.next().as_deref() != Some(PDF_EXTRACTION_WORKER_ARG) {
+        return None;
+    }
+    let page_count = arguments
+        .next()
+        .ok_or_else(|| "PDF extraction worker page count is missing".to_owned())
+        .and_then(|value| {
+            value
+                .parse::<u32>()
+                .map_err(|_| "PDF extraction worker page count is invalid".to_owned())
+        })
+        .and_then(|value| {
+            if value == 0 || value as usize > MAX_PDF_PAGES {
+                Err("PDF extraction worker page count is out of bounds".into())
+            } else {
+                Ok(value)
+            }
+        });
+    let result = install_pdf_worker_resource_limits()
+        .and(page_count)
+        .and_then(|page_count| {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .take(MAX_PDF_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| format!("could not read PDF extraction input: {error}"))?;
+            if bytes.len() > MAX_PDF_BYTES {
+                return Err("PDF extraction input exceeded its byte limit".into());
+            }
+            catch_unwind(AssertUnwindSafe(|| {
+                extract_pdf_pages_from_bytes(&bytes, page_count)
+            }))
+            .unwrap_or_else(|_| Err("the isolated PDF extractor panicked".into()))
+        });
+    let response = PdfExtractionWorkerResponse { result };
+    let serialized = match serde_json::to_vec(&response) {
+        Ok(serialized) if serialized.len() as u64 <= MAX_PDF_WORKER_OUTPUT_BYTES => serialized,
+        Ok(_) => br#"{"result":{"Err":"PDF extraction output exceeded its byte limit"}}"#.to_vec(),
+        Err(error) => {
+            let fallback = PdfExtractionWorkerResponse {
+                result: Err(format!("could not encode PDF extraction output: {error}")),
+            };
+            serde_json::to_vec(&fallback).unwrap_or_default()
+        }
+    };
+    match std::io::stdout().write_all(&serialized) {
+        Ok(()) => Some(0),
+        Err(_) => Some(74),
+    }
+}
+
+#[cfg(unix)]
+fn install_pdf_worker_resource_limits() -> std::result::Result<(), String> {
+    let cpu = libc::rlimit {
+        rlim_cur: PDF_WORKER_CPU_SECONDS,
+        rlim_max: PDF_WORKER_CPU_SECONDS,
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_CPU, &cpu) } != 0 {
+        return Err(format!(
+            "could not install the PDF extractor CPU limit: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn pdf_worker_physical_footprint(pid: u32) -> std::result::Result<u64, String> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct RusageInfoV0 {
+        uuid: [u8; 16],
+        user_time: u64,
+        system_time: u64,
+        package_idle_wakeups: u64,
+        interrupt_wakeups: u64,
+        pageins: u64,
+        wired_size: u64,
+        resident_size: u64,
+        physical_footprint: u64,
+        process_start_absolute_time: u64,
+        process_exit_absolute_time: u64,
+    }
+
+    unsafe extern "C" {
+        fn proc_pid_rusage(
+            pid: libc::c_int,
+            flavor: libc::c_int,
+            buffer: *mut libc::c_void,
+        ) -> libc::c_int;
+    }
+
+    let mut usage = RusageInfoV0::default();
+    let result =
+        unsafe { proc_pid_rusage(pid as libc::c_int, 0, std::ptr::from_mut(&mut usage).cast()) };
+    if result != 0 {
+        return Err(format!(
+            "could not monitor isolated PDF extraction memory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(usage.physical_footprint)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pdf_worker_physical_footprint(_pid: u32) -> std::result::Result<u64, String> {
+    Ok(0)
+}
+
+#[cfg(not(unix))]
+fn install_pdf_worker_resource_limits() -> std::result::Result<(), String> {
+    Err("isolated PDF extraction requires Unix resource limits".into())
 }
 
 #[cfg(target_os = "macos")]
@@ -459,27 +682,35 @@ fn with_pdf_document<T>(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn extract_pdf_pages(
     job: &PdfExtractionJob,
+) -> std::result::Result<Vec<PdfPageExtraction>, String> {
+    extract_pdf_pages_from_bytes(&job.pdf_bytes, job.page_count)
+}
+
+#[cfg(target_os = "macos")]
+fn extract_pdf_pages_from_bytes(
+    pdf_bytes: &[u8],
+    page_count: u32,
 ) -> std::result::Result<Vec<PdfPageExtraction>, String> {
     use objc2_foundation::NSSize;
     use objc2_pdf_kit::PDFDisplayBox;
 
-    with_pdf_document(&job.pdf_bytes, |document| {
+    with_pdf_document(pdf_bytes, |document| {
         if unsafe { document.isEncrypted() } || unsafe { document.isLocked() } {
             return Err(DatabaseError::InvalidInput(
                 "the PDF became encrypted before extraction".into(),
             ));
         }
-        if unsafe { document.pageCount() } != job.page_count as usize {
+        if unsafe { document.pageCount() } != page_count as usize {
             return Err(DatabaseError::InvalidInput(
                 "the PDF page count no longer matches ingestion metadata".into(),
             ));
         }
-        let mut pages = Vec::with_capacity(job.page_count as usize);
+        let mut pages = Vec::with_capacity(page_count as usize);
         let mut ocr_pages = 0_usize;
-        for index in 0..job.page_count as usize {
+        for index in 0..page_count as usize {
             let page_number = u32::try_from(index + 1).expect("bounded PDF page fits u32");
             let Some(page) = (unsafe { document.pageAtIndex(index) }) else {
                 pages.push(PdfPageExtraction {
@@ -573,8 +804,9 @@ fn extract_pdf_pages(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn extract_pdf_pages(
-    _job: &PdfExtractionJob,
+fn extract_pdf_pages_from_bytes(
+    _pdf_bytes: &[u8],
+    _page_count: u32,
 ) -> std::result::Result<Vec<PdfPageExtraction>, String> {
     Err("native PDF extraction is available only on macOS".into())
 }

@@ -13,11 +13,11 @@ use tempfile::TempDir;
 use super::{
     drafts::SaveDraftWrite,
     media::{
-        recover_media_lifecycle_batch, referenced_attachments, AttachmentDisplayRole,
-        CanonicalImage, ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata,
-        IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite, MediaByteRange,
-        PdfExtractionStatus, PdfPageExtraction, PdfPageSource, StagedAttachment,
-        MEDIA_RECONCILE_BATCH_SIZE,
+        recover_media_lifecycle_batch, referenced_attachments, split_pdf_page_passages,
+        AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
+        IngestAttachmentMetadata, IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite,
+        MediaByteRange, PdfExtractionStatus, PdfPageExtraction, PdfPageSource, StagedAttachment,
+        MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
     },
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     AttachmentIngestInput, AttachmentKind, CitationLocator, ClearDraftInput, Database,
@@ -299,7 +299,10 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
                     page_number: 1,
                     result: Ok((
                         PdfPageSource::NativeText,
-                        "first_page_exact_evidence".into(),
+                        format!(
+                            "first_page_exact_evidence. {}",
+                            "bounded citation context. ".repeat(100)
+                        ),
                     )),
                 },
                 PdfPageExtraction {
@@ -333,6 +336,10 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
             })
             .expect("search PDF page evidence");
         assert_eq!(results.len(), 1);
+        assert!(
+            results[0].citation.excerpt.chars().count() <= PDF_PASSAGE_MAX_CHARS,
+            "PDF result excerpts stay citation-sized"
+        );
         assert_eq!(
             results[0].citation.locator,
             CitationLocator::PdfPage {
@@ -395,6 +402,34 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
         Some("https://example.com/reader"),
         "attachment citations stay bound to the revision that established their provenance"
     );
+}
+
+#[test]
+fn pdf_page_passages_are_bounded_and_overlap() {
+    let text = (0..300)
+        .map(|index| format!("Sentence {index} carries useful PDF evidence."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let passages = split_pdf_page_passages(&text);
+    assert!(passages.len() > 1);
+    assert!(passages
+        .iter()
+        .all(|passage| passage.chars().count() <= PDF_PASSAGE_MAX_CHARS));
+    for pair in passages.windows(2) {
+        let tail = pair[0]
+            .chars()
+            .rev()
+            .take(PDF_PASSAGE_OVERLAP_CHARS)
+            .collect::<Vec<_>>();
+        assert!(
+            tail.into_iter()
+                .rev()
+                .collect::<String>()
+                .split_whitespace()
+                .any(|word| pair[1].contains(word)),
+            "neighboring PDF passages retain searchable overlap"
+        );
+    }
 }
 
 #[test]

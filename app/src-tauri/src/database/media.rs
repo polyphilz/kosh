@@ -32,6 +32,9 @@ const IMAGE_OCR_EXTRACTOR: &str = "ocr";
 const PDF_TEXT_EXTRACTOR: &str = "pdf-text";
 const MAX_IMAGE_OCR_ATTEMPTS: u32 = 4;
 const MAX_PDF_EXTRACTION_ATTEMPTS: u32 = 3;
+const PDF_PASSAGE_TARGET_CHARS: usize = 700;
+pub(crate) const PDF_PASSAGE_MAX_CHARS: usize = 1_000;
+pub(crate) const PDF_PASSAGE_OVERLAP_CHARS: usize = 100;
 const IMAGE_OCR_RETRY_DELAYS_MS: [i64; 3] = [5 * 60 * 1_000, 30 * 60 * 1_000, 2 * 60 * 60 * 1_000];
 const IMAGE_OCR_RECOVERY_BATCH_SIZE: usize = 64;
 const MAX_OCR_REGIONS: usize = 4_096;
@@ -269,7 +272,8 @@ pub(crate) struct IngestPdfWrite {
     pub page_count: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum PdfPageSource {
     NativeText,
     Ocr,
@@ -284,7 +288,8 @@ impl PdfPageSource {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PdfPageExtraction {
     pub page_number: u32,
     pub result: std::result::Result<(PdfPageSource, String), String>,
@@ -1436,49 +1441,61 @@ pub(crate) fn complete_pdf_extraction(
                  WHERE id = ?2",
                 params![completed_at_ms, &job.extraction_id],
             )?;
+            let mut segment_ordinal = 0_i64;
             for page in pages {
                 match page.result {
                     Ok((source, text)) => {
-                        let segment_id = Uuid::now_v7().to_string();
-                        let passage_id = Uuid::now_v7().to_string();
-                        let content_hash = Sha256::digest(text.as_bytes()).to_vec();
                         let locator_json = serde_json::to_string(&serde_json::json!({
                             "page": page.page_number
                         }))
                         .expect("PDF page locator is serializable");
-                        transaction.execute(
-                            "INSERT INTO attachment_segment(
-                                id, extraction_id, ordinal, locator_kind, page_number,
-                                line_start, line_end, region_json, content, content_hash
-                             ) VALUES(?1, ?2, ?3, 'PDF_PAGE', ?4, NULL, NULL, NULL, ?5, ?6)",
-                            params![
-                                &segment_id,
-                                &job.extraction_id,
-                                i64::from(page.page_number - 1),
-                                page.page_number,
-                                &text,
-                                &content_hash
-                            ],
-                        )?;
-                        transaction.execute(
-                            "INSERT INTO passage(
-                                id, tidbit_revision_id, attachment_segment_id, owner_kind,
-                                ordinal, content, content_hash, locator_kind, locator_json,
-                                created_at, construction_version, heading_context_json
-                             ) VALUES(
-                                ?1, NULL, ?2, 'ATTACHMENT', 0, ?3, ?4, 'PDF_PAGE',
-                                ?5, ?6, ?7, '[]'
-                             )",
-                            params![
-                                &passage_id,
-                                &segment_id,
-                                &text,
-                                &content_hash,
-                                &locator_json,
-                                completed_at_ms,
-                                &construction_version
-                            ],
-                        )?;
+                        let chunks = split_pdf_page_passages(&text);
+                        let mut first_segment_id = None;
+                        for chunk in chunks {
+                            let segment_id = Uuid::now_v7().to_string();
+                            let passage_id = Uuid::now_v7().to_string();
+                            let content_hash = Sha256::digest(chunk.as_bytes()).to_vec();
+                            transaction.execute(
+                                "INSERT INTO attachment_segment(
+                                    id, extraction_id, ordinal, locator_kind, page_number,
+                                    line_start, line_end, region_json, content, content_hash
+                                 ) VALUES(
+                                    ?1, ?2, ?3, 'PDF_PAGE', ?4, NULL, NULL, NULL, ?5, ?6
+                                 )",
+                                params![
+                                    &segment_id,
+                                    &job.extraction_id,
+                                    segment_ordinal,
+                                    page.page_number,
+                                    &chunk,
+                                    &content_hash
+                                ],
+                            )?;
+                            transaction.execute(
+                                "INSERT INTO passage(
+                                    id, tidbit_revision_id, attachment_segment_id, owner_kind,
+                                    ordinal, content, content_hash, locator_kind, locator_json,
+                                    created_at, construction_version, heading_context_json
+                                 ) VALUES(
+                                    ?1, NULL, ?2, 'ATTACHMENT', ?3, ?4, ?5, 'PDF_PAGE',
+                                    ?6, ?7, ?8, '[]'
+                                 )",
+                                params![
+                                    &passage_id,
+                                    &segment_id,
+                                    segment_ordinal,
+                                    &chunk,
+                                    &content_hash,
+                                    &locator_json,
+                                    completed_at_ms,
+                                    &construction_version
+                                ],
+                            )?;
+                            first_segment_id.get_or_insert(segment_id);
+                            segment_ordinal = segment_ordinal.checked_add(1).ok_or_else(|| {
+                                DatabaseError::InvalidInput("PDF passage ordinal overflow".into())
+                            })?;
+                        }
                         transaction.execute(
                             "INSERT INTO pdf_page_extraction(
                                 extraction_id, page_number, source, segment_id, error
@@ -1487,7 +1504,7 @@ pub(crate) fn complete_pdf_extraction(
                                 &job.extraction_id,
                                 page.page_number,
                                 source.as_db_str(),
-                                &segment_id
+                                first_segment_id.expect("validated PDF page has a passage")
                             ],
                         )?;
                     }
@@ -1610,6 +1627,59 @@ fn validate_pdf_pages(
         return Err("PDF contains too much extracted text".into());
     }
     Ok(pages)
+}
+
+pub(crate) fn split_pdf_page_passages(text: &str) -> Vec<String> {
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut passages = Vec::new();
+    let mut start = 0_usize;
+    while start < characters.len() {
+        let raw_end = if characters.len() - start <= PDF_PASSAGE_MAX_CHARS {
+            characters.len()
+        } else {
+            pdf_passage_boundary(&characters, start)
+        };
+        let mut trimmed_start = start;
+        while trimmed_start < raw_end && characters[trimmed_start].is_whitespace() {
+            trimmed_start += 1;
+        }
+        let mut trimmed_end = raw_end;
+        while trimmed_end > trimmed_start && characters[trimmed_end - 1].is_whitespace() {
+            trimmed_end -= 1;
+        }
+        if trimmed_start < trimmed_end {
+            passages.push(characters[trimmed_start..trimmed_end].iter().collect());
+        }
+        if raw_end == characters.len() {
+            break;
+        }
+        let overlap_target = raw_end.saturating_sub(PDF_PASSAGE_OVERLAP_CHARS);
+        let next = (overlap_target..raw_end)
+            .find(|position| characters[*position].is_whitespace())
+            .map_or(overlap_target, |position| position + 1);
+        start = next.max(start + 1);
+    }
+    passages
+}
+
+fn pdf_passage_boundary(characters: &[char], start: usize) -> usize {
+    let target = (start + PDF_PASSAGE_TARGET_CHARS).min(characters.len());
+    let maximum = (start + PDF_PASSAGE_MAX_CHARS).min(characters.len());
+    let minimum = (start + PDF_PASSAGE_TARGET_CHARS / 2).min(maximum);
+    (minimum..maximum)
+        .filter(|position| {
+            *position > 0
+                && *position < characters.len()
+                && matches!(characters[*position - 1], '.' | '!' | '?' | '\n')
+                && characters[*position].is_whitespace()
+        })
+        .min_by_key(|position| position.abs_diff(target))
+        .or_else(|| {
+            (target..maximum)
+                .rev()
+                .find(|position| characters[*position].is_whitespace())
+        })
+        .unwrap_or(maximum)
 }
 
 pub(crate) fn retry_pdf_extraction(

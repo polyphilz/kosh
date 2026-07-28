@@ -97,6 +97,10 @@ pub fn run() {
     .expect("error while running Kosh");
 }
 
+pub fn run_pdf_extraction_worker_if_requested() -> Option<i32> {
+    pdf::run_extraction_worker_if_requested()
+}
+
 pub use database::{
     AttachmentIngestInput, AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator,
     CitationResolution, CitationState, CitationTidbit, ClearDraftInput, Database,
