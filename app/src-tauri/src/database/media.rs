@@ -457,6 +457,13 @@ pub(crate) struct MediaByteRange {
     pub end_inclusive: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MediaRangeRequest {
+    Inclusive(MediaByteRange),
+    From(u64),
+    Suffix(u64),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct MediaPayload {
     pub bytes: Vec<u8>,
@@ -978,7 +985,7 @@ pub(crate) fn load_media_payload(
     media: &Connection,
     attachment_id: &str,
     now_ms: i64,
-    requested_range: Option<MediaByteRange>,
+    requested_range: Option<MediaRangeRequest>,
     max_response_bytes: u64,
 ) -> Result<MediaPayload> {
     validate_uuid_v7(attachment_id, "attachmentId")?;
@@ -1056,10 +1063,21 @@ pub(crate) fn load_media_payload(
             reason: format!("attachment {attachment_id} is empty"),
         });
     }
-    let range = requested_range.unwrap_or(MediaByteRange {
-        start: 0,
-        end_inclusive: total_byte_length - 1,
-    });
+    let range = match requested_range {
+        Some(MediaRangeRequest::Inclusive(range)) => range,
+        Some(MediaRangeRequest::From(start)) => MediaByteRange {
+            start,
+            end_inclusive: total_byte_length - 1,
+        },
+        Some(MediaRangeRequest::Suffix(length)) => MediaByteRange {
+            start: total_byte_length.saturating_sub(length),
+            end_inclusive: total_byte_length - 1,
+        },
+        None => MediaByteRange {
+            start: 0,
+            end_inclusive: total_byte_length - 1,
+        },
+    };
     if range.start > range.end_inclusive || range.end_inclusive >= total_byte_length {
         return Err(DatabaseError::InvalidInput(
             "requested media range is outside the attachment".into(),

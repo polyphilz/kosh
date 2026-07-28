@@ -18,7 +18,7 @@ use crate::{
     database::{
         media::{
             CanonicalImage, ImageOcrJob, ImageOcrRegion, IngestAttachmentMetadata,
-            IngestImageWrite, MediaByteRange, StagedAttachment,
+            IngestImageWrite, MediaByteRange, MediaRangeRequest, StagedAttachment,
         },
         DatabaseClient, DatabaseError, ImageOcrDiagnostics, ImageRecord, ImageStatusRecord,
         MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
@@ -884,19 +884,24 @@ pub(crate) fn protocol_response<R: tauri::Runtime>(
     }
 }
 
-fn parse_range(value: &str) -> Option<MediaByteRange> {
+fn parse_range(value: &str) -> Option<MediaRangeRequest> {
     let range = value.strip_prefix("bytes=")?;
     if range.contains(',') {
         return None;
     }
     let (start, end) = range.split_once('-')?;
-    if start.is_empty() || end.is_empty() {
-        return None;
+    match (start.is_empty(), end.is_empty()) {
+        (false, false) => Some(MediaRangeRequest::Inclusive(MediaByteRange {
+            start: start.parse().ok()?,
+            end_inclusive: end.parse().ok()?,
+        })),
+        (false, true) => Some(MediaRangeRequest::From(start.parse().ok()?)),
+        (true, false) => {
+            let length = end.parse().ok()?;
+            (length > 0).then_some(MediaRangeRequest::Suffix(length))
+        }
+        (true, true) => None,
     }
-    Some(MediaByteRange {
-        start: start.parse().ok()?,
-        end_inclusive: end.parse().ok()?,
-    })
 }
 
 fn is_uuid_v7(value: &str) -> bool {
@@ -966,16 +971,20 @@ mod tests {
     }
 
     #[test]
-    fn range_parser_accepts_one_bounded_range_only() {
+    fn range_parser_accepts_single_bounded_open_and_suffix_ranges() {
         assert_eq!(
             parse_range("bytes=10-19"),
-            Some(MediaByteRange {
+            Some(MediaRangeRequest::Inclusive(MediaByteRange {
                 start: 10,
                 end_inclusive: 19
-            })
+            }))
         );
-        assert_eq!(parse_range("bytes=10-"), None);
-        assert_eq!(parse_range("bytes=-10"), None);
+        assert_eq!(parse_range("bytes=10-"), Some(MediaRangeRequest::From(10)));
+        assert_eq!(
+            parse_range("bytes=-10"),
+            Some(MediaRangeRequest::Suffix(10))
+        );
+        assert_eq!(parse_range("bytes=-0"), None);
         assert_eq!(parse_range("bytes=0-1,4-5"), None);
     }
 

@@ -16,8 +16,9 @@ use super::{
         recover_media_lifecycle_batch, referenced_attachments, split_pdf_page_passages,
         AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
         IngestAttachmentMetadata, IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite,
-        MediaByteRange, PdfExtractionStatus, PdfPageExtraction, PdfPageSource, StagedAttachment,
-        MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
+        MediaByteRange, MediaRangeRequest, PdfExtractionStatus, PdfPageExtraction, PdfPageSource,
+        StagedAttachment, MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS,
+        PDF_PASSAGE_OVERLAP_CHARS,
     },
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     AttachmentIngestInput, AttachmentKind, CitationLocator, ClearDraftInput, Database,
@@ -1316,10 +1317,10 @@ fn ingestion_deduplicates_bytes_preserves_metadata_and_bounds_reads() {
         .load_media_payload(
             first.id.clone(),
             13,
-            Some(MediaByteRange {
+            Some(MediaRangeRequest::Inclusive(MediaByteRange {
                 start: 5,
                 end_inclusive: 9,
-            }),
+            })),
             5,
         )
         .expect("authorized bounded read");
@@ -1327,6 +1328,15 @@ fn ingestion_deduplicates_bytes_preserves_metadata_and_bounds_reads() {
     assert_eq!(payload.total_byte_length, 10);
     assert_eq!(payload.media_type, "text/plain");
     assert!(!payload.revision_bound);
+
+    let from = client
+        .load_media_payload(first.id.clone(), 13, Some(MediaRangeRequest::From(5)), 5)
+        .expect("authorized open-ended read");
+    assert_eq!(from.bytes, b"bytes");
+    let suffix = client
+        .load_media_payload(first.id.clone(), 13, Some(MediaRangeRequest::Suffix(5)), 5)
+        .expect("authorized suffix read");
+    assert_eq!(suffix.bytes, b"bytes");
 
     assert!(matches!(
         client.load_media_payload(first.id.clone(), 13, None, 9),

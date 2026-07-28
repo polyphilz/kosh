@@ -12,9 +12,9 @@ use super::{
     media::{
         AttachmentRecord, ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion,
         ImageRecord, ImageStatusRecord, IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite,
-        MediaByteRange, MediaIntegrityReport, MediaIntegrityScan, MediaLimits,
-        MediaMaintenanceReport, MediaMaintenanceScan, MediaPayload, PdfExtractionJob,
-        PdfPageExtraction, PdfRecord, PdfStatusRecord,
+        MediaIntegrityReport, MediaIntegrityScan, MediaLimits, MediaMaintenanceReport,
+        MediaMaintenanceScan, MediaPayload, MediaRangeRequest, PdfExtractionJob, PdfPageExtraction,
+        PdfRecord, PdfStatusRecord,
     },
     migrations::MigrationHeads,
     passages::CitationResolution,
@@ -154,7 +154,7 @@ pub(super) enum WriterMessage {
     LoadMediaPayload {
         attachment_id: String,
         now_ms: i64,
-        requested_range: Option<MediaByteRange>,
+        requested_range: Option<MediaRangeRequest>,
         max_response_bytes: u64,
         reply: SyncSender<Result<MediaPayload>>,
     },
@@ -459,7 +459,7 @@ impl DatabaseClient {
         &self,
         attachment_id: String,
         now_ms: i64,
-        requested_range: Option<MediaByteRange>,
+        requested_range: Option<MediaRangeRequest>,
         max_response_bytes: u64,
     ) -> Result<MediaPayload> {
         let (reply, receiver) = mpsc::sync_channel(1);

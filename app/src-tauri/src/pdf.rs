@@ -346,7 +346,7 @@ fn safe_pdf_filename(value: &str) -> String {
         return "Document.pdf".into();
     }
     if !filename.to_ascii_lowercase().ends_with(".pdf") {
-        filename.truncate(251);
+        filename = filename.chars().take(251).collect();
         filename.push_str(".pdf");
     }
     filename
@@ -988,6 +988,10 @@ mod tests {
     fn filenames_are_bounded_and_keep_a_pdf_extension() {
         assert_eq!(safe_pdf_filename("../../notes"), "notes.pdf");
         assert_eq!(safe_pdf_filename("chapter.PDF"), "chapter.PDF");
+        let unicode = format!("{}notes", "🧠".repeat(251));
+        let bounded = safe_pdf_filename(&unicode);
+        assert_eq!(bounded.chars().count(), 255);
+        assert!(bounded.ends_with(".pdf"));
     }
 
     #[test]
