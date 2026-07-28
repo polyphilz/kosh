@@ -237,7 +237,7 @@ fn append_event_content(capture: &mut Capture, event: Event<'_>) {
             capture.content.push_str("$$");
         }
         Event::Html(value) => capture.content.push_str(&value),
-        Event::InlineHtml(_) => {}
+        Event::InlineHtml(value) => append_inline_html(capture, &value),
         Event::FootnoteReference(value) => {
             capture.content.push_str("[^");
             capture.content.push_str(&value);
@@ -251,6 +251,22 @@ fn append_event_content(capture: &mut Capture, event: Event<'_>) {
                 .push_str(if checked { "[x] " } else { "[ ] " });
         }
         Event::Start(_) | Event::End(_) => {}
+    }
+}
+
+fn append_inline_html(capture: &mut Capture, value: &str) {
+    let tag = value
+        .trim()
+        .strip_prefix('<')
+        .map(|value| value.trim_start_matches('/').trim_start())
+        .and_then(|value| {
+            let end = value
+                .find(|character: char| character.is_whitespace() || matches!(character, '/' | '>'))
+                .unwrap_or(value.len());
+            (end > 0).then(|| &value[..end])
+        });
+    if tag.is_some_and(|tag| tag.eq_ignore_ascii_case("br") || tag.eq_ignore_ascii_case("hr")) {
+        capture.content.push('\n');
     }
 }
 
@@ -730,6 +746,21 @@ mod tests {
         assert!(content.contains("Nested alpha.\nNested beta."));
         assert!(!content.contains("paragraph.Second"));
         assert!(!content.contains("alpha.Nested"));
+    }
+
+    #[test]
+    fn inline_html_breaks_preserve_text_boundaries_without_retaining_markup() {
+        let markdown = "alpha<br>beta <span class=\"term\">gamma</span><BR />delta<hr>epsilon";
+        let passages = build_markdown_passages(markdown);
+
+        assert_eq!(
+            passages
+                .iter()
+                .map(|passage| passage.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "alpha\nbeta gamma\ndelta\nepsilon"
+        );
     }
 
     fn assert_valid_source_ranges<'a>(
