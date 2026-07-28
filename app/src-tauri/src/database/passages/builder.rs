@@ -138,11 +138,12 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
     for (event, range) in parser {
         match event {
             Event::Start(tag) => {
-                let starts_nested_code = matches!(&tag, Tag::CodeBlock(_))
-                    && capture
-                        .as_ref()
-                        .is_some_and(|active| active.kind == BlockKind::Prose);
-                if starts_nested_code {
+                let nested_atomic_kind = capture
+                    .as_ref()
+                    .filter(|active| active.kind == BlockKind::Prose)
+                    .and_then(|_| captured_block_kind(&tag))
+                    .filter(|kind| *kind != BlockKind::Prose);
+                if let Some(kind) = nested_atomic_kind {
                     let outer = capture.take().expect("captured list item");
                     suspended_capture = Some(SuspendedCapture {
                         end_tag: outer.end_tag,
@@ -150,7 +151,7 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
                     });
                     finish_capture(outer, range.start, &mut headings, &mut blocks);
                     capture = Some(Capture {
-                        kind: BlockKind::Code,
+                        kind,
                         end_tag: tag.to_end(),
                         nested_depth: 0,
                         content: String::new(),
@@ -181,7 +182,7 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
                     active.nested_depth -= 1;
                 } else if active.end_tag == tag {
                     let finished = capture.take().expect("active Markdown capture");
-                    let resumes_outer = finished.kind == BlockKind::Code;
+                    let resumes_outer = suspended_capture.is_some();
                     finish_capture(finished, range.end, &mut headings, &mut blocks);
                     if resumes_outer {
                         if let Some(suspended) = suspended_capture.take() {
@@ -195,6 +196,36 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
                         }
                     }
                 }
+            }
+            Event::DisplayMath(formula)
+                if capture
+                    .as_ref()
+                    .is_some_and(|active| active.kind == BlockKind::Prose)
+                    && capture
+                        .as_ref()
+                        .is_some_and(|active| active.end_tag == TagEnd::Item) =>
+            {
+                let outer = capture.take().expect("captured list item");
+                let resume = SuspendedCapture {
+                    end_tag: outer.end_tag,
+                    nested_depth: outer.nested_depth,
+                };
+                finish_capture(outer, range.start, &mut headings, &mut blocks);
+                push_standalone_block(
+                    BlockKind::DisplayMath,
+                    format!("$${formula}$$"),
+                    range.start,
+                    range.end,
+                    &headings,
+                    &mut blocks,
+                );
+                capture = Some(Capture {
+                    kind: BlockKind::Prose,
+                    end_tag: resume.end_tag,
+                    nested_depth: resume.nested_depth,
+                    content: String::new(),
+                    source_start_byte: range.end,
+                });
             }
             Event::DisplayMath(formula) if capture.is_none() => {
                 let content = format!("$${formula}$$");
@@ -770,6 +801,23 @@ mod tests {
             );
         }
         assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn nested_list_display_math_remains_an_atomic_semantic_block() {
+        let markdown = "- Before equation.\n\n  $$x^2 + y^2$$\n\n  After equation.";
+        let passages = build_markdown_passages(markdown);
+
+        assert!(passages
+            .iter()
+            .any(|passage| passage.content == "Before equation."));
+        assert!(passages
+            .iter()
+            .any(|passage| passage.content == "$$x^2 + y^2$$"));
+        assert!(passages
+            .iter()
+            .any(|passage| passage.content == "After equation."));
+        assert_valid_source_ranges(markdown, passages.iter().map(|passage| &passage.locator));
     }
 
     #[test]
