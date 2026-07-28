@@ -425,17 +425,9 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
             passage.content,
             passage.content_hash,
             attachment.updated_at
-         FROM passage
-         JOIN attachment_segment AS segment
-           ON segment.id = passage.attachment_segment_id
-         JOIN attachment_extraction AS extraction
-           ON extraction.id = segment.extraction_id
-          AND extraction.status = 'READY'
-         JOIN attachment
-           ON attachment.id = extraction.attachment_id
-          AND attachment.sha256 = extraction.content_hash
-          AND attachment.deleted_at IS NULL
-         WHERE passage.owner_kind = 'ATTACHMENT'
+         FROM current_attachment_passage AS current
+         JOIN passage ON passage.id = current.passage_id
+         JOIN attachment ON attachment.id = current.attachment_id
          ORDER BY attachment.id, passage.ordinal",
         [],
     )?;
@@ -524,15 +516,8 @@ fn query_fts_index(
                    AND document.owner_content_hash = passage.content_hash
                    AND EXISTS (
                        SELECT 1
-                       FROM attachment_segment AS segment
-                       JOIN attachment_extraction AS extraction
-                         ON extraction.id = segment.extraction_id
-                        AND extraction.status = 'READY'
-                       JOIN attachment
-                         ON attachment.id = extraction.attachment_id
-                        AND attachment.sha256 = extraction.content_hash
-                        AND attachment.deleted_at IS NULL
-                       WHERE segment.id = passage.attachment_segment_id
+                       FROM current_attachment_passage AS current
+                       WHERE current.passage_id = passage.id
                    )
                )
            )
@@ -659,15 +644,9 @@ fn load_search_document(
                ON passage.id = document.passage_id
               AND passage.owner_kind = 'ATTACHMENT'
               AND passage.content_hash = document.owner_content_hash
-             JOIN attachment_segment AS segment
-               ON segment.id = passage.attachment_segment_id
-             JOIN attachment_extraction AS extraction
-               ON extraction.id = segment.extraction_id
-              AND extraction.status = 'READY'
-             JOIN attachment
-               ON attachment.id = extraction.attachment_id
-              AND attachment.sha256 = extraction.content_hash
-              AND attachment.deleted_at IS NULL
+             JOIN current_attachment_passage AS current
+               ON current.passage_id = passage.id
+             JOIN attachment ON attachment.id = current.attachment_id
              WHERE document.passage_id = ?1
                AND document.tidbit_id IS NULL",
             params![passage_id],
@@ -1387,6 +1366,130 @@ mod tests {
             .expect("search restored attachment")
             .len(),
             1
+        );
+        let mismatched = connection
+            .execute(
+                "INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009508',
+                    '019f547b-6200-7000-8000-000000009503',
+                    'ATTACHMENT', 0, 'fabricated attachment text', randomblob(32),
+                    'PDF_PAGE', '{\"page\":7}', 35, 'pdf-page-bad', '[]'
+                 )",
+                [],
+            )
+            .expect_err("mismatched attachment passage must be rejected");
+        assert!(mismatched
+            .to_string()
+            .contains("does not match its immutable segment"));
+
+        connection
+            .execute_batch(
+                "INSERT INTO attachment_extraction(
+                    id, attachment_id, extractor, extractor_version, content_hash,
+                    status, created_at, started_at, completed_at
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009505',
+                    '019f547b-6200-7000-8000-000000009501',
+                    'pdf-text', '2', zeroblob(32), 'READY', 40, 40, 40
+                 );
+                 INSERT INTO attachment_segment(
+                    id, extraction_id, ordinal, locator_kind, page_number,
+                    content, content_hash
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009506',
+                    '019f547b-6200-7000-8000-000000009505',
+                    0, 'PDF_PAGE', 8,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32)
+                 );
+                 INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009507',
+                    '019f547b-6200-7000-8000-000000009506',
+                    'ATTACHMENT', 0,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 40, 'pdf-page-v2', '[]'
+                 );",
+            )
+            .expect("new extraction version");
+        assert!(super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "quasar_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search stale extraction")
+        .is_empty());
+        assert_eq!(
+            super::search_passages(
+                &connection,
+                SearchPassagesInput {
+                    query: "nova_needle".into(),
+                    mode: LexicalSearchMode::Default,
+                    limit: 10,
+                },
+            )
+            .expect("search current extraction")
+            .len(),
+            1
+        );
+        connection
+            .execute(
+                "INSERT INTO passage(
+                    id, attachment_segment_id, owner_kind, ordinal, content,
+                    content_hash, locator_kind, locator_json, created_at,
+                    construction_version, heading_context_json
+                 ) VALUES(
+                    '019f547b-6200-7000-8000-000000009509',
+                    '019f547b-6200-7000-8000-000000009506',
+                    'ATTACHMENT', 0,
+                    'The nova_needle supersedes the old extraction.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 50, 'pdf-page-v3', '[]'
+                 )",
+                [],
+            )
+            .expect("new attachment passage construction");
+        let rebuilt = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "nova_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search current attachment passage construction");
+        assert_eq!(
+            rebuilt
+                .iter()
+                .map(|result| result.passage_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["019f547b-6200-7000-8000-000000009509"]
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009507",
+            )
+            .expect("resolve stale construction citation")
+            .state,
+            crate::database::CitationState::Historical
+        );
+        assert_eq!(
+            crate::database::passages::resolve_citation(
+                &connection,
+                "019f547b-6200-7000-8000-000000009504",
+            )
+            .expect("resolve stale extraction citation")
+            .state,
+            crate::database::CitationState::Historical
         );
     }
 

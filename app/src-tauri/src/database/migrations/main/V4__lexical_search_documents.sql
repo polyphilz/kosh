@@ -23,6 +23,55 @@ CREATE TABLE passage_search_document (
 CREATE INDEX passage_search_document_tidbit_idx
     ON passage_search_document(tidbit_id);
 
+CREATE VIEW current_attachment_passage AS
+SELECT
+    passage.id AS passage_id,
+    attachment.id AS attachment_id,
+    extraction.id AS extraction_id
+FROM passage
+JOIN attachment_segment AS segment
+  ON segment.id = passage.attachment_segment_id
+JOIN attachment_extraction AS extraction
+  ON extraction.id = segment.extraction_id
+ AND extraction.status = 'READY'
+JOIN attachment
+  ON attachment.id = extraction.attachment_id
+ AND attachment.sha256 = extraction.content_hash
+ AND attachment.deleted_at IS NULL
+WHERE passage.owner_kind = 'ATTACHMENT'
+  AND passage.content = segment.content
+  AND passage.content_hash = segment.content_hash
+  AND NOT EXISTS (
+      SELECT 1
+      FROM attachment_extraction AS newer_extraction
+      WHERE newer_extraction.attachment_id = extraction.attachment_id
+        AND newer_extraction.extractor = extraction.extractor
+        AND newer_extraction.content_hash = extraction.content_hash
+        AND newer_extraction.status = 'READY'
+        AND (
+            newer_extraction.created_at > extraction.created_at
+            OR (
+                newer_extraction.created_at = extraction.created_at
+                AND newer_extraction.id > extraction.id
+            )
+        )
+  )
+  AND passage.construction_version = (
+      SELECT candidate.construction_version
+      FROM passage AS candidate
+      JOIN attachment_segment AS candidate_segment
+        ON candidate_segment.id = candidate.attachment_segment_id
+      WHERE candidate.owner_kind = 'ATTACHMENT'
+        AND candidate_segment.extraction_id = extraction.id
+        AND candidate.content = candidate_segment.content
+        AND candidate.content_hash = candidate_segment.content_hash
+      GROUP BY candidate.construction_version
+      ORDER BY
+          max(candidate.created_at) DESC,
+          candidate.construction_version DESC
+      LIMIT 1
+  );
+
 CREATE VIRTUAL TABLE passage_fts_word USING fts5(
     title,
     heading_context,
@@ -133,6 +182,20 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER passage_attachment_evidence_validate
+BEFORE INSERT ON passage
+WHEN new.owner_kind = 'ATTACHMENT'
+BEGIN
+    SELECT RAISE(ABORT, 'attachment passage content does not match its immutable segment')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM attachment_segment AS segment
+        WHERE segment.id = new.attachment_segment_id
+          AND segment.content = new.content
+          AND segment.content_hash = new.content_hash
+    );
+END;
+
 CREATE TRIGGER passage_attachment_search_after_insert
 AFTER INSERT ON passage
 WHEN new.owner_kind = 'ATTACHMENT'
@@ -170,15 +233,9 @@ BEGIN
         new.content,
         new.content_hash,
         attachment.updated_at
-    FROM attachment_segment AS segment
-    JOIN attachment_extraction AS extraction
-      ON extraction.id = segment.extraction_id
-     AND extraction.status = 'READY'
-    JOIN attachment
-      ON attachment.id = extraction.attachment_id
-     AND attachment.sha256 = extraction.content_hash
-     AND attachment.deleted_at IS NULL
-    WHERE segment.id = new.attachment_segment_id;
+    FROM current_attachment_passage AS current
+    JOIN attachment ON attachment.id = current.attachment_id
+    WHERE current.passage_id = new.id;
 END;
 
 CREATE TRIGGER attachment_search_refresh_after_update
@@ -259,15 +316,9 @@ BEGIN
         passage.content,
         passage.content_hash,
         new.updated_at
-    FROM passage
-    JOIN attachment_segment AS segment
-      ON segment.id = passage.attachment_segment_id
-    JOIN attachment_extraction AS extraction
-      ON extraction.id = segment.extraction_id
-     AND extraction.status = 'READY'
-     AND extraction.attachment_id = new.id
-     AND extraction.content_hash = new.sha256
-    WHERE passage.owner_kind = 'ATTACHMENT'
+    FROM current_attachment_passage AS current
+    JOIN passage ON passage.id = current.passage_id
+    WHERE current.attachment_id = new.id
       AND new.deleted_at IS NULL;
 END;
 
@@ -375,17 +426,9 @@ SELECT
     passage.content,
     passage.content_hash,
     attachment.updated_at
-FROM passage
-JOIN attachment_segment AS segment
-  ON segment.id = passage.attachment_segment_id
-JOIN attachment_extraction AS extraction
-  ON extraction.id = segment.extraction_id
- AND extraction.status = 'READY'
-JOIN attachment
-  ON attachment.id = extraction.attachment_id
- AND attachment.sha256 = extraction.content_hash
- AND attachment.deleted_at IS NULL
-WHERE passage.owner_kind = 'ATTACHMENT';
+FROM current_attachment_passage AS current
+JOIN passage ON passage.id = current.passage_id
+JOIN attachment ON attachment.id = current.attachment_id;
 
 UPDATE index_state
 SET version = 'lexical-v1',
