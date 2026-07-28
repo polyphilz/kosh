@@ -291,9 +291,7 @@ fn read_bounded_attachment(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Datab
 }
 
 fn looks_like_pdf(bytes: &[u8]) -> bool {
-    bytes
-        .get(..bytes.len().min(1_024))
-        .is_some_and(|prefix| prefix.windows(5).any(|window| window == b"%PDF-"))
+    bytes.starts_with(b"%PDF-")
 }
 
 fn extract_text(bytes: &[u8]) -> std::result::Result<Vec<TextFileSegment>, String> {
@@ -498,7 +496,22 @@ fn safe_attachment_filename(value: &str) -> String {
     } else {
         sanitized
     };
-    truncate_utf8_bytes(sanitized, MAX_MATERIALIZED_FILENAME_BYTES)
+    truncate_filename_preserving_extension(sanitized, MAX_MATERIALIZED_FILENAME_BYTES)
+}
+
+fn truncate_filename_preserving_extension(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let Some((stem, extension)) = value.rsplit_once('.') else {
+        return truncate_utf8_bytes(value, max_bytes);
+    };
+    let suffix_bytes = extension.len().saturating_add(1);
+    if stem.is_empty() || extension.is_empty() || suffix_bytes >= max_bytes {
+        return truncate_utf8_bytes(value, max_bytes);
+    }
+    let stem = truncate_utf8_bytes(stem, max_bytes - suffix_bytes);
+    format!("{stem}.{extension}")
 }
 
 fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
@@ -816,8 +829,11 @@ mod tests {
 
     #[test]
     fn content_sniffing_recognizes_renamed_pdfs_without_trusting_extensions() {
-        assert!(looks_like_pdf(b"\n%PDF-1.7 renamed document"));
+        assert!(looks_like_pdf(b"%PDF-1.7 renamed document"));
         assert!(!looks_like_pdf(b"plain text in a file named notes.pdf"));
+        assert!(!looks_like_pdf(
+            b"documentation describing the %PDF- header is still plain text"
+        ));
     }
 
     #[test]
@@ -839,6 +855,11 @@ mod tests {
         assert_eq!(safe_attachment_filename("../../notes:1.txt"), "notes_1.txt");
         assert_eq!(safe_attachment_filename(" \n "), "Attachment");
         assert!(safe_attachment_filename(&"é".repeat(200)).len() <= 160);
+        let long_text_filename = format!("{}.txt", "n".repeat(200));
+        let safe_text_filename = safe_attachment_filename(&long_text_filename);
+        assert_eq!(safe_text_filename.len(), 160);
+        assert!(safe_text_filename.ends_with(".txt"));
+        assert_eq!(attachment_media_type(&safe_text_filename), "text/plain");
     }
 
     #[test]
