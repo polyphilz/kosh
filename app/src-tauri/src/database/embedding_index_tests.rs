@@ -235,6 +235,39 @@ fn migration_from_v4_preserves_authored_data_and_pins_vec_version() {
     assert_eq!(vec_version, "v0.1.9");
 }
 
+#[test]
+fn missing_optional_vector_table_does_not_block_authored_library_startup() {
+    let library = TestLibrary::new();
+    let database = Database::initialize(library.paths.clone()).expect("database");
+    let original = create_tidbit(&database.client(), "lexical evidence remains", 10);
+    database.shutdown().expect("shutdown database");
+
+    let main =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("main writer");
+    main.execute("DROP TABLE passage_embedding_vec_jina_v1", [])
+        .expect("remove optional derived table");
+    drop(main);
+
+    let reopened =
+        Database::initialize(library.paths.clone()).expect("authored library remains available");
+    assert_eq!(
+        reopened
+            .client()
+            .load_tidbit(original.id)
+            .expect("load authored tidbit")
+            .body_markdown,
+        "lexical evidence remains"
+    );
+    create_tidbit(&reopened.client(), "capture still works", 20);
+    let progress = reopened
+        .client()
+        .passage_embedding_index_progress()
+        .expect("failed semantic progress remains observable");
+    assert_eq!(progress.state, PassageEmbeddingIndexState::Failed);
+    assert_eq!(progress.indexed_passages, 0);
+}
+
 fn create_tidbit(client: &super::DatabaseClient, body: &str, now_ms: i64) -> Tidbit {
     client
         .create_tidbit_with_ids(

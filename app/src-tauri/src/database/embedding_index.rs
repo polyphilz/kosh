@@ -236,24 +236,38 @@ pub(crate) fn progress(connection: &Connection) -> Result<PassageEmbeddingIndexP
         connection.query_row("SELECT count(*) FROM passage_search_document", [], |row| {
             row.get(0)
         })?;
-    let indexed_passages = connection.query_row(
-        "SELECT count(*)
-         FROM passage_search_document AS document
-         JOIN passage
-           ON passage.rowid = document.rowid
-          AND passage.id = document.passage_id
-         JOIN passage_embedding AS metadata
-           ON metadata.passage_id = passage.id
-          AND metadata.embedding_index_id = ?1
-          AND metadata.passage_content_hash = passage.content_hash
-         WHERE EXISTS (
-             SELECT 1
-             FROM passage_embedding_vec_jina_v1 AS vector
-             WHERE vector.rowid = document.rowid
-         )",
-        params![manifest.id.as_str()],
-        |row| row.get(0),
-    )?;
+    let vector_table_available = connection
+        .query_row(
+            "SELECT 1
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = ?1",
+            params![JINA_V1_VEC_TABLE],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let indexed_passages = if vector_table_available {
+        connection.query_row(
+            "SELECT count(*)
+             FROM passage_search_document AS document
+             JOIN passage
+               ON passage.rowid = document.rowid
+              AND passage.id = document.passage_id
+             JOIN passage_embedding AS metadata
+               ON metadata.passage_id = passage.id
+              AND metadata.embedding_index_id = ?1
+              AND metadata.passage_content_hash = passage.content_hash
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM passage_embedding_vec_jina_v1 AS vector
+                 WHERE vector.rowid = document.rowid
+             )",
+            params![manifest.id.as_str()],
+            |row| row.get(0),
+        )?
+    } else {
+        0
+    };
     let active_index_id = connection.query_row(
         "SELECT active_embedding_index_id
          FROM passage_embedding_settings

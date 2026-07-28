@@ -46,24 +46,28 @@ pub struct PassageEmbeddingIndexStatus {
 pub(crate) struct PassageEmbeddingIndexer {
     shutdown: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
+    runtime: Option<Arc<EmbeddingRuntime>>,
     startup_error: Option<String>,
 }
 
 impl PassageEmbeddingIndexer {
     pub(crate) fn start(database: DatabaseClient, runtime: Arc<EmbeddingRuntime>) -> Self {
         let (shutdown, receiver) = mpsc::channel();
+        let worker_runtime = Arc::clone(&runtime);
         match thread::Builder::new()
             .name("kosh-passage-embedding-indexer".into())
-            .spawn(move || worker_loop(database, runtime, &receiver))
+            .spawn(move || worker_loop(database, worker_runtime, &receiver))
         {
             Ok(worker) => Self {
                 shutdown: Some(shutdown),
                 worker: Some(worker),
+                runtime: Some(runtime),
                 startup_error: None,
             },
             Err(error) => Self {
                 shutdown: None,
                 worker: None,
+                runtime: Some(runtime),
                 startup_error: Some(format!(
                     "could not start the passage embedding indexer: {error}"
                 )),
@@ -76,6 +80,7 @@ impl PassageEmbeddingIndexer {
         Self {
             shutdown: None,
             worker: None,
+            runtime: None,
             startup_error: None,
         }
     }
@@ -122,6 +127,11 @@ impl Drop for PassageEmbeddingIndexer {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
+        // Stop the sidecar before joining so an in-flight HTTP request wakes
+        // promptly instead of holding application quit until its timeout.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown();
+        }
         if let Some(worker) = self.worker.take() {
             if let Err(error) = worker.join() {
                 log::error!("passage embedding indexer panicked during shutdown: {error:?}");
@@ -133,10 +143,20 @@ impl Drop for PassageEmbeddingIndexer {
 fn worker_loop(database: DatabaseClient, runtime: Arc<EmbeddingRuntime>, shutdown: &Receiver<()>) {
     loop {
         if runtime.status().phase == SemanticRuntimePhase::Ready {
-            if let Err(error) = reconcile_batch(&database, &runtime, shutdown) {
-                let message = error;
-                let _ =
-                    database.record_passage_embedding_index_failure(message, timestamp_now_ms());
+            match database.passage_embedding_index_progress() {
+                Ok(progress) if reconciliation_required(&progress) => {
+                    if let Err(error) = reconcile_batch(&database, &runtime, shutdown) {
+                        let _ = database
+                            .record_passage_embedding_index_failure(error, timestamp_now_ms());
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let _ = database.record_passage_embedding_index_failure(
+                        error.to_string(),
+                        timestamp_now_ms(),
+                    );
+                }
             }
         }
         match shutdown.recv_timeout(POLL_INTERVAL) {
@@ -144,6 +164,12 @@ fn worker_loop(database: DatabaseClient, runtime: Arc<EmbeddingRuntime>, shutdow
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
+}
+
+fn reconciliation_required(progress: &PassageEmbeddingIndexProgress) -> bool {
+    !progress.active
+        || progress.indexed_passages != progress.total_passages
+        || progress.state != PassageEmbeddingIndexState::Idle
 }
 
 fn reconcile_batch(
@@ -183,4 +209,40 @@ fn timestamp_now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_active_index_waits_for_explicit_invalidation() {
+        let complete = PassageEmbeddingIndexProgress {
+            embedding_index_id: "index-id".into(),
+            index_key: "index-key".into(),
+            indexed_passages: 12,
+            total_passages: 12,
+            active: true,
+            state: PassageEmbeddingIndexState::Idle,
+            error: None,
+        };
+        assert!(!reconciliation_required(&complete));
+
+        for invalidated in [
+            PassageEmbeddingIndexProgress {
+                state: PassageEmbeddingIndexState::Dirty,
+                ..complete.clone()
+            },
+            PassageEmbeddingIndexProgress {
+                indexed_passages: 11,
+                ..complete.clone()
+            },
+            PassageEmbeddingIndexProgress {
+                active: false,
+                ..complete
+            },
+        ] {
+            assert!(reconciliation_required(&invalidated));
+        }
+    }
 }

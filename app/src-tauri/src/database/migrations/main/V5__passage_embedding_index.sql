@@ -117,7 +117,10 @@ AFTER DELETE ON passage_search_document
 BEGIN
     DELETE FROM passage_embedding WHERE passage_id = old.passage_id;
     UPDATE index_state
-    SET status = CASE WHEN status = 'RUNNING' THEN status ELSE 'DIRTY' END,
+    SET status = CASE
+            WHEN status IN ('RUNNING', 'FAILED') THEN status
+            ELSE 'DIRTY'
+        END,
         cursor = NULL,
         error = NULL
     WHERE name = 'PASSAGE_EMBEDDING';
@@ -127,7 +130,10 @@ CREATE TRIGGER passage_embedding_dirty_after_search_insert
 AFTER INSERT ON passage_search_document
 BEGIN
     UPDATE index_state
-    SET status = CASE WHEN status = 'RUNNING' THEN status ELSE 'DIRTY' END,
+    SET status = CASE
+            WHEN status IN ('RUNNING', 'FAILED') THEN status
+            ELSE 'DIRTY'
+        END,
         cursor = NULL,
         error = NULL
     WHERE name = 'PASSAGE_EMBEDDING';
@@ -139,7 +145,10 @@ ON passage_search_document
 BEGIN
     DELETE FROM passage_embedding WHERE passage_id = old.passage_id;
     UPDATE index_state
-    SET status = CASE WHEN status = 'RUNNING' THEN status ELSE 'DIRTY' END,
+    SET status = CASE
+            WHEN status IN ('RUNNING', 'FAILED') THEN status
+            ELSE 'DIRTY'
+        END,
         cursor = NULL,
         error = NULL
     WHERE name = 'PASSAGE_EMBEDDING';

@@ -26,7 +26,6 @@ const MAIN_TABLES: &[&str] = &[
     "passage_embedding",
     "passage_embedding_index",
     "passage_embedding_settings",
-    "passage_embedding_vec_jina_v1",
     "passage_fts_short",
     "passage_fts_trigram",
     "passage_fts_word",
@@ -68,8 +67,7 @@ pub fn validate_migrated_pair(
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
     recover_interrupted_derived_work(main)?;
-    embedding_index::validate_definition(main)?;
-    validate_vec_smoke_test(main)?;
+    validate_optional_embedding_index(main);
     validate_foreign_keys(main, DatabaseKind::Main)?;
     validate_foreign_keys(media, DatabaseKind::Media)?;
     validate_media_relationship(main, media)?;
@@ -133,14 +131,36 @@ fn validate_required_features(connection: &Connection) -> Result<()> {
     if json != 1 {
         return invalid(DatabaseKind::Main, "bundled SQLite lacks JSON".into());
     }
-    let vec_version: String = connection.query_row("SELECT vec_version()", [], |row| row.get(0))?;
-    if vec_version != "v0.1.9" {
-        return invalid(
-            DatabaseKind::Main,
-            format!("sqlite-vec version is {vec_version}, expected v0.1.9"),
+    Ok(())
+}
+
+fn validate_optional_embedding_index(connection: &mut Connection) {
+    let result = (|| {
+        let vec_version: String =
+            connection.query_row("SELECT vec_version()", [], |row| row.get(0))?;
+        if vec_version != "v0.1.9" {
+            return invalid(
+                DatabaseKind::Main,
+                format!("sqlite-vec version is {vec_version}, expected v0.1.9"),
+            );
+        }
+        if !table_exists(connection, embedding_index::JINA_V1_VEC_TABLE)? {
+            return invalid(
+                DatabaseKind::Main,
+                "the Jina v1 vector table is missing".into(),
+            );
+        }
+        embedding_index::validate_definition(connection)?;
+        validate_vec_smoke_test(connection)
+    })();
+    if let Err(error) = result {
+        log::warn!("semantic passage index is unavailable at startup: {error}");
+        let _ = embedding_index::record_failure(
+            connection,
+            "semantic passage index is unavailable; repair is required",
+            0,
         );
     }
-    Ok(())
 }
 
 fn validate_vec_smoke_test(connection: &mut Connection) -> Result<()> {
