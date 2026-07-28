@@ -7,6 +7,7 @@ import type {
   EditTidbitInput,
   ListTidbitsInput,
   PassageSearchResult,
+  PassageEmbeddingIndexStatus,
   RuntimeProbe,
   RestoreTidbitInput,
   SaveDraftInput,
@@ -110,6 +111,19 @@ export class FakeBackend implements Backend {
 
   async semanticRuntimeLogs(): Promise<SemanticRuntimeLogs> {
     return { text: "", truncated: false };
+  }
+
+  async passageEmbeddingIndexStatus(): Promise<PassageEmbeddingIndexStatus> {
+    const ready = this.semanticStatus.phase === "READY";
+    return {
+      phase: ready ? "READY" : "WAITING_FOR_RUNTIME",
+      embeddingIndexId: "019f547b-6200-7000-8000-000000000002",
+      indexKey: "jina_v1",
+      indexedPassages: 0,
+      totalPassages: 0,
+      active: ready,
+      message: null,
+    };
   }
 
   async createTidbit(input: TidbitDraft): Promise<TidbitRecord> {

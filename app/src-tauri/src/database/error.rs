@@ -11,6 +11,12 @@ pub enum DatabaseError {
     #[error("migration operation failed: {0}")]
     Migration(#[from] refinery::Error),
 
+    #[error("database JSON operation failed: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("sqlite-vec auto-extension registration failed with SQLite code {0}")]
+    VecRegistration(i32),
+
     #[error("database pair is incomplete: main is {main_state}, media is {media_state}")]
     IncompletePair {
         main_state: &'static str,

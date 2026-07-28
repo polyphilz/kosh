@@ -8,6 +8,7 @@ import type {
   EditTidbitInput,
   ListTidbitsInput,
   PassageSearchResult,
+  PassageEmbeddingIndexStatus,
   RuntimeProbe,
   RestoreTidbitInput,
   SaveDraftInput,
@@ -26,6 +27,8 @@ export const tauriBackend: Backend = {
   retrySemanticRuntime: () => invoke<SemanticRuntimeStatus>("retry_semantic_runtime"),
   repairSemanticRuntime: () => invoke<SemanticRuntimeStatus>("repair_semantic_runtime"),
   semanticRuntimeLogs: () => invoke<SemanticRuntimeLogs>("semantic_runtime_logs"),
+  passageEmbeddingIndexStatus: () =>
+    invoke<PassageEmbeddingIndexStatus>("passage_embedding_index_status"),
   createTidbit: (input: TidbitDraft) => invoke<TidbitRecord>("create_tidbit", { input }),
   loadTidbit: (id: string) => invoke<TidbitRecord>("load_tidbit", { id }),
   listTidbits: (input: ListTidbitsInput) => invoke<TidbitListPage>("list_tidbits", { input }),

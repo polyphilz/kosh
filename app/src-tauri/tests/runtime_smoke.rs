@@ -2,7 +2,8 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    RuntimeProbe, SemanticRuntimePhase, SemanticRuntimeStatus,
+    PassageEmbeddingIndexPhase, PassageEmbeddingIndexStatus, RuntimeProbe, SemanticRuntimePhase,
+    SemanticRuntimeStatus,
 };
 
 #[test]
@@ -50,6 +51,46 @@ fn main_window_invokes_runtime_probe_with_temporary_state() {
         }
     );
     assert!(!response.data_dir.contains("Application Support"));
+}
+
+#[test]
+fn passage_embedding_progress_is_available_before_the_model_is_downloaded() {
+    let data_root = TestDataRoot::new();
+    let app = mock_app(&data_root, 1_785_201_600_000, std::iter::empty::<String>());
+    let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .expect("mock main window");
+
+    let response = tauri::test::get_ipc_response(
+        &window,
+        tauri::webview::InvokeRequest {
+            cmd: "passage_embedding_index_status".into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .expect("test IPC URL"),
+            body: tauri::ipc::InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_owned(),
+        },
+    )
+    .expect("passage embedding status IPC response")
+    .deserialize::<PassageEmbeddingIndexStatus>()
+    .expect("passage embedding status payload");
+
+    assert_eq!(
+        response.phase,
+        PassageEmbeddingIndexPhase::WaitingForRuntime
+    );
+    assert_eq!(response.index_key, "jina_v1");
+    assert_eq!(response.indexed_passages, 0);
+    assert_eq!(response.total_passages, 0);
+    assert!(!response.active);
 }
 
 #[test]

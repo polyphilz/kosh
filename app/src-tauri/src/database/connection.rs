@@ -1,4 +1,4 @@
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path, sync::OnceLock, time::Duration};
 
 use rusqlite::{functions::FunctionFlags, limits::Limit, Connection, OpenFlags};
 
@@ -11,6 +11,7 @@ pub const MAIN_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KOSH");
 pub const MEDIA_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KMED");
 pub const MAX_MEDIA_BLOB_BYTES: i64 = 256 * 1024 * 1024;
 const MEDIA_CONNECTION_LENGTH_LIMIT: i32 = MAX_MEDIA_BLOB_BYTES as i32 + 64 * 1024;
+static SQLITE_VEC_REGISTRATION: OnceLock<std::result::Result<(), i32>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseKind {
@@ -49,6 +50,33 @@ impl FileState {
     }
 }
 
+pub fn register_sqlite_vec() -> Result<()> {
+    let result = SQLITE_VEC_REGISTRATION.get_or_init(|| {
+        type ExtensionEntry = unsafe extern "C" fn(
+            *mut rusqlite::ffi::sqlite3,
+            *mut *mut std::ffi::c_char,
+            *const rusqlite::ffi::sqlite3_api_routines,
+        ) -> std::ffi::c_int;
+
+        // sqlite-vec exposes SQLite's C extension entry point. SQLite's
+        // auto-extension API requires the erased callback signature.
+        let code = unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                ExtensionEntry,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const ()
+            )))
+        };
+        if code == rusqlite::ffi::SQLITE_OK {
+            Ok(())
+        } else {
+            Err(code)
+        }
+    });
+    result.map_err(DatabaseError::VecRegistration)
+}
+
 pub fn inspect_file(path: &Path) -> Result<FileState> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.len() > 0 => Ok(FileState::Existing),
@@ -59,6 +87,7 @@ pub fn inspect_file(path: &Path) -> Result<FileState> {
 }
 
 pub fn open_writer(path: &Path, kind: DatabaseKind, state: FileState) -> Result<Connection> {
+    register_sqlite_vec()?;
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -76,6 +105,7 @@ pub fn open_writer(path: &Path, kind: DatabaseKind, state: FileState) -> Result<
 }
 
 pub fn open_read_only(path: &Path, kind: DatabaseKind) -> Result<Connection> {
+    register_sqlite_vec()?;
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = Connection::open_with_flags(path, flags)?;
     configure_length_limit(&connection, kind)?;

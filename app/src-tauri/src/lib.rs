@@ -1,6 +1,7 @@
 mod database;
 mod embedding;
 mod embedding_runtime;
+mod passage_embedding_indexer;
 pub mod relevance;
 mod runtime;
 
@@ -32,6 +33,7 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
         runtime::semantic_runtime_status,
+        runtime::passage_embedding_index_status,
         runtime::prepare_semantic_runtime,
         runtime::retry_semantic_runtime,
         runtime::repair_semantic_runtime,
@@ -81,6 +83,7 @@ pub use embedding_runtime::{
     EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimePhase,
     SemanticRuntimeStatus,
 };
+pub use passage_embedding_indexer::{PassageEmbeddingIndexPhase, PassageEmbeddingIndexStatus};
 pub use runtime::RuntimeProbe;
 
 #[cfg(test)]

@@ -376,23 +376,21 @@ fn strict_schema_rejects_non_uuidv7_ids_and_preserves_immutable_rows() {
         )
         .is_err());
 
-    main.execute(
-        "INSERT INTO embedding_index(
-            id, model_id, model_version, dimension, distance_metric, created_at
-         ) VALUES('fixture-index', 'fixture-model', 'v1', 3, 'COSINE', 10)",
-        [],
-    )
-    .expect("embedding index");
     assert!(main
         .execute(
-            "UPDATE embedding_index
-             SET model_version = 'v2'
-             WHERE id = 'fixture-index'",
+            "UPDATE passage_embedding_index
+             SET model_revision = 'mutated'
+             WHERE index_key = 'jina_v1'",
             [],
         )
         .is_err());
     main.execute(
-        "UPDATE embedding_index SET active = 1 WHERE id = 'fixture-index'",
+        "UPDATE passage_embedding_settings
+         SET active_embedding_index_id = (
+             SELECT id FROM passage_embedding_index WHERE index_key = 'jina_v1'
+         ),
+         updated_at = 10
+         WHERE singleton_id = 1",
         [],
     )
     .expect("activation remains mutable");
@@ -705,9 +703,6 @@ fn passage_embeddings_require_exact_passage_and_index_provenance() {
             '019f547b-6200-7000-8000-000000000901',
             1, 10, 'semantic evidence', zeroblob(32)
          );
-         INSERT INTO embedding_index(
-            id, model_id, model_version, dimension, distance_metric, created_at
-         ) VALUES('fixture-semantic-v1', 'fixture-semantic', 'v1', 3, 'COSINE', 10);
          COMMIT;",
     )
     .expect("embedding provenance fixture");
@@ -726,42 +721,50 @@ fn passage_embeddings_require_exact_passage_and_index_provenance() {
     )
     .expect("passage");
 
-    let vector = vec![0_u8; 12];
     let mismatch = main
         .execute(
             "INSERT INTO passage_embedding(
-                passage_id, embedding_index_id, passage_content_hash, vector_bytes, created_at
+                passage_id, embedding_index_id, passage_content_hash, created_at
              ) VALUES(
                 '019f547b-6200-7000-8000-000000000903',
-                'fixture-semantic-v1', ?1, ?2, 11
+                '019f547b-6200-7000-8000-000000000002', ?1, 11
              )",
-            params![vec![22_u8; 32], &vector],
+            params![vec![22_u8; 32]],
         )
         .expect_err("stale passage hash");
     assert!(mismatch
         .to_string()
         .contains("passage embedding provenance mismatch"));
-    assert!(main
-        .execute(
-            "INSERT INTO passage_embedding(
-                passage_id, embedding_index_id, passage_content_hash, vector_bytes, created_at
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000000903',
-                'fixture-semantic-v1', ?1, zeroblob(8), 11
-             )",
-            params![&passage_hash],
-        )
-        .is_err());
     main.execute(
         "INSERT INTO passage_embedding(
-            passage_id, embedding_index_id, passage_content_hash, vector_bytes, created_at
+            passage_id, embedding_index_id, passage_content_hash, created_at
          ) VALUES(
             '019f547b-6200-7000-8000-000000000903',
-            'fixture-semantic-v1', ?1, ?2, 11
+            '019f547b-6200-7000-8000-000000000002', ?1, 11
          )",
-        params![&passage_hash, &vector],
+        params![&passage_hash],
     )
     .expect("matching embedding provenance");
+
+    let invalid_vector = serde_json::to_string(&vec![0.0_f32; 3]).expect("vector JSON");
+    assert!(main
+        .execute(
+            "INSERT INTO passage_embedding_vec_jina_v1(rowid, embedding)
+             SELECT rowid, ?1 FROM passage
+             WHERE id = '019f547b-6200-7000-8000-000000000903'",
+            params![invalid_vector],
+        )
+        .is_err());
+    let mut vector = vec![0.0_f32; 768];
+    vector[0] = 1.0;
+    let vector_json = serde_json::to_string(&vector).expect("vector JSON");
+    main.execute(
+        "INSERT INTO passage_embedding_vec_jina_v1(rowid, embedding)
+         SELECT rowid, ?1 FROM passage
+         WHERE id = '019f547b-6200-7000-8000-000000000903'",
+        params![vector_json],
+    )
+    .expect("matching vector dimension");
 }
 
 #[test]
