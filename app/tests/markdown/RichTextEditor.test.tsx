@@ -60,6 +60,17 @@ it("canonicalizes consumed link definitions without dropping unused definitions"
   expect(serializeKoshMarkdown(parseKoshMarkdown(canonical, koshEditorSchema))).toBe(canonical);
 });
 
+it("resolves definitions nested inside Markdown containers", () => {
+  const source = ["> Read [nested docs][docs].", ">", "> [docs]: https://example.com/nested"].join(
+    "\n",
+  );
+
+  const canonical = serializeKoshMarkdown(parseKoshMarkdown(source, koshEditorSchema));
+
+  expect(canonical).toBe("> Read [nested docs](https://example.com/nested).");
+  expect(serializeKoshMarkdown(parseKoshMarkdown(canonical, koshEditorSchema))).toBe(canonical);
+});
+
 it("starts with the controlled value and reports canonical document changes", () => {
   const onChange = vi.fn();
   const { getByRole } = render(

@@ -51,7 +51,7 @@ export function parseKoshMarkdownAst(source: string): Root {
 export function parseKoshMarkdown(source: string, schema: Schema): ProseMirrorNode {
   const tree = parseKoshMarkdownAst(source);
   const definitions = new Map<string, MarkdownDefinition>();
-  for (const node of tree.children) {
+  visitMarkdown(tree, (node) => {
     if (node.type === "definition" && !definitions.has(node.identifier.toLowerCase())) {
       definitions.set(node.identifier.toLowerCase(), {
         node,
@@ -59,25 +59,32 @@ export function parseKoshMarkdown(source: string, schema: Schema): ProseMirrorNo
         url: node.url,
       });
     }
-  }
+  });
   const context: MarkdownContext = {
     consumedDefinitions: new Set(),
     definitions,
   };
-  const converted = new Map<RootContent, ProseMirrorNode[]>();
-  for (const node of tree.children) {
-    if (node.type !== "definition") {
-      converted.set(node, blockFromMarkdown(node, source, schema, context));
+  visitMarkdown(tree, (node) => {
+    if (node.type === "linkReference") {
+      const definition = definitions.get(node.identifier.toLowerCase());
+      if (definition && externalHttpUrl(definition.url)) {
+        context.consumedDefinitions.add(definition.node);
+      }
+    }
+  });
+  const blocks = tree.children.flatMap((node) => blockFromMarkdown(node, source, schema, context));
+  return schema.topNodeType.createAndFill(null, blocks.length ? blocks : null)!;
+}
+
+function visitMarkdown(node: Content | Root, visitor: (node: Content) => void): void {
+  if (node.type !== "root") {
+    visitor(node);
+  }
+  if ("children" in node) {
+    for (const child of node.children as Content[]) {
+      visitMarkdown(child, visitor);
     }
   }
-  const blocks = tree.children.flatMap((node) =>
-    node.type === "definition"
-      ? context.consumedDefinitions.has(node)
-        ? []
-        : [definitionFromMarkdown(node, schema)]
-      : (converted.get(node) ?? []),
-  );
-  return schema.topNodeType.createAndFill(null, blocks.length ? blocks : null)!;
 }
 
 export function serializeKoshMarkdown(document: ProseMirrorNode): string {
@@ -141,7 +148,7 @@ function blockFromMarkdown(
     case "html":
       return [schema.nodes.paragraph!.create(null, schema.text(node.value))];
     case "definition":
-      return [definitionFromMarkdown(node, schema)];
+      return context.consumedDefinitions.has(node) ? [] : [definitionFromMarkdown(node, schema)];
     default:
       return fallbackBlock(node, source, schema);
   }
@@ -267,7 +274,6 @@ function inlineFromMarkdown(
         if (!definition || !href) {
           return literalInlineNode(node, source, schema, marks);
         }
-        context.consumedDefinitions.add(definition.node);
         return inlineFromMarkdown(node.children, source, schema, context, [
           ...marks,
           schema.marks.link!.create({ href, title: definition.title }),
