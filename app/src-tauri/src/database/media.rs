@@ -19,6 +19,7 @@ const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_FILENAME_CHARS: usize = 255;
 const MAX_MEDIA_TYPE_BYTES: usize = 127;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+const MAX_DIRECT_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MEDIA_RECONCILE_BATCH_SIZE: u32 = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
@@ -38,9 +39,9 @@ pub struct MediaLimits {
 impl Default for MediaLimits {
     fn default() -> Self {
         Self {
-            max_attachment_bytes: 256 * 1024 * 1024,
+            max_attachment_bytes: MAX_DIRECT_ATTACHMENT_BYTES,
             max_attachments_per_draft: 32,
-            max_protocol_response_bytes: 32 * 1024 * 1024,
+            max_protocol_response_bytes: MAX_DIRECT_ATTACHMENT_BYTES,
             draft_lease_duration_ms: 24 * 60 * 60 * 1_000,
             orphan_grace_period_ms: 7 * 24 * 60 * 60 * 1_000,
             max_reaps_per_maintenance: 32,
@@ -50,13 +51,10 @@ impl Default for MediaLimits {
 
 impl MediaLimits {
     pub(crate) fn validate(self) -> Result<Self> {
-        if self.max_attachment_bytes == 0
-            || self.max_attachment_bytes
-                > u64::try_from(super::connection::MAX_MEDIA_BLOB_BYTES)
-                    .expect("positive media schema limit")
+        if self.max_attachment_bytes == 0 || self.max_attachment_bytes > MAX_DIRECT_ATTACHMENT_BYTES
         {
             return Err(DatabaseError::InvalidInput(
-                "maxAttachmentBytes must be between 1 and the media schema limit".into(),
+                "maxAttachmentBytes must be between 1 and the direct media response limit".into(),
             ));
         }
         if self.max_attachments_per_draft == 0 || self.max_attachments_per_draft > 256 {
@@ -64,11 +62,9 @@ impl MediaLimits {
                 "maxAttachmentsPerDraft must be between 1 and 256".into(),
             ));
         }
-        if self.max_protocol_response_bytes == 0
-            || self.max_protocol_response_bytes > self.max_attachment_bytes
-        {
+        if self.max_protocol_response_bytes != self.max_attachment_bytes {
             return Err(DatabaseError::InvalidInput(
-                "maxProtocolResponseBytes must be between 1 and maxAttachmentBytes".into(),
+                "maxProtocolResponseBytes must equal maxAttachmentBytes".into(),
             ));
         }
         if self.draft_lease_duration_ms <= 0

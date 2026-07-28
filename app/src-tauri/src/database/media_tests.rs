@@ -1,6 +1,9 @@
 use std::{
     io::{self, Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
+    sync::{mpsc, Arc},
+    thread,
+    time::Duration,
 };
 
 use rusqlite::{params, Connection, MAIN_DB};
@@ -274,6 +277,10 @@ impl Read for UnexpectedRead {
 #[test]
 fn public_ingestion_validates_limits_before_staging() {
     let library = TestLibrary::new();
+    assert_eq!(
+        MediaLimits::default().max_attachment_bytes,
+        MediaLimits::default().max_protocol_response_bytes
+    );
     let invalid_limits = MediaLimits {
         max_attachment_bytes: u64::MAX,
         ..MediaLimits::default()
@@ -295,6 +302,136 @@ fn public_ingestion_validates_limits_before_staging() {
 
     assert!(matches!(error, DatabaseError::InvalidInput(_)));
     assert!(!library.paths.root().join("media-staging").exists());
+
+    let mismatched_limits = MediaLimits {
+        max_attachment_bytes: 16,
+        max_protocol_response_bytes: 8,
+        ..MediaLimits::default()
+    };
+    assert!(matches!(
+        library.database.ingest_attachment(
+            AttachmentIngestInput {
+                draft_id: CAPTURE_DRAFT_ID.into(),
+                display_filename: "mismatch.bin".into(),
+                media_type: "application/octet-stream".into(),
+                now_ms: 11,
+                limits: mismatched_limits,
+            },
+            UnexpectedRead,
+        ),
+        Err(DatabaseError::InvalidInput(_))
+    ));
+}
+
+struct GatedReader {
+    bytes: Cursor<Vec<u8>>,
+    read_started: Option<mpsc::Sender<()>>,
+    release: Option<mpsc::Receiver<()>>,
+}
+
+impl Read for GatedReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if let Some(read_started) = self.read_started.take() {
+            let _ = read_started.send(());
+            if let Some(release) = self.release.take() {
+                release.recv().map_err(|_| {
+                    io::Error::new(io::ErrorKind::Interrupted, "staging release was dropped")
+                })?;
+            }
+        }
+        self.bytes.read(buffer)
+    }
+}
+
+#[test]
+fn concurrent_ingestion_serializes_before_reading_attachment_bytes() {
+    let root = tempfile::tempdir().expect("concurrent staging root");
+    let database = Arc::new(
+        Database::initialize(DatabasePaths::new(root.path())).expect("concurrent staging database"),
+    );
+    database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: String::new(),
+                sources: Vec::new(),
+            },
+            now_ms: 10,
+            draft_id: CAPTURE_DRAFT_ID.into(),
+            media_limits: MediaLimits::default(),
+        })
+        .expect("concurrent staging draft");
+
+    let (first_started_tx, first_started_rx) = mpsc::channel();
+    let (first_release_tx, first_release_rx) = mpsc::channel();
+    let first_database = Arc::clone(&database);
+    let first = thread::spawn(move || {
+        first_database.ingest_attachment(
+            AttachmentIngestInput {
+                draft_id: CAPTURE_DRAFT_ID.into(),
+                display_filename: "first.txt".into(),
+                media_type: "text/plain".into(),
+                now_ms: 11,
+                limits: MediaLimits {
+                    max_attachments_per_draft: 2,
+                    ..MediaLimits::default()
+                },
+            },
+            GatedReader {
+                bytes: Cursor::new(b"first".to_vec()),
+                read_started: Some(first_started_tx),
+                release: Some(first_release_rx),
+            },
+        )
+    });
+    first_started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("first staging read started");
+
+    let (second_started_tx, second_started_rx) = mpsc::channel();
+    let second_database = Arc::clone(&database);
+    let second = thread::spawn(move || {
+        second_database.ingest_attachment(
+            AttachmentIngestInput {
+                draft_id: CAPTURE_DRAFT_ID.into(),
+                display_filename: "second.txt".into(),
+                media_type: "text/plain".into(),
+                now_ms: 12,
+                limits: MediaLimits {
+                    max_attachments_per_draft: 2,
+                    ..MediaLimits::default()
+                },
+            },
+            GatedReader {
+                bytes: Cursor::new(b"second".to_vec()),
+                read_started: Some(second_started_tx),
+                release: None,
+            },
+        )
+    });
+    assert!(matches!(
+        second_started_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    first_release_tx
+        .send(())
+        .expect("release first staging read");
+    first
+        .join()
+        .expect("first ingestion thread")
+        .expect("first ingestion");
+    second_started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("second staging read started after first completed");
+    second
+        .join()
+        .expect("second ingestion thread")
+        .expect("second ingestion");
 }
 
 struct InterruptedReader {

@@ -59,6 +59,8 @@ pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
 use connection::{DatabaseKind, FileState};
 
+static ATTACHMENT_INGEST_GATE: Mutex<()> = Mutex::new(());
+
 #[derive(Debug)]
 struct DatabaseOwnership {
     writer_thread: Option<JoinHandle<()>>,
@@ -173,6 +175,9 @@ impl Database {
         reader: impl Read,
     ) -> Result<AttachmentRecord> {
         let limits = input.limits.validate()?;
+        let _ingest_guard = ATTACHMENT_INGEST_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let attachment_id = uuid::Uuid::now_v7().to_string();
         let ingest_lease_id = uuid::Uuid::now_v7().to_string();
         let stage_id = uuid::Uuid::now_v7().to_string();
