@@ -117,7 +117,9 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
     else {
         panic!("authored citation needs a Markdown locator");
     };
-    assert_eq!((start_block, end_block, source_start_byte), (0, 0, 0));
+    assert_eq!((start_block, end_block, source_start_byte), (0, 0, Some(0)));
+    let source_start_byte = source_start_byte.expect("generated source start");
+    let source_end_byte = source_end_byte.expect("generated source end");
     assert_eq!(
         &created.body_markdown[source_start_byte as usize..source_end_byte as usize],
         "# Heat\n"
@@ -373,14 +375,21 @@ fn startup_reconciles_preexisting_revisions_and_retains_old_builder_versions() {
             .state,
         CitationState::Current
     );
-    assert_eq!(
-        upgraded
-            .client()
-            .resolve_citation("019f547b-6200-7000-8000-000000002203".into())
-            .expect("legacy citation remains resolvable")
-            .state,
-        CitationState::Historical
-    );
+    let legacy = upgraded
+        .client()
+        .resolve_citation("019f547b-6200-7000-8000-000000002203".into())
+        .expect("legacy citation remains resolvable");
+    assert_eq!(legacy.state, CitationState::Historical);
+    let CitationLocator::MarkdownBlocks {
+        source_start_byte,
+        source_end_byte,
+        ..
+    } = legacy.locator
+    else {
+        panic!("legacy author citation needs a Markdown locator");
+    };
+    assert_eq!(source_start_byte, None);
+    assert_eq!(source_end_byte, None);
 }
 
 #[test]

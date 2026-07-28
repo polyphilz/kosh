@@ -18,9 +18,9 @@ pub struct MarkdownLocator {
     pub start: u32,
     pub end: u32,
     #[serde(default)]
-    pub source_start_byte: u64,
+    pub source_start_byte: Option<u64>,
     #[serde(default)]
-    pub source_end_byte: u64,
+    pub source_end_byte: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_char: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -463,10 +463,12 @@ fn flush_group(pending: &mut Vec<SourceBlock>, passages: &mut Vec<BuiltPassage>)
         MarkdownLocator {
             start: first.ordinal,
             end: last.ordinal,
-            source_start_byte: u64::try_from(first.source_start_byte)
-                .expect("source offset fits in u64"),
-            source_end_byte: u64::try_from(last.source_end_byte)
-                .expect("source offset fits in u64"),
+            source_start_byte: Some(
+                u64::try_from(first.source_start_byte).expect("source offset fits in u64"),
+            ),
+            source_end_byte: Some(
+                u64::try_from(last.source_end_byte).expect("source offset fits in u64"),
+            ),
             start_char: None,
             end_char: None,
             start_line: None,
@@ -660,9 +662,12 @@ fn block_locator(
     MarkdownLocator {
         start: block.ordinal,
         end: block.ordinal,
-        source_start_byte: u64::try_from(block.source_start_byte)
-            .expect("source offset fits in u64"),
-        source_end_byte: u64::try_from(block.source_end_byte).expect("source offset fits in u64"),
+        source_start_byte: Some(
+            u64::try_from(block.source_start_byte).expect("source offset fits in u64"),
+        ),
+        source_end_byte: Some(
+            u64::try_from(block.source_end_byte).expect("source offset fits in u64"),
+        ),
         start_char,
         end_char,
         start_line,
@@ -983,8 +988,14 @@ mod tests {
         locators: impl IntoIterator<Item = &'a MarkdownLocator>,
     ) {
         for locator in locators {
-            let start = usize::try_from(locator.source_start_byte).expect("start byte");
-            let end = usize::try_from(locator.source_end_byte).expect("end byte");
+            let start = usize::try_from(
+                locator
+                    .source_start_byte
+                    .expect("generated locator start byte"),
+            )
+            .expect("start byte");
+            let end = usize::try_from(locator.source_end_byte.expect("generated locator end byte"))
+                .expect("end byte");
             assert!(start < end);
             assert!(markdown.get(start..end).is_some());
         }

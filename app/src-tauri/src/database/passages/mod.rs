@@ -29,8 +29,8 @@ pub enum CitationLocator {
     MarkdownBlocks {
         start_block: u32,
         end_block: u32,
-        source_start_byte: u64,
-        source_end_byte: u64,
+        source_start_byte: Option<u64>,
+        source_end_byte: Option<u64>,
         start_char: Option<u32>,
         end_char: Option<u32>,
         start_line: Option<u32>,

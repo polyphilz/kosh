@@ -37,8 +37,8 @@ export type CitationLocator =
       kind: "MARKDOWN_BLOCKS";
       startBlock: number;
       endBlock: number;
-      sourceStartByte: number;
-      sourceEndByte: number;
+      sourceStartByte: number | null;
+      sourceEndByte: number | null;
       startChar: number | null;
       endChar: number | null;
       startLine: number | null;
