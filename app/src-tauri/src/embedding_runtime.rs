@@ -618,36 +618,21 @@ fn prepare_and_verify(
     } else {
         prepare_managed_artifact(inner)?
     };
-    let receipt_before = build_verification_receipt(inner, &artifact_path, sidecar_path)
-        .inspect_err(|error| {
-            log::warn!("could not fingerprint semantic-search verification inputs: {error}");
-        })
-        .ok();
+    let receipt_before = build_verification_receipt(inner, &artifact_path, sidecar_path)?;
     update_status(inner, |status| {
         status.phase = SemanticRuntimePhase::Starting;
         status.downloaded_bytes = inner.contract.manifest.config.model_file_size;
+        status.verified = false;
         status.message = Some("Verifying llama.cpp compatibility".into());
     });
     verify_golden_fixtures(inner, &artifact_path)?;
-    let receipt_after = build_verification_receipt(inner, &artifact_path, sidecar_path)
-        .inspect_err(|error| {
-            log::warn!("could not fingerprint verified semantic-search inputs: {error}");
-        })
-        .ok();
-    if receipt_before
-        .as_ref()
-        .zip(receipt_after.as_ref())
-        .is_some_and(|(before, after)| before != after)
-    {
+    let receipt_after = build_verification_receipt(inner, &artifact_path, sidecar_path)?;
+    if receipt_before != receipt_after {
         return Err(SemanticRuntimeError::InvalidArtifact(
             "the model or llama-server changed during verification".into(),
         ));
     }
-    if let Some(receipt) = receipt_after {
-        if let Err(error) = write_verification_receipt(&inner.data_root, &receipt) {
-            log::warn!("could not cache semantic-search verification: {error}");
-        }
-    }
+    write_verification_receipt(&inner.data_root, &receipt_after)?;
     Ok(())
 }
 
@@ -1074,6 +1059,8 @@ struct SidecarRuntime {
     child: Option<Child>,
     endpoint: Option<String>,
     model_path: Option<PathBuf>,
+    model_fingerprint: Option<VerificationFileFingerprint>,
+    sidecar_fingerprint: Option<VerificationFileFingerprint>,
     last_used: Option<Instant>,
     log_threads: Vec<JoinHandle<()>>,
 }
@@ -1162,17 +1149,27 @@ fn ensure_sidecar(
     let sidecar_path = inner.sidecar_path.as_deref().ok_or_else(|| {
         SemanticRuntimeError::RuntimeUnavailable("no llama-server executable was found".into())
     })?;
-    if require_verified_inputs {
+    let (model_fingerprint, sidecar_fingerprint) = if require_verified_inputs {
         let expected = build_verification_receipt(inner, model_path, sidecar_path)?;
         if !verification_receipt_matches(&inner.data_root, &expected) {
             return Err(SemanticRuntimeError::InvalidArtifact(
                 "the verified model or llama-server changed; retry verification".into(),
             ));
         }
-    }
+        (expected.model, expected.sidecar)
+    } else {
+        (
+            verification_file_fingerprint(model_path)?,
+            verification_file_fingerprint(sidecar_path)?,
+        )
+    };
     let mut runtime = lock(&inner.runtime);
     if let Some(child) = runtime.child.as_mut() {
-        if child.try_wait()?.is_none() && runtime.model_path.as_deref() == Some(model_path) {
+        if child.try_wait()?.is_none()
+            && runtime.model_path.as_deref() == Some(model_path)
+            && runtime.model_fingerprint.as_ref() == Some(&model_fingerprint)
+            && runtime.sidecar_fingerprint.as_ref() == Some(&sidecar_fingerprint)
+        {
             runtime.last_used = Some(Instant::now());
             update_status(inner, |status| status.runtime_running = true);
             return runtime
@@ -1242,6 +1239,8 @@ fn ensure_sidecar(
     runtime.child = Some(child);
     runtime.endpoint = Some(endpoint.clone());
     runtime.model_path = Some(model_path.to_owned());
+    runtime.model_fingerprint = Some(model_fingerprint);
+    runtime.sidecar_fingerprint = Some(sidecar_fingerprint);
     runtime.last_used = Some(Instant::now());
     runtime.log_threads = log_threads;
     drop(runtime);
@@ -1329,6 +1328,8 @@ fn stop_runtime(runtime: &mut SidecarRuntime, data_root: &Path) {
     join_sidecar_log_threads(runtime.log_threads.drain(..));
     runtime.endpoint = None;
     runtime.model_path = None;
+    runtime.model_fingerprint = None;
+    runtime.sidecar_fingerprint = None;
     runtime.last_used = None;
 }
 
@@ -2173,10 +2174,21 @@ mod tests {
         let mut command = Command::new("sh");
         command.args(["-c", "sleep 30"]).process_group(0);
         let child = command.spawn().expect("fixture sidecar process");
+        let sidecar_path = runtime
+            .inner
+            .sidecar_path
+            .as_deref()
+            .expect("fixture sidecar path");
         *lock(&runtime.inner.runtime) = SidecarRuntime {
             child: Some(child),
             endpoint: Some(endpoint),
             model_path: Some(model_path.to_owned()),
+            model_fingerprint: Some(
+                verification_file_fingerprint(model_path).expect("fixture model fingerprint"),
+            ),
+            sidecar_fingerprint: Some(
+                verification_file_fingerprint(sidecar_path).expect("fixture sidecar fingerprint"),
+            ),
             last_used: Some(Instant::now()),
             log_threads: Vec::new(),
         };
@@ -2386,6 +2398,91 @@ mod tests {
             runtime.embed_document("must not reuse the sidecar"),
             Err(SemanticRuntimeError::InvalidArtifact(_))
         ));
+        let status = runtime.status();
+        assert_eq!(status.phase, SemanticRuntimePhase::Failed);
+        assert!(!status.verified);
+        assert!(!status.runtime_running);
+        assert!(read_verification_receipt(directory.path())
+            .expect("verification receipt state")
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_verification_restarts_a_sidecar_whose_artifact_changed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("replaced sidecar runtime directory");
+        let model_path = directory.path().join("model.gguf");
+        let sidecar_path = directory.path().join("llama-server");
+        fs::write(&model_path, b"0123456789").expect("model fixture");
+        fs::write(&sidecar_path, b"original sidecar").expect("sidecar fixture");
+        let (endpoint, transcript, server) = start_embedding_server(false, 2);
+        let runtime = EmbeddingRuntime::start(test_configuration(
+            directory.path(),
+            Some(sidecar_path.clone()),
+            Some(model_path.clone()),
+            test_contract(b"0123456789", "http://127.0.0.1:1/model".into()),
+            Duration::from_secs(60),
+        ));
+        install_running_fixture(&runtime, endpoint, &model_path);
+
+        runtime.prepare().expect("initial golden verification");
+        server.join().expect("embedding fixture server");
+        assert_eq!(transcript.recv().expect("embedding transcript").len(), 2);
+        fs::write(
+            &sidecar_path,
+            b"#!/bin/sh\necho replacement-sidecar-ran >&2\nexit 9\n",
+        )
+        .expect("replacement sidecar");
+        let mut permissions = sidecar_path
+            .metadata()
+            .expect("replacement metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&sidecar_path, permissions).expect("executable replacement");
+
+        assert!(matches!(
+            runtime.retry(),
+            Err(SemanticRuntimeError::Runtime(_))
+        ));
+        assert!(runtime
+            .logs()
+            .expect("replacement logs")
+            .text
+            .contains("replacement-sidecar-ran"));
+        let status = runtime.status();
+        assert_eq!(status.phase, SemanticRuntimePhase::Failed);
+        assert!(!status.verified);
+        assert!(!status.runtime_running);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparation_fails_when_the_verification_receipt_cannot_persist() {
+        let directory = tempfile::tempdir().expect("unwritable receipt runtime directory");
+        let model_path = directory.path().join("model.gguf");
+        let sidecar_path = directory.path().join("llama-server");
+        fs::write(&model_path, b"0123456789").expect("model fixture");
+        fs::write(&sidecar_path, b"sidecar").expect("sidecar fixture");
+        fs::create_dir(verification_receipt_path(directory.path()).with_extension("json.tmp"))
+            .expect("blocked receipt temporary path");
+        let (endpoint, transcript, server) = start_embedding_server(false, 2);
+        let runtime = EmbeddingRuntime::start(test_configuration(
+            directory.path(),
+            Some(sidecar_path),
+            Some(model_path.clone()),
+            test_contract(b"0123456789", "http://127.0.0.1:1/model".into()),
+            Duration::from_secs(60),
+        ));
+        install_running_fixture(&runtime, endpoint, &model_path);
+
+        assert!(matches!(
+            runtime.prepare(),
+            Err(SemanticRuntimeError::Io(_))
+        ));
+        server.join().expect("embedding fixture server");
+        assert_eq!(transcript.recv().expect("embedding transcript").len(), 2);
         let status = runtime.status();
         assert_eq!(status.phase, SemanticRuntimePhase::Failed);
         assert!(!status.verified);
