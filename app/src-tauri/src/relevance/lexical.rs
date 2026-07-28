@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
 use crate::database::search::{
     candidate_limit, normalize_for_search, parse_lexical_query, rank_lexical_documents,
-    LexicalDocument, LexicalSearchMode, SearchField,
+    short_grams_for_search, LexicalDocument, LexicalSearchMode, SearchField,
 };
 use crate::database::{
     Database, DatabaseClient, DatabasePaths, LexicalBenchmarkAttachmentWrite, SearchPassagesInput,
@@ -23,7 +23,7 @@ const BENCHMARK_RESULT_LIMIT: u32 = 20;
 
 pub struct LexicalFixtureRetriever;
 
-type FixtureRanks = (Option<usize>, Option<usize>);
+type FixtureRanks = (Option<usize>, Option<usize>, Option<usize>);
 type FixtureCandidates = BTreeMap<usize, FixtureRanks>;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -69,7 +69,7 @@ impl Retriever for LexicalFixtureRetriever {
         let candidates = fixture_candidate_ranks(corpus, &query, limit)?;
         let documents = candidates
             .into_iter()
-            .map(|(index, (word_rank, trigram_rank))| {
+            .map(|(index, (word_rank, trigram_rank, short_rank))| {
                 let passage = &corpus[index];
                 LexicalDocument {
                     passage_id: passage.id.clone(),
@@ -77,6 +77,7 @@ impl Retriever for LexicalFixtureRetriever {
                     fields: fixture_fields(passage),
                     word_rank,
                     trigram_rank,
+                    short_rank,
                 }
             })
             .collect();
@@ -123,6 +124,11 @@ fn fixture_candidate_ranks(
                 title, heading_context, body, source_labels, source_domains,
                 attachment_names, extracted_text,
                 tokenize = 'trigram'
+             );
+             CREATE VIRTUAL TABLE fixture_short USING fts5(
+                title, heading_context, body, source_labels, source_domains,
+                attachment_names, extracted_text,
+                tokenize = 'unicode61'
              );",
         )
         .map_err(|error| error.to_string())?;
@@ -148,6 +154,25 @@ fn fixture_candidate_ranks(
                 values,
             )
             .map_err(|error| error.to_string())?;
+        let short_values = params![
+            rowid,
+            short_grams_for_search(&fields[&SearchField::Title]),
+            short_grams_for_search(&fields[&SearchField::HeadingContext]),
+            short_grams_for_search(&fields[&SearchField::Body]),
+            short_grams_for_search(&fields[&SearchField::SourceLabel]),
+            short_grams_for_search(&fields[&SearchField::SourceDomain]),
+            short_grams_for_search(&fields[&SearchField::AttachmentName]),
+            short_grams_for_search(&fields[&SearchField::ExtractedText]),
+        ];
+        connection
+            .execute(
+                "INSERT INTO fixture_short(
+                    rowid, title, heading_context, body, source_labels,
+                    source_domains, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                short_values,
+            )
+            .map_err(|error| error.to_string())?;
         connection
             .execute(
                 "INSERT INTO fixture_trigram(
@@ -168,7 +193,7 @@ fn fixture_candidate_ranks(
             &word_query,
             limit,
             &mut candidates,
-            true,
+            0,
         )?;
     }
     if let Some(trigram_query) = query.trigram_match_query() {
@@ -178,7 +203,17 @@ fn fixture_candidate_ranks(
             &trigram_query,
             limit,
             &mut candidates,
-            false,
+            1,
+        )?;
+    }
+    if let Some(short_query) = query.short_match_query() {
+        install_fixture_ranks(
+            &connection,
+            "fixture_short",
+            &short_query,
+            limit,
+            &mut candidates,
+            2,
         )?;
     }
     Ok(candidates)
@@ -190,7 +225,7 @@ fn install_fixture_ranks(
     query: &str,
     limit: u32,
     candidates: &mut FixtureCandidates,
-    word: bool,
+    rank_slot: usize,
 ) -> std::result::Result<(), String> {
     let sql = format!(
         "SELECT rowid
@@ -209,10 +244,11 @@ fn install_fixture_ranks(
         let index = usize::try_from(rowid.map_err(|error| error.to_string())? - 1)
             .map_err(|error| error.to_string())?;
         let ranks = candidates.entry(index).or_default();
-        if word {
-            ranks.0 = Some(position + 1);
-        } else {
-            ranks.1 = Some(position + 1);
+        match rank_slot {
+            0 => ranks.0 = Some(position + 1),
+            1 => ranks.1 = Some(position + 1),
+            2 => ranks.2 = Some(position + 1),
+            _ => return Err(format!("unknown fixture rank slot {rank_slot}")),
         }
     }
     Ok(())

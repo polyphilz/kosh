@@ -24,6 +24,7 @@ const MAIN_TABLES: &[&str] = &[
     "media_ingest_lease",
     "passage",
     "passage_embedding",
+    "passage_fts_short",
     "passage_fts_trigram",
     "passage_fts_word",
     "passage_search_document",
@@ -213,7 +214,11 @@ fn recover_interrupted_derived_work(connection: &mut Connection) -> Result<()> {
 }
 
 pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
-    const INDEXES: &[&str] = &["passage_fts_word", "passage_fts_trigram"];
+    const INDEXES: &[&str] = &[
+        "passage_fts_word",
+        "passage_fts_trigram",
+        "passage_fts_short",
+    ];
     const VERSION: &str = "lexical-v1";
     let existing_version = connection
         .query_row(
@@ -287,6 +292,11 @@ fn rebuild_normalized_fts(
         &format!("INSERT INTO {index}({index}) VALUES('delete-all')"),
         [],
     )?;
+    let projection = if index == "passage_fts_short" {
+        "kosh_search_short_grams"
+    } else {
+        "kosh_search_normalize"
+    };
     transaction.execute(
         &format!(
             "INSERT INTO {index}(
@@ -295,13 +305,13 @@ fn rebuild_normalized_fts(
              )
              SELECT
                 rowid,
-                kosh_search_normalize(title),
-                kosh_search_normalize(heading_context),
-                kosh_search_normalize(body),
-                kosh_search_normalize(source_labels),
-                kosh_search_normalize(source_domains),
-                kosh_search_normalize(attachment_names),
-                kosh_search_normalize(extracted_text)
+                {projection}(title),
+                {projection}(heading_context),
+                {projection}(body),
+                {projection}(source_labels),
+                {projection}(source_domains),
+                {projection}(attachment_names),
+                {projection}(extracted_text)
              FROM passage_search_document
              ORDER BY rowid"
         ),

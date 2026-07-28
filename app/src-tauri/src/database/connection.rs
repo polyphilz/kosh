@@ -131,6 +131,17 @@ fn configure_writer(connection: &Connection, kind: DatabaseKind) -> Result<()> {
                 Ok(search::normalize_for_search(&value))
             },
         )?;
+        connection.create_scalar_function(
+            "kosh_search_short_grams",
+            1,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
+            |context| {
+                let value = context.get::<String>(0)?;
+                Ok(search::short_grams_for_search(&value))
+            },
+        )?;
     }
     connection.busy_timeout(Duration::from_millis(5_000))?;
     let journal_mode: String =

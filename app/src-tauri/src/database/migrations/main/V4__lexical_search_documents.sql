@@ -104,6 +104,19 @@ CREATE VIRTUAL TABLE passage_fts_trigram USING fts5(
     tokenize = 'trigram'
 );
 
+CREATE VIRTUAL TABLE passage_fts_short USING fts5(
+    title,
+    heading_context,
+    body,
+    source_labels,
+    source_domains,
+    attachment_names,
+    extracted_text,
+    content = 'passage_search_document',
+    content_rowid = 'rowid',
+    tokenize = 'unicode61'
+);
+
 CREATE TRIGGER passage_search_document_fts_after_insert
 AFTER INSERT ON passage_search_document
 BEGIN
@@ -132,6 +145,19 @@ BEGIN
         kosh_search_normalize(new.source_domains),
         kosh_search_normalize(new.attachment_names),
         kosh_search_normalize(new.extracted_text)
+    );
+    INSERT INTO passage_fts_short(
+        rowid, title, heading_context, body, source_labels,
+        source_domains, attachment_names, extracted_text
+    ) VALUES(
+        new.rowid,
+        kosh_search_short_grams(new.title),
+        kosh_search_short_grams(new.heading_context),
+        kosh_search_short_grams(new.body),
+        kosh_search_short_grams(new.source_labels),
+        kosh_search_short_grams(new.source_domains),
+        kosh_search_short_grams(new.attachment_names),
+        kosh_search_short_grams(new.extracted_text)
     );
 END;
 
@@ -163,6 +189,19 @@ BEGIN
         kosh_search_normalize(old.source_domains),
         kosh_search_normalize(old.attachment_names),
         kosh_search_normalize(old.extracted_text)
+    );
+    INSERT INTO passage_fts_short(
+        passage_fts_short, rowid, title, heading_context, body, source_labels,
+        source_domains, attachment_names, extracted_text
+    ) VALUES(
+        'delete', old.rowid,
+        kosh_search_short_grams(old.title),
+        kosh_search_short_grams(old.heading_context),
+        kosh_search_short_grams(old.body),
+        kosh_search_short_grams(old.source_labels),
+        kosh_search_short_grams(old.source_domains),
+        kosh_search_short_grams(old.attachment_names),
+        kosh_search_short_grams(old.extracted_text)
     );
 END;
 
@@ -230,6 +269,32 @@ BEGIN
         kosh_search_normalize(new.attachment_names),
         kosh_search_normalize(new.extracted_text)
     );
+    INSERT INTO passage_fts_short(
+        passage_fts_short, rowid, title, heading_context, body, source_labels,
+        source_domains, attachment_names, extracted_text
+    ) VALUES(
+        'delete', old.rowid,
+        kosh_search_short_grams(old.title),
+        kosh_search_short_grams(old.heading_context),
+        kosh_search_short_grams(old.body),
+        kosh_search_short_grams(old.source_labels),
+        kosh_search_short_grams(old.source_domains),
+        kosh_search_short_grams(old.attachment_names),
+        kosh_search_short_grams(old.extracted_text)
+    );
+    INSERT INTO passage_fts_short(
+        rowid, title, heading_context, body, source_labels,
+        source_domains, attachment_names, extracted_text
+    ) VALUES(
+        new.rowid,
+        kosh_search_short_grams(new.title),
+        kosh_search_short_grams(new.heading_context),
+        kosh_search_short_grams(new.body),
+        kosh_search_short_grams(new.source_labels),
+        kosh_search_short_grams(new.source_domains),
+        kosh_search_short_grams(new.attachment_names),
+        kosh_search_short_grams(new.extracted_text)
+    );
 END;
 
 CREATE TRIGGER passage_attachment_evidence_validate
@@ -243,73 +308,6 @@ BEGIN
         WHERE segment.id = new.attachment_segment_id
           AND segment.content = new.content
           AND segment.content_hash = new.content_hash
-    );
-END;
-
-CREATE TRIGGER passage_attachment_search_after_insert
-AFTER INSERT ON passage
-WHEN new.owner_kind = 'ATTACHMENT'
-BEGIN
-    DELETE FROM passage_search_document
-    WHERE passage_id IN (
-        SELECT candidate.id
-        FROM passage AS candidate
-        JOIN attachment_segment AS candidate_segment
-          ON candidate_segment.id = candidate.attachment_segment_id
-        JOIN attachment_extraction AS candidate_extraction
-          ON candidate_extraction.id = candidate_segment.extraction_id
-        WHERE candidate.owner_kind = 'ATTACHMENT'
-          AND candidate_extraction.attachment_id = (
-              SELECT extraction.attachment_id
-              FROM attachment_segment AS segment
-              JOIN attachment_extraction AS extraction
-                ON extraction.id = segment.extraction_id
-              WHERE segment.id = new.attachment_segment_id
-          )
-    );
-
-    INSERT INTO passage_search_document(
-        rowid,
-        passage_id,
-        tidbit_id,
-        title,
-        heading_context,
-        body,
-        source_labels,
-        source_domains,
-        attachment_names,
-        extracted_text,
-        owner_content_hash,
-        updated_at
-    )
-    SELECT
-        passage.rowid,
-        passage.id,
-        NULL,
-        '',
-        coalesce(
-            (
-                SELECT group_concat(value, char(10))
-                FROM json_each(passage.heading_context_json)
-            ),
-            ''
-        ),
-        '',
-        '',
-        '',
-        attachment.display_filename,
-        passage.content,
-        passage.content_hash,
-        attachment.updated_at
-    FROM current_attachment_passage AS current
-    JOIN passage ON passage.id = current.passage_id
-    JOIN attachment ON attachment.id = current.attachment_id
-    WHERE current.attachment_id = (
-        SELECT extraction.attachment_id
-        FROM attachment_segment AS segment
-        JOIN attachment_extraction AS extraction
-          ON extraction.id = segment.extraction_id
-        WHERE segment.id = new.attachment_segment_id
     );
 END;
 

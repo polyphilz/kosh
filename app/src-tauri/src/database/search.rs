@@ -101,6 +101,7 @@ pub(crate) struct LexicalDocument {
     pub fields: BTreeMap<SearchField, String>,
     pub word_rank: Option<usize>,
     pub trigram_rank: Option<usize>,
+    pub short_rank: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +162,31 @@ impl ParsedLexicalQuery {
             .collect::<Vec<_>>();
         join_fts_clauses(clauses, self.mode)
     }
+
+    pub(crate) fn short_match_query(&self) -> Option<String> {
+        if self
+            .atoms
+            .iter()
+            .any(|atom| normalize_for_search(atom.text.trim()).chars().count() > 2)
+        {
+            return None;
+        }
+        let clauses = self
+            .atoms
+            .iter()
+            .filter_map(|atom| {
+                let characters = normalize_for_search(atom.text.trim())
+                    .chars()
+                    .collect::<Vec<_>>();
+                ((1..=2).contains(&characters.len())
+                    && characters
+                        .iter()
+                        .any(|character| character.is_alphanumeric() || *character == '_'))
+                .then(|| format!("\"{}\"", short_gram_token(&characters)))
+            })
+            .collect::<Vec<_>>();
+        join_fts_clauses(clauses, self.mode)
+    }
 }
 
 pub(super) fn search_passages(
@@ -194,6 +220,18 @@ pub(super) fn search_passages(
                 candidate_limit,
             )?,
             CandidateIndex::Trigram,
+        );
+    }
+    if let Some(short_query) = query.short_match_query() {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(
+                connection,
+                "passage_fts_short",
+                &short_query,
+                candidate_limit,
+            )?,
+            CandidateIndex::Short,
         );
     }
     if ranks.is_empty() {
@@ -305,6 +343,79 @@ pub(super) fn replace_tidbit_documents(
            AND passage.owner_kind = 'AUTHOR'
          ORDER BY passage.ordinal",
         params![tidbit_id],
+    )?;
+    Ok(())
+}
+
+pub(super) fn replace_attachment_documents(
+    connection: &mut Connection,
+    attachment_id: &str,
+) -> Result<()> {
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    replace_attachment_documents_in_transaction(&transaction, attachment_id)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(super) fn replace_attachment_documents_in_transaction(
+    transaction: &Transaction<'_>,
+    attachment_id: &str,
+) -> Result<()> {
+    transaction.execute(
+        "DELETE FROM passage_search_document
+         WHERE passage_id IN (
+            SELECT passage.id
+            FROM passage
+            JOIN attachment_segment AS segment
+              ON segment.id = passage.attachment_segment_id
+            JOIN attachment_extraction AS extraction
+              ON extraction.id = segment.extraction_id
+            WHERE passage.owner_kind = 'ATTACHMENT'
+              AND extraction.attachment_id = ?1
+         )",
+        params![attachment_id],
+    )?;
+    transaction.execute(
+        "INSERT INTO passage_search_document(
+            rowid,
+            passage_id,
+            tidbit_id,
+            title,
+            heading_context,
+            body,
+            source_labels,
+            source_domains,
+            attachment_names,
+            extracted_text,
+            owner_content_hash,
+            updated_at
+         )
+         SELECT
+            passage.rowid,
+            passage.id,
+            NULL,
+            '',
+            coalesce(
+                (
+                    SELECT group_concat(value, char(10))
+                    FROM json_each(passage.heading_context_json)
+                ),
+                ''
+            ),
+            '',
+            '',
+            '',
+            attachment.display_filename,
+            passage.content,
+            passage.content_hash,
+            attachment.updated_at
+         FROM current_attachment_passage AS current
+         JOIN passage ON passage.id = current.passage_id
+         JOIN attachment ON attachment.id = current.attachment_id
+         WHERE current.attachment_id = ?1
+         ORDER BY passage.ordinal",
+        params![attachment_id],
     )?;
     Ok(())
 }
@@ -451,11 +562,13 @@ fn mark_fts_current(transaction: &Transaction<'_>) -> Result<()> {
 struct CandidateRanks {
     word: Option<usize>,
     trigram: Option<usize>,
+    short: Option<usize>,
 }
 
 enum CandidateIndex {
     Word,
     Trigram,
+    Short,
 }
 
 fn install_ranks(
@@ -469,6 +582,7 @@ fn install_ranks(
         match index {
             CandidateIndex::Word => candidate.word = Some(rank),
             CandidateIndex::Trigram => candidate.trigram = Some(rank),
+            CandidateIndex::Short => candidate.short = Some(rank),
         }
     }
 }
@@ -506,6 +620,7 @@ fn load_search_documents(
                 "passageId": passage_id,
                 "wordRank": ranks.word,
                 "trigramRank": ranks.trigram,
+                "shortRank": ranks.short,
             })
         })
         .collect::<Vec<_>>();
@@ -519,7 +634,8 @@ fn load_search_documents(
             SELECT
                 json_extract(value, '$.passageId') AS passage_id,
                 json_extract(value, '$.wordRank') AS word_rank,
-                json_extract(value, '$.trigramRank') AS trigram_rank
+                json_extract(value, '$.trigramRank') AS trigram_rank,
+                json_extract(value, '$.shortRank') AS short_rank
             FROM json_each(?1)
          )
          SELECT
@@ -567,7 +683,8 @@ fn load_search_documents(
             ),
             '',
             candidate.word_rank,
-            candidate.trigram_rank
+            candidate.trigram_rank,
+            candidate.short_rank
          FROM candidate
          JOIN passage_search_document AS document
            ON document.passage_id = candidate.passage_id
@@ -603,7 +720,8 @@ fn load_search_documents(
             attachment.display_filename,
             passage.content,
             candidate.word_rank,
-            candidate.trigram_rank
+            candidate.trigram_rank,
+            candidate.short_rank
          FROM candidate
          JOIN passage_search_document AS document
            ON document.passage_id = candidate.passage_id
@@ -623,6 +741,9 @@ fn load_search_documents(
         let trigram_rank = row
             .get::<_, Option<i64>>(10)?
             .and_then(|rank| usize::try_from(rank).ok());
+        let short_rank = row
+            .get::<_, Option<i64>>(11)?
+            .and_then(|rank| usize::try_from(rank).ok());
         Ok(LexicalDocument {
             passage_id: row.get(0)?,
             updated_at_ms: row.get(1)?,
@@ -639,6 +760,7 @@ fn load_search_documents(
             .collect(),
             word_rank,
             trigram_rank,
+            short_rank,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -730,6 +852,7 @@ fn score_document(query: &ParsedLexicalQuery, document: LexicalDocument) -> Opti
         .word_rank
         .into_iter()
         .chain(document.trigram_rank)
+        .chain(document.short_rank)
         .map(|rank| 1.0 / (RRF_RANK_CONSTANT + rank as f64))
         .sum::<f64>();
     let exact_mode_bonus = if query.mode == LexicalSearchMode::Exact {
@@ -818,6 +941,27 @@ pub(crate) fn normalize_for_search(value: &str) -> String {
     normalize_with_mapping(value).0.into_iter().collect()
 }
 
+pub(crate) fn short_grams_for_search(value: &str) -> String {
+    let characters = normalize_for_search(value).chars().collect::<Vec<_>>();
+    let mut tokens = BTreeSet::new();
+    for start in 0..characters.len() {
+        tokens.insert(short_gram_token(&characters[start..=start]));
+        if let Some(end) = start.checked_add(2).filter(|end| *end <= characters.len()) {
+            tokens.insert(short_gram_token(&characters[start..end]));
+        }
+    }
+    tokens.into_iter().collect::<Vec<_>>().join(" ")
+}
+
+fn short_gram_token(characters: &[char]) -> String {
+    let prefix = if characters.len() == 1 { 'a' } else { 'b' };
+    let encoded = characters
+        .iter()
+        .map(|character| format!("{:06x}", u32::from(*character)))
+        .collect::<String>();
+    format!("{prefix}{encoded}")
+}
+
 fn normalize_with_mapping(value: &str) -> (Vec<char>, Vec<usize>) {
     let mut normalized = Vec::new();
     let mut original_indices = Vec::new();
@@ -886,6 +1030,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             word_rank: None,
             trigram_rank: None,
+            short_rank: None,
         }
     }
 
@@ -1028,6 +1173,7 @@ mod tests {
             .expect("literal punctuation atom");
         assert!(punctuation.word_match_query().is_none());
         assert!(punctuation.trigram_match_query().is_none());
+        assert!(punctuation.short_match_query().is_none());
     }
 
     #[test]
@@ -1098,7 +1244,7 @@ mod tests {
                     expected_revision_id: created.current_revision_id.clone(),
                     title: Some("Updated lexical note".into()),
                     body_markdown:
-                        "# Search\n\nThe replacement carries café, a ﬁle, C, R2, and $$E=mc^2$$."
+                        "# Search\n\nThe replacement carries café, a ﬁle, OpenAI, C, R2, and $$E=mc^2$$."
                             .into(),
                     sources: Vec::new(),
                 },
@@ -1115,7 +1261,7 @@ mod tests {
             })
             .expect("old revision search")
             .is_empty());
-        for query in ["cafe", "file", "C", "R2", "E=mc^2"] {
+        for query in ["cafe", "file", "AI", "R2", "E=mc^2"] {
             let results = client
                 .search_passages(SearchPassagesInput {
                     query: query.into(),
@@ -1133,6 +1279,21 @@ mod tests {
                 Some(edited.current_revision_id.as_str())
             );
         }
+        let single_character = client
+            .search_passages(SearchPassagesInput {
+                query: "C".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            })
+            .expect("single-character substring search");
+        assert!(!single_character.is_empty());
+        assert!(single_character.iter().all(|result| {
+            result
+                .citation
+                .tidbit
+                .as_ref()
+                .is_some_and(|tidbit| tidbit.revision_id == edited.current_revision_id)
+        }));
 
         client
             .delete_tidbit(
@@ -1204,7 +1365,7 @@ mod tests {
             .shutdown()
             .expect("close attachment search database");
         drop(database);
-        let connection =
+        let mut connection =
             connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
                 .expect("attachment fixture writer");
         connection
@@ -1260,6 +1421,11 @@ mod tests {
                     '019f547b-6200-7000-8000-000000009502',
                     0, 'PDF_PAGE', 7, 'The quasar_needle calibration is authoritative.',
                     zeroblob(32)
+                 ), (
+                    '019f547b-6200-7000-8000-000000009516',
+                    '019f547b-6200-7000-8000-000000009502',
+                    1, 'PDF_PAGE', 8, 'A second page is installed in the same batch.',
+                    zeroblob(32)
                  );
                  INSERT INTO passage(
                     id, attachment_segment_id, owner_kind, ordinal, content,
@@ -1271,9 +1437,48 @@ mod tests {
                     'ATTACHMENT', 0,
                     'The quasar_needle calibration is authoritative.', zeroblob(32),
                     'PDF_PAGE', '{\"page\":7}', 10, 'pdf-page-v1', '[]'
+                 ), (
+                    '019f547b-6200-7000-8000-000000009517',
+                    '019f547b-6200-7000-8000-000000009516',
+                    'ATTACHMENT', 0,
+                    'A second page is installed in the same batch.', zeroblob(32),
+                    'PDF_PAGE', '{\"page\":8}', 10, 'pdf-page-v1', '[]'
                  );",
             )
             .expect("ready attachment passage");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM passage_search_document
+                     WHERE passage_id IN (
+                        '019f547b-6200-7000-8000-000000009504',
+                        '019f547b-6200-7000-8000-000000009517'
+                     )",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("unrefreshed attachment document count"),
+            0
+        );
+        super::replace_attachment_documents(
+            &mut connection,
+            "019f547b-6200-7000-8000-000000009501",
+        )
+        .expect("refresh completed attachment passage batch");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM passage_search_document
+                     WHERE passage_id IN (
+                        '019f547b-6200-7000-8000-000000009504',
+                        '019f547b-6200-7000-8000-000000009517'
+                     )",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("batched attachment document count"),
+            2
+        );
         let results = super::search_passages(
             &connection,
             SearchPassagesInput {
@@ -1413,6 +1618,11 @@ mod tests {
                  );",
             )
             .expect("new extraction version");
+        super::replace_attachment_documents(
+            &mut connection,
+            "019f547b-6200-7000-8000-000000009501",
+        )
+        .expect("refresh upgraded extraction passage batch");
         assert!(super::search_passages(
             &connection,
             SearchPassagesInput {
@@ -1455,6 +1665,11 @@ mod tests {
                  )",
             )
             .expect("new attachment passage construction");
+        super::replace_attachment_documents(
+            &mut connection,
+            "019f547b-6200-7000-8000-000000009501",
+        )
+        .expect("refresh upgraded passage construction batch");
         let rebuilt = super::search_passages(
             &connection,
             SearchPassagesInput {

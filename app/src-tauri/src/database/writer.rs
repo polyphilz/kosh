@@ -88,6 +88,10 @@ pub(super) enum WriterMessage {
         input: SearchPassagesInput,
         reply: SyncSender<Result<Vec<PassageSearchResult>>>,
     },
+    RefreshAttachmentSearchDocuments {
+        attachment_id: String,
+        reply: SyncSender<Result<()>>,
+    },
     InstallLexicalBenchmarkAttachments {
         writes: Vec<LexicalBenchmarkAttachmentWrite>,
         reply: SyncSender<Result<()>>,
@@ -166,6 +170,19 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::ReconcileAuthorPassages { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn refresh_attachment_search_documents(&self, attachment_id: String) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RefreshAttachmentSearchDocuments {
+                attachment_id,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

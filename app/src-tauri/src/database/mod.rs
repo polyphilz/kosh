@@ -254,6 +254,15 @@ fn writer_loop(
             WriterMessage::SearchPassages { input, reply } => {
                 let _ = reply.send(search::search_passages(&main, input));
             }
+            WriterMessage::RefreshAttachmentSearchDocuments {
+                attachment_id,
+                reply,
+            } => {
+                let _ = reply.send(search::replace_attachment_documents(
+                    &mut main,
+                    &attachment_id,
+                ));
+            }
             WriterMessage::InstallLexicalBenchmarkAttachments { writes, reply } => {
                 let _ = reply.send(writer::install_lexical_benchmark_attachments(
                     &mut main, writes,
