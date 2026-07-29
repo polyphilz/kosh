@@ -1,4 +1,5 @@
 mod attachments;
+mod claude;
 mod database;
 mod embedding;
 mod embedding_runtime;
@@ -38,6 +39,10 @@ fn select_data_dir(
 fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        claude::claude_setup_status,
+        claude::claude_cli_defaults,
+        claude::start_research_process,
+        claude::cancel_research_process,
         runtime::semantic_runtime_status,
         runtime::passage_embedding_index_status,
         runtime::prepare_semantic_runtime,
@@ -95,6 +100,10 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
     // logic is covered by the platform unit tests in windows.rs.
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        claude::claude_setup_status,
+        claude::claude_cli_defaults,
+        claude::start_research_process,
+        claude::cancel_research_process,
         runtime::semantic_runtime_status,
         runtime::passage_embedding_index_status,
         runtime::prepare_semantic_runtime,
@@ -170,6 +179,9 @@ pub fn run() {
         let shortcut_settings = runtime.database_client().load_shortcut_settings()?;
         app.manage(runtime);
         windows::setup(app, shortcut_settings)?;
+        app.state::<RuntimeState>()
+            .claude_processes()
+            .recover_work_directories_async();
         Ok(())
     })
     .build(tauri::generate_context!())
@@ -183,6 +195,9 @@ pub fn run() {
             if let Err(error) = windows::show_main(app.clone()) {
                 log::error!("failed to show Kosh after activation: {error}");
             }
+        }
+        tauri::RunEvent::Exit => {
+            app.state::<RuntimeState>().claude_processes().shutdown();
         }
         _ => {}
     });
