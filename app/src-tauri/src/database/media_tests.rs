@@ -14,13 +14,13 @@ use tempfile::TempDir;
 use super::{
     drafts::SaveDraftWrite,
     media::{
-        recover_media_lifecycle_batch, referenced_attachments, split_pdf_page_passages,
-        validate_filename, AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
-        IngestAttachmentMetadata, IngestAttachmentWrite, IngestGenericAttachmentWrite,
-        IngestImageWrite, IngestPdfWrite, MediaByteRange, MediaRangeRequest, PdfExtractionStatus,
-        PdfPageExtraction, PdfPageSource, StagedAttachment, TextFileSegment,
-        MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
-        PDF_RECOVERY_BATCH_SIZE,
+        media_reclamation_is_eligible, recover_media_lifecycle_batch, referenced_attachments,
+        split_pdf_page_passages, validate_filename, AttachmentDisplayRole, CanonicalImage,
+        ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata, IngestAttachmentWrite,
+        IngestGenericAttachmentWrite, IngestImageWrite, IngestPdfWrite, MediaByteRange,
+        MediaRangeRequest, PdfExtractionStatus, PdfPageExtraction, PdfPageSource, StagedAttachment,
+        TextFileSegment, MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS,
+        PDF_PASSAGE_OVERLAP_CHARS, PDF_RECOVERY_BATCH_SIZE,
     },
     research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
@@ -2421,6 +2421,63 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     assert_eq!(after_grace.cleanup.deleted_blob_count, 1);
     assert_eq!(after_grace.cleanup.reclaimed_bytes, 9);
     assert_eq!(blob_count(&library.database), 0);
+}
+
+#[test]
+fn reclamation_preflight_scans_past_stale_candidate_window() {
+    let library = TestLibrary::new();
+    library
+        .database
+        .shutdown()
+        .expect("stop writer before direct preflight");
+    let main = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("direct main writer");
+    let media = super::connection::open_writer(
+        &library.paths.media,
+        super::connection::DatabaseKind::Media,
+        super::connection::FileState::Existing,
+    )
+    .expect("direct media writer");
+    let limits = MediaLimits {
+        orphan_grace_period_ms: 1,
+        max_reaps_per_maintenance: 2,
+        ..MediaLimits::default()
+    };
+
+    for byte in [1_u8, 2] {
+        main.execute(
+            "INSERT INTO media_blob_reap_candidate(sha256, orphaned_at, reason)
+             VALUES(?1, 1, 'stale test candidate')",
+            params![[byte; 32].as_slice()],
+        )
+        .expect("insert stale missing-blob candidate");
+    }
+    let eligible_hash = Sha256::digest(b"eligible after stale candidates");
+    main.execute(
+        "INSERT INTO media_blob_reap_candidate(sha256, orphaned_at, reason)
+         VALUES(?1, 2, 'eligible test candidate')",
+        params![eligible_hash.as_slice()],
+    )
+    .expect("insert eligible candidate");
+    media
+        .execute(
+            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+             VALUES(?1, ?2, ?3, 1)",
+            params![
+                eligible_hash.as_slice(),
+                b"eligible after stale candidates".as_slice(),
+                i64::try_from(b"eligible after stale candidates".len())
+                    .expect("eligible byte length")
+            ],
+        )
+        .expect("insert eligible orphan blob");
+
+    assert!(media_reclamation_is_eligible(&main, &media, 10, limits)
+        .expect("scan past stale candidate window"));
 }
 
 #[test]

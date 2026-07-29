@@ -4139,20 +4139,18 @@ pub(crate) fn media_reclamation_is_eligible(
     }
 
     let cutoff = now_ms.saturating_sub(limits.orphan_grace_period_ms);
-    let candidates = main
-        .prepare(
-            "SELECT sha256
-             FROM media_blob_reap_candidate
-             WHERE orphaned_at <= ?1
-             ORDER BY orphaned_at, sha256
-             LIMIT ?2",
-        )?
-        .query_map(
-            params![cutoff, i64::from(limits.max_reaps_per_maintenance)],
-            |row| row.get::<_, Vec<u8>>(0),
-        )?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for hash in candidates {
+    // Stream the ordered queue instead of collecting it: stale or already
+    // missing rows cannot consume the deletion budget and hide later work,
+    // while memory remains bounded to the current SQLite row.
+    let mut candidate_statement = main.prepare(
+        "SELECT sha256
+         FROM media_blob_reap_candidate
+         WHERE orphaned_at <= ?1
+         ORDER BY orphaned_at, sha256",
+    )?;
+    let mut candidates = candidate_statement.query(params![cutoff])?;
+    while let Some(candidate) = candidates.next()? {
+        let hash = candidate.get::<_, Vec<u8>>(0)?;
         let referenced: bool = main.query_row(
             "SELECT EXISTS(
                 SELECT 1
