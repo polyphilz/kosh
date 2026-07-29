@@ -33,10 +33,17 @@ fi
 platform="${KOSH_RUNTIME_GATE_PLATFORM:-$(uname -s)}"
 cargo_bin="${CARGO_BIN:-cargo}"
 git_bin="${GIT_BIN:-git}"
+pnpm_bin="${PNPM_BIN:-pnpm}"
+curl_bin="${CURL_BIN:-curl}"
+testing="${KOSH_RUNTIME_GATE_TESTING:-false}"
 [[ "$platform" == "Darwin" ]] || fail "real Tauri startup verification requires macOS"
 command -v "$cargo_bin" >/dev/null 2>&1 || fail "cargo is unavailable"
 command -v "$git_bin" >/dev/null 2>&1 || fail "git is unavailable"
 command -v jq >/dev/null 2>&1 || fail "jq is unavailable"
+if [[ "$testing" != "true" ]]; then
+  command -v "$pnpm_bin" >/dev/null 2>&1 || fail "pnpm is unavailable"
+  command -v "$curl_bin" >/dev/null 2>&1 || fail "curl is unavailable"
+fi
 
 repo_root="$("$git_bin" rev-parse --show-toplevel)"
 head_sha="$("$git_bin" -C "$repo_root" rev-parse HEAD)"
@@ -61,7 +68,12 @@ aggregate_receipt="$loop_root/runtime-gate.json"
 mkdir -p "$launch_root" "$persistent_root"
 
 fresh_data="$(mktemp -d "$runtime_root/fresh.XXXXXX")"
+frontend_pid=""
 cleanup() {
+  if [[ -n "$frontend_pid" ]]; then
+    kill "$frontend_pid" >/dev/null 2>&1 || true
+    wait "$frontend_pid" >/dev/null 2>&1 || true
+  fi
   case "$fresh_data" in
     "$runtime_root"/fresh.*)
       rm -rf "$fresh_data"
@@ -72,6 +84,50 @@ cleanup() {
   esac
 }
 trap cleanup EXIT
+
+if [[ "$testing" != "true" ]]; then
+  frontend_log="$launch_root/frontend.log"
+  if "$curl_bin" \
+    --fail \
+    --silent \
+    --show-error \
+    --connect-timeout 1 \
+    --max-time 1 \
+    http://127.0.0.1:1420/ >/dev/null 2>&1; then
+    fail "port 1420 is already serving HTTP; stop the existing frontend before verification"
+  fi
+  rm -f "$frontend_log"
+  (
+    cd "$repo_root/app"
+    exec "$pnpm_bin" exec vite --host 127.0.0.1 --port 1420 --strictPort
+  ) >"$frontend_log" 2>&1 &
+  frontend_pid=$!
+
+  frontend_ready="false"
+  for _ in {1..80}; do
+    if ! kill -0 "$frontend_pid" >/dev/null 2>&1; then
+      sed -n '1,160p' "$frontend_log" >&2
+      fail "the exact-head frontend server exited before becoming ready"
+    fi
+    if "$curl_bin" \
+      --fail \
+      --silent \
+      --show-error \
+      --connect-timeout 1 \
+      --max-time 1 \
+      http://127.0.0.1:1420/ >/dev/null 2>&1; then
+      frontend_ready="true"
+      break
+    fi
+    sleep 0.25
+  done
+  [[ "$frontend_ready" == "true" ]] || {
+    sed -n '1,160p' "$frontend_log" >&2
+    fail "the exact-head frontend server did not become ready"
+  }
+  kill -0 "$frontend_pid" >/dev/null 2>&1 ||
+    fail "the exact-head frontend server exited after its readiness check"
+fi
 
 run_launch() {
   local data_dir="$1"
@@ -109,6 +165,18 @@ run_launch() {
       and .expectation == $expectation
       and .dataDir == $data
       and (.windows | sort) == ["main", "quick-add"]
+      and ([.webviews[].surface] | sort) == ["main", "quick-add"]
+      and (.webviews | length) == 2
+      and all(
+        .webviews[];
+        .rendered == true
+        and .rootChildCount > 0
+        and (.documentReadyState == "interactive" or .documentReadyState == "complete")
+        and .probeDataDir == $data
+        and (.probeRequestId | type) == "string"
+        and (.probeRequestId | length) > 0
+      )
+      and ([.webviews[].probeRequestId] | unique | length) == 2
       and .diagnostics.mainJournalMode == "wal"
       and .diagnostics.mediaJournalMode == "wal"
       and .diagnostics.mainForeignKeys == true

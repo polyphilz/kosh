@@ -87,6 +87,24 @@ jq -n \
     processId: 123,
     completedAtMs: 456,
     windows: ["main", "quick-add"],
+    webviews: [
+      {
+        surface: "main",
+        rendered: true,
+        documentReadyState: "complete",
+        rootChildCount: 1,
+        probeDataDir: $data,
+        probeRequestId: "00000000-0000-7000-8000-000000000004"
+      },
+      {
+        surface: "quick-add",
+        rendered: true,
+        documentReadyState: "complete",
+        rootChildCount: 1,
+        probeDataDir: $data,
+        probeRequestId: "00000000-0000-7000-8000-000000000005"
+      }
+    ],
     diagnostics: {
       migrationHeads: {main: 11, media: 2},
       mainJournalMode: "wal",
@@ -109,6 +127,7 @@ chmod +x "$temp_dir/cargo"
 export GIT_BIN="$temp_dir/git"
 export CARGO_BIN="$temp_dir/cargo"
 export KOSH_RUNTIME_GATE_PLATFORM="Darwin"
+export KOSH_RUNTIME_GATE_TESTING="true"
 export FAKE_REPO_ROOT="$repo_root"
 export FAKE_HEAD_SHA="$head_sha"
 

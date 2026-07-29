@@ -41,6 +41,24 @@ launch_receipt() {
       processId: 123,
       completedAtMs: 456,
       windows: ["main", "quick-add"],
+      webviews: [
+        {
+          surface: "main",
+          rendered: true,
+          documentReadyState: "complete",
+          rootChildCount: 1,
+          probeDataDir: $data,
+          probeRequestId: "00000000-0000-7000-8000-000000000004"
+        },
+        {
+          surface: "quick-add",
+          rendered: true,
+          documentReadyState: "complete",
+          rootChildCount: 1,
+          probeDataDir: $data,
+          probeRequestId: "00000000-0000-7000-8000-000000000005"
+        }
+      ],
       diagnostics: {
         migrationHeads: {main: 11, media: 2},
         mainJournalMode: "wal",
@@ -145,6 +163,19 @@ restart="$bad_restart"
 write_aggregate local "$head_sha" true present "$persistent"
 expect_blocked "fresh restart silently retargets the citation"
 restart="$original_restart"
+
+bad_webview="$(jq '.webviews[1].rendered = false' <<<"$persistent")"
+original_persistent="$persistent"
+persistent="$bad_webview"
+write_aggregate local "$head_sha" true present "$persistent"
+expect_blocked "a webview did not render its React root"
+persistent="$original_persistent"
+
+bad_ipc="$(jq '.webviews[0].probeRequestId = ""' <<<"$persistent")"
+persistent="$bad_ipc"
+write_aggregate local "$head_sha" true present "$persistent"
+expect_blocked "a webview has no backend IPC evidence"
+persistent="$original_persistent"
 
 rm "$persistent_data/media.sqlite3"
 write_aggregate local "$head_sha" true present "$persistent"

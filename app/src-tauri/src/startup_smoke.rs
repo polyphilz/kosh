@@ -1,12 +1,15 @@
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
-use tauri::{App, Manager};
+use serde::{Deserialize, Serialize};
+use tauri::{App, AppHandle, Listener, Manager};
 
 use crate::{
     database::{
@@ -20,9 +23,12 @@ use crate::{
 const RECEIPT_ENV: &str = "KOSH_STARTUP_SMOKE_RECEIPT";
 const HEAD_ENV: &str = "KOSH_STARTUP_SMOKE_HEAD";
 const EXPECT_ENV: &str = "KOSH_STARTUP_SMOKE_EXPECT";
+const READY_EVENT: &str = "kosh://startup-smoke-ready";
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const CANARY: &str = "koshstartupcanaryv1";
 const CANARY_TITLE: &str = "Kosh progressive startup canary";
 const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
+const REQUIRED_SURFACES: [&str; 2] = ["main", "quick-add"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +47,17 @@ struct CanaryEvidence {
     source_url: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebviewReady {
+    surface: String,
+    rendered: bool,
+    document_ready_state: String,
+    root_child_count: u32,
+    probe_data_dir: String,
+    probe_request_id: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StartupSmokeReceipt {
@@ -51,13 +68,21 @@ struct StartupSmokeReceipt {
     process_id: u32,
     completed_at_ms: u128,
     windows: Vec<String>,
+    webviews: Vec<WebviewReady>,
     diagnostics: DatabaseDiagnostics,
     canary_preexisting: bool,
     canary_created: bool,
     canary: CanaryEvidence,
 }
 
-pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bool> {
+#[derive(Debug)]
+struct StartupSmokeRequest {
+    receipt_path: PathBuf,
+    head_sha: String,
+    expectation: CanaryExpectation,
+}
+
+pub(crate) fn run_if_requested(app: &App) -> io::Result<bool> {
     let Some(receipt_path) = std::env::var_os(RECEIPT_ENV).map(PathBuf::from) else {
         return Ok(false);
     };
@@ -81,10 +106,43 @@ pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bo
             ));
         }
     };
+    let request = StartupSmokeRequest {
+        receipt_path,
+        head_sha,
+        expectation,
+    };
 
+    let (ready_sender, ready_receiver) = mpsc::channel();
+    app.listen(READY_EVENT, move |event| {
+        let _ = ready_sender.send(event.payload().to_owned());
+    });
+    let app_handle = app.handle().clone();
+    thread::Builder::new()
+        .name("kosh-startup-smoke".into())
+        .spawn(move || {
+            let result = wait_for_webviews(&ready_receiver)
+                .and_then(|webviews| complete_startup_smoke(&app_handle, request, webviews));
+            match result {
+                Ok(()) => app_handle.exit(0),
+                Err(error) => {
+                    eprintln!("Kosh startup smoke failed: {error}");
+                    app_handle.exit(1);
+                }
+            }
+        })
+        .map_err(|error| invalid(format!("could not start the startup smoke worker: {error}")))?;
+    Ok(true)
+}
+
+fn complete_startup_smoke(
+    app: &AppHandle,
+    request: StartupSmokeRequest,
+    mut webviews: Vec<WebviewReady>,
+) -> io::Result<()> {
+    let state = app.state::<RuntimeState>();
     let client = state.database_client();
     let existing = find_canary(&client)?;
-    match (expectation, existing.is_some()) {
+    match (request.expectation, existing.is_some()) {
         (CanaryExpectation::Absent, true) => {
             return Err(invalid(
                 "the startup smoke canary unexpectedly existed before the fresh launch",
@@ -101,7 +159,7 @@ pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bo
 
     let created = if existing.is_none()
         && matches!(
-            expectation,
+            request.expectation,
             CanaryExpectation::Absent | CanaryExpectation::Ensure
         ) {
         let now_ms = SystemTime::now()
@@ -156,7 +214,7 @@ pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bo
 
     let mut windows = app.webview_windows().into_keys().collect::<Vec<_>>();
     windows.sort();
-    if windows != ["main", "quick-add"] {
+    if windows != REQUIRED_SURFACES {
         return Err(invalid(format!(
             "the startup smoke expected main and quick-add windows, found {}",
             windows.join(", ")
@@ -168,28 +226,119 @@ pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bo
             "could not resolve the startup smoke data directory: {error}"
         ))
     })?;
+    let data_dir_text = data_dir.to_string_lossy().into_owned();
+    for ready in &webviews {
+        let probe_data_dir = fs::canonicalize(&ready.probe_data_dir).map_err(|error| {
+            invalid(format!(
+                "the {} webview reported an invalid IPC data directory: {error}",
+                ready.surface
+            ))
+        })?;
+        if probe_data_dir != data_dir {
+            return Err(invalid(format!(
+                "the {} webview IPC probe resolved to a different data directory",
+                ready.surface
+            )));
+        }
+    }
+    webviews.sort_by(|left, right| left.surface.cmp(&right.surface));
     let completed_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| invalid(format!("the system clock is invalid: {error}")))?
         .as_millis();
     write_receipt(
-        &receipt_path,
+        &request.receipt_path,
         &StartupSmokeReceipt {
             schema_version: 1,
-            head_sha,
-            expectation,
-            data_dir: data_dir.to_string_lossy().into_owned(),
+            head_sha: request.head_sha,
+            expectation: request.expectation,
+            data_dir: data_dir_text,
             process_id: std::process::id(),
             completed_at_ms,
             windows,
+            webviews,
             diagnostics,
             canary_preexisting: existing.is_some(),
             canary_created: created.is_some(),
             canary: evidence,
         },
-    )?;
-    app.handle().exit(0);
-    Ok(true)
+    )
+}
+
+fn wait_for_webviews(receiver: &mpsc::Receiver<String>) -> io::Result<Vec<WebviewReady>> {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    let mut ready_by_surface = HashMap::new();
+    while ready_by_surface.len() < REQUIRED_SURFACES.len() {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| readiness_timeout(&ready_by_surface))?;
+        let payload = receiver
+            .recv_timeout(remaining)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => readiness_timeout(&ready_by_surface),
+                mpsc::RecvTimeoutError::Disconnected => {
+                    invalid("the startup smoke readiness channel disconnected")
+                }
+            })?;
+        let ready: WebviewReady = serde_json::from_str(&payload).map_err(|error| {
+            invalid(format!(
+                "a webview emitted an invalid startup readiness payload: {error}"
+            ))
+        })?;
+        if !REQUIRED_SURFACES.contains(&ready.surface.as_str()) {
+            return Err(invalid(format!(
+                "an unknown webview emitted startup readiness: {}",
+                ready.surface
+            )));
+        }
+        if !ready.rendered || ready.root_child_count == 0 {
+            return Err(invalid(format!(
+                "the {} webview emitted readiness without a rendered React root",
+                ready.surface
+            )));
+        }
+        if !matches!(
+            ready.document_ready_state.as_str(),
+            "interactive" | "complete"
+        ) {
+            return Err(invalid(format!(
+                "the {} webview emitted readiness while the document was {}",
+                ready.surface, ready.document_ready_state
+            )));
+        }
+        if ready.probe_data_dir.is_empty() || ready.probe_request_id.is_empty() {
+            return Err(invalid(format!(
+                "the {} webview emitted readiness without IPC probe evidence",
+                ready.surface
+            )));
+        }
+        ready_by_surface
+            .entry(ready.surface.clone())
+            .or_insert(ready);
+    }
+
+    let probe_ids = ready_by_surface
+        .values()
+        .map(|ready| ready.probe_request_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    if probe_ids.len() != REQUIRED_SURFACES.len() {
+        return Err(invalid(
+            "the webview readiness IPC probes did not have distinct request IDs",
+        ));
+    }
+    Ok(ready_by_surface.into_values().collect())
+}
+
+fn readiness_timeout(ready: &HashMap<String, WebviewReady>) -> io::Error {
+    let mut missing = REQUIRED_SURFACES
+        .into_iter()
+        .filter(|surface| !ready.contains_key(*surface))
+        .collect::<Vec<_>>();
+    missing.sort();
+    invalid(format!(
+        "timed out waiting for rendered webview readiness: {}",
+        missing.join(", ")
+    ))
 }
 
 fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {

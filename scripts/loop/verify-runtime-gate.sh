@@ -57,13 +57,27 @@ jq -e \
     and (.persistent.receipt.windows | sort) == ["main", "quick-add"]
     and all(
       [.fresh.seed, .fresh.restart, .persistent.receipt][];
-      .diagnostics.mainJournalMode == "wal"
-      and .diagnostics.mediaJournalMode == "wal"
-      and .diagnostics.mainForeignKeys == true
-      and .diagnostics.mediaForeignKeys == true
-      and (.diagnostics.migrationHeads.main | type) == "number"
-      and (.diagnostics.migrationHeads.media | type) == "number"
-      and .canary.sourceUrl == "https://example.invalid/kosh-progressive-operability"
+      . as $launch
+      | ([$launch.webviews[].surface] | sort) == ["main", "quick-add"]
+      and ($launch.webviews | length) == 2
+      and all(
+        $launch.webviews[];
+        .rendered == true
+        and .rootChildCount > 0
+        and (.documentReadyState == "interactive" or .documentReadyState == "complete")
+        and .probeDataDir == $launch.dataDir
+        and (.probeRequestId | type) == "string"
+        and (.probeRequestId | length) > 0
+      )
+      and ([$launch.webviews[].probeRequestId] | unique | length) == 2
+      and
+      $launch.diagnostics.mainJournalMode == "wal"
+      and $launch.diagnostics.mediaJournalMode == "wal"
+      and $launch.diagnostics.mainForeignKeys == true
+      and $launch.diagnostics.mediaForeignKeys == true
+      and ($launch.diagnostics.migrationHeads.main | type) == "number"
+      and ($launch.diagnostics.migrationHeads.media | type) == "number"
+      and $launch.canary.sourceUrl == "https://example.invalid/kosh-progressive-operability"
     )
   ' \
   "$receipt" >/dev/null || fail "receipt contents do not satisfy the progressive launch contract"

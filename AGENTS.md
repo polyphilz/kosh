@@ -51,6 +51,9 @@ Every slice must also leave the real Tauri application progressively operable:
 the exact committed head must launch from a fresh profile, restart against that
 profile without losing a searchable cited canary, and launch against the
 preserved `.kosh-loop/progressive-profile/` created by the preceding slices.
+Every native launch must also load both exact-head frontend entries, render
+their React roots, and complete an IPC probe against the same runtime data
+directory before it can produce a passing receipt.
 The runtime gate owns these profiles; never replace or clear them to make a
 migration failure pass.
 

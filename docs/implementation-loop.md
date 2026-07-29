@@ -39,11 +39,14 @@ debug Tauri binary three times:
 3. against `.kosh-loop/progressive-profile/data`, where the canary and database
    pair from prior slices must survive all forward migrations.
 
-Each launch also proves that the main and quick-add windows are constructed,
-both database files use WAL and foreign keys, and both embedded migration heads
-are applied. The fresh profile is disposable. The preserved profile is not:
-never delete, replace, or edit it to make a slice pass. On a genuinely new
-workstation, initialize it exactly once with:
+Each launch also starts the exact-head Vite frontend and proves that the main
+and quick-add windows are constructed, both React roots render, both surfaces
+complete a distinct Tauri IPC probe against the expected data directory, both
+database files use WAL and foreign keys, and both embedded migration heads are
+applied. A blank/error webview therefore cannot issue a passing receipt. The
+fresh profile is disposable. The preserved profile is not: never delete,
+replace, or edit it to make a slice pass. On a genuinely new workstation,
+initialize it exactly once with:
 
 ```bash
 scripts/loop/runtime-gate.sh --bootstrap-persistent
