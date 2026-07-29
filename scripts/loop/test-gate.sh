@@ -60,12 +60,47 @@ esac
 FAKE_GH
 chmod +x "$temp_dir/gh"
 
+cat >"$temp_dir/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  "rev-parse")
+    echo "$FAKE_HEAD_SHA"
+    ;;
+  "status")
+    printf '%s' "${FAKE_GIT_STATUS:-}"
+    ;;
+  *)
+    echo "unexpected fake git invocation: $*" >&2
+    exit 2
+    ;;
+esac
+FAKE_GIT
+chmod +x "$temp_dir/git"
+
+cat >"$temp_dir/verify-runtime-gate" <<'FAKE_RUNTIME_GATE'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "${1:-}" == "$FAKE_HEAD_SHA" ]] || {
+  echo "runtime verifier received another head" >&2
+  exit 2
+}
+[[ "${FAKE_RUNTIME_GATE_RESULT:-pass}" == "pass" ]] || exit 1
+: >"$FAKE_RUNTIME_GATE_MARKER"
+FAKE_RUNTIME_GATE
+chmod +x "$temp_dir/verify-runtime-gate"
+
 readonly head_sha="0123456789abcdef0123456789abcdef01234567"
 readonly bot="chatgpt-codex-connector[bot]"
 
 export GH_BIN="$temp_dir/gh"
+export GIT_BIN="$temp_dir/git"
+export KOSH_RUNTIME_GATE_VERIFIER="$temp_dir/verify-runtime-gate"
 export FAKE_HEAD_SHA="$head_sha"
 export FAKE_MERGE_MARKER="$temp_dir/merged"
+export FAKE_RUNTIME_GATE_MARKER="$temp_dir/runtime-gate-checked"
 FAKE_PR_JSON="$(
   jq -cn \
     --arg head "$head_sha" \
@@ -121,6 +156,10 @@ export FAKE_COMMENTS_JSON
 "$repo_root/scripts/loop/merge.sh" 1 polyphilz/kosh >/dev/null
 [[ -f "$FAKE_MERGE_MARKER" ]] || {
   echo "merge wrapper did not invoke a guarded merge" >&2
+  exit 1
+}
+[[ -f "$FAKE_RUNTIME_GATE_MARKER" ]] || {
+  echo "merge gate did not verify the exact-head runtime receipt" >&2
   exit 1
 }
 status_output="$("$status" polyphilz/kosh)"
@@ -180,6 +219,18 @@ expect_blocked() {
     exit 1
   fi
 }
+
+export FAKE_RUNTIME_GATE_RESULT='fail'
+expect_blocked "missing exact-head runtime receipt"
+export FAKE_RUNTIME_GATE_RESULT='pass'
+
+export FAKE_GIT_STATUS=' M app/src-tauri/src/lib.rs'
+expect_blocked "dirty local worktree"
+export FAKE_GIT_STATUS=''
+
+export FAKE_HEAD_SHA='ffffffffffffffffffffffffffffffffffffffff'
+expect_blocked "local head differs from pull request head"
+export FAKE_HEAD_SHA="$head_sha"
 
 export FAKE_CHECKS_JSON='[{"bucket":"fail","link":"","name":"check","state":"FAILURE","workflow":"check"}]'
 expect_blocked "failed CI"

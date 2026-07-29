@@ -9,6 +9,8 @@ mod pdf;
 pub mod relevance;
 pub mod research;
 mod runtime;
+#[cfg(debug_assertions)]
+mod startup_smoke;
 mod windows;
 
 #[cfg(feature = "test-support")]
@@ -179,9 +181,15 @@ pub fn run() {
         let shortcut_settings = runtime.database_client().load_shortcut_settings()?;
         app.manage(runtime);
         windows::setup(app, shortcut_settings)?;
-        app.state::<RuntimeState>()
-            .claude_processes()
-            .recover_work_directories_async();
+        #[cfg(debug_assertions)]
+        let startup_smoke = startup_smoke::run_if_requested(app)?;
+        #[cfg(not(debug_assertions))]
+        let startup_smoke = false;
+        if !startup_smoke {
+            app.state::<RuntimeState>()
+                .claude_processes()
+                .recover_work_directories_async();
+        }
         Ok(())
     })
     .build(tauri::generate_context!())

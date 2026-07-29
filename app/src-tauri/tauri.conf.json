@@ -5,7 +5,7 @@
   "identifier": "com.rohan.kosh",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
@@ -38,7 +38,7 @@
       },
       "devCsp": {
         "default-src": "'self'",
-        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:1420",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://127.0.0.1:1420",
         "img-src": "'self' blob: data: kosh-media:",
         "style-src": "'self' 'unsafe-inline'",
         "object-src": "kosh-media:",

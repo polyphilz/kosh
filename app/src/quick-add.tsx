@@ -11,6 +11,7 @@ import ReactDOM from "react-dom/client";
 import { BackendProvider } from "./backend/context";
 import { createBackend } from "./backend/createBackend";
 import { AppearanceProvider } from "./components/Appearance";
+import { StartupSmokeReady } from "./components/StartupSmokeReady";
 import { QuitCoordinator } from "./lifecycle/quit";
 import "./components/components.css";
 import "./markdown/markdown.css";
@@ -30,6 +31,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <BackendProvider backend={createBackend()}>
       <AppearanceProvider>
+        <StartupSmokeReady surface="quick-add" />
         <QuitCoordinator />
         <RouterProvider router={quickAddRouter} />
       </AppearanceProvider>

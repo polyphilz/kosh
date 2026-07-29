@@ -30,6 +30,7 @@ use crate::embedding::{
 };
 
 const MODEL_OVERRIDE_ENV: &str = "KOSH_EMBEDDING_MODEL_PATH";
+#[cfg(debug_assertions)]
 const SIDECAR_OVERRIDE_ENV: &str = "KOSH_LLAMA_SERVER_PATH";
 const LLAMA_DEVICE_ENV: &str = "KOSH_LLAMA_DEVICE";
 const LLAMA_GPU_LAYERS_ENV: &str = "KOSH_LLAMA_GPU_LAYERS";
@@ -247,6 +248,7 @@ impl EmbeddingRuntime {
         })
     }
 
+    #[cfg(feature = "test-support")]
     pub(crate) fn without_sidecar(data_root: &Path) -> Self {
         Self::start(RuntimeConfiguration {
             contract: jina_contract(),

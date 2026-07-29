@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly review_bot="${KOSH_CODEX_REVIEW_BOT:-chatgpt-codex-connector[bot]}"
 readonly gh_bin="${GH_BIN:-gh}"
+readonly runtime_gate_verifier="$(dirname "$0")/verify-runtime-gate.sh"
 
 repo="${1:-$("$gh_bin" repo view --json nameWithOwner --jq '.nameWithOwner')}"
 branch="$(git branch --show-current)"
@@ -25,6 +26,12 @@ head_sha="$(jq -r '.headRefOid' <<<"$pr_json")"
 echo "pull request: $(jq -r '.url' <<<"$pr_json")"
 echo "head: $head_sha"
 echo "state: $(jq -r '.state' <<<"$pr_json")"
+echo "runtime gate:"
+if "$runtime_gate_verifier" "$head_sha" 2>&1; then
+  :
+else
+  echo "runtime gate is not valid for the current head"
+fi
 echo "checks:"
 "$gh_bin" pr checks "$pr_number" --repo "$repo" || true
 

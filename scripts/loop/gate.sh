@@ -3,6 +3,14 @@ set -euo pipefail
 
 readonly review_bot="${KOSH_CODEX_REVIEW_BOT:-chatgpt-codex-connector[bot]}"
 readonly gh_bin="${GH_BIN:-gh}"
+readonly git_bin="${GIT_BIN:-git}"
+readonly runtime_gate_verifier="$(
+  if [[ -n "${KOSH_RUNTIME_GATE_VERIFIER:-}" ]]; then
+    printf '%s' "$KOSH_RUNTIME_GATE_VERIFIER"
+  else
+    printf '%s/verify-runtime-gate.sh' "$(dirname "$0")"
+  fi
+)"
 
 usage() {
   echo "usage: $0 <pull-request-number> [owner/repository]" >&2
@@ -23,7 +31,10 @@ if (($# < 1 || $# > 2)); then
 fi
 
 require_command "$gh_bin"
+require_command "$git_bin"
 require_command jq
+[[ -x "$runtime_gate_verifier" ]] ||
+  fail "runtime gate verifier is unavailable: $runtime_gate_verifier"
 
 pr_number="$1"
 [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || fail "pull request number must be a positive integer"
@@ -51,6 +62,13 @@ pr_url="$(jq -r '.url' <<<"$pr_json")"
 [[ "$is_draft" == "false" ]] || fail "pull request is still a draft"
 [[ "$base_ref" == "main" ]] || fail "pull request targets $base_ref instead of main"
 [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || fail "pull request head SHA is invalid"
+local_head="$("$git_bin" rev-parse HEAD)"
+[[ "$local_head" == "$head_sha" ]] ||
+  fail "local head $local_head does not match pull request head $head_sha"
+[[ -z "$("$git_bin" status --porcelain --untracked-files=normal)" ]] ||
+  fail "local source changes exist after runtime verification"
+"$runtime_gate_verifier" "$head_sha" ||
+  fail "the exact pull request head has no valid progressive runtime receipt"
 [[ "$mergeable" == "MERGEABLE" ]] || fail "GitHub reports mergeable=$mergeable"
 case "$merge_state" in
   CLEAN | HAS_HOOKS | UNSTABLE) ;;
