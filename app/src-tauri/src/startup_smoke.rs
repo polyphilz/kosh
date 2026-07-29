@@ -1,0 +1,296 @@
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use serde::Serialize;
+use tauri::{App, Manager};
+
+use crate::{
+    database::{
+        tidbits::CreateTidbitWrite, CitationState, DatabaseClient, DatabaseDiagnostics,
+        LexicalSearchMode, SearchExecutionMode, SearchPassagesInput, SemanticSearchReadiness,
+        SourceDraft, TidbitDraft,
+    },
+    runtime::RuntimeState,
+};
+
+const RECEIPT_ENV: &str = "KOSH_STARTUP_SMOKE_RECEIPT";
+const HEAD_ENV: &str = "KOSH_STARTUP_SMOKE_HEAD";
+const EXPECT_ENV: &str = "KOSH_STARTUP_SMOKE_EXPECT";
+const CANARY: &str = "koshstartupcanaryv1";
+const CANARY_TITLE: &str = "Kosh progressive startup canary";
+const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum CanaryExpectation {
+    Absent,
+    Present,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanaryEvidence {
+    tidbit_id: String,
+    revision_id: String,
+    passage_id: String,
+    source_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupSmokeReceipt {
+    schema_version: u32,
+    head_sha: String,
+    expectation: CanaryExpectation,
+    data_dir: String,
+    process_id: u32,
+    completed_at_ms: u128,
+    windows: Vec<String>,
+    diagnostics: DatabaseDiagnostics,
+    canary_preexisting: bool,
+    canary_created: bool,
+    canary: CanaryEvidence,
+}
+
+pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bool> {
+    let Some(receipt_path) = std::env::var_os(RECEIPT_ENV).map(PathBuf::from) else {
+        return Ok(false);
+    };
+    if receipt_path.as_os_str().is_empty() {
+        return Err(invalid("the startup smoke receipt path is empty"));
+    }
+
+    let head_sha = required_environment_text(HEAD_ENV)?;
+    if head_sha.len() != 40 || !head_sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid(
+            "the startup smoke head must be a 40-character hexadecimal Git SHA",
+        ));
+    }
+    let expectation = match required_environment_text(EXPECT_ENV)?.as_str() {
+        "absent" => CanaryExpectation::Absent,
+        "present" => CanaryExpectation::Present,
+        _ => {
+            return Err(invalid(
+                "the startup smoke expectation must be absent or present",
+            ));
+        }
+    };
+
+    let client = state.database_client();
+    let existing = find_canary(&client)?;
+    match (expectation, existing.is_some()) {
+        (CanaryExpectation::Absent, true) => {
+            return Err(invalid(
+                "the startup smoke canary unexpectedly existed before the fresh launch",
+            ));
+        }
+        (CanaryExpectation::Present, false) => {
+            return Err(invalid(
+                "the startup smoke canary did not survive the previous launch",
+            ));
+        }
+        _ => {}
+    }
+
+    let created = if expectation == CanaryExpectation::Absent {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| invalid(format!("the system clock is invalid: {error}")))?
+            .as_millis()
+            .try_into()
+            .map_err(|_| invalid("the startup smoke timestamp exceeds SQLite's range"))?;
+        let tidbit = client
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: Some(CANARY_TITLE.into()),
+                    body_markdown: CANARY.into(),
+                    sources: vec![SourceDraft {
+                        label: Some("Kosh startup smoke".into()),
+                        url: Some(CANARY_SOURCE_URL.into()),
+                    }],
+                },
+                now_ms,
+                tidbit_id: uuid::Uuid::now_v7().to_string(),
+                revision_id: uuid::Uuid::now_v7().to_string(),
+                source_ids: vec![uuid::Uuid::now_v7().to_string()],
+            })
+            .map_err(database_error)?;
+        Some((tidbit.id, tidbit.current_revision_id))
+    } else {
+        None
+    };
+
+    let evidence = find_canary(&client)?
+        .ok_or_else(|| invalid("the startup smoke canary was not searchable after setup"))?;
+    if let Some((tidbit_id, revision_id)) = &created {
+        if evidence.tidbit_id != *tidbit_id || evidence.revision_id != *revision_id {
+            return Err(invalid(
+                "the startup smoke citation did not resolve to the created revision",
+            ));
+        }
+    }
+
+    let diagnostics = client.diagnostics().map_err(database_error)?;
+    if !diagnostics.main_foreign_keys
+        || !diagnostics.media_foreign_keys
+        || !diagnostics.main_journal_mode.eq_ignore_ascii_case("wal")
+        || !diagnostics.media_journal_mode.eq_ignore_ascii_case("wal")
+        || diagnostics.migration_heads.main.is_none()
+        || diagnostics.migration_heads.media.is_none()
+    {
+        return Err(invalid(
+            "the startup smoke database diagnostics are not durable and current",
+        ));
+    }
+
+    let mut windows = app.webview_windows().into_keys().collect::<Vec<_>>();
+    windows.sort();
+    if windows != ["main", "quick-add"] {
+        return Err(invalid(format!(
+            "the startup smoke expected main and quick-add windows, found {}",
+            windows.join(", ")
+        )));
+    }
+
+    let data_dir = fs::canonicalize(state.database_paths().root()).map_err(|error| {
+        invalid(format!(
+            "could not resolve the startup smoke data directory: {error}"
+        ))
+    })?;
+    let completed_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| invalid(format!("the system clock is invalid: {error}")))?
+        .as_millis();
+    write_receipt(
+        &receipt_path,
+        &StartupSmokeReceipt {
+            schema_version: 1,
+            head_sha,
+            expectation,
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            process_id: std::process::id(),
+            completed_at_ms,
+            windows,
+            diagnostics,
+            canary_preexisting: existing.is_some(),
+            canary_created: created.is_some(),
+            canary: evidence,
+        },
+    )?;
+    app.handle().exit(0);
+    Ok(true)
+}
+
+fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {
+    let response = client
+        .search_passages_with_semantics(
+            SearchPassagesInput {
+                query: CANARY.into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            },
+            None,
+            SemanticSearchReadiness::NotRequested,
+        )
+        .map_err(database_error)?;
+    if response.execution_mode != SearchExecutionMode::Exact {
+        return Err(invalid(
+            "the startup smoke canary query did not execute in exact lexical mode",
+        ));
+    }
+
+    let matches = response
+        .results
+        .into_iter()
+        .filter(|result| result.citation.excerpt.contains(CANARY))
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(invalid(
+            "the startup smoke canary resolved to more than one passage",
+        ));
+    }
+    let Some(result) = matches.into_iter().next() else {
+        return Ok(None);
+    };
+    if result.citation.state != CitationState::Current {
+        return Err(invalid("the startup smoke canary citation is not current"));
+    }
+    let tidbit = result
+        .citation
+        .tidbit
+        .ok_or_else(|| invalid("the startup smoke citation has no authored tidbit"))?;
+    let source_url = result
+        .citation
+        .sources
+        .iter()
+        .find_map(|source| source.url.as_deref())
+        .filter(|url| *url == CANARY_SOURCE_URL)
+        .ok_or_else(|| invalid("the startup smoke citation lost its source URL"))?;
+    let loaded = client
+        .load_tidbit(tidbit.id.clone())
+        .map_err(database_error)?;
+    if loaded.current_revision_id != tidbit.revision_id
+        || loaded.body_markdown != CANARY
+        || loaded.title.as_deref() != Some(CANARY_TITLE)
+    {
+        return Err(invalid(
+            "the startup smoke citation did not resolve to the stored authored revision",
+        ));
+    }
+
+    Ok(Some(CanaryEvidence {
+        tidbit_id: tidbit.id,
+        revision_id: tidbit.revision_id,
+        passage_id: result.passage_id,
+        source_url: source_url.into(),
+    }))
+}
+
+fn write_receipt(path: &Path, receipt: &StartupSmokeReceipt) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| invalid("the startup smoke receipt must have a parent directory"))?;
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid("the startup smoke receipt filename is invalid"))?;
+    let temporary = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::now_v7()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        serde_json::to_writer_pretty(&mut file, receipt)
+            .map_err(|error| invalid(format!("could not serialize startup receipt: {error}")))?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn required_environment_text(name: &str) -> io::Result<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| invalid(format!("{name} is required for startup smoke mode")))
+}
+
+fn database_error(error: crate::database::DatabaseError) -> io::Error {
+    invalid(format!("startup smoke database operation failed: {error}"))
+}
+
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}

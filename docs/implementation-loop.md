@@ -12,6 +12,7 @@ select
   -> implement
   -> verify
   -> commit
+  -> verify exact-head fresh/restart/preserved launches
   -> push
   -> open PR
   -> wait for Codex
@@ -24,25 +25,58 @@ Only one branch and pull request may be active at a time. Runtime progress and
 feedback dispositions belong under ignored `.kosh-loop/`; they must not create
 commits that invalidate an in-flight review.
 
+## Progressive operability contract
+
+Every committed slice must run as an application, not merely compile as a
+collection of components. `scripts/loop/runtime-gate.sh` launches the real
+debug Tauri binary three times:
+
+1. against a unique empty data root, where it migrates both databases, creates
+   a canary tidbit through the production writer, finds it through exact lexical
+   search, and resolves its source-bearing citation;
+2. against that same root, where the canary must already exist and resolve to
+   the identical tidbit revision and passage; and
+3. against `.kosh-loop/progressive-profile/data`, where the canary and database
+   pair from prior slices must survive all forward migrations.
+
+Each launch also proves that the main and quick-add windows are constructed,
+both database files use WAL and foreign keys, and both embedded migration heads
+are applied. The fresh profile is disposable. The preserved profile is not:
+never delete, replace, or edit it to make a slice pass. On a genuinely new
+workstation, initialize it exactly once with:
+
+```bash
+scripts/loop/runtime-gate.sh --bootstrap-persistent
+```
+
+Normal slice verification uses `scripts/loop/runtime-gate.sh` with no flags.
+The script requires a clean worktree and writes an ignored, exact-commit
+receipt to `.kosh-loop/runtime-gate.json`. A later commit invalidates that
+receipt. CI independently launches and restarts a fresh profile on macOS with
+`scripts/loop/runtime-gate.sh --ci`.
+
 ## Review completion contract
 
 `scripts/loop/gate.sh` is the merge authority. For an open, ready PR targeting
 `main`, it requires:
 
-1. at least one CI check and no failed, pending, or canceled checks;
-2. a user-authored `@codex review` request created after the latest GitHub
+1. a clean local worktree whose `HEAD` is the pull request head and whose
+   progressive runtime receipt validates for that exact commit;
+2. at least one CI check and no failed, pending, or canceled checks;
+3. a user-authored `@codex review` request created after the latest GitHub
    Actions run records a transition to the current head on GitHub;
-3. one later clean-review signal from `chatgpt-codex-connector[bot]`, either:
+4. one later clean-review signal from `chatgpt-codex-connector[bot]`, either:
    - a `+1` reaction on that exact review-request comment; or
    - a clean completion comment naming the exact current head SHA; and
-4. a mergeable GitHub state.
+5. a mergeable GitHub state.
 
 The server-side workflow timestamp prevents author-controlled Git timestamps
 or clean evidence from an older revision from authorizing a newer revision. A
 PR-body reaction is informational only because GitHub does not bind it to a
 request or commit.
 `scripts/loop/merge.sh` runs the gate, binds the merge atomically to that head
-SHA, and uses the repository's squash-only merge policy.
+SHA, rechecks that local source state did not change, and uses the repository's
+squash-only merge policy.
 
 ## Review feedback
 

@@ -23,6 +23,9 @@
 - Keep changes scoped to the active slice and preserve unrelated user work.
 - Run targeted verification and the complete available check suite before
   committing.
+- After committing, run `scripts/loop/runtime-gate.sh` for the exact head before
+  pushing. On a new workstation only, establish the preserved profile with
+  `scripts/loop/runtime-gate.sh --bootstrap-persistent`.
 - Commit messages are one succinct, descriptive line.
 - Never commit `.env`, credentials, tokens, local databases, model weights, or
   `.kosh-loop/` state.
@@ -31,7 +34,8 @@
 - Address valid Codex review findings on the same branch. Record the rationale
   for invalid findings without making a token code change.
 - Never invoke `gh pr merge` directly. Use `scripts/loop/merge.sh`, which
-  requires current-head CI and Codex review evidence before squash-merging.
+  requires an exact-head runtime receipt, current-head CI, and Codex review
+  evidence before squash-merging.
 
 ## Verification
 
@@ -43,6 +47,17 @@ scripts/check-repository.sh
 
 Once `app/package.json` exists, prefer the repository's aggregate `pnpm check`
 command from `app/` plus targeted Rust or UI tests for the active slice.
+Every slice must also leave the real Tauri application progressively operable:
+the exact committed head must launch from a fresh profile, restart against that
+profile without losing a searchable cited canary, and launch against the
+preserved `.kosh-loop/progressive-profile/` created by the preceding slices.
+The runtime gate owns these profiles; never replace or clear them to make a
+migration failure pass.
+
+The comprehensive test architecture and rollout live in the ignored
+`.plans/002-testing.md`. Chunk 26 executes the complete browser, native,
+migration, relevance, durability, security, performance, and release matrix;
+earlier chunks add the targeted layers called out for their changed contract.
 
 ## Code Review Rules
 
