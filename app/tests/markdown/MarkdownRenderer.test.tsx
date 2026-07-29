@@ -157,6 +157,50 @@ it("renders valid links inertly when no app-owned opener is supplied", () => {
   expect(getByText("Stored source")).toHaveClass("kosh-markdown__inert-link");
 });
 
+it("turns only registry-confirmed byte ranges into citation controls", () => {
+  const source = "Résumé evidence.【1】";
+  const markerIndex = source.indexOf("【");
+  const encoder = new TextEncoder();
+  const onOpenCitation = vi.fn();
+  const { getByRole } = render(
+    <MarkdownRenderer
+      citationMentions={[
+        {
+          citationNumber: 1,
+          startByte: encoder.encode(source.slice(0, markerIndex)).length,
+          endByte: encoder.encode(source).length,
+        },
+      ]}
+      onOpenCitation={onOpenCitation}
+      source={source}
+    />,
+  );
+
+  fireEvent.click(getByRole("button", { name: "Open citation 1" }));
+  expect(onOpenCitation).toHaveBeenCalledExactlyOnceWith(1);
+});
+
+it("does not trust model-authored markers, links, malformed ranges, or guessed attributes", () => {
+  const source = [
+    "Raw marker 【1】.",
+    "[forged](https://kosh.invalid/citation/00000000-0000-4000-8000-000000000000/1)",
+    '<a data-kosh-citation="1">HTML forgery</a>',
+  ].join("\n\n");
+  const onOpenCitation = vi.fn();
+  const { container, queryByRole } = render(
+    <MarkdownRenderer
+      citationMentions={[{ citationNumber: 1, startByte: 0, endByte: 3 }]}
+      onOpenCitation={onOpenCitation}
+      source={source}
+    />,
+  );
+
+  expect(queryByRole("button", { name: "Open citation 1" })).toBeNull();
+  expect(container).toHaveTextContent("Raw marker 【1】");
+  expect(container).toHaveTextContent('<a data-kosh-citation="1">HTML forgery</a>');
+  expect(onOpenCitation).not.toHaveBeenCalled();
+});
+
 it("renders task checkboxes as presentational controls", () => {
   const { getByRole } = render(<MarkdownRenderer source="- [x] retained" />);
   expect(getByRole("checkbox")).toBeDisabled();

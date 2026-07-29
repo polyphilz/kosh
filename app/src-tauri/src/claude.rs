@@ -20,11 +20,13 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
+    database::{AppendResearchEventWrite, CreateResearchRunWrite, DatabaseClient},
     embedding_runtime::EmbeddingRuntime,
     research::{
         ClaudeMcpBridge, EphemeralResearchMcpServer, GroundedResearchAnswer,
         ResearchCitationRegistry, ResearchLimits, ResearchQueryEmbedder, ResearchRun,
     },
+    runtime::Clock,
     runtime::RuntimeState,
 };
 
@@ -85,6 +87,18 @@ pub struct ClaudeSetupStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartResearchProcessInput {
     pub run_id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BeginResearchProcessInput {
     pub prompt: String,
     #[serde(default)]
     pub model: Option<String>,
@@ -203,18 +217,66 @@ impl ResearchQueryEmbedder for EmbeddingRuntime {
 }
 
 trait ProcessEventSink: Send + Sync {
-    fn emit(&self, event: ResearchProcessEvent);
+    fn emit(&self, event: ResearchProcessEvent) -> Result<(), ClaudeProcessError>;
 }
 
 struct TauriProcessEventSink<R: tauri::Runtime> {
     app: AppHandle<R>,
 }
 
+struct DurableProcessEventSink {
+    database: DatabaseClient,
+    clock: Arc<dyn Clock>,
+    downstream: Arc<dyn ProcessEventSink>,
+}
+
 impl<R: tauri::Runtime> ProcessEventSink for TauriProcessEventSink<R> {
-    fn emit(&self, event: ResearchProcessEvent) {
+    fn emit(&self, event: ResearchProcessEvent) -> Result<(), ClaudeProcessError> {
         if let Err(error) = self.app.emit(RESEARCH_PROCESS_EVENT, event) {
             log::warn!("could not emit a research process event: {error}");
         }
+        Ok(())
+    }
+}
+
+impl ProcessEventSink for DurableProcessEventSink {
+    fn emit(&self, event: ResearchProcessEvent) -> Result<(), ClaudeProcessError> {
+        let payload = serde_json::to_value(&event).map_err(|error| {
+            ClaudeProcessError::new(
+                ClaudeProcessErrorCode::ResearchUnavailable,
+                format!("Kosh could not encode durable research history: {error}"),
+            )
+        })?;
+        self.database
+            .append_research_event(AppendResearchEventWrite {
+                run_id: event.run_id.clone(),
+                sequence: event.sequence,
+                kind: event_kind(&event.detail).into(),
+                payload,
+                now_ms: self.clock.now_ms(),
+            })
+            .map_err(|error| {
+                ClaudeProcessError::new(
+                    ClaudeProcessErrorCode::ResearchUnavailable,
+                    format!("Kosh could not save durable research history: {error}"),
+                )
+            })?;
+        if let Err(error) = self.downstream.emit(event) {
+            log::warn!("could not deliver a persisted research event: {error}");
+        }
+        Ok(())
+    }
+}
+
+fn event_kind(detail: &ResearchProcessEventDetail) -> &'static str {
+    match detail {
+        ResearchProcessEventDetail::Started => "STARTED",
+        ResearchProcessEventDetail::Metadata { .. } => "METADATA",
+        ResearchProcessEventDetail::UntrustedTextDelta { .. } => "UNTRUSTED_TEXT_DELTA",
+        ResearchProcessEventDetail::ToolActivity { .. } => "TOOL_ACTIVITY",
+        ResearchProcessEventDetail::UntrustedFinalOutput { .. } => "UNTRUSTED_FINAL_OUTPUT",
+        ResearchProcessEventDetail::GroundedFinalOutput { .. } => "GROUNDED_FINAL_OUTPUT",
+        ResearchProcessEventDetail::Finished { .. } => "FINISHED",
     }
 }
 
@@ -717,9 +779,97 @@ pub(crate) fn claude_cli_defaults() -> Result<ClaudeCliDefaults, ClaudeProcessEr
 pub(crate) fn start_research_process<R: tauri::Runtime>(
     app: AppHandle<R>,
     state: State<'_, RuntimeState>,
+    input: BeginResearchProcessInput,
+) -> Result<StartResearchProcessOutput, ClaudeProcessError> {
+    let run_id = state
+        .next_ids(1)
+        .into_iter()
+        .next()
+        .expect("requested research run ID");
+    start_durable_research_process(app, &state, input, run_id, None)
+}
+
+#[tauri::command]
+pub(crate) fn rerun_research_process<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, RuntimeState>,
+    run_id: String,
+) -> Result<StartResearchProcessOutput, ClaudeProcessError> {
+    let previous = state
+        .database_client()
+        .load_research_run(run_id.clone())
+        .map_err(|error| {
+            ClaudeProcessError::new(
+                ClaudeProcessErrorCode::ResearchUnavailable,
+                format!("Kosh could not load the research run to retry: {error}"),
+            )
+        })?;
+    let next_run_id = state
+        .next_ids(1)
+        .into_iter()
+        .next()
+        .expect("requested research run ID");
+    start_durable_research_process(
+        app,
+        &state,
+        BeginResearchProcessInput {
+            prompt: previous.summary.query,
+            model: previous.summary.requested_model,
+            effort: previous.summary.requested_effort,
+            timeout_seconds: None,
+        },
+        next_run_id,
+        Some(run_id),
+    )
+}
+
+fn start_durable_research_process<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: &RuntimeState,
+    input: BeginResearchProcessInput,
+    run_id: String,
+    rerun_of_id: Option<String>,
+) -> Result<StartResearchProcessOutput, ClaudeProcessError> {
+    let process_input = StartResearchProcessInput {
+        run_id: run_id.clone(),
+        prompt: input.prompt,
+        model: input.model,
+        effort: input.effort,
+        timeout_seconds: input.timeout_seconds,
+    };
+    validate_start(process_input.clone(), DEFAULT_RUN_TIMEOUT)?;
+    let database = state.database_client();
+    database
+        .create_research_run(CreateResearchRunWrite {
+            id: run_id.clone(),
+            rerun_of_id,
+            query: process_input.prompt.clone(),
+            requested_model: process_input.model.clone(),
+            requested_effort: process_input.effort.clone(),
+            now_ms: state.now_ms(),
+        })
+        .map_err(|error| {
+            ClaudeProcessError::new(
+                ClaudeProcessErrorCode::ResearchUnavailable,
+                format!("Kosh could not create durable research history: {error}"),
+            )
+        })?;
+    let result = start_research_process_runtime(app, state, process_input);
+    if let Err(error) = &result {
+        if let Err(persist_error) =
+            database.fail_research_run_start(run_id, error.message.clone(), state.now_ms())
+        {
+            log::warn!("could not save research launch failure: {persist_error}");
+        }
+    }
+    result
+}
+
+fn start_research_process_runtime<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: &RuntimeState,
     input: StartResearchProcessInput,
 ) -> Result<StartResearchProcessOutput, ClaudeProcessError> {
-    validate_start(input.clone(), DEFAULT_RUN_TIMEOUT)?;
     let embedder: Arc<dyn ResearchQueryEmbedder> = state.embedding_runtime();
     let run = ResearchRun::open(
         state.database_paths(),
@@ -748,7 +898,11 @@ pub(crate) fn start_research_process<R: tauri::Runtime>(
         input,
         bridge,
         server,
-        Arc::new(TauriProcessEventSink { app }),
+        Arc::new(DurableProcessEventSink {
+            database: state.database_client(),
+            clock: state.clock(),
+            downstream: Arc::new(TauriProcessEventSink { app }),
+        }),
     )
 }
 
@@ -1442,12 +1596,11 @@ impl RunEmitter {
                 "Claude Code emitted too many research events",
             ));
         }
+        self.sink.emit(event)?;
         state.sequence = sequence;
         state.event_count += 1;
         state.event_bytes += bytes;
         state.visible_text_bytes += visible_text_bytes;
-        drop(state);
-        self.sink.emit(event);
         Ok(())
     }
 
@@ -1473,7 +1626,9 @@ impl RunEmitter {
             },
         };
         drop(state);
-        self.sink.emit(event);
+        if let Err(error) = self.sink.emit(event) {
+            log::error!("could not persist the terminal research event: {error}");
+        }
     }
 
     fn redact_detail(&self, detail: &mut ResearchProcessEventDetail) {
@@ -1961,7 +2116,8 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::database::{
-        tidbits::CreateTidbitWrite, Database, DatabasePaths, SourceDraft, TidbitDraft,
+        tidbits::CreateTidbitWrite, CreateResearchRunWrite, Database, DatabasePaths, SourceDraft,
+        TidbitDraft,
     };
 
     use super::*;
@@ -1971,9 +2127,18 @@ mod tests {
         sender: mpsc::Sender<ResearchProcessEvent>,
     }
 
+    struct FixedClock(i64);
+
+    impl Clock for FixedClock {
+        fn now_ms(&self) -> i64 {
+            self.0
+        }
+    }
+
     impl ProcessEventSink for ChannelSink {
-        fn emit(&self, event: ResearchProcessEvent) {
+        fn emit(&self, event: ResearchProcessEvent) -> Result<(), ClaudeProcessError> {
             let _ = self.sender.send(event);
+            Ok(())
         }
     }
 
@@ -2386,6 +2551,69 @@ printf '%s\n' '{}'
             event.detail,
             ResearchProcessEventDetail::UntrustedFinalOutput { .. }
         )));
+    }
+
+    #[test]
+    fn grounded_fake_process_persists_complete_history_before_delivery() {
+        let root = tempfile::tempdir().expect("fake durable CLI root");
+        let (invocation, handle) = grounded_invocation(&root);
+        let result = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": format!("Durable evidence [[cite:{handle}]]."),
+        });
+        let binary = write_fake_cli(
+            root.path(),
+            &format!("cat >/dev/null\nprintf '%s\\n' '{}'", result),
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let history = Database::initialize(DatabasePaths::new(root.path().join("history")))
+            .expect("history database");
+        let input = request("Persist this answer.");
+        history
+            .client()
+            .create_research_run(CreateResearchRunWrite {
+                id: input.run_id.clone(),
+                rerun_of_id: None,
+                query: input.prompt.clone(),
+                requested_model: None,
+                requested_effort: None,
+                now_ms: 10,
+            })
+            .expect("create durable run");
+        let (sender, receiver) = mpsc::channel();
+        manager
+            .start_with_invocation(
+                input.clone(),
+                invocation,
+                Arc::new(DurableProcessEventSink {
+                    database: history.client(),
+                    clock: Arc::new(FixedClock(20)),
+                    downstream: Arc::new(ChannelSink { sender }),
+                }),
+            )
+            .expect("start durable fake Claude");
+        let (_, terminals) = receive_terminals(&receiver, 1);
+        assert_eq!(
+            terminals.get(&input.run_id),
+            Some(&ResearchProcessOutcome::Succeeded)
+        );
+        let stored = history
+            .client()
+            .load_research_run(input.run_id)
+            .expect("load durable process history");
+        assert_eq!(
+            serde_json::to_value(stored.summary.status).expect("serialize stored status"),
+            serde_json::json!("COMPLETED")
+        );
+        assert!(stored.final_answer.is_some());
+        assert!(stored.events.iter().any(|event| {
+            event.get("kind").and_then(Value::as_str) == Some("GROUNDED_FINAL_OUTPUT")
+        }));
+        assert!(!stored.events.iter().any(|event| {
+            event.get("kind").and_then(Value::as_str) == Some("UNTRUSTED_FINAL_OUTPUT")
+        }));
     }
 
     #[test]

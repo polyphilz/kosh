@@ -136,6 +136,13 @@ impl RuntimeState {
         if let Err(error) = state
             .database
             .client()
+            .interrupt_active_research_runs(state.clock.now_ms())
+        {
+            log::warn!("startup research interruption recovery could not complete: {error}");
+        }
+        if let Err(error) = state
+            .database
+            .client()
             .schedule_media_lifecycle_recovery(state.clock.now_ms(), state.media_limits)
         {
             log::warn!("startup media lifecycle recovery could not be scheduled: {error}");
@@ -164,7 +171,7 @@ impl RuntimeState {
     ) -> Self {
         let database =
             Database::initialize(DatabasePaths::new(&data_dir)).expect("temporary Kosh database");
-        Self {
+        let state = Self {
             claude_processes: ClaudeProcessManager::production(&data_dir),
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
@@ -179,7 +186,12 @@ impl RuntimeState {
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
             file_drop_consumers: Mutex::new(HashSet::new()),
-        }
+        };
+        let _ = state
+            .database
+            .client()
+            .interrupt_active_research_runs(state.clock.now_ms());
+        state
     }
 
     pub(crate) fn database_client(&self) -> DatabaseClient {
@@ -210,6 +222,10 @@ impl RuntimeState {
 
     pub(crate) fn now_ms(&self) -> i64 {
         self.clock.now_ms()
+    }
+
+    pub(crate) fn clock(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
     }
 
     pub(crate) fn next_ids(&self, count: usize) -> Vec<String> {

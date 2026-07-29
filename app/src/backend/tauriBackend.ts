@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   Backend,
+  BeginResearchProcessInput,
   CitationResolution,
+  ClaudeCliDefaults,
+  ClaudeSetupStatus,
   ClearDraftInput,
   DeleteTidbitInput,
   DraftRecord,
@@ -12,10 +16,14 @@ import type {
   ImageRecord,
   ImageStatusRecord,
   ListTidbitsInput,
+  ListResearchRunsInput,
   PassageEmbeddingIndexStatus,
   PdfRecord,
   PdfStatusRecord,
   RuntimeProbe,
+  ResearchProcessEvent,
+  ResearchRunPage,
+  ResearchRunRecord,
   SelectedAttachmentRecord,
   SetShortcutSettingsInput,
   RestoreTidbitInput,
@@ -28,6 +36,7 @@ import type {
   TidbitDraft,
   TidbitListPage,
   TidbitRecord,
+  StartResearchProcessOutput,
 } from "./contracts";
 
 export const tauriBackend: Backend = {
@@ -88,4 +97,20 @@ export const tauriBackend: Backend = {
   retryPdfExtraction: (attachmentId: string) =>
     invoke<PdfStatusRecord>("retry_pdf_extraction", { attachmentId }),
   openPdfExternal: (attachmentId: string) => invoke<void>("open_pdf_external", { attachmentId }),
+  claudeSetupStatus: () => invoke<ClaudeSetupStatus>("claude_setup_status"),
+  claudeCliDefaults: () => invoke<ClaudeCliDefaults>("claude_cli_defaults"),
+  startResearchProcess: (input: BeginResearchProcessInput) =>
+    invoke<StartResearchProcessOutput>("start_research_process", { input }),
+  rerunResearchProcess: (runId: string) =>
+    invoke<StartResearchProcessOutput>("rerun_research_process", { runId }),
+  cancelResearchProcess: (runId: string) => invoke<boolean>("cancel_research_process", { runId }),
+  listResearchRuns: (input: ListResearchRunsInput) =>
+    invoke<ResearchRunPage>("list_research_runs", { input }),
+  loadResearchRun: (id: string) => invoke<ResearchRunRecord>("load_research_run", { id }),
+  saveResearchAnswerAsTidbit: (runId: string) =>
+    invoke<TidbitRecord>("save_research_answer_as_tidbit", { runId }),
+  onResearchProcessEvent: async (handler: (event: ResearchProcessEvent) => void) =>
+    listen<ResearchProcessEvent>("kosh://research-process", ({ payload }) => {
+      handler(payload);
+    }),
 };

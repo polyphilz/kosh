@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::database::{CitationLocator, CitationResolution};
 
@@ -17,7 +17,7 @@ const TRUSTED_MARKER_CLOSE: char = '】';
 const UNKNOWN_MARKER: &str = "⟦unverified citation⟧";
 const MALFORMED_MARKER: &str = "⟦malformed citation⟧";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum GroundedEvidenceKind {
     AuthoredTidbit,
@@ -26,7 +26,7 @@ pub enum GroundedEvidenceKind {
     TextLines,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedResearchCitation {
     pub number: u32,
@@ -35,7 +35,7 @@ pub struct GroundedResearchCitation {
     pub evidence: CitationResolution,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedCitationMention {
     pub citation_number: u32,
@@ -43,7 +43,7 @@ pub struct GroundedCitationMention {
     pub end_byte: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum GroundedOutputIssueCode {
     UnknownCitation,
@@ -53,7 +53,7 @@ pub enum GroundedOutputIssueCode {
     CitationLimitExceeded,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedOutputIssue {
     pub code: GroundedOutputIssueCode,
@@ -62,7 +62,7 @@ pub struct GroundedOutputIssue {
     pub message: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedResearchAnswer {
     pub markdown: String,

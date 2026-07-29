@@ -365,6 +365,154 @@ export interface TidbitListPage {
   nextCursor: TidbitListCursor | null;
 }
 
+export type ClaudeSetupPhase = "READY" | "MISSING" | "UNAUTHENTICATED" | "UNAVAILABLE";
+
+export interface ClaudeCliDefaults {
+  model: string | null;
+  effort: string | null;
+}
+
+export interface ClaudeSetupStatus {
+  phase: ClaudeSetupPhase;
+  binaryPath: string | null;
+  version: string | null;
+  defaults: ClaudeCliDefaults;
+  message: string;
+}
+
+export interface BeginResearchProcessInput {
+  prompt: string;
+  model: string | null;
+  effort: string | null;
+  timeoutSeconds: number | null;
+}
+
+export interface StartResearchProcessOutput {
+  runId: string;
+  replacedRunId?: string;
+}
+
+export type ResearchRunStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "COMPLETED"
+  | "CANCELED"
+  | "FAILED"
+  | "INTERRUPTED";
+
+export type ResearchProcessOutcome =
+  | "SUCCEEDED"
+  | "FAILED"
+  | "CANCELED"
+  | "REPLACED"
+  | "TIMED_OUT"
+  | "SHUTDOWN";
+
+export type ResearchProcessEvent =
+  | { runId: string; sequence: number; kind: "STARTED" }
+  | { runId: string; sequence: number; kind: "METADATA"; model?: string }
+  | { runId: string; sequence: number; kind: "UNTRUSTED_TEXT_DELTA"; text: string }
+  | {
+      runId: string;
+      sequence: number;
+      kind: "TOOL_ACTIVITY";
+      tool: string;
+      phase: "STARTED" | "FINISHED";
+    }
+  | {
+      runId: string;
+      sequence: number;
+      kind: "GROUNDED_FINAL_OUTPUT";
+      answer: GroundedResearchAnswer;
+    }
+  | {
+      runId: string;
+      sequence: number;
+      kind: "FINISHED";
+      outcome: ResearchProcessOutcome;
+      error?: string;
+      stderrTruncated: boolean;
+    };
+
+export type GroundedEvidenceKind = "AUTHORED_TIDBIT" | "PDF_PAGE" | "IMAGE_OCR" | "TEXT_LINES";
+
+export interface GroundedResearchCitation {
+  number: number;
+  label: string;
+  evidenceKind: GroundedEvidenceKind;
+  evidence: CitationResolution;
+}
+
+export interface GroundedCitationMention {
+  citationNumber: number;
+  startByte: number;
+  endByte: number;
+}
+
+export interface GroundedOutputIssue {
+  code:
+    | "UNKNOWN_CITATION"
+    | "MALFORMED_CITATION"
+    | "CITATION_IN_CODE"
+    | "UNCITED_PARAGRAPH"
+    | "CITATION_LIMIT_EXCEEDED";
+  startByte: number;
+  endByte: number;
+  message: string;
+}
+
+export interface GroundedResearchAnswer {
+  markdown: string;
+  citations: GroundedResearchCitation[];
+  mentions: GroundedCitationMention[];
+  issues: GroundedOutputIssue[];
+}
+
+export interface ResearchRunCursor {
+  updatedAtMs: number;
+  id: string;
+}
+
+export interface ListResearchRunsInput {
+  limit: number;
+  cursor: ResearchRunCursor | null;
+}
+
+export interface ResearchRunSummary {
+  id: string;
+  rerunOfId: string | null;
+  query: string;
+  status: ResearchRunStatus;
+  requestedModel: string | null;
+  requestedEffort: string | null;
+  actualModel: string | null;
+  createdAtMs: number;
+  startedAtMs: number | null;
+  completedAtMs: number | null;
+  updatedAtMs: number;
+  error: string | null;
+  stderrTruncated: boolean;
+  savedTidbitId: string | null;
+}
+
+export interface ResearchCitationFreshness {
+  citationNumber: number;
+  citedRevisionId: string | null;
+  currentRevisionId: string | null;
+  hasNewerRevision: boolean;
+}
+
+export interface ResearchRunRecord extends ResearchRunSummary {
+  events: ResearchProcessEvent[];
+  finalAnswer: GroundedResearchAnswer | null;
+  citationFreshness: ResearchCitationFreshness[];
+}
+
+export interface ResearchRunPage {
+  items: ResearchRunSummary[];
+  nextCursor: ResearchRunCursor | null;
+}
+
 export interface Backend {
   runtimeProbe(): Promise<RuntimeProbe>;
   semanticRuntimeStatus(): Promise<SemanticRuntimeStatus>;
@@ -406,4 +554,13 @@ export interface Backend {
   pdfStatus(attachmentId: string): Promise<PdfStatusRecord>;
   retryPdfExtraction(attachmentId: string): Promise<PdfStatusRecord>;
   openPdfExternal(attachmentId: string): Promise<void>;
+  claudeSetupStatus(): Promise<ClaudeSetupStatus>;
+  claudeCliDefaults(): Promise<ClaudeCliDefaults>;
+  startResearchProcess(input: BeginResearchProcessInput): Promise<StartResearchProcessOutput>;
+  rerunResearchProcess(runId: string): Promise<StartResearchProcessOutput>;
+  cancelResearchProcess(runId: string): Promise<boolean>;
+  listResearchRuns(input: ListResearchRunsInput): Promise<ResearchRunPage>;
+  loadResearchRun(id: string): Promise<ResearchRunRecord>;
+  saveResearchAnswerAsTidbit(runId: string): Promise<TidbitRecord>;
+  onResearchProcessEvent(handler: (event: ResearchProcessEvent) => void): Promise<() => void>;
 }

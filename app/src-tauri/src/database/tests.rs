@@ -141,6 +141,80 @@ fn pending_migrations_apply_to_an_identified_empty_pair() {
 }
 
 #[test]
+fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_tables() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(11))
+        .run(&mut main)
+        .expect("main schema through shortcut settings");
+    let mut media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
+            .expect("fresh media writer");
+    migrations::run_media(&mut media).expect("media schema");
+    main.execute_batch(
+        "INSERT INTO research_run(
+            id, query, status, created_at, started_at, completed_at, answer_markdown
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000111',
+            'Legacy completed question',
+            'COMPLETED',
+            10,
+            11,
+            12,
+            'A preserved legacy answer.'
+         );
+         INSERT INTO research_run(
+            id, query, status, created_at, started_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000112',
+            'Legacy active question',
+            'RUNNING',
+            20,
+            21
+         );",
+    )
+    .expect("legacy research rows");
+    drop(main);
+    drop(media);
+
+    let database = Database::initialize(pair.paths.clone()).expect("durable research upgrade");
+    let completed = database
+        .client()
+        .load_research_run("019f547b-6200-7000-8000-000000000111".into())
+        .expect("migrated completed run");
+    assert_eq!(
+        completed.summary.status,
+        super::research_runs::ResearchRunStatus::Completed
+    );
+    assert_eq!(
+        completed
+            .final_answer
+            .as_ref()
+            .and_then(|answer| answer.get("markdown"))
+            .and_then(serde_json::Value::as_str),
+        Some("A preserved legacy answer.")
+    );
+    assert_eq!(
+        database
+            .client()
+            .interrupt_active_research_runs(30)
+            .expect("recover migrated active run"),
+        1
+    );
+    assert_eq!(
+        database
+            .client()
+            .load_research_run("019f547b-6200-7000-8000-000000000112".into())
+            .expect("migrated active run")
+            .summary
+            .status,
+        super::research_runs::ResearchRunStatus::Interrupted
+    );
+}
+
+#[test]
 fn lexical_upgrade_defers_backfill_until_post_start_reconciliation() {
     let pair = TestPair::new();
     let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)

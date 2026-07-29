@@ -125,3 +125,15 @@ Repository policy and secret checks run from the repository root:
 ```bash
 scripts/check-repository.sh
 ```
+
+## Local Research
+
+Research runs Claude Code with read-only Kosh tools and no web access. The
+Research route streams only inert preview text and compact tool activity, then
+renders a grounded final answer whose interactive markers are bound to exact
+Kosh citation snapshots. Runs, visible events, outcomes, model metadata, and
+answers survive restart; interrupted runs can be rerun but are never
+resurrected. A completed answer can be saved explicitly as a normal tidbit.
+
+See [docs/research-citations.md](docs/research-citations.md) for the citation
+trust boundary and durable-history contract.

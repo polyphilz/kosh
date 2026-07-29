@@ -1,15 +1,31 @@
-import { Children, Component, useMemo, type ErrorInfo, type ReactNode } from "react";
+import { Children, Component, useMemo, useRef, type ErrorInfo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import type { GroundedCitationMention } from "../backend/contracts";
 import { rehypePlugins, remarkPlugins } from "./rendererConfig";
 import { externalHttpUrl, localMediaAttachmentId, markdownUrlTransform } from "./urlPolicy";
 
 interface MarkdownRendererProps {
+  citationMentions?: GroundedCitationMention[];
+  onOpenCitation?: (citationNumber: number) => void;
   onOpenExternalUrl?: (url: string) => Promise<void> | void;
   source: string;
 }
 
-export function MarkdownRenderer({ onOpenExternalUrl, source }: MarkdownRendererProps) {
-  const components = useMemo(() => rendererComponents(onOpenExternalUrl), [onOpenExternalUrl]);
+export function MarkdownRenderer({
+  citationMentions = [],
+  onOpenCitation,
+  onOpenExternalUrl,
+  source,
+}: MarkdownRendererProps) {
+  const nonce = useRef<string>(globalThis.crypto.randomUUID()).current;
+  const trustedCitations = useMemo(
+    () => injectTrustedCitationLinks(source, citationMentions, nonce),
+    [citationMentions, nonce, source],
+  );
+  const components = useMemo(
+    () => rendererComponents(onOpenExternalUrl, onOpenCitation, trustedCitations.hrefs),
+    [onOpenCitation, onOpenExternalUrl, trustedCitations.hrefs],
+  );
 
   return (
     <MarkdownErrorBoundary key={source} source={source}>
@@ -20,7 +36,7 @@ export function MarkdownRenderer({ onOpenExternalUrl, source }: MarkdownRenderer
           remarkPlugins={remarkPlugins}
           urlTransform={markdownUrlTransform}
         >
-          {source}
+          {trustedCitations.source}
         </ReactMarkdown>
       </div>
     </MarkdownErrorBoundary>
@@ -29,9 +45,24 @@ export function MarkdownRenderer({ onOpenExternalUrl, source }: MarkdownRenderer
 
 function rendererComponents(
   onOpenExternalUrl: ((url: string) => Promise<void> | void) | undefined,
+  onOpenCitation: ((citationNumber: number) => void) | undefined,
+  trustedCitationHrefs: ReadonlyMap<string, number>,
 ): Components {
   return {
     a({ children, href }) {
+      const citationNumber = href ? trustedCitationHrefs.get(href) : undefined;
+      if (citationNumber !== undefined && onOpenCitation) {
+        return (
+          <button
+            aria-label={`Open citation ${citationNumber}`}
+            className="kosh-markdown__citation"
+            onClick={() => onOpenCitation(citationNumber)}
+            type="button"
+          >
+            {children}
+          </button>
+        );
+      }
       const url = externalHttpUrl(href);
       if (!url || !onOpenExternalUrl) {
         return <span className="kosh-markdown__inert-link">{children}</span>;
@@ -99,6 +130,63 @@ function rendererComponents(
       );
     },
   };
+}
+
+function injectTrustedCitationLinks(
+  source: string,
+  mentions: GroundedCitationMention[],
+  nonce: string,
+): { source: string; hrefs: ReadonlyMap<string, number> } {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const bytes = encoder.encode(source);
+  const hrefs = new Map<string, number>();
+  const replacements = mentions
+    .map((mention) => {
+      if (
+        !Number.isSafeInteger(mention.citationNumber) ||
+        mention.citationNumber < 1 ||
+        !Number.isSafeInteger(mention.startByte) ||
+        !Number.isSafeInteger(mention.endByte) ||
+        mention.startByte < 0 ||
+        mention.endByte <= mention.startByte ||
+        mention.endByte > bytes.length
+      ) {
+        return null;
+      }
+      try {
+        const start = decoder.decode(bytes.slice(0, mention.startByte)).length;
+        const end = decoder.decode(bytes.slice(0, mention.endByte)).length;
+        const marker = `【${mention.citationNumber}】`;
+        if (
+          source.slice(start, end) !== marker ||
+          encoder.encode(source.slice(0, start)).length !== mention.startByte ||
+          encoder.encode(source.slice(0, end)).length !== mention.endByte
+        ) {
+          return null;
+        }
+        return { start, end, marker, number: mention.citationNumber };
+      } catch {
+        return null;
+      }
+    })
+    .filter((mention) => mention !== null)
+    .sort((left, right) => right.start - left.start);
+  let transformed = source;
+  let nextStart = source.length;
+  for (const mention of replacements) {
+    if (mention.end > nextStart) {
+      continue;
+    }
+    const href = `https://kosh.invalid/citation/${nonce}/${mention.number}`;
+    transformed =
+      transformed.slice(0, mention.start) +
+      `[${mention.marker}](${href})` +
+      transformed.slice(mention.end);
+    hrefs.set(href, mention.number);
+    nextStart = mention.start;
+  }
+  return { source: transformed, hrefs };
 }
 
 function parseImageTitle(

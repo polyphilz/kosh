@@ -7,6 +7,7 @@ pub(crate) mod media;
 mod migrations;
 pub(crate) mod passages;
 mod paths;
+mod research_runs;
 pub(crate) mod search;
 pub(crate) mod settings;
 pub(crate) mod tidbits;
@@ -19,6 +20,8 @@ mod drafts_tests;
 mod embedding_index_tests;
 #[cfg(test)]
 mod media_tests;
+#[cfg(test)]
+mod research_runs_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]
@@ -50,6 +53,8 @@ pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
 };
 pub use paths::DatabasePaths;
+pub(crate) use research_runs::{AppendResearchEventWrite, CreateResearchRunWrite};
+pub use research_runs::{ListResearchRunsInput, ResearchRunPage, ResearchRunRecord};
 pub use search::{
     LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
     SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
@@ -519,6 +524,32 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(tidbits::restore_tidbit(&mut main, input, now_ms));
+            }
+            WriterMessage::CreateResearchRun { write, reply } => {
+                let _ = reply.send(research_runs::create(&mut main, write));
+            }
+            WriterMessage::AppendResearchEvent { write, reply } => {
+                let _ = reply.send(research_runs::append_event(&mut main, write));
+            }
+            WriterMessage::FailResearchRunStart {
+                run_id,
+                error,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(research_runs::fail_start(&main, &run_id, &error, now_ms));
+            }
+            WriterMessage::InterruptActiveResearchRuns { now_ms, reply } => {
+                let _ = reply.send(research_runs::interrupt_active(&main, now_ms));
+            }
+            WriterMessage::ListResearchRuns { input, reply } => {
+                let _ = reply.send(research_runs::list(&main, input));
+            }
+            WriterMessage::LoadResearchRun { id, reply } => {
+                let _ = reply.send(research_runs::load(&main, &id));
+            }
+            WriterMessage::SaveResearchAnswer { write, reply } => {
+                let _ = reply.send(research_runs::save_answer_as_tidbit(&mut main, write));
             }
             WriterMessage::ResolveCitation { passage_id, reply } => {
                 let _ = reply.send(passages::resolve_citation(&main, &passage_id));
