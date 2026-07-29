@@ -2448,12 +2448,17 @@ mod tests {
         let (url, server) = start_stalled_download_server(Duration::from_millis(250));
         let client = build_http_client(Duration::from_secs(1), Duration::from_millis(50));
         let mut response = client.get(url).send().expect("stalled fixture response");
-        let started = Instant::now();
-        response
+        let error = response
             .read(&mut [0_u8; 1])
             .expect_err("stalled body read must time out");
 
-        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<reqwest::Error>())
+                .is_some_and(reqwest::Error::is_timeout),
+            "stalled body read returned a non-timeout error: {error:?}"
+        );
         server.join().expect("stalled fixture server");
     }
 
