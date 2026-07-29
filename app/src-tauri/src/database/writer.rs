@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "test-support", allow(dead_code))]
+
 use std::sync::mpsc::{self, Sender, SyncSender};
 
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -22,6 +24,7 @@ use super::{
     search::{
         PassageSearchResult, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
     },
+    settings::{SetShortcutSettingsInput, ShortcutSettings},
     tidbits::{
         CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput,
         RestoreTidbitInput, Tidbit, TidbitListPage,
@@ -236,6 +239,13 @@ pub(super) enum WriterMessage {
         input: ClearDraftInput,
         now_ms: i64,
         reply: SyncSender<Result<bool>>,
+    },
+    LoadShortcutSettings {
+        reply: SyncSender<Result<ShortcutSettings>>,
+    },
+    SetShortcutSettings {
+        input: SetShortcutSettingsInput,
+        reply: SyncSender<Result<ShortcutSettings>>,
     },
     Shutdown,
 }
@@ -874,6 +884,29 @@ impl DatabaseClient {
                 now_ms,
                 reply,
             })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_shortcut_settings(&self) -> Result<ShortcutSettings> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadShortcutSettings { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn set_shortcut_settings(
+        &self,
+        input: SetShortcutSettingsInput,
+    ) -> Result<ShortcutSettings> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::SetShortcutSettings { input, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

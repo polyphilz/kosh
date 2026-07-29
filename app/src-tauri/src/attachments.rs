@@ -69,12 +69,13 @@ pub(crate) async fn select_attachment<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub(crate) async fn ingest_selected_attachment(
+pub(crate) async fn ingest_selected_attachment<R: tauri::Runtime>(
+    window: tauri::Window<R>,
     state: State<'_, RuntimeState>,
     draft_id: String,
     selection_id: String,
 ) -> Result<SelectedAttachmentRecord, crate::database::commands::CommandError> {
-    let path = state.take_file_selection(&selection_id)?;
+    let path = state.take_file_selection(window.label(), &selection_id)?;
     let filename = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -134,17 +135,22 @@ pub(crate) async fn reveal_attachment_in_finder<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub(crate) fn set_file_drop_consumer_active(state: State<'_, RuntimeState>, active: bool) {
-    state.set_file_drop_consumer_active(active);
+pub(crate) fn set_file_drop_consumer_active<R: tauri::Runtime>(
+    window: tauri::Window<R>,
+    state: State<'_, RuntimeState>,
+    active: bool,
+) {
+    state.set_file_drop_consumer_active(window.label(), active);
 }
 
 #[tauri::command]
-pub(crate) fn discard_file_drop_selections(
+pub(crate) fn discard_file_drop_selections<R: tauri::Runtime>(
+    window: tauri::Window<R>,
     state: State<'_, RuntimeState>,
     selection_ids: Vec<String>,
 ) -> Result<(), crate::database::commands::CommandError> {
     state
-        .discard_file_drop_selections(&selection_ids)
+        .discard_file_drop_selections(window.label(), &selection_ids)
         .map_err(Into::into)
 }
 
@@ -158,7 +164,7 @@ pub(crate) fn handle_file_drop<R: tauri::Runtime>(
     let Some(state) = window.try_state::<RuntimeState>() else {
         return;
     };
-    if !state.file_drop_consumer_active() {
+    if !state.file_drop_consumer_active(window.label()) {
         return;
     }
     let selections = paths
@@ -166,13 +172,14 @@ pub(crate) fn handle_file_drop<R: tauri::Runtime>(
         .filter(|path| path.is_file())
         .take(MAX_FILES_PER_DROP)
         .filter_map(|path| {
-            let selection_id = match state.register_dropped_file_selection(path.clone()) {
-                Ok(id) => id,
-                Err(error) => {
-                    log::warn!("could not register a dropped file: {error}");
-                    return None;
-                }
-            };
+            let selection_id =
+                match state.register_dropped_file_selection(window.label(), path.clone()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        log::warn!("could not register a dropped file: {error}");
+                        return None;
+                    }
+                };
             Some(FileDropSelection {
                 selection_id,
                 filename: path
@@ -189,12 +196,25 @@ pub(crate) fn handle_file_drop<R: tauri::Runtime>(
         .iter()
         .map(|selection| selection.selection_id.clone())
         .collect::<Vec<_>>();
-    if let Err(error) = window.emit(FILE_DROP_EVENT, FileDropNotice { selections }) {
-        if let Err(discard_error) = state.discard_file_drop_selections(&selection_ids) {
+    if let Err(error) = emit_file_drop_notice(window, FileDropNotice { selections }) {
+        if let Err(discard_error) =
+            state.discard_file_drop_selections(window.label(), &selection_ids)
+        {
             log::warn!("could not revoke an undelivered file drop: {discard_error}");
         }
         log::warn!("could not notify the editor about a native file drop: {error}");
     }
+}
+
+fn emit_file_drop_notice<R: tauri::Runtime>(
+    window: &tauri::Window<R>,
+    notice: FileDropNotice,
+) -> tauri::Result<()> {
+    window.emit_to(
+        tauri::EventTarget::webview_window(window.label()),
+        FILE_DROP_EVENT,
+        notice,
+    )
 }
 
 pub(crate) fn recover_attachment_open_directory(path: &Path) -> Result<usize, DatabaseError> {
@@ -809,12 +829,57 @@ fn run_external_action(_path: PathBuf, _action: ExternalAction) -> Result<(), Da
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        attachment_media_type, decode_text, extract_text, looks_like_pdf,
-        materialize_for_external_use, read_bounded_attachment, recover_attachment_open_directory,
-        safe_attachment_filename, split_text_passages, MAX_OPEN_MATERIALIZATIONS,
-        MAX_TEXT_EXTRACTION_BYTES, MAX_TEXT_FILE_PASSAGES,
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
     };
+
+    use tauri::Listener;
+
+    use super::{
+        attachment_media_type, decode_text, emit_file_drop_notice, extract_text, looks_like_pdf,
+        materialize_for_external_use, read_bounded_attachment, recover_attachment_open_directory,
+        safe_attachment_filename, split_text_passages, FileDropNotice, FileDropSelection,
+        FILE_DROP_EVENT, MAX_OPEN_MATERIALIZATIONS, MAX_TEXT_EXTRACTION_BYTES,
+        MAX_TEXT_FILE_PASSAGES,
+    };
+
+    #[test]
+    fn file_drop_notice_reaches_only_the_originating_webview() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("main webview");
+        let quick_add = tauri::WebviewWindowBuilder::new(&app, "quick-add", Default::default())
+            .build()
+            .expect("quick-add webview");
+        let main_notices = Arc::new(AtomicUsize::new(0));
+        let quick_add_notices = Arc::new(AtomicUsize::new(0));
+        let main_count = Arc::clone(&main_notices);
+        let quick_add_count = Arc::clone(&quick_add_notices);
+        main.listen(FILE_DROP_EVENT, move |_| {
+            main_count.fetch_add(1, Ordering::SeqCst);
+        });
+        quick_add.listen(FILE_DROP_EVENT, move |_| {
+            quick_add_count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        emit_file_drop_notice(
+            &main.as_ref().window(),
+            FileDropNotice {
+                selections: vec![FileDropSelection {
+                    selection_id: "019f547b-6200-7000-8000-000000000996".to_owned(),
+                    filename: "main-only.txt".to_owned(),
+                }],
+            },
+        )
+        .expect("targeted file-drop notice");
+
+        assert_eq!(main_notices.load(Ordering::SeqCst), 1);
+        assert_eq!(quick_add_notices.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn text_decoding_supports_utf8_and_bom_marked_utf16() {

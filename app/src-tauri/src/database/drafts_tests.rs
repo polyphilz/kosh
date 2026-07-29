@@ -140,6 +140,53 @@ fn draft_survives_clean_shutdown_and_reopen() {
 }
 
 #[test]
+fn quick_add_draft_survives_clean_shutdown_and_uses_an_isolated_context() {
+    let library = TestLibrary::new();
+    let quick_add = library.save(
+        SaveDraftInput {
+            context_key: "quick-add".into(),
+            tidbit_id: None,
+            base_revision_id: None,
+            title: Some("Captured globally".into()),
+            body_markdown: "Still here after the quick window hides.".into(),
+            sources: Vec::new(),
+        },
+        21,
+        "019f547b-6200-7000-8000-000000006004",
+    );
+    let capture = library.save(
+        SaveDraftInput {
+            context_key: "capture".into(),
+            tidbit_id: None,
+            base_revision_id: None,
+            title: Some("Main window".into()),
+            body_markdown: "A separate capture draft.".into(),
+            sources: Vec::new(),
+        },
+        22,
+        "019f547b-6200-7000-8000-000000006005",
+    );
+    let paths = DatabasePaths::new(library.root.path());
+    library.database.shutdown().expect("clean shutdown");
+
+    let reopened = Database::initialize(paths).expect("reopen database");
+    assert_eq!(
+        reopened
+            .client()
+            .load_draft("quick-add".into())
+            .expect("load quick-add draft"),
+        Some(quick_add)
+    );
+    assert_eq!(
+        reopened
+            .client()
+            .load_draft("capture".into())
+            .expect("load capture draft"),
+        Some(capture)
+    );
+}
+
+#[test]
 fn edit_draft_requires_the_matching_tidbit_revision() {
     let library = TestLibrary::new();
     let tidbit = library

@@ -21,6 +21,15 @@ Always start the development app through `pnpm tauri dev`. That script sets
 release app-data directory. The Rust backend honors this override only in debug
 builds; release builds always use the platform app-data directory.
 
+## Global capture
+
+Kosh launches as a menu-bar resident macOS app. Use `⌃⌥⌘K` to open the
+persistent Quick Add window from any application and `⌃⌥⌘O` to bring the main
+window forward. Both shortcuts are configurable in Settings. Saving with
+`⌘↵` or explicitly cancelling Quick Add restores the application that was
+active before capture; clicking away hides the window while preserving its
+local draft and attachment leases.
+
 ## Checks
 
 From `app/`, run the complete local suite:

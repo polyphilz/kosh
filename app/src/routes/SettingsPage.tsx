@@ -1,8 +1,18 @@
 import { useState } from "react";
+import {
+  DEFAULT_KEYBOARD_BINDINGS,
+  DEFAULT_MAIN_WINDOW_ACCELERATOR,
+  DEFAULT_QUICK_ADD_ACCELERATOR,
+  KoshCommand,
+  type KeyboardBinding,
+} from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
+import { Button } from "../components/Button";
 import { Select } from "../components/Select";
+import { ShortcutRecorder } from "../components/ShortcutRecorder";
 import { Status } from "../components/Status";
 import { Toggle } from "../components/Toggle";
+import { bindingFor, useShortcutSettings } from "../shortcuts/context";
 
 const appearanceOptions = [
   { label: "System", value: "SYSTEM" },
@@ -13,6 +23,29 @@ const appearanceOptions = [
 export function SettingsPage() {
   const { appearance, setAppearance } = useAppearance();
   const [citationPreview, setCitationPreview] = useState(true);
+  const [shortcutResetToken, setShortcutResetToken] = useState(0);
+  const { error, loading, settings, update } = useShortcutSettings();
+  const bindings = settings?.keyboardBindings ?? DEFAULT_KEYBOARD_BINDINGS;
+
+  const setBinding = (command: KeyboardBinding["command"], accelerator: string) => {
+    if (!settings) return;
+    const keyboardBindings = settings.keyboardBindings.map((binding) =>
+      binding.command === command ? { ...binding, accelerator } : binding,
+    );
+    void update({
+      expectedRevision: settings.revision,
+      keyboardBindings,
+    }).catch(() => undefined);
+  };
+
+  const resetBindings = () => {
+    if (!settings) return;
+    setShortcutResetToken((value) => value + 1);
+    void update({
+      expectedRevision: settings.revision,
+      keyboardBindings: DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
+    }).catch(() => undefined);
+  };
 
   return (
     <main className="page page--narrow">
@@ -22,7 +55,9 @@ export function SettingsPage() {
           <h1>Settings</h1>
           <p>Keep the interface quiet and the evidence visible.</p>
         </div>
-        <Status tone="success">Saved locally</Status>
+        <Status tone={error ? "danger" : "success"}>
+          {error ? "Shortcut needs attention" : loading ? "Loading…" : "Saved locally"}
+        </Status>
       </header>
       <section className="settings-list">
         <label>
@@ -48,6 +83,52 @@ export function SettingsPage() {
             onChange={setCitationPreview}
           />
         </label>
+        <label>
+          <span>
+            <strong>Quick Add shortcut</strong>
+            <small>Open the compact capture window from any application.</small>
+          </span>
+          <ShortcutRecorder
+            accelerator={
+              bindingFor(bindings, KoshCommand.QuickAdd)?.accelerator ??
+              DEFAULT_QUICK_ADD_ACCELERATOR
+            }
+            disabled={loading || !settings}
+            label="Quick Add shortcut"
+            onCapture={(accelerator) => setBinding(KoshCommand.QuickAdd, accelerator)}
+            resetToken={shortcutResetToken}
+          />
+        </label>
+        <label>
+          <span>
+            <strong>Main window shortcut</strong>
+            <small>Bring Kosh forward without opening another window.</small>
+          </span>
+          <ShortcutRecorder
+            accelerator={
+              bindingFor(bindings, KoshCommand.MainWindow)?.accelerator ??
+              DEFAULT_MAIN_WINDOW_ACCELERATOR
+            }
+            disabled={loading || !settings}
+            label="Main window shortcut"
+            onCapture={(accelerator) => setBinding(KoshCommand.MainWindow, accelerator)}
+            resetToken={shortcutResetToken}
+          />
+        </label>
+        {(error || settings?.shortcutErrors.length) && (
+          <div className="settings-list__error" role="alert">
+            {error ?? settings?.shortcutErrors.join(" ")}
+          </div>
+        )}
+        <Button
+          className="settings-list__reset"
+          disabled={loading || !settings}
+          onClick={resetBindings}
+          size="compact"
+          variant="ghost"
+        >
+          Reset shortcuts
+        </Button>
       </section>
     </main>
   );

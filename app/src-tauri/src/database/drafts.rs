@@ -5,6 +5,7 @@ use uuid::Uuid;
 use super::{media, DatabaseError, Result, SourceDraft};
 
 const CAPTURE_CONTEXT: &str = "capture";
+const QUICK_ADD_CONTEXT: &str = "quick-add";
 const EDIT_CONTEXT_PREFIX: &str = "edit:";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -241,7 +242,7 @@ fn validate_context(input: &SaveDraftInput) -> Result<()> {
         input.tidbit_id.as_deref(),
         input.base_revision_id.as_deref(),
     ) {
-        (CAPTURE_CONTEXT, None, None) => Ok(()),
+        (CAPTURE_CONTEXT | QUICK_ADD_CONTEXT, None, None) => Ok(()),
         (context, Some(tidbit_id), Some(base_revision_id))
             if context == format!("{EDIT_CONTEXT_PREFIX}{tidbit_id}") =>
         {
@@ -249,13 +250,14 @@ fn validate_context(input: &SaveDraftInput) -> Result<()> {
             validate_uuid_v7(base_revision_id, "baseRevisionId")
         }
         _ => Err(DatabaseError::InvalidInput(
-            "draft context must be capture or edit:<tidbitId> with matching edit metadata".into(),
+            "draft context must be capture, quick-add, or edit:<tidbitId> with matching edit metadata"
+                .into(),
         )),
     }
 }
 
 fn validate_context_key(context_key: &str) -> Result<()> {
-    if context_key == CAPTURE_CONTEXT {
+    if matches!(context_key, CAPTURE_CONTEXT | QUICK_ADD_CONTEXT) {
         return Ok(());
     }
     let Some(tidbit_id) = context_key.strip_prefix(EDIT_CONTEXT_PREFIX) else {

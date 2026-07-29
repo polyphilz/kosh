@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quick-add",
+  "description": "Capability for the persistent Kosh quick-add window",
+  "windows": ["quick-add"],
+  "permissions": ["core:default"]
+}
