@@ -3,6 +3,7 @@ pub(crate) mod connection;
 pub(crate) mod drafts;
 pub(crate) mod embedding_index;
 mod error;
+mod maintenance;
 pub(crate) mod media;
 mod migrations;
 pub(crate) mod passages;
@@ -18,6 +19,8 @@ mod writer;
 mod drafts_tests;
 #[cfg(test)]
 mod embedding_index_tests;
+#[cfg(test)]
+mod maintenance_tests;
 #[cfg(test)]
 mod media_tests;
 #[cfg(test)]
@@ -43,6 +46,7 @@ use rusqlite::Connection;
 
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
+pub use maintenance::MaintenanceDatabaseSnapshot;
 pub use media::{
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, AttachmentRecord,
     GenericAttachmentRecord, GenericAttachmentStatusRecord, ImageOcrDiagnostics, ImageOcrRecovery,
@@ -265,6 +269,18 @@ fn writer_loop(
             WriterMessage::ReconcileAuthorPassages { reply } => {
                 let result = passages::reconcile_author_passages(&mut main);
                 let _ = reply.send(result);
+            }
+            WriterMessage::MaintenanceSnapshot { reply } => {
+                let _ = reply.send(maintenance::snapshot(&main));
+            }
+            WriterMessage::RebuildSearch { reply } => {
+                let _ = reply.send(maintenance::rebuild_search(&mut main));
+            }
+            WriterMessage::RebuildEmbeddings { now_ms, reply } => {
+                let _ = reply.send(maintenance::rebuild_embeddings(&mut main, now_ms));
+            }
+            WriterMessage::RetryFailedExtractions { now_ms, reply } => {
+                let _ = reply.send(maintenance::retry_failed_extractions(&mut main, now_ms));
             }
             WriterMessage::ReconcileAuthorPassageBatch => {
                 if passages::reconcile_author_passage_batch(

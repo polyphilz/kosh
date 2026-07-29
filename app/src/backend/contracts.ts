@@ -41,6 +41,114 @@ export interface PassageEmbeddingIndexStatus {
   message: string | null;
 }
 
+export interface MaintenanceQueueCounts {
+  pending: number;
+  running: number;
+  retryWait: number;
+  ready: number;
+  failed: number;
+}
+
+export interface MaintenanceResearchCounts {
+  queued: number;
+  running: number;
+  completed: number;
+  canceled: number;
+  failed: number;
+  interrupted: number;
+}
+
+export interface MaintenanceIndexDiagnostic {
+  name: string;
+  version: string;
+  status: string;
+  error: string | null;
+}
+
+export interface MaintenanceDiagnostics {
+  applicationVersion: string;
+  database: {
+    migrationHeads: {
+      main: number | null;
+      media: number | null;
+    };
+    mainJournalMode: string;
+    mediaJournalMode: string;
+    mainForeignKeys: boolean;
+    mediaForeignKeys: boolean;
+  };
+  library: {
+    activeTidbits: number;
+    trashedTidbits: number;
+    revisions: number;
+    authoredPassages: number;
+    attachmentPassages: number;
+    searchDocuments: number;
+    attachments: number;
+    attachmentBytes: number;
+    imageOcr: MaintenanceQueueCounts;
+    pdfExtraction: MaintenanceQueueCounts;
+    research: MaintenanceResearchCounts;
+    indexes: MaintenanceIndexDiagnostic[];
+  };
+  storage: {
+    dataRoot: string;
+    mainDatabasePath: string;
+    mediaDatabasePath: string;
+    mainDatabaseBytes: number;
+    mediaDatabaseBytes: number;
+    modelBytes: number;
+    logsBytes: number;
+    temporaryBytes: number;
+    totalBytes: number;
+  };
+  mediaLimits: {
+    maxAttachmentBytes: number;
+    maxAttachmentsPerDraft: number;
+    maxProtocolResponseBytes: number;
+    draftLeaseDurationMs: number;
+    orphanGracePeriodMs: number;
+    maxReapsPerMaintenance: number;
+  };
+  nativeLogs: {
+    paths: string[];
+    maxFileBytes: number;
+    maxFiles: number;
+    diskUsageBytes: number;
+  };
+  semanticLogPaths: string[];
+  backupPhase: "COMING_LATER";
+}
+
+export interface MediaIntegrityReport {
+  missingBlobAttachmentIds: string[];
+  corruptBlobSha256: string[];
+  extraBlobSha256: string[];
+  orphanedAttachmentIds: string[];
+  diagnosticsTruncated: boolean;
+}
+
+export interface IntegrityCheckOutcome {
+  databaseOk: boolean;
+  media: MediaIntegrityReport;
+  message: string;
+  completedAtMs: number;
+}
+
+export type MaintenanceOperation =
+  | "REBUILD_SEARCH"
+  | "REBUILD_EMBEDDINGS"
+  | "RETRY_EXTRACTIONS"
+  | "RECLAIM_MEDIA";
+
+export interface MaintenanceOutcome {
+  operation: MaintenanceOperation;
+  changedItems: number;
+  reclaimedBytes: number;
+  message: string;
+  completedAtMs: number;
+}
+
 export interface SourceDraft {
   label: string | null;
   url: string | null;
@@ -582,6 +690,12 @@ export interface Backend {
   repairSemanticRuntime(): Promise<SemanticRuntimeStatus>;
   semanticRuntimeLogs(): Promise<SemanticRuntimeLogs>;
   passageEmbeddingIndexStatus(): Promise<PassageEmbeddingIndexStatus>;
+  loadMaintenanceDiagnostics(): Promise<MaintenanceDiagnostics>;
+  runIntegrityCheck(): Promise<IntegrityCheckOutcome>;
+  rebuildSearchIndexes(): Promise<MaintenanceOutcome>;
+  rebuildEmbeddingIndex(): Promise<MaintenanceOutcome>;
+  retryFailedExtractions(): Promise<MaintenanceOutcome>;
+  reclaimEligibleMedia(): Promise<MaintenanceOutcome>;
   createTidbit(input: TidbitDraft): Promise<TidbitRecord>;
   loadTidbit(id: string): Promise<TidbitRecord>;
   listTidbits(input: ListTidbitsInput): Promise<TidbitListPage>;
