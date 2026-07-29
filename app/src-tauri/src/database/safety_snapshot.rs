@@ -215,33 +215,83 @@ fn validate_attachment_blob_relationship(main: &Connection, media: &Connection) 
     let mut verified_digests = std::collections::HashSet::new();
     for row in rows {
         let (attachment_id, sha256, expected_bytes) = row?;
-        let (rowid, actual_bytes) = blob
-            .query_row(params![&sha256], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })
-            .optional()?
-            .ok_or_else(|| DatabaseError::Validation {
-                kind: "safety snapshot",
-                reason: format!("attachment {attachment_id} has no retained media blob"),
-            })?;
-        if actual_bytes != expected_bytes {
+        validate_media_blob_reference(
+            media,
+            &mut blob,
+            &mut verified_digests,
+            &attachment_id,
+            "original",
+            sha256,
+            expected_bytes,
+        )?;
+    }
+    if table_exists(main, "attachment_image")? {
+        let sql = format!(
+            "SELECT attachment.id, image.preview_sha256, image.preview_byte_length
+             FROM attachment_image AS image
+             JOIN attachment ON attachment.id = image.attachment_id
+             WHERE {}",
+            retained.join(" OR ")
+        );
+        let mut previews = main.prepare(&sql)?;
+        let rows = previews.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (attachment_id, sha256, expected_bytes) = row?;
+            validate_media_blob_reference(
+                media,
+                &mut blob,
+                &mut verified_digests,
+                &attachment_id,
+                "preview",
+                sha256,
+                expected_bytes,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_media_blob_reference(
+    media: &Connection,
+    blob: &mut rusqlite::Statement<'_>,
+    verified_digests: &mut std::collections::HashSet<Vec<u8>>,
+    attachment_id: &str,
+    role: &str,
+    sha256: Vec<u8>,
+    expected_bytes: i64,
+) -> Result<()> {
+    let (rowid, actual_bytes) = blob
+        .query_row(params![&sha256], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .optional()?
+        .ok_or_else(|| DatabaseError::Validation {
+            kind: "safety snapshot",
+            reason: format!("attachment {attachment_id} has no retained {role} media blob"),
+        })?;
+    if actual_bytes != expected_bytes {
+        return Err(DatabaseError::Validation {
+            kind: "safety snapshot",
+            reason: format!(
+                "attachment {attachment_id} {role} expects {expected_bytes} bytes, media has {actual_bytes}"
+            ),
+        });
+    }
+    if verified_digests.insert(sha256.clone()) {
+        let actual_sha256 = hash_media_blob(media, rowid)?;
+        if actual_sha256.as_slice() != sha256.as_slice() {
             return Err(DatabaseError::Validation {
                 kind: "safety snapshot",
                 reason: format!(
-                    "attachment {attachment_id} expects {expected_bytes} bytes, media has {actual_bytes}"
+                    "attachment {attachment_id} references a {role} media blob whose SHA-256 is corrupt"
                 ),
             });
-        }
-        if verified_digests.insert(sha256.clone()) {
-            let actual_sha256 = hash_media_blob(media, rowid)?;
-            if actual_sha256.as_slice() != sha256.as_slice() {
-                return Err(DatabaseError::Validation {
-                    kind: "safety snapshot",
-                    reason: format!(
-                        "attachment {attachment_id} references a media blob whose SHA-256 is corrupt"
-                    ),
-                });
-            }
         }
     }
     Ok(())
@@ -458,6 +508,7 @@ mod tests {
     use crate::database::{
         connection::FileState,
         drafts::{SaveDraftInput, SaveDraftWrite},
+        media::{CanonicalImage, IngestAttachmentMetadata, IngestImageWrite, StagedAttachment},
         migrations,
         tidbits::{self, CreateTidbitWrite},
         AttachmentIngestInput, LexicalSearchMode, MediaLimits, SearchPassagesInput, SourceDraft,
@@ -683,6 +734,82 @@ mod tests {
                 .filter_map(|entry| entry.ok())
                 .any(|entry| entry.path().join("manifest.json").is_file());
         assert!(!published);
+    }
+
+    #[test]
+    fn snapshot_creation_rejects_a_retained_image_with_a_corrupt_preview() {
+        let root = tempfile::tempdir().expect("corrupt image snapshot pair");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        let draft_id = Uuid::now_v7().to_string();
+        database
+            .client()
+            .save_draft(SaveDraftWrite {
+                input: SaveDraftInput {
+                    context_key: "capture".into(),
+                    tidbit_id: None,
+                    base_revision_id: None,
+                    title: None,
+                    body_markdown: String::new(),
+                    sources: Vec::new(),
+                },
+                now_ms: 1,
+                draft_id: draft_id.clone(),
+                media_limits: MediaLimits::default(),
+            })
+            .expect("image draft");
+        let limits = MediaLimits::default();
+        let staged = StagedAttachment::from_reader(
+            Cursor::new(b"original image"),
+            &paths.root.join("staging"),
+            &Uuid::now_v7().to_string(),
+            limits.max_attachment_bytes,
+        )
+        .expect("staged image");
+        let preview = b"canonical preview".to_vec();
+        database
+            .client()
+            .ingest_image(IngestImageWrite {
+                attachment: staged.write(IngestAttachmentMetadata {
+                    attachment_id: Uuid::now_v7().to_string(),
+                    ingest_lease_id: Uuid::now_v7().to_string(),
+                    draft_id,
+                    display_filename: "evidence.png".into(),
+                    media_type: "image/png".into(),
+                    now_ms: 2,
+                    limits,
+                }),
+                extraction_id: Uuid::now_v7().to_string(),
+                preview: CanonicalImage {
+                    bytes: preview.clone(),
+                    natural_width: 1,
+                    natural_height: 1,
+                },
+            })
+            .expect("retained image");
+        let preview_sha256 = Sha256::digest(&preview).to_vec();
+        let media = Connection::open(&paths.media).expect("media writer");
+        let rowid = media
+            .query_row(
+                "SELECT rowid FROM media_blob WHERE sha256 = ?1",
+                params![preview_sha256],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("preview rowid");
+        let mut blob = media
+            .blob_open(MAIN_DB, "media_blob", "bytes", rowid, false)
+            .expect("writable preview");
+        blob.seek(SeekFrom::Start(0)).expect("seek preview");
+        blob.write_all(b"X").expect("corrupt preview");
+        drop(blob);
+        drop(media);
+
+        let error = database
+            .client()
+            .maintain_media_with_safety_snapshot(10, limits)
+            .expect_err("corrupt preview must fail snapshot verification");
+
+        assert!(matches!(error, DatabaseError::Validation { .. }));
     }
 
     #[test]
