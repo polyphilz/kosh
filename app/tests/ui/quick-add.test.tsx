@@ -10,6 +10,12 @@ import { describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
 import type { ImageRecord, SelectedAttachmentRecord } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
+import {
+  QuitCoordinator,
+  type PrepareQuitNotice,
+  type QuitCanceledNotice,
+  type QuitNative,
+} from "../../src/lifecycle/quit";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { QuickAddWindow } from "../../src/quickAdd/QuickAddWindow";
 import type { QuickAddNative } from "../../src/quickAdd/native";
@@ -96,9 +102,9 @@ describe("global quick add", () => {
         mediaType: "text/plain",
       },
     };
-    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
-      "01980c8e-6c00-7000-8000-000000000284",
-    );
+    const captureClipboardImage = vi
+      .spyOn(backend, "captureClipboardImage")
+      .mockResolvedValue("01980c8e-6c00-7000-8000-000000000284");
     vi.spyOn(backend, "ingestClipboardImage").mockResolvedValue(image);
     vi.spyOn(backend, "selectAttachment").mockResolvedValue("01980c8e-6c00-7000-8000-000000000285");
     const ingestAttachment = vi
@@ -111,7 +117,8 @@ describe("global quick add", () => {
     fireEvent.paste(editor, {
       clipboardData: { items: [{ type: "image/png" }] },
     });
-    expect(await screen.findByLabelText("Alt text")).toBeInTheDocument();
+    await waitFor(() => expect(captureClipboardImage).toHaveBeenCalledOnce(), { timeout: 3_000 });
+    expect(await screen.findByLabelText("Alt text", {}, { timeout: 3_000 })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Add attachment" }));
 
     await waitFor(() => expect(ingestAttachment).toHaveBeenCalledOnce());
@@ -138,11 +145,85 @@ describe("global quick add", () => {
     await waitFor(() => expect(focus).toHaveBeenCalledTimes(initialFocusCalls + 2));
     expect(screen.getAllByRole("main", { name: "Quick add" })).toHaveLength(1);
   });
+
+  it("flushes the latest quick draft before acknowledging quit", async () => {
+    const backend = new FakeBackend();
+    const native = createNative();
+    const quit = createQuitNative();
+    renderQuickAdd(backend, native.controller, quit.controller);
+    await screen.findByRole("textbox", { name: "Tidbit" });
+    setEditorText("The keystroke immediately before Quit must survive.");
+
+    act(() => quit.prepare(41));
+
+    await waitFor(() => expect(quit.acknowledge).toHaveBeenCalledWith(41, null));
+    await expect(backend.loadDraft("quick-add")).resolves.toMatchObject({
+      bodyMarkdown: "The keystroke immediately before Quit must survive.",
+    });
+    expect(screen.getByRole("textbox", { name: /^Title/u })).toBeDisabled();
+
+    act(() => quit.cancel(41));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: /^Title/u })).not.toBeDisabled(),
+    );
+  });
+
+  it("cancels quit instead of interrupting pending media ingestion", async () => {
+    const backend = new FakeBackend();
+    const native = createNative();
+    const quit = createQuitNative();
+    let finishIngestion: ((image: ImageRecord) => void) | undefined;
+    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
+      "01980c8e-6c00-7000-8000-000000000286",
+    );
+    vi.spyOn(backend, "ingestClipboardImage").mockImplementation(
+      () =>
+        new Promise<ImageRecord>((resolve) => {
+          finishIngestion = resolve;
+        }),
+    );
+    renderQuickAdd(backend, native.controller, quit.controller);
+    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+
+    fireEvent.paste(editor, {
+      clipboardData: { items: [{ type: "image/png" }] },
+    });
+    await screen.findByRole("button", { name: "Adding attachment…" });
+    act(() => quit.prepare(42));
+
+    await waitFor(() =>
+      expect(quit.acknowledge).toHaveBeenCalledWith(
+        42,
+        "Wait for pending attachments before quitting",
+      ),
+    );
+
+    act(() =>
+      finishIngestion?.({
+        byteLength: 1_024,
+        displayFilename: "pending.png",
+        id: "01980c8e-6c00-7000-8000-000000000287",
+        ingestLeaseId: "01980c8e-6c00-7000-8000-000000000288",
+        kind: "IMAGE",
+        mediaType: "image/png",
+        naturalHeight: 100,
+        naturalWidth: 100,
+        ocrError: null,
+        ocrStatus: "PENDING",
+      }),
+    );
+    expect(await screen.findByLabelText("Alt text")).toBeInTheDocument();
+  });
 });
 
-function renderQuickAdd(backend: FakeBackend, native: QuickAddNative) {
+function renderQuickAdd(backend: FakeBackend, native: QuickAddNative, quitNative?: QuitNative) {
   const rootRoute = createRootRoute({
-    component: () => <QuickAddWindow native={native} />,
+    component: () => (
+      <>
+        {quitNative && <QuitCoordinator native={quitNative} />}
+        <QuickAddWindow native={native} />
+      </>
+    ),
   });
   const router = createRouter({
     history: createMemoryHistory(),
@@ -173,6 +254,32 @@ function createNative() {
     dismiss,
     setFileDialogOpen,
     show: () => shown?.(),
+  };
+}
+
+function createQuitNative() {
+  let prepare: ((notice: PrepareQuitNotice) => void) | undefined;
+  let cancel: ((notice: QuitCanceledNotice) => void) | undefined;
+  const acknowledge = vi.fn(async (_requestId: number, _error: string | null) => undefined);
+  return {
+    acknowledge,
+    cancel: (requestId: number) => cancel?.({ requestId }),
+    controller: {
+      acknowledge,
+      onCanceled: vi.fn(async (listener: (notice: QuitCanceledNotice) => void) => {
+        cancel = listener;
+        return () => {
+          cancel = undefined;
+        };
+      }),
+      onPrepare: vi.fn(async (listener: (notice: PrepareQuitNotice) => void) => {
+        prepare = listener;
+        return () => {
+          prepare = undefined;
+        };
+      }),
+    } satisfies QuitNative,
+    prepare: (requestId: number) => prepare?.({ requestId }),
   };
 }
 

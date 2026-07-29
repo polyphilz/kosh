@@ -24,6 +24,7 @@ import { Dialog } from "../components/Dialog";
 import { Input } from "../components/Input";
 import { RichTextEditor, type RichTextEditorHandle } from "../markdown/RichTextEditor";
 import { classNames } from "../lib/classNames";
+import { registerQuitParticipant } from "../lifecycle/quit";
 
 const AUTOSAVE_DELAY_MS = 350;
 const FILE_DROP_EVENT = "kosh://file-drop";
@@ -100,6 +101,7 @@ export const TidbitComposer = forwardRef<TidbitComposerHandle, TidbitComposerPro
     const editorMediaPendingRef = useRef(false);
     const mountedRef = useRef(true);
     const pendingDropCountRef = useRef(0);
+    const quitPreparingRef = useRef(false);
     const queueRef = useRef<Promise<void>>(Promise.resolve());
     const editorRef = useRef<RichTextEditorHandle>(null);
     const stateRef = useRef(state);
@@ -173,6 +175,56 @@ export const TidbitComposer = forwardRef<TidbitComposerHandle, TidbitComposerPro
         return operation;
       },
       [backend, draftInput],
+    );
+
+    const cancelQuitPreparation = useCallback(() => {
+      if (!quitPreparingRef.current) return;
+      quitPreparingRef.current = false;
+      busyRef.current = false;
+      if (mountedRef.current) setBusy(false);
+    }, []);
+
+    const prepareForQuit = useCallback(async () => {
+      if (!readyRef.current) {
+        throw new Error("Draft recovery is still starting");
+      }
+      if (busyRef.current) {
+        throw new Error("A capture action is still finishing");
+      }
+      if (editorMediaPendingRef.current || pendingDropCountRef.current > 0) {
+        throw new Error("Wait for pending attachments before quitting");
+      }
+
+      quitPreparingRef.current = true;
+      busyRef.current = true;
+      if (mountedRef.current) {
+        setBusy(true);
+        if (dirtyRef.current) setDraftStatus("saving");
+      }
+      try {
+        if (dirtyRef.current) {
+          await enqueueDraftSave(stateRef.current);
+        } else {
+          await queueRef.current;
+        }
+        if (mountedRef.current && dirtyRef.current) setDraftStatus("saved");
+      } catch (reason: unknown) {
+        cancelQuitPreparation();
+        if (mountedRef.current) {
+          setDraftStatus("failed");
+          setError(`Could not preserve the draft before quitting: ${errorMessage(reason)}`);
+        }
+        throw reason;
+      }
+    }, [cancelQuitPreparation, enqueueDraftSave]);
+
+    useEffect(
+      () =>
+        registerQuitParticipant({
+          cancel: cancelQuitPreparation,
+          prepare: prepareForQuit,
+        }),
+      [cancelQuitPreparation, prepareForQuit],
     );
 
     useEffect(() => {

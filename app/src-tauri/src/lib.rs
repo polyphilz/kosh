@@ -77,6 +77,7 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         database::commands::save_draft,
         database::commands::load_draft,
         database::commands::clear_draft,
+        windows::acknowledge_quit,
         windows::dismiss_quick_add,
         windows::load_shortcut_settings,
         windows::set_quick_add_file_dialog_open,

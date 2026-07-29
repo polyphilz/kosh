@@ -1,6 +1,6 @@
 #![cfg_attr(feature = "test-support", allow(dead_code))]
 
-use std::sync::Mutex;
+use std::{collections::BTreeSet, sync::Mutex, time::Duration};
 
 use objc2::MainThreadMarker as ObjcMainThreadMarker;
 use objc2_app_kit::{
@@ -31,6 +31,9 @@ const TRAY_ID: &str = "kosh-tray";
 const QUICK_ADD_SHOWN_EVENT: &str = "kosh://quick-add-shown";
 const OPEN_SETTINGS_EVENT: &str = "kosh://open-settings";
 const SHORTCUT_SETTINGS_CHANGED_EVENT: &str = "kosh://shortcut-settings-changed";
+const PREPARE_QUIT_EVENT: &str = "kosh://prepare-quit";
+const QUIT_CANCELED_EVENT: &str = "kosh://quit-canceled";
+const QUIT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 enum TrayAction {
@@ -118,7 +121,97 @@ enum DismissFocus {
 #[derive(Default)]
 pub(crate) struct WindowState {
     focus: Mutex<FocusContext>,
+    quit: Mutex<QuitContext>,
     shortcut_errors: Mutex<Vec<String>>,
+}
+
+#[derive(Default)]
+struct QuitContext {
+    next_request_id: u64,
+    pending: Option<QuitAttempt>,
+}
+
+struct QuitAttempt {
+    awaiting: BTreeSet<String>,
+    request_id: u64,
+}
+
+#[derive(Debug, PartialEq)]
+enum QuitAcknowledgement {
+    Canceled { error: String, window_label: String },
+    Exit,
+    Ignored,
+    Waiting,
+}
+
+impl QuitContext {
+    fn begin(
+        &mut self,
+        window_labels: impl IntoIterator<Item = String>,
+    ) -> Option<(u64, Vec<String>)> {
+        if self.pending.is_some() {
+            return None;
+        }
+        let awaiting = window_labels.into_iter().collect::<BTreeSet<_>>();
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        let request_id = self.next_request_id;
+        let labels = awaiting.iter().cloned().collect();
+        self.pending = Some(QuitAttempt {
+            awaiting,
+            request_id,
+        });
+        Some((request_id, labels))
+    }
+
+    fn acknowledge(
+        &mut self,
+        request_id: u64,
+        window_label: &str,
+        error: Option<String>,
+    ) -> QuitAcknowledgement {
+        let Some(attempt) = self
+            .pending
+            .as_mut()
+            .filter(|attempt| attempt.request_id == request_id)
+        else {
+            return QuitAcknowledgement::Ignored;
+        };
+        if !attempt.awaiting.remove(window_label) {
+            return QuitAcknowledgement::Ignored;
+        }
+        if let Some(error) = error {
+            self.pending = None;
+            return QuitAcknowledgement::Canceled {
+                error,
+                window_label: window_label.to_owned(),
+            };
+        }
+        if attempt.awaiting.is_empty() {
+            self.pending = None;
+            QuitAcknowledgement::Exit
+        } else {
+            QuitAcknowledgement::Waiting
+        }
+    }
+
+    fn cancel(&mut self, request_id: u64) -> bool {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|attempt| attempt.request_id == request_id)
+        {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuitNotice {
+    request_id: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -222,7 +315,7 @@ fn install_tray(app: &App, bindings: &[KeyboardBinding]) -> tauri::Result<()> {
                 Some(TrayAction::ShowQuickAdd) => {
                     dispatch_logged(app, "show quick add", show_quick_add_inner)
                 }
-                Some(TrayAction::Quit) => app.exit(0),
+                Some(TrayAction::Quit) => request_quit(app),
                 None => {}
             },
         );
@@ -231,6 +324,112 @@ fn install_tray(app: &App, bindings: &[KeyboardBinding]) -> tauri::Result<()> {
     }
     tray.build(app)?;
     Ok(())
+}
+
+fn request_quit(app: &AppHandle) {
+    let labels = [MAIN_LABEL, QUICK_ADD_LABEL]
+        .into_iter()
+        .filter(|label| app.get_webview_window(label).is_some())
+        .map(str::to_owned);
+    let Some((request_id, labels)) = app
+        .state::<WindowState>()
+        .quit
+        .lock()
+        .expect("quit context poisoned")
+        .begin(labels)
+    else {
+        return;
+    };
+    if labels.is_empty() {
+        app.exit(0);
+        return;
+    }
+
+    let notice = QuitNotice { request_id };
+    for label in &labels {
+        if let Err(error) = app.emit_to(label, PREPARE_QUIT_EVENT, notice) {
+            app.state::<WindowState>()
+                .quit
+                .lock()
+                .expect("quit context poisoned")
+                .cancel(request_id);
+            cancel_quit_ui(
+                app,
+                request_id,
+                label,
+                &format!("Could not ask {label} to preserve its draft: {error}"),
+            );
+            return;
+        }
+    }
+
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(QUIT_ACK_TIMEOUT);
+        let timed_out = app
+            .state::<WindowState>()
+            .quit
+            .lock()
+            .expect("quit context poisoned")
+            .cancel(request_id);
+        if timed_out {
+            cancel_quit_ui(
+                &app,
+                request_id,
+                MAIN_LABEL,
+                "Kosh did not finish preserving open drafts before the quit timeout",
+            );
+        }
+    });
+}
+
+#[tauri::command]
+pub(crate) fn acknowledge_quit(
+    window: tauri::Window,
+    state: State<'_, WindowState>,
+    request_id: u64,
+    error: Option<String>,
+) {
+    let error = error.map(|error| error.chars().take(512).collect());
+    let acknowledgement = state
+        .quit
+        .lock()
+        .expect("quit context poisoned")
+        .acknowledge(request_id, window.label(), error);
+    match acknowledgement {
+        QuitAcknowledgement::Exit => {
+            dispatch_logged(window.app_handle(), "quit Kosh", |app| {
+                app.exit(0);
+                Ok(())
+            });
+        }
+        QuitAcknowledgement::Canceled {
+            error,
+            window_label,
+        } => cancel_quit_ui(window.app_handle(), request_id, &window_label, &error),
+        QuitAcknowledgement::Ignored | QuitAcknowledgement::Waiting => {}
+    }
+}
+
+fn cancel_quit_ui(app: &AppHandle, request_id: u64, window_label: &str, error: &str) {
+    log::error!("quit canceled while preserving {window_label}: {error}");
+    let notice = QuitNotice { request_id };
+    for label in [MAIN_LABEL, QUICK_ADD_LABEL] {
+        if app.get_webview_window(label).is_some() {
+            if let Err(emit_error) = app.emit_to(label, QUIT_CANCELED_EVENT, notice) {
+                log::error!("could not release {label} after canceled quit: {emit_error}");
+            }
+        }
+    }
+    if window_label == QUICK_ADD_LABEL {
+        dispatch_logged(
+            app,
+            "show quick-add draft after canceled quit",
+            show_quick_add_inner,
+        );
+    } else {
+        dispatch_logged(app, "show main draft after canceled quit", show_main_inner);
+    }
 }
 
 fn update_tray(app: &AppHandle, bindings: &[KeyboardBinding]) -> Result<(), String> {
@@ -782,6 +981,62 @@ mod tests {
         let target = context.begin_dismiss().expect("visible quick add");
         assert!(target.main);
         assert_eq!(target.external_pid, None);
+    }
+
+    #[test]
+    fn quit_waits_for_every_window_and_ignores_duplicate_acknowledgements() {
+        let mut context = QuitContext::default();
+        let (request_id, labels) = context
+            .begin([MAIN_LABEL.to_owned(), QUICK_ADD_LABEL.to_owned()])
+            .expect("first request starts");
+        assert_eq!(
+            labels,
+            vec![MAIN_LABEL.to_owned(), QUICK_ADD_LABEL.to_owned()]
+        );
+        assert!(context
+            .begin([MAIN_LABEL.to_owned(), QUICK_ADD_LABEL.to_owned()])
+            .is_none());
+        assert_eq!(
+            context.acknowledge(request_id, MAIN_LABEL, None),
+            QuitAcknowledgement::Waiting
+        );
+        assert_eq!(
+            context.acknowledge(request_id, MAIN_LABEL, None),
+            QuitAcknowledgement::Ignored
+        );
+        assert_eq!(
+            context.acknowledge(request_id, QUICK_ADD_LABEL, None),
+            QuitAcknowledgement::Exit
+        );
+    }
+
+    #[test]
+    fn failed_or_timed_out_draft_flush_cancels_quit() {
+        let mut context = QuitContext::default();
+        let (request_id, _) = context
+            .begin([MAIN_LABEL.to_owned(), QUICK_ADD_LABEL.to_owned()])
+            .expect("request starts");
+        assert_eq!(
+            context.acknowledge(
+                request_id,
+                QUICK_ADD_LABEL,
+                Some("attachment is still being ingested".to_owned())
+            ),
+            QuitAcknowledgement::Canceled {
+                error: "attachment is still being ingested".to_owned(),
+                window_label: QUICK_ADD_LABEL.to_owned(),
+            }
+        );
+        assert_eq!(
+            context.acknowledge(request_id, MAIN_LABEL, None),
+            QuitAcknowledgement::Ignored
+        );
+
+        let (next_request_id, _) = context
+            .begin([MAIN_LABEL.to_owned(), QUICK_ADD_LABEL.to_owned()])
+            .expect("a canceled request can be retried");
+        assert!(context.cancel(next_request_id));
+        assert!(!context.cancel(next_request_id));
     }
 
     #[test]
