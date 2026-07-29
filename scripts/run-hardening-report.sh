@@ -104,6 +104,10 @@ jq -n \
     lexicalScale: $lexical[0],
     bundle: $bundle[0]
   }' >"$temporary"
+[[ "$(git -C "$repo_root" rev-parse HEAD)" == "$head_sha" ]] ||
+  fail "HEAD changed while the hardening report was assembled"
+[[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]] ||
+  fail "worktree changed while the hardening report was assembled"
 mv "$temporary" "$output"
 
 echo "hardening report passed for $head_sha: $output"

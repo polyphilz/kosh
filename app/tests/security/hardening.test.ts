@@ -93,6 +93,17 @@ describe("desktop security boundary", () => {
     expect(report).toContain('KOSH_BUNDLE_ROOT="$app_root/dist"');
     expect(report).toContain('KOSH_BUNDLE_REPORT="$bundle_report"');
     expect(report).toContain('rm -- "$bundle_report"');
+    const publication = report.slice(report.lastIndexOf('>"$temporary"'));
+    expect(publication).toContain('[[ "$(git -C "$repo_root" rev-parse HEAD)" == "$head_sha" ]]');
+    expect(publication).toContain(
+      'git -C "$repo_root" status --porcelain --untracked-files=normal',
+    );
+    expect(publication.indexOf("rev-parse HEAD")).toBeLessThan(
+      publication.indexOf('mv "$temporary"'),
+    );
+    expect(publication.indexOf("status --porcelain")).toBeLessThan(
+      publication.indexOf('mv "$temporary"'),
+    );
   });
 
   it("pins Claude to an ephemeral read-only tool boundary with no browser", () => {
