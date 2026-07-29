@@ -207,6 +207,17 @@ fresh_seed_receipt="$launch_root/fresh-seed.json"
 fresh_restart_receipt="$launch_root/fresh-restart.json"
 run_launch "$fresh_data" "$fresh_seed_receipt" "absent" "$launch_root/fresh-seed.log"
 run_launch "$fresh_data" "$fresh_restart_receipt" "present" "$launch_root/fresh-restart.log"
+jq -e -n \
+  --slurpfile seed "$fresh_seed_receipt" \
+  --slurpfile restart "$fresh_restart_receipt" \
+  '
+    $seed[0].dataDir == $restart[0].dataDir
+    and $seed[0].canary.tidbitId == $restart[0].canary.tidbitId
+    and $seed[0].canary.revisionId == $restart[0].canary.revisionId
+    and $seed[0].canary.passageId == $restart[0].canary.passageId
+    and $seed[0].canary.sourceUrl == $restart[0].canary.sourceUrl
+  ' >/dev/null ||
+  fail "the fresh restart silently retargeted the startup canary citation"
 
 if [[ "$mode" == "ci" ]]; then
   temporary="$aggregate_receipt.$$.tmp"

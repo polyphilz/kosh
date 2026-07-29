@@ -72,6 +72,10 @@ fi
 : >"$data/kosh.sqlite3"
 : >"$data/media.sqlite3"
 canonical_data="$(cd "$data" && pwd -P)"
+passage_id="00000000-0000-7000-8000-000000000003"
+if [[ "${FAKE_RETARGET_PRESENT:-false}" == "true" && "$expectation" == "present" ]]; then
+  passage_id="00000000-0000-7000-8000-000000000009"
+fi
 
 jq -n \
   --arg head "$KOSH_STARTUP_SMOKE_HEAD" \
@@ -79,6 +83,7 @@ jq -n \
   --arg data "$canonical_data" \
   --argjson preexisting "$preexisting" \
   --argjson created "$created" \
+  --arg passage "$passage_id" \
   '{
     schemaVersion: 1,
     headSha: $head,
@@ -119,7 +124,7 @@ jq -n \
     canary: {
       tidbitId: "00000000-0000-7000-8000-000000000001",
       revisionId: "00000000-0000-7000-8000-000000000002",
-      passageId: "00000000-0000-7000-8000-000000000003",
+      passageId: $passage,
       sourceUrl: "https://example.invalid/kosh-progressive-operability"
     }
   }' >"$receipt"
@@ -139,6 +144,10 @@ run_gate() {
 
 run_normal_gate() {
   KOSH_LOOP_STATE_ROOT="$1" "$runtime_gate"
+}
+
+run_ci_gate() {
+  KOSH_LOOP_STATE_ROOT="$1" "$runtime_gate" --ci
 }
 
 stage_loop="$temp_dir/stage-interruption"
@@ -208,5 +217,12 @@ jq -e \
   ' \
   "$promoted_marker" >/dev/null ||
   { echo "legacy marker did not upgrade without replacing its profile" >&2; exit 1; }
+
+export FAKE_RETARGET_PRESENT="true"
+if run_ci_gate "$temp_dir/ci-retarget" >"$temp_dir/ci-retarget.log" 2>&1; then
+  echo "CI accepted a restart that silently retargeted the canary passage" >&2
+  exit 1
+fi
+unset FAKE_RETARGET_PRESENT
 
 echo "runtime bootstrap recovery tests passed"
