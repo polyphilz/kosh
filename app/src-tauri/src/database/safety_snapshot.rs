@@ -85,6 +85,7 @@ pub(super) fn create(
     );
     let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
     create_private_directory(&snapshot_root)?;
+    cleanup_interrupted_staging(&snapshot_root)?;
     let staging = snapshot_root.join(format!(".{id}.incomplete"));
     let published = snapshot_root.join(&id);
     create_private_directory(&staging)?;
@@ -322,6 +323,68 @@ fn prune_published_snapshots(snapshot_root: &Path, current_id: &str) -> Result<(
     sync_directory(snapshot_root)
 }
 
+fn cleanup_interrupted_staging(snapshot_root: &Path) -> Result<()> {
+    let mut removed = false;
+    for entry in fs::read_dir(snapshot_root)? {
+        let entry = entry?;
+        let name = match entry.file_name().into_string() {
+            Ok(name) if is_owned_staging_name(&name) => name,
+            _ => continue,
+        };
+        if !entry.file_type()?.is_dir() || !staging_contents_are_owned(&entry.path())? {
+            continue;
+        }
+        log::warn!("removing interrupted safety snapshot staging directory {name}");
+        fs::remove_dir_all(entry.path())?;
+        removed = true;
+    }
+    if removed {
+        sync_directory(snapshot_root)?;
+    }
+    Ok(())
+}
+
+fn staging_contents_are_owned(directory: &Path) -> Result<bool> {
+    const OWNED_FILES: [&str; 4] = [
+        "kosh.sqlite3",
+        "media.sqlite3",
+        "manifest.json",
+        "manifest.json.tmp",
+    ];
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return Ok(false);
+        };
+        if !entry.file_type()?.is_file() || !OWNED_FILES.contains(&name.as_str()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn is_owned_staging_name(name: &str) -> bool {
+    let Some(id) = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".incomplete"))
+    else {
+        return false;
+    };
+    let tail = id
+        .strip_prefix("migration-")
+        .or_else(|| id.strip_prefix("media-reclaim-"));
+    let Some((created_at_ms, uuid)) = tail.and_then(|tail| tail.split_once('-')) else {
+        return false;
+    };
+    created_at_ms.parse::<i64>().is_ok_and(|value| value >= 0)
+        && uuid.len() == 32
+        && uuid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && uuid.as_bytes()[12] == b'7'
+        && matches!(uuid.as_bytes()[16], b'8' | b'9' | b'a' | b'b')
+}
+
 fn read_owned_manifest(directory: &Path, expected_id: &str) -> Result<SafetySnapshotManifest> {
     let manifest_path = directory.join("manifest.json");
     let metadata = fs::symlink_metadata(&manifest_path)?;
@@ -345,7 +408,7 @@ fn remove_owned_staging(snapshot_root: &Path, staging: &Path) {
     let has_owned_name = staging
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with('.') && name.ends_with(".incomplete"));
+        .is_some_and(is_owned_staging_name);
     if is_direct_child && has_owned_name {
         let _ = fs::remove_dir_all(staging);
     }
@@ -457,6 +520,35 @@ mod tests {
         assert_eq!(
             fs::read_to_string(unowned.join("keep.txt")).expect("unowned marker survives"),
             "do not delete"
+        );
+    }
+
+    #[test]
+    fn snapshot_creation_removes_only_validated_interrupted_staging_directories() {
+        let root = tempfile::tempdir().expect("snapshot staging recovery");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let interrupted = snapshot_root.join(format!(
+            ".migration-10-{}.incomplete",
+            Uuid::now_v7().simple()
+        ));
+        fs::create_dir_all(&interrupted).expect("interrupted directory");
+        fs::write(interrupted.join("kosh.sqlite3"), b"partial snapshot")
+            .expect("interrupted snapshot file");
+        let unowned = snapshot_root.join(".user-data.incomplete");
+        fs::create_dir_all(&unowned).expect("unowned directory");
+        fs::write(unowned.join("keep.txt"), b"user data").expect("unowned file");
+
+        database
+            .client()
+            .maintain_media_with_safety_snapshot(10, crate::database::MediaLimits::default())
+            .expect("replacement snapshot");
+
+        assert!(!interrupted.exists());
+        assert_eq!(
+            fs::read(unowned.join("keep.txt")).expect("unowned file survives"),
+            b"user data"
         );
     }
 

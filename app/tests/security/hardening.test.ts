@@ -79,6 +79,12 @@ describe("desktop security boundary", () => {
     expect(source).not.toMatch(/tauri_plugin_(shell|opener|fs|http)/u);
   });
 
+  it("routes every externally callable media reclamation through a safety snapshot", () => {
+    const media = readFileSync("src-tauri/src/media.rs", "utf8");
+    expect(media).toContain("maintain_media_with_safety_snapshot(now_ms, limits)");
+    expect(media).not.toContain("client.maintain_media(now_ms, limits)");
+  });
+
   it("pins Claude to an ephemeral read-only tool boundary with no browser", () => {
     const claude = readFileSync("src-tauri/src/claude.rs", "utf8");
     const mcp = readFileSync("src-tauri/src/research/mcp.rs", "utf8");

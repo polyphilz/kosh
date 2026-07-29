@@ -23,6 +23,7 @@ mkdir -p "$(dirname "$output")"
 head_sha="$(git -C "$repo_root" rev-parse HEAD)"
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]] ||
   fail "commit-bound reporting requires a clean worktree"
+[[ ! -e "$output" ]] || rm -- "$output"
 started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 started_epoch="$(date +%s)"
 
