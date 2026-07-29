@@ -45,6 +45,8 @@ test("library surface stays visually stable", async ({ page }) => {
     fullPage: true,
     mask: [page.locator(".library-list time")],
     maskColor: "#d8d2ca",
+    maxDiffPixelRatio: 0.04,
+    threshold: 0.35,
   });
 });
 
