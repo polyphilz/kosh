@@ -109,12 +109,13 @@ pub(crate) async fn select_pdf<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub(crate) async fn ingest_selected_pdf(
+pub(crate) async fn ingest_selected_pdf<R: tauri::Runtime>(
+    window: tauri::Window<R>,
     state: State<'_, RuntimeState>,
     draft_id: String,
     selection_id: String,
 ) -> Result<PdfRecord, crate::database::commands::CommandError> {
-    let path = state.take_file_selection(&selection_id)?;
+    let path = state.take_file_selection(window.label(), &selection_id)?;
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())

@@ -1,5 +1,6 @@
 import { useBlocker } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   forwardRef,
   useCallback,
@@ -233,51 +234,55 @@ export const TidbitComposer = forwardRef<TidbitComposerHandle, TidbitComposerPro
       }
       let active = true;
       let unlisten: (() => void) | undefined;
-      void listen<FileDropNotice>(FILE_DROP_EVENT, (event) => {
-        const selectionIds = event.payload.selections.map((selection) => selection.selectionId);
-        if (!active || !readyRef.current || busyRef.current) {
-          void backend.discardFileDropSelections(selectionIds).catch((reason: unknown) => {
-            console.error("Could not discard an ignored file drop", reason);
-          });
-          return;
-        }
-        pendingDropCountRef.current += 1;
-        setDropMediaPending(true);
-        setError(null);
-        void enqueueDraftSave(stateRef.current)
-          .then(async (draft) => {
-            const attachments: SelectedAttachmentRecord[] = [];
-            const failures: string[] = [];
-            for (const selection of event.payload.selections) {
-              try {
-                attachments.push(
-                  await backend.ingestSelectedAttachment(selection.selectionId, draft.id),
-                );
-              } catch (reason) {
-                failures.push(`${selection.filename}: ${errorMessage(reason)}`);
+      void listen<FileDropNotice>(
+        FILE_DROP_EVENT,
+        (event) => {
+          const selectionIds = event.payload.selections.map((selection) => selection.selectionId);
+          if (!active || !readyRef.current || busyRef.current) {
+            void backend.discardFileDropSelections(selectionIds).catch((reason: unknown) => {
+              console.error("Could not discard an ignored file drop", reason);
+            });
+            return;
+          }
+          pendingDropCountRef.current += 1;
+          setDropMediaPending(true);
+          setError(null);
+          void enqueueDraftSave(stateRef.current)
+            .then(async (draft) => {
+              const attachments: SelectedAttachmentRecord[] = [];
+              const failures: string[] = [];
+              for (const selection of event.payload.selections) {
+                try {
+                  attachments.push(
+                    await backend.ingestSelectedAttachment(selection.selectionId, draft.id),
+                  );
+                } catch (reason) {
+                  failures.push(`${selection.filename}: ${errorMessage(reason)}`);
+                }
               }
-            }
-            return { attachments, failures };
-          })
-          .then(({ attachments, failures }) => {
-            if (!active) return;
-            editorRef.current?.insertAttachments(attachments);
-            if (failures.length > 0) {
-              setError(`Could not add dropped files: ${failures.join("; ")}`);
-            }
-          })
-          .catch((reason: unknown) => {
-            if (active) {
-              setError(`Could not add dropped file: ${errorMessage(reason)}`);
-            }
-          })
-          .finally(() => {
-            pendingDropCountRef.current = Math.max(0, pendingDropCountRef.current - 1);
-            if (active) {
-              setDropMediaPending(pendingDropCountRef.current > 0);
-            }
-          });
-      }).then((stop) => {
+              return { attachments, failures };
+            })
+            .then(({ attachments, failures }) => {
+              if (!active) return;
+              editorRef.current?.insertAttachments(attachments);
+              if (failures.length > 0) {
+                setError(`Could not add dropped files: ${failures.join("; ")}`);
+              }
+            })
+            .catch((reason: unknown) => {
+              if (active) {
+                setError(`Could not add dropped file: ${errorMessage(reason)}`);
+              }
+            })
+            .finally(() => {
+              pendingDropCountRef.current = Math.max(0, pendingDropCountRef.current - 1);
+              if (active) {
+                setDropMediaPending(pendingDropCountRef.current > 0);
+              }
+            });
+        },
+        { target: getCurrentWindow().label },
+      ).then((stop) => {
         if (active) {
           unlisten = stop;
           setFileDropListenerReady(true);

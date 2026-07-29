@@ -441,6 +441,7 @@ impl RuntimeState {
 
     pub(crate) fn discard_file_drop_selections(
         &self,
+        consumer: &str,
         selection_ids: &[String],
     ) -> crate::database::Result<()> {
         if selection_ids.len() > MAX_PENDING_FILE_SELECTIONS {
@@ -458,7 +459,7 @@ impl RuntimeState {
         for selection_id in selection_ids {
             if pending
                 .get(selection_id)
-                .is_some_and(|selection| selection.drop_consumer.is_some())
+                .is_some_and(|selection| selection.drop_consumer.as_deref() == Some(consumer))
             {
                 pending.remove(selection_id);
             }
@@ -468,6 +469,7 @@ impl RuntimeState {
 
     pub(crate) fn take_file_selection(
         &self,
+        consumer: &str,
         selection_id: &str,
     ) -> crate::database::Result<PathBuf> {
         validate_capability_id(selection_id, "selectionId")?;
@@ -479,8 +481,15 @@ impl RuntimeState {
         pending.retain(|_, selection| {
             now_ms.saturating_sub(selection.created_at_ms) <= FILE_SELECTION_TTL_MS
         });
-        pending
-            .remove(selection_id)
+        let authorized = pending.get(selection_id).is_some_and(|selection| {
+            selection
+                .drop_consumer
+                .as_deref()
+                .is_none_or(|owner| owner == consumer)
+        });
+        authorized
+            .then(|| pending.remove(selection_id))
+            .flatten()
             .map(|selection| selection.path)
             .ok_or_else(|| crate::database::DatabaseError::NotFound {
                 entity: "file selection",
@@ -756,17 +765,24 @@ mod tests {
         state.set_file_drop_consumer_active("main", false);
         assert_eq!(
             state
-                .take_file_selection(&picker_id)
+                .take_file_selection("main", &picker_id)
                 .expect("picker survives"),
             picker_pdf
         );
         assert!(matches!(
-            state.take_file_selection(&dropped_id),
+            state.take_file_selection("main", &dropped_id),
             Err(crate::database::DatabaseError::NotFound { .. })
         ));
+        assert!(matches!(
+            state.take_file_selection("main", &quick_drop_id),
+            Err(crate::database::DatabaseError::NotFound { .. })
+        ));
+        state
+            .discard_file_drop_selections("main", std::slice::from_ref(&quick_drop_id))
+            .expect("another window cannot revoke the selection");
         assert_eq!(
             state
-                .take_file_selection(&quick_drop_id)
+                .take_file_selection("quick-add", &quick_drop_id)
                 .expect("other window drop survives"),
             quick_drop
         );
