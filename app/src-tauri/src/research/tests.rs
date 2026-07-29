@@ -296,9 +296,18 @@ fn hybrid_search_falls_back_to_lexical_without_a_model() {
 #[test]
 fn context_tidbit_and_sources_expand_only_trusted_handles() {
     let library = TestLibrary::new();
+    let long_neighbors = (0..10)
+        .map(|index| {
+            format!(
+                "## Neighbor {index}\n\nneighbor_{index}_research_context {}",
+                "bounded authored context. ".repeat(40)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
     library.create_tidbit(
         0x500,
-        "# Context\n\ncontext_anchor_research_evidence.\n\nNeighbor before.\n\nNeighbor after.",
+        &format!("# Context\n\ncontext_anchor_research_evidence.\n\n{long_neighbors}"),
         "Context notebook",
     );
     let mut run = library.run();
@@ -340,6 +349,21 @@ fn context_tidbit_and_sources_expand_only_trusted_handles() {
         .expect("current tidbit");
     assert_eq!(tidbit["displayTitle"], "Knowledge 1280");
     assert_eq!(tidbit["items"].as_array().map(Vec::len), Some(2));
+    let mut tidbit_page = tidbit;
+    let mut passage_count = 2;
+    while let Some(cursor) = tidbit_page["nextCursor"].as_str() {
+        tidbit_page = run
+            .call_tool(
+                READ_CURRENT_TIDBIT_TOOL,
+                json!({ "cursor": cursor, "limit": 2 }),
+            )
+            .expect("continued current tidbit");
+        passage_count += tidbit_page["items"]
+            .as_array()
+            .expect("tidbit passage page")
+            .len();
+    }
+    assert!(passage_count > 2);
 
     let sources = run
         .call_tool(
@@ -682,14 +706,56 @@ fn mcp_byte_budget_counts_text_and_structured_copies() {
         .run_with_limits(limits)
         .call_tool(EXACT_SEARCH_TOOL, arguments.clone())
         .expect("raw output remains within the selected limit");
+    let error = library
+        .run_with_limits(limits)
+        .call_tool_for_mcp(EXACT_SEARCH_TOOL, arguments)
+        .expect("bounded MCP error result");
+    assert_eq!(error["isError"], true);
     assert_eq!(
-        library
-            .run_with_limits(limits)
-            .call_tool_for_mcp(EXACT_SEARCH_TOOL, arguments)
-            .expect_err("MCP envelope exceeds the selected limit")
+        error["structuredContent"]["error"]["code"],
+        "LIMIT_EXCEEDED"
+    );
+}
+
+#[test]
+fn mcp_error_responses_are_bounded_and_counted() {
+    let library = TestLibrary::new();
+    let limits = ResearchLimits {
+        max_tool_calls: 8,
+        max_response_bytes: 1_024,
+        max_run_response_bytes: 1_024,
+        ..ResearchLimits::default()
+    };
+    let mut run = library.run_with_limits(limits);
+    let oversized_field = "untrusted_argument_name_".repeat(800);
+    let arguments = Value::Object(
+        [(oversized_field.clone(), Value::Bool(true))]
+            .into_iter()
+            .collect(),
+    );
+    let response = run
+        .call_tool_for_mcp(EXACT_SEARCH_TOOL, arguments.clone())
+        .expect("first bounded MCP tool error");
+    assert_eq!(response["isError"], true);
+    assert!(
+        serde_json::to_vec(&response)
+            .expect("serialize MCP error")
+            .len()
+            <= limits.max_response_bytes
+    );
+    assert!(!response.to_string().contains(&oversized_field));
+    assert!(run.events().last().is_some_and(
+        |event| event.kind == ResearchEventKind::ToolError && event.response_bytes.is_some()
+    ));
+    assert!(run.response_bytes <= limits.max_run_response_bytes);
+
+    assert_eq!(
+        run.call_tool_for_mcp(EXACT_SEARCH_TOOL, arguments)
+            .expect_err("cumulative error bytes are enforced")
             .code,
         ResearchErrorCode::LimitExceeded
     );
+    assert!(run.response_bytes <= limits.max_run_response_bytes);
 }
 
 #[test]

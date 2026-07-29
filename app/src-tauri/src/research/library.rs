@@ -100,10 +100,12 @@ impl ResearchLibrary {
             .collect()
     }
 
-    pub(super) fn current_tidbit_passages(
+    pub(super) fn current_tidbit_passage_page(
         &self,
         snapshot: &ResearchResourceSnapshot,
-    ) -> Result<(Tidbit, Vec<CitationResolution>), ResearchError> {
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Tidbit, Vec<CitationResolution>, bool), ResearchError> {
         let ResearchResourceSnapshot::Tidbit {
             id, revision_id, ..
         } = snapshot
@@ -127,9 +129,42 @@ impl ResearchLibrary {
                 "the tidbit changed after this research handle was issued",
             ));
         }
-        let ids = self.author_passage_ids_for_revision(revision_id)?;
+        let query_limit = i64::try_from(limit.saturating_add(1)).map_err(|_| {
+            ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the tidbit page limit is too large",
+            )
+        })?;
+        let query_offset = i64::try_from(offset).map_err(|_| {
+            ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the tidbit page offset is too large",
+            )
+        })?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT passage.id
+                 FROM passage
+                 JOIN active_passage ON active_passage.passage_id = passage.id
+                 WHERE passage.tidbit_revision_id = ?1
+                   AND passage.owner_kind = 'AUTHOR'
+                 ORDER BY passage.ordinal
+                 LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(ResearchError::from_sqlite)?;
+        let rows = statement
+            .query_map(params![revision_id, query_limit, query_offset], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(ResearchError::from_sqlite)?;
+        let mut ids = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(ResearchError::from_sqlite)?;
+        let has_more = ids.len() > limit;
+        ids.truncate(limit);
         let passages = self.resolve_current_passages(ids)?;
-        Ok((tidbit, passages))
+        Ok((tidbit, passages, has_more))
     }
 
     pub(super) fn current_attachment_passage_page(

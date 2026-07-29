@@ -43,6 +43,7 @@ pub const RESEARCH_TOOL_NAMES: [&str; 6] = [
 const RESEARCH_OUTPUT_VERSION: &str = "v1";
 const MAX_TOOL_NAME_BYTES: usize = 128;
 const MAX_SEARCH_CANDIDATES_CEILING: u32 = 100;
+const MAX_RESEARCH_ERROR_MESSAGE_BYTES: usize = 240;
 
 pub trait ResearchQueryEmbedder: Send + Sync {
     fn embed_query(&self, query: &str) -> Result<Vec<f32>, String>;
@@ -156,7 +157,7 @@ impl ResearchError {
     fn new(code: ResearchErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
-            message: message.into(),
+            message: truncate_utf8_bytes(&message.into(), MAX_RESEARCH_ERROR_MESSAGE_BYTES),
         }
     }
 
@@ -254,10 +255,6 @@ enum ResearchCursor {
     },
     Tidbit {
         owner_handle: String,
-        title: Option<String>,
-        display_title: String,
-        revision_number: i64,
-        passages: Vec<CitationResolution>,
         offset: usize,
     },
     Attachment {
@@ -370,18 +367,12 @@ impl ResearchRun {
         tool: &str,
         arguments: Value,
     ) -> Result<Value, ResearchError> {
-        self.call_tool_with_envelope(tool, arguments, |output| {
-            let text = serde_json::to_string(output)
-                .map_err(|error| ResearchError::malformed(error.to_string()))?;
-            Ok(json!({
-                "content": [{
-                    "type": "text",
-                    "text": text,
-                }],
-                "structuredContent": output,
-                "isError": false,
-            }))
-        })
+        match self.call_tool_with_envelope(tool, arguments, |output| {
+            Ok(mcp_tool_response(output, false))
+        }) {
+            Ok(response) => Ok(response),
+            Err(error) => self.account_mcp_error_response(error),
+        }
     }
 
     fn call_tool_with_envelope<F>(
@@ -480,6 +471,38 @@ impl ResearchRun {
                 Err(error)
             }
         }
+    }
+
+    fn account_mcp_error_response(&mut self, error: ResearchError) -> Result<Value, ResearchError> {
+        let output = json!({
+            "version": RESEARCH_OUTPUT_VERSION,
+            "error": error,
+        });
+        let response = mcp_tool_response(&output, true);
+        let bytes = serde_json::to_vec(&response)
+            .map_err(|error| ResearchError::malformed(error.to_string()))?
+            .len();
+        if bytes > self.limits.max_response_bytes {
+            return Err(ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the research tool error exceeded its byte limit",
+            ));
+        }
+        if self.response_bytes.saturating_add(bytes) > self.limits.max_run_response_bytes {
+            return Err(ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the research run exhausted its response-byte budget",
+            ));
+        }
+        self.response_bytes += bytes;
+        if let Some(event) = self
+            .events
+            .last_mut()
+            .filter(|event| event.kind == ResearchEventKind::ToolError)
+        {
+            event.response_bytes = Some(bytes);
+        }
+        Ok(response)
     }
 
     pub fn events(&self) -> &[ResearchEvent] {
@@ -649,7 +672,9 @@ impl ResearchRun {
         match (input.owner_handle, input.cursor) {
             (Some(owner_handle), None) => {
                 let snapshot = self.resolve_resource_handle(&owner_handle)?.clone();
-                let (tidbit, passages) = self.library.current_tidbit_passages(&snapshot)?;
+                let (tidbit, passages, has_more) = self
+                    .library
+                    .current_tidbit_passage_page(&snapshot, 0, limit)?;
                 self.tidbit_page(
                     owner_handle,
                     tidbit.title,
@@ -657,16 +682,12 @@ impl ResearchRun {
                     tidbit.revision_number,
                     passages,
                     0,
-                    limit,
+                    has_more,
                 )
             }
             (None, Some(cursor)) => {
                 let ResearchCursor::Tidbit {
                     owner_handle,
-                    title,
-                    display_title,
-                    revision_number,
-                    passages,
                     offset,
                 } = self.take_cursor(&cursor, "read current tidbit")?
                 else {
@@ -676,15 +697,17 @@ impl ResearchRun {
                     ));
                 };
                 let snapshot = self.resolve_resource_handle(&owner_handle)?.clone();
-                self.library.current_tidbit_passages(&snapshot)?;
+                let (tidbit, passages, has_more) = self
+                    .library
+                    .current_tidbit_passage_page(&snapshot, offset, limit)?;
                 self.tidbit_page(
                     owner_handle,
-                    title,
-                    display_title,
-                    revision_number,
+                    tidbit.title,
+                    tidbit.display_title,
+                    tidbit.revision_number,
                     passages,
                     offset,
-                    limit,
+                    has_more,
                 )
             }
             _ => Err(ResearchError::invalid(
@@ -702,21 +725,17 @@ impl ResearchRun {
         revision_number: i64,
         passages: Vec<CitationResolution>,
         offset: usize,
-        limit: usize,
+        has_more: bool,
     ) -> Result<(Value, usize), ResearchError> {
-        let end = (offset + limit).min(passages.len());
-        let page = passages[offset..end]
+        let item_count = passages.len();
+        let page = passages
             .iter()
             .map(|passage| self.evidence(passage, None))
             .collect::<Result<Vec<_>, _>>()?;
-        let next_cursor = (end < passages.len()).then(|| {
+        let next_cursor = has_more.then(|| {
             self.store_cursor(ResearchCursor::Tidbit {
                 owner_handle: owner_handle.clone(),
-                title: title.clone(),
-                display_title: display_title.clone(),
-                revision_number,
-                passages,
-                offset: end,
+                offset: offset.saturating_add(item_count),
             })
         });
         let output = json!({
@@ -728,7 +747,7 @@ impl ResearchRun {
             "items": page,
             "nextCursor": next_cursor,
         });
-        Ok((output, end - offset))
+        Ok((output, item_count))
     }
 
     fn inspect_sources(&mut self, arguments: Value) -> Result<(Value, usize), ResearchError> {
@@ -1105,6 +1124,30 @@ fn evidence_kind(locator: &CitationLocator) -> &'static str {
 fn parse_arguments<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T, ResearchError> {
     serde_json::from_value(arguments)
         .map_err(|error| ResearchError::malformed(format!("invalid tool arguments: {error}")))
+}
+
+fn mcp_tool_response(output: &Value, is_error: bool) -> Value {
+    let text =
+        serde_json::to_string(output).expect("serializing a research MCP output value cannot fail");
+    json!({
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+        "structuredContent": output,
+        "isError": is_error,
+    })
+}
+
+fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 #[derive(Deserialize)]

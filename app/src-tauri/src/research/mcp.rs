@@ -191,23 +191,11 @@ impl ResearchMcpSession {
             .call_tool_for_mcp(&params.name, params.arguments.unwrap_or_else(|| json!({})))
         {
             Ok(output) => Ok(output),
-            Err(error) => {
-                let output = json!({
-                    "version": "v1",
-                    "error": error,
-                });
-                let text = serde_json::to_string(&output).map_err(|_| {
-                    McpProtocolError::new(-32603, "could not serialize the tool error", None)
-                })?;
-                Ok(json!({
-                    "content": [{
-                        "type": "text",
-                        "text": text,
-                    }],
-                    "structuredContent": output,
-                    "isError": true,
-                }))
-            }
+            Err(_) => Err(McpProtocolError::new(
+                -32000,
+                "the research response budget is exhausted",
+                None,
+            )),
         }
     }
 
