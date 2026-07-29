@@ -67,6 +67,8 @@ impl Retriever for LexicalFixtureRetriever {
         else {
             return Ok(Vec::new());
         };
+        let lexical_candidate_limit =
+            candidate_limit(u32::try_from(limit).unwrap_or(u32::MAX)) as usize;
         let candidates = fixture_candidate_ranks(corpus, &query, limit)?;
         let documents = candidates
             .into_iter()
@@ -84,7 +86,7 @@ impl Retriever for LexicalFixtureRetriever {
             })
             .collect();
         hydrate_fixture_hits(
-            rank_lexical_documents(&query, documents, limit),
+            rank_lexical_documents(&query, documents, lexical_candidate_limit),
             corpus,
             limit,
             false,
@@ -637,7 +639,8 @@ impl Drop for TemporaryBenchmarkLibrary {
 mod tests {
     use super::{benchmark_scale_lexical, LexicalFixtureRetriever};
     use crate::relevance::{
-        generate_scale_corpus, run_relevance_suite, RelevanceFixture, ScaleGenerationOptions,
+        generate_scale_corpus, run_relevance_suite, RelevanceFixture, RetrievalRequest, Retriever,
+        ScaleGenerationOptions, SearchMode,
     };
 
     #[test]
@@ -665,6 +668,34 @@ mod tests {
         assert_eq!(
             report.to_text(),
             include_str!("../../../fixtures/relevance/reports/lexical-v1.txt")
+        );
+    }
+
+    #[test]
+    fn lexical_fixture_diversifies_beyond_the_display_limit() {
+        let fixture: RelevanceFixture =
+            serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
+                .expect("checked-in fixture");
+        let hits = LexicalFixtureRetriever
+            .retrieve(
+                &RetrievalRequest {
+                    text: "vector clock reconciliation causal order".into(),
+                    search_mode: SearchMode::Default,
+                },
+                &fixture.corpus,
+                4,
+            )
+            .expect("diverse lexical hits");
+
+        assert_eq!(hits[0].passage_id, "passage-authored-vector-clock");
+        assert!(hits
+            .iter()
+            .any(|hit| hit.passage_id == "passage-pdf-conference-clock"));
+        assert!(
+            hits.iter()
+                .filter(|hit| hit.passage_id.starts_with("passage-pdf-distributed-"))
+                .count()
+                <= 2
         );
     }
 
