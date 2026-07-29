@@ -59,6 +59,7 @@ export const browserRuntimeProbe: RuntimeProbe = {
   dataDir: "/tmp/kosh-browser-fixture",
   nowMs: 1_785_201_600_000,
   requestId: "fixture-request-1",
+  startupSmokeCanary: null,
 };
 
 export class FakeBackend implements Backend {

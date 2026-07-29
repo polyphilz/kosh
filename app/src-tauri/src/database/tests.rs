@@ -1,7 +1,7 @@
 use std::sync::{Arc, Barrier};
 
 use refinery::Target;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -170,6 +170,122 @@ fn pushed_v16_profile_upgrades_without_checksum_divergence() {
             .migration_heads,
         migrations::expected_heads()
     );
+}
+
+#[test]
+fn serialized_v16_profile_preserves_authored_search_and_citation_across_upgrade() {
+    const MAIN_SQL: &str = include_str!("fixtures/v16-profile/main-v16.sql");
+    const MEDIA_SQL: &str = include_str!("fixtures/v16-profile/media-v2.sql");
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/v16-profile/manifest.json"))
+            .expect("migration fixture manifest");
+    assert_eq!(manifest["schemaVersion"], 2);
+    assert_eq!(manifest["serialization"], "sqlite-sql-dump");
+    assert_eq!(manifest["mainMigrationHead"], 16);
+    assert_eq!(manifest["mediaMigrationHead"], 2);
+    assert_eq!(
+        sha256_hex(MAIN_SQL.as_bytes()),
+        manifest["mainSqlSha256"]
+            .as_str()
+            .expect("main SQL fixture hash")
+    );
+    assert_eq!(
+        sha256_hex(MEDIA_SQL.as_bytes()),
+        manifest["mediaSqlSha256"]
+            .as_str()
+            .expect("media SQL fixture hash")
+    );
+
+    let pair = TestPair::new();
+    materialize_sql_fixture(&pair.paths.main, MAIN_SQL);
+    materialize_sql_fixture(&pair.paths.media, MEDIA_SQL);
+
+    for launch in 0..2 {
+        let database =
+            Database::initialize(pair.paths.clone()).expect("upgrade serialized V16 fixture");
+        assert_eq!(
+            database
+                .client()
+                .diagnostics()
+                .expect("fixture diagnostics")
+                .migration_heads,
+            migrations::expected_heads()
+        );
+        let tidbit = database
+            .client()
+            .load_tidbit(
+                manifest["tidbitId"]
+                    .as_str()
+                    .expect("fixture tidbit ID")
+                    .to_owned(),
+            )
+            .expect("authored fixture tidbit");
+        assert_eq!(
+            tidbit.current_revision_id,
+            manifest["revisionId"]
+                .as_str()
+                .expect("fixture revision ID")
+        );
+        assert_eq!(
+            tidbit.body_markdown,
+            "The checked migration profile preserves exact amber evidence."
+        );
+
+        let search = database
+            .client()
+            .search_passages(SearchPassagesInput {
+                query: "amber".into(),
+                mode: LexicalSearchMode::Exact,
+                limit: 10,
+            })
+            .expect("exact fixture search");
+        assert_eq!(search.len(), 1, "launch {launch}");
+        let result = &search[0];
+        assert_eq!(
+            result.passage_id,
+            manifest["passageId"].as_str().expect("fixture passage ID")
+        );
+        assert_eq!(
+            result
+                .citation
+                .tidbit
+                .as_ref()
+                .expect("fixture citation tidbit")
+                .revision_id,
+            manifest["revisionId"]
+                .as_str()
+                .expect("fixture revision ID")
+        );
+        assert_eq!(
+            result.citation.sources[0].url.as_deref(),
+            manifest["sourceUrl"].as_str()
+        );
+        database.shutdown().expect("close upgraded fixture");
+    }
+}
+
+fn materialize_sql_fixture(path: &std::path::Path, sql: &str) {
+    let connection = Connection::open(path).expect("open serialized migration fixture");
+    connection
+        .execute_batch(sql)
+        .expect("materialize serialized migration fixture");
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("enable fixture foreign keys");
+    assert_eq!(
+        connection
+            .query_row("PRAGMA foreign_key_check", [], |_| Ok(1))
+            .optional()
+            .expect("serialized fixture foreign key check"),
+        None
+    );
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[test]

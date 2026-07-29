@@ -17,6 +17,7 @@ pnpm relevance:validate
 pnpm relevance:empty
 pnpm relevance:lexical
 pnpm relevance:hybrid
+pnpm relevance:gate
 ```
 
 The empty runner writes diffable JSON and text reports under the ignored
@@ -26,8 +27,8 @@ the same report contract.
 
 `relevance:lexical` writes a local copy of the report and should match the
 checked-in `reports/lexical-v1.{json,txt}` baseline. The media-aware baseline
-passes 19 of 20 queries, has Recall@10 0.95, MRR 0.9125, nDCG@10 0.9163,
-citation-locator accuracy 0.95, exact and phrase success 1.0, and zero forbidden
+passes 24 of 25 queries, has Recall@10 0.96, MRR 0.8950, nDCG@10 0.9056,
+citation-locator accuracy 0.96, exact and phrase success 1.0, and zero forbidden
 hits. OCR, PDF-page, and text-line queries pass, while the authored passage
 ranks first in a PDF-volume stress query. The remaining miss is the misspelled
 concurrency query marked for combined lexical and semantic retrieval.
@@ -37,9 +38,18 @@ fixture digest and the shipped Jina v1 model hash, then writes a local report
 that should match `reports/hybrid-v1.{json,txt}`. The vectors were generated
 from the pinned model through Kosh's verified llama.cpp runtime; tests only read
 the checked-in vectors and never download or start a model. The media-aware
-hybrid report passes all 20 queries with Recall@10, MRR, and citation-locator
-accuracy of 1.0, nDCG@10 0.9948, exact/phrase success of 1.0, and zero forbidden
-hits. Exact and code-identifier category metrics match the lexical baseline.
+hybrid report passes all 25 queries with Recall@10 and citation-locator accuracy
+of 1.0, MRR 0.9657, nDCG@10 0.9691, exact/phrase success of 1.0, and zero
+forbidden hits. Exact and code-identifier category metrics match the lexical
+baseline.
+
+`relevance:gate` is the release authority. It regenerates both reports in
+memory, requires at least 25 queries, enforces explicit lexical and hybrid
+metric floors, rejects precision regressions, and validates the ten-entry
+manual citation sample in `citation-audit-v1.json`. The audit covers authored
+and attachment evidence plus Markdown block, PDF page, OCR region, and text-line
+locators. Its ignored JSON receipt can be retained by CI without treating
+wall-clock observations as deterministic quality evidence.
 
 Maintainers with the pinned model and sidecar can regenerate the vector fixture
 before intentionally updating the reports:

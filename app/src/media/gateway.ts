@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { TauriCommand } from "../tauriProtocol";
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export interface MediaLimits {
@@ -40,7 +41,7 @@ export interface MediaMaintenanceReport {
 }
 
 export function loadMediaLimits(): Promise<MediaLimits> {
-  return invoke<MediaLimits>("media_limits");
+  return invoke<MediaLimits>(TauriCommand.MediaLimits);
 }
 
 export function attachmentMediaUrl(attachmentId: string): string {
@@ -51,9 +52,9 @@ export function attachmentMediaUrl(attachmentId: string): string {
 }
 
 export function scanMediaIntegrity(): Promise<MediaIntegrityReport> {
-  return invoke<MediaIntegrityReport>("media_integrity_scan");
+  return invoke<MediaIntegrityReport>(TauriCommand.MediaIntegrityScan);
 }
 
 export function maintainMedia(): Promise<MediaMaintenanceReport> {
-  return invoke<MediaMaintenanceReport>("maintain_media");
+  return invoke<MediaMaintenanceReport>(TauriCommand.MaintainMedia);
 }

@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 const themes = ["LIGHT", "DARK"] as const;
 
@@ -14,26 +14,11 @@ for (const theme of themes) {
 
     const catalogResults = await new AxeBuilder({ page }).analyze();
     expect(catalogResults.violations).toEqual([]);
-    await expect(page).toHaveScreenshot(`catalog-${theme.toLowerCase()}.png`, {
-      animations: "disabled",
-      caret: "hide",
-      fullPage: true,
-      maxDiffPixelRatio: 0.04,
-      threshold: 0.35,
-    });
-
     const trigger = page.getByRole("button", { name: "Open dialog" });
     await trigger.click();
     await expect(page.getByRole("dialog", { name: "Remove this source?" })).toBeVisible();
     const dialogResults = await new AxeBuilder({ page }).analyze();
     expect(dialogResults.violations).toEqual([]);
-    await expect(page).toHaveScreenshot(`dialog-${theme.toLowerCase()}.png`, {
-      animations: "disabled",
-      caret: "hide",
-      maxDiffPixelRatio: 0.04,
-      threshold: 0.35,
-    });
-
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toBeHidden();
     await expect(trigger).toBeFocused();

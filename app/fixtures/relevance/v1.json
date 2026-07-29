@@ -1112,6 +1112,138 @@
           "page": 113
         }
       }
+    },
+    {
+      "id": "query-particle-distribution",
+      "text": "what does temperature say about particle energy distributions",
+      "searchMode": "DEFAULT",
+      "category": "PROSE",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-heat-modern",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": ["passage-heat-caloric"],
+      "expectedCitation": {
+        "passageId": "passage-heat-modern",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 2,
+          "endBlock": 2,
+          "sourceStartByte": 36,
+          "sourceEndByte": 174,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-receipt-total",
+      "text": "invoice bearings total 86.40",
+      "searchMode": "DEFAULT",
+      "category": "OCR",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-ocr-receipt",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-ocr-receipt",
+        "locator": {
+          "kind": "OCR_REGION",
+          "page": null,
+          "region": {
+            "x": 84,
+            "y": 122,
+            "width": 1032,
+            "height": 214
+          }
+        }
+      }
+    },
+    {
+      "id": "query-stale-writer",
+      "text": "how do I stop an old lease holder from writing",
+      "searchMode": "DEFAULT",
+      "category": "PDF",
+      "retrievalNeed": "SEMANTIC",
+      "relevance": [
+        {
+          "passageId": "passage-pdf-distributed-113",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-pdf-distributed-113",
+        "locator": {
+          "kind": "PDF_PAGE",
+          "page": 113
+        }
+      }
+    },
+    {
+      "id": "query-citation-function",
+      "text": "backend.resolveCitation passageId",
+      "searchMode": "DEFAULT",
+      "category": "CODE_IDENTIFIER",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-code-resolve-citation",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-code-resolve-citation",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 2,
+          "endBlock": 2,
+          "sourceStartByte": 32,
+          "sourceEndByte": 121,
+          "startChar": null,
+          "endChar": null,
+          "startLine": 1,
+          "endLine": 1
+        }
+      }
+    },
+    {
+      "id": "query-expensive-worker-limit",
+      "text": "limit how many expensive workers run at once",
+      "searchMode": "DEFAULT",
+      "category": "SYNONYM",
+      "retrievalNeed": "SEMANTIC",
+      "relevance": [
+        {
+          "passageId": "passage-misspelling-concurrency",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-misspelling-concurrency",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 1,
+          "endBlock": 1,
+          "sourceStartByte": 12,
+          "sourceEndByte": 113,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 test("runtime route crosses the typed fake backend", async ({ page }) => {
   await page.goto("/#/runtime");

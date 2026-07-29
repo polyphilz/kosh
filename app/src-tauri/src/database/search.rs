@@ -36,6 +36,12 @@ pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
         .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
 }
 
+pub(crate) fn trigram_candidate_limit(result_limit: u32) -> u32 {
+    result_limit
+        .saturating_mul(4)
+        .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum LexicalSearchMode {
@@ -342,7 +348,13 @@ pub(crate) fn search_passages_with_semantics(
         });
     };
     let candidate_limit = candidate_limit(input.limit);
-    let lexical = lexical_ranked_candidates(connection, &query, candidate_limit)?;
+    let lexical = lexical_ranked_candidates(
+        connection,
+        &query,
+        candidate_limit,
+        trigram_candidate_limit(input.limit),
+        input.limit as usize,
+    )?;
     if input.mode == LexicalSearchMode::Exact {
         return Ok(SearchPassagesResponse {
             results: hydrate_ranked_passages(connection, lexical, input.limit as usize, false)?,
@@ -407,6 +419,8 @@ fn lexical_ranked_candidates(
     connection: &Connection,
     query: &ParsedLexicalQuery,
     limit: u32,
+    trigram_limit: u32,
+    result_limit: usize,
 ) -> Result<Vec<RankedLexicalDocument>> {
     let mut ranks = HashMap::<String, CandidateRanks>::new();
     if let Some(word_query) = query.word_match_query() {
@@ -416,12 +430,17 @@ fn lexical_ranked_candidates(
             CandidateIndex::Word,
         );
     }
-    if let Some(trigram_query) = query.trigram_match_query() {
-        install_ranks(
-            &mut ranks,
-            query_fts_index(connection, "passage_fts_trigram", &trigram_query, limit)?,
-            CandidateIndex::Trigram,
-        );
+    let trigram_query = query.trigram_match_query();
+    let mut trigram_saturated = false;
+    if let Some(trigram_query) = trigram_query.as_deref() {
+        let trigram_candidates = query_fts_index(
+            connection,
+            "passage_fts_trigram",
+            trigram_query,
+            trigram_limit,
+        )?;
+        trigram_saturated = trigram_candidates.len() == trigram_limit as usize;
+        install_ranks(&mut ranks, trigram_candidates, CandidateIndex::Trigram);
     }
     if let Some(short_query) = query.short_match_query() {
         install_ranks(
@@ -434,6 +453,36 @@ fn lexical_ranked_candidates(
         return Ok(Vec::new());
     }
 
+    let ranked = rank_candidate_documents(connection, query, ranks.clone(), limit)?;
+    if !trigram_saturated || trigram_limit >= limit || ranked.len() >= result_limit {
+        return Ok(ranked);
+    }
+
+    // Qualification uses immutable authored/extracted evidence after FTS
+    // nomination. If a bounded initial trigram pool is saturated but fails to
+    // fill the requested result page, widen to the full candidate budget so
+    // high-rank stale or single-atom rows cannot hide qualifying substrings.
+    install_ranks(
+        &mut ranks,
+        query_fts_index(
+            connection,
+            "passage_fts_trigram",
+            trigram_query
+                .as_deref()
+                .expect("saturation requires a trigram query"),
+            limit,
+        )?,
+        CandidateIndex::Trigram,
+    );
+    rank_candidate_documents(connection, query, ranks, limit)
+}
+
+fn rank_candidate_documents(
+    connection: &Connection,
+    query: &ParsedLexicalQuery,
+    ranks: HashMap<String, CandidateRanks>,
+    limit: u32,
+) -> Result<Vec<RankedLexicalDocument>> {
     let documents = load_search_documents(connection, ranks)?;
     Ok(rank_lexical_documents(query, documents, limit as usize))
 }
@@ -1232,7 +1281,8 @@ fn query_fts_index(
          JOIN passage_search_document AS document
            ON document.rowid = {index}.rowid
          WHERE {index} MATCH ?1
-         ORDER BY bm25({index}, {FTS_BM25_WEIGHTS}),
+           AND {index}.rank MATCH 'bm25({FTS_BM25_WEIGHTS})'
+         ORDER BY {index}.rank,
                   document.updated_at DESC,
                   document.passage_id
          LIMIT ?2"
@@ -2085,6 +2135,88 @@ mod tests {
                 .expect("restored search")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn saturated_word_candidates_cannot_hide_a_qualifying_substring_result() {
+        let root = tempfile::tempdir().expect("temporary saturated search library");
+        let paths = DatabasePaths::new(root.path());
+        let database = Database::initialize(paths.clone()).expect("search database");
+        let client = database.client();
+
+        for index in 0..64_u64 {
+            let atom = if index < 32 { "apple" } else { "orange" };
+            client
+                .create_tidbit(CreateTidbitWrite {
+                    input: TidbitDraft {
+                        title: Some(format!("{atom} {atom} {atom} title decoy {index}")),
+                        body_markdown: format!(
+                            "# {atom}\n\n{atom} {atom} {atom} single-atom decoy."
+                        ),
+                        sources: Vec::new(),
+                    },
+                    now_ms: i64::try_from(index).expect("bounded timestamp"),
+                    tidbit_id: format!("019f547b-6200-7000-8000-{:012x}", index * 2 + 1),
+                    revision_id: format!("019f547b-6200-7000-8000-{:012x}", index * 2 + 2),
+                    source_ids: Vec::new(),
+                })
+                .expect("create word-only decoy");
+        }
+        let target = client
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: None,
+                    body_markdown: "The pineapple and bloodorange pairing is the answer.".into(),
+                    sources: Vec::new(),
+                },
+                now_ms: 100,
+                tidbit_id: "019f547b-6200-7000-8000-000000001001".into(),
+                revision_id: "019f547b-6200-7000-8000-000000001002".into(),
+                source_ids: Vec::new(),
+            })
+            .expect("create substring target");
+
+        drop(client);
+        database
+            .shutdown()
+            .expect("close saturated search database");
+        drop(database);
+        let connection =
+            connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+                .expect("derived-index maintenance writer");
+        connection
+            .execute(
+                "UPDATE passage_search_document
+                 SET title = 'apple orange apple orange apple orange'
+                 WHERE tidbit_id <> ?1",
+                params![target.id],
+            )
+            .expect("simulate stale high-rank derived candidates");
+
+        let results = super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "apple orange".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("search saturated word and trigram candidates");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0]
+                .citation
+                .tidbit
+                .as_ref()
+                .map(|citation| citation.id.as_str()),
+            Some(target.id.as_str())
+        );
+        assert_eq!(
+            results[0].matched_fields,
+            vec![SearchField::Body],
+            "both atoms must be proven from immutable authored text"
         );
     }
 

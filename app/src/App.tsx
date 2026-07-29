@@ -6,8 +6,7 @@ import { ErrorBoundary } from "./components/States";
 import { Shortcut } from "./components/Shortcut";
 import { acceleratorKeys, describeAccelerator } from "./shortcuts/accelerator";
 import { bindingFor, ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
-
-const OPEN_SETTINGS_EVENT = "kosh://open-settings";
+import { TauriEvent } from "./tauriProtocol";
 
 const destinations = [
   { label: "Search", to: "/" },
@@ -36,7 +35,7 @@ function AppShell() {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen(OPEN_SETTINGS_EVENT, () => {
+    void listen(TauriEvent.OpenSettings, () => {
       if (active) void navigate({ to: "/settings" });
     }).then((stop) => {
       if (active) unlisten = stop;

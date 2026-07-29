@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { TauriCommand, TauriEvent } from "../tauriProtocol";
 import type {
   Backend,
   BeginResearchProcessInput,
@@ -47,89 +48,100 @@ import type {
 } from "./contracts";
 
 export const tauriBackend: Backend = {
-  runtimeProbe: () => invoke<RuntimeProbe>("runtime_probe"),
-  semanticRuntimeStatus: () => invoke<SemanticRuntimeStatus>("semantic_runtime_status"),
-  prepareSemanticRuntime: () => invoke<SemanticRuntimeStatus>("prepare_semantic_runtime"),
-  retrySemanticRuntime: () => invoke<SemanticRuntimeStatus>("retry_semantic_runtime"),
-  repairSemanticRuntime: () => invoke<SemanticRuntimeStatus>("repair_semantic_runtime"),
-  semanticRuntimeLogs: () => invoke<SemanticRuntimeLogs>("semantic_runtime_logs"),
+  runtimeProbe: () => invoke<RuntimeProbe>(TauriCommand.RuntimeProbe),
+  semanticRuntimeStatus: () => invoke<SemanticRuntimeStatus>(TauriCommand.SemanticRuntimeStatus),
+  prepareSemanticRuntime: () => invoke<SemanticRuntimeStatus>(TauriCommand.PrepareSemanticRuntime),
+  retrySemanticRuntime: () => invoke<SemanticRuntimeStatus>(TauriCommand.RetrySemanticRuntime),
+  repairSemanticRuntime: () => invoke<SemanticRuntimeStatus>(TauriCommand.RepairSemanticRuntime),
+  semanticRuntimeLogs: () => invoke<SemanticRuntimeLogs>(TauriCommand.SemanticRuntimeLogs),
   passageEmbeddingIndexStatus: () =>
-    invoke<PassageEmbeddingIndexStatus>("passage_embedding_index_status"),
-  loadMaintenanceDiagnostics: () => invoke<MaintenanceDiagnostics>("load_maintenance_diagnostics"),
-  runIntegrityCheck: () => invoke<IntegrityCheckOutcome>("run_integrity_check"),
-  rebuildSearchIndexes: () => invoke<MaintenanceOutcome>("rebuild_search_indexes"),
-  rebuildEmbeddingIndex: () => invoke<MaintenanceOutcome>("rebuild_embedding_index"),
-  retryFailedExtractions: () => invoke<MaintenanceOutcome>("retry_failed_extractions"),
-  reclaimEligibleMedia: () => invoke<MaintenanceOutcome>("reclaim_eligible_media"),
-  createTidbit: (input: TidbitDraft) => invoke<TidbitRecord>("create_tidbit", { input }),
-  loadTidbit: (id: string) => invoke<TidbitRecord>("load_tidbit", { id }),
-  listTidbits: (input: ListTidbitsInput) => invoke<TidbitListPage>("list_tidbits", { input }),
+    invoke<PassageEmbeddingIndexStatus>(TauriCommand.PassageEmbeddingIndexStatus),
+  loadMaintenanceDiagnostics: () =>
+    invoke<MaintenanceDiagnostics>(TauriCommand.LoadMaintenanceDiagnostics),
+  runIntegrityCheck: () => invoke<IntegrityCheckOutcome>(TauriCommand.RunIntegrityCheck),
+  rebuildSearchIndexes: () => invoke<MaintenanceOutcome>(TauriCommand.RebuildSearchIndexes),
+  rebuildEmbeddingIndex: () => invoke<MaintenanceOutcome>(TauriCommand.RebuildEmbeddingIndex),
+  retryFailedExtractions: () => invoke<MaintenanceOutcome>(TauriCommand.RetryFailedExtractions),
+  reclaimEligibleMedia: () => invoke<MaintenanceOutcome>(TauriCommand.ReclaimEligibleMedia),
+  createTidbit: (input: TidbitDraft) => invoke<TidbitRecord>(TauriCommand.CreateTidbit, { input }),
+  loadTidbit: (id: string) => invoke<TidbitRecord>(TauriCommand.LoadTidbit, { id }),
+  listTidbits: (input: ListTidbitsInput) =>
+    invoke<TidbitListPage>(TauriCommand.ListTidbits, { input }),
   listTidbitRevisions: (input: ListTidbitRevisionsInput) =>
-    invoke<TidbitRevisionPage>("list_tidbit_revisions", { input }),
+    invoke<TidbitRevisionPage>(TauriCommand.ListTidbitRevisions, { input }),
   loadTidbitRevision: (tidbitId: string, revisionId: string) =>
-    invoke<TidbitRevisionRecord>("load_tidbit_revision", { tidbitId, revisionId }),
-  editTidbit: (input: EditTidbitInput) => invoke<TidbitRecord>("edit_tidbit", { input }),
-  deleteTidbit: (input: DeleteTidbitInput) => invoke<TidbitRecord>("delete_tidbit", { input }),
-  restoreTidbit: (input: RestoreTidbitInput) => invoke<TidbitRecord>("restore_tidbit", { input }),
-  purgeTidbit: (input: PurgeTidbitInput) => invoke<boolean>("purge_tidbit", { input }),
-  openSourceUrl: (sourceId: string) => invoke<void>("open_source_url", { sourceId }),
+    invoke<TidbitRevisionRecord>(TauriCommand.LoadTidbitRevision, { tidbitId, revisionId }),
+  editTidbit: (input: EditTidbitInput) => invoke<TidbitRecord>(TauriCommand.EditTidbit, { input }),
+  deleteTidbit: (input: DeleteTidbitInput) =>
+    invoke<TidbitRecord>(TauriCommand.DeleteTidbit, { input }),
+  restoreTidbit: (input: RestoreTidbitInput) =>
+    invoke<TidbitRecord>(TauriCommand.RestoreTidbit, { input }),
+  purgeTidbit: (input: PurgeTidbitInput) => invoke<boolean>(TauriCommand.PurgeTidbit, { input }),
+  openSourceUrl: (sourceId: string) => invoke<void>(TauriCommand.OpenSourceUrl, { sourceId }),
   resolveCitation: (passageId: string) =>
-    invoke<CitationResolution>("resolve_citation", { passageId }),
+    invoke<CitationResolution>(TauriCommand.ResolveCitation, { passageId }),
   searchPassages: (input: SearchPassagesInput) =>
-    invoke<SearchPassagesResponse>("search_passages", { input }),
-  saveDraft: (input: SaveDraftInput) => invoke<DraftRecord>("save_draft", { input }),
-  loadDraft: (contextKey: string) => invoke<DraftRecord | null>("load_draft", { contextKey }),
-  clearDraft: (input: ClearDraftInput) => invoke<boolean>("clear_draft", { input }),
-  loadShortcutSettings: () => invoke<ShortcutSettingsSnapshot>("load_shortcut_settings"),
+    invoke<SearchPassagesResponse>(TauriCommand.SearchPassages, { input }),
+  saveDraft: (input: SaveDraftInput) => invoke<DraftRecord>(TauriCommand.SaveDraft, { input }),
+  loadDraft: (contextKey: string) =>
+    invoke<DraftRecord | null>(TauriCommand.LoadDraft, { contextKey }),
+  clearDraft: (input: ClearDraftInput) => invoke<boolean>(TauriCommand.ClearDraft, { input }),
+  loadShortcutSettings: () => invoke<ShortcutSettingsSnapshot>(TauriCommand.LoadShortcutSettings),
   setShortcutSettings: (input: SetShortcutSettingsInput) =>
-    invoke<ShortcutSettingsSnapshot>("set_shortcut_settings", { input }),
-  selectImage: () => invoke<string | null>("select_image"),
+    invoke<ShortcutSettingsSnapshot>(TauriCommand.SetShortcutSettings, { input }),
+  selectImage: () => invoke<string | null>(TauriCommand.SelectImage),
   ingestSelectedImage: (selectionId: string, draftId: string) =>
-    invoke<ImageRecord>("ingest_selected_image", { selectionId, draftId }),
-  captureClipboardImage: () => invoke<string>("capture_clipboard_image"),
+    invoke<ImageRecord>(TauriCommand.IngestSelectedImage, { selectionId, draftId }),
+  captureClipboardImage: () => invoke<string>(TauriCommand.CaptureClipboardImage),
   ingestClipboardImage: (captureId: string, draftId: string) =>
-    invoke<ImageRecord>("ingest_clipboard_image", { captureId, draftId }),
+    invoke<ImageRecord>(TauriCommand.IngestClipboardImage, { captureId, draftId }),
   ingestDroppedImages: (dropId: string, draftId: string) =>
-    invoke<ImageDropIngestResult>("ingest_dropped_images", { dropId, draftId }),
+    invoke<ImageDropIngestResult>(TauriCommand.IngestDroppedImages, { dropId, draftId }),
   imageStatus: (attachmentId: string) =>
-    invoke<ImageStatusRecord>("image_status", { attachmentId }),
+    invoke<ImageStatusRecord>(TauriCommand.ImageStatus, { attachmentId }),
   retryImageOcr: (attachmentId: string) =>
-    invoke<ImageStatusRecord>("retry_image_ocr", { attachmentId }),
-  imageOcrDiagnostics: () => invoke<ImageOcrDiagnostics>("image_ocr_diagnostics"),
-  selectPdf: () => invoke<string | null>("select_pdf"),
+    invoke<ImageStatusRecord>(TauriCommand.RetryImageOcr, { attachmentId }),
+  imageOcrDiagnostics: () => invoke<ImageOcrDiagnostics>(TauriCommand.ImageOcrDiagnostics),
+  selectPdf: () => invoke<string | null>(TauriCommand.SelectPdf),
   ingestSelectedPdf: (selectionId: string, draftId: string) =>
-    invoke<PdfRecord>("ingest_selected_pdf", { selectionId, draftId }),
-  selectAttachment: () => invoke<string | null>("select_attachment"),
+    invoke<PdfRecord>(TauriCommand.IngestSelectedPdf, { selectionId, draftId }),
+  selectAttachment: () => invoke<string | null>(TauriCommand.SelectAttachment),
   ingestSelectedAttachment: (selectionId: string, draftId: string) =>
-    invoke<SelectedAttachmentRecord>("ingest_selected_attachment", { selectionId, draftId }),
+    invoke<SelectedAttachmentRecord>(TauriCommand.IngestSelectedAttachment, {
+      selectionId,
+      draftId,
+    }),
   attachmentStatus: (attachmentId: string) =>
-    invoke<GenericAttachmentStatusRecord>("attachment_status", { attachmentId }),
+    invoke<GenericAttachmentStatusRecord>(TauriCommand.AttachmentStatus, { attachmentId }),
   openAttachmentExternal: (attachmentId: string) =>
-    invoke<void>("open_attachment_external", { attachmentId }),
+    invoke<void>(TauriCommand.OpenAttachmentExternal, { attachmentId }),
   revealAttachmentInFinder: (attachmentId: string) =>
-    invoke<void>("reveal_attachment_in_finder", { attachmentId }),
+    invoke<void>(TauriCommand.RevealAttachmentInFinder, { attachmentId }),
   setFileDropConsumerActive: (active: boolean) =>
-    invoke<void>("set_file_drop_consumer_active", { active }),
+    invoke<void>(TauriCommand.SetFileDropConsumerActive, { active }),
   discardFileDropSelections: (selectionIds: string[]) =>
-    invoke<void>("discard_file_drop_selections", { selectionIds }),
-  pdfStatus: (attachmentId: string) => invoke<PdfStatusRecord>("pdf_status", { attachmentId }),
+    invoke<void>(TauriCommand.DiscardFileDropSelections, { selectionIds }),
+  pdfStatus: (attachmentId: string) =>
+    invoke<PdfStatusRecord>(TauriCommand.PdfStatus, { attachmentId }),
   retryPdfExtraction: (attachmentId: string) =>
-    invoke<PdfStatusRecord>("retry_pdf_extraction", { attachmentId }),
-  openPdfExternal: (attachmentId: string) => invoke<void>("open_pdf_external", { attachmentId }),
-  claudeSetupStatus: () => invoke<ClaudeSetupStatus>("claude_setup_status"),
-  claudeCliDefaults: () => invoke<ClaudeCliDefaults>("claude_cli_defaults"),
+    invoke<PdfStatusRecord>(TauriCommand.RetryPdfExtraction, { attachmentId }),
+  openPdfExternal: (attachmentId: string) =>
+    invoke<void>(TauriCommand.OpenPdfExternal, { attachmentId }),
+  claudeSetupStatus: () => invoke<ClaudeSetupStatus>(TauriCommand.ClaudeSetupStatus),
+  claudeCliDefaults: () => invoke<ClaudeCliDefaults>(TauriCommand.ClaudeCliDefaults),
   startResearchProcess: (input: BeginResearchProcessInput) =>
-    invoke<StartResearchProcessOutput>("start_research_process", { input }),
+    invoke<StartResearchProcessOutput>(TauriCommand.StartResearchProcess, { input }),
   rerunResearchProcess: (runId: string) =>
-    invoke<StartResearchProcessOutput>("rerun_research_process", { runId }),
-  cancelResearchProcess: (runId: string) => invoke<boolean>("cancel_research_process", { runId }),
+    invoke<StartResearchProcessOutput>(TauriCommand.RerunResearchProcess, { runId }),
+  cancelResearchProcess: (runId: string) =>
+    invoke<boolean>(TauriCommand.CancelResearchProcess, { runId }),
   listResearchRuns: (input: ListResearchRunsInput) =>
-    invoke<ResearchRunPage>("list_research_runs", { input }),
-  loadResearchRun: (id: string) => invoke<ResearchRunRecord>("load_research_run", { id }),
+    invoke<ResearchRunPage>(TauriCommand.ListResearchRuns, { input }),
+  loadResearchRun: (id: string) => invoke<ResearchRunRecord>(TauriCommand.LoadResearchRun, { id }),
   saveResearchAnswerAsTidbit: (runId: string) =>
-    invoke<TidbitRecord>("save_research_answer_as_tidbit", { runId }),
+    invoke<TidbitRecord>(TauriCommand.SaveResearchAnswerAsTidbit, { runId }),
   onResearchProcessEvent: async (handler: (event: ResearchProcessEvent) => void) =>
-    listen<ResearchProcessEvent>("kosh://research-process", ({ payload }) => {
+    listen<ResearchProcessEvent>(TauriEvent.ResearchProcess, ({ payload }) => {
       handler(payload);
     }),
 };

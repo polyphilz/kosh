@@ -85,7 +85,7 @@ jq -n \
   --argjson created "$created" \
   --arg passage "$passage_id" \
   '{
-    schemaVersion: 1,
+    schemaVersion: 2,
     headSha: $head,
     expectation: $expectation,
     dataDir: $data,
@@ -100,7 +100,16 @@ jq -n \
         rootChildCount: 1,
         frontendOrigin: "http://127.0.0.1:1420",
         probeDataDir: $data,
-        probeRequestId: "00000000-0000-7000-8000-000000000004"
+        probeRequestId: "00000000-0000-7000-8000-000000000004",
+        canary: {
+          executionMode: "EXACT",
+          citationState: "CURRENT",
+          resultCount: 1,
+          passageId: $passage,
+          resolvedPassageId: $passage,
+          revisionId: "00000000-0000-7000-8000-000000000002",
+          sourceUrl: "https://example.invalid/kosh-progressive-operability"
+        }
       },
       {
         surface: "quick-add",
@@ -109,7 +118,16 @@ jq -n \
         rootChildCount: 1,
         frontendOrigin: "http://127.0.0.1:1420",
         probeDataDir: $data,
-        probeRequestId: "00000000-0000-7000-8000-000000000005"
+        probeRequestId: "00000000-0000-7000-8000-000000000005",
+        canary: {
+          executionMode: "EXACT",
+          citationState: "CURRENT",
+          resultCount: 1,
+          passageId: $passage,
+          resolvedPassageId: $passage,
+          revisionId: "00000000-0000-7000-8000-000000000002",
+          sourceUrl: "https://example.invalid/kosh-progressive-operability"
+        }
       }
     ],
     diagnostics: {

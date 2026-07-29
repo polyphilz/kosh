@@ -1,6 +1,7 @@
 mod fixture;
 mod hybrid;
 mod lexical;
+mod quality;
 mod report;
 mod scale;
 
@@ -18,6 +19,13 @@ pub use hybrid::{
 pub use lexical::{
     benchmark_scale_lexical, LexicalFixtureRetriever, LexicalPerformanceReport,
     INTERACTIVE_LEXICAL_P95_BUDGET_MS, LEXICAL_PERFORMANCE_SCHEMA_VERSION,
+};
+pub use quality::{
+    enforce_quality_gate, CitationAudit, CitationAuditEntry, QualityGateReport, QualityThresholds,
+    CITATION_AUDIT_SCHEMA_VERSION, MINIMUM_CITATION_AUDIT_COUNT, MINIMUM_HYBRID_CITATION_ACCURACY,
+    MINIMUM_HYBRID_MRR, MINIMUM_HYBRID_NDCG_AT_10, MINIMUM_HYBRID_RECALL_AT_10,
+    MINIMUM_LEXICAL_CITATION_ACCURACY, MINIMUM_LEXICAL_RECALL_AT_10, MINIMUM_QUERY_COUNT,
+    QUALITY_GATE_SCHEMA_VERSION,
 };
 pub use report::{
     run_relevance_suite, EmptyRetriever, QueryMetrics, QueryReport, RelevanceReport, ReportSummary,
@@ -57,6 +65,8 @@ pub enum RelevanceError {
     LexicalBenchmark(String),
     #[error("hybrid vector fixture failed: {0}")]
     HybridVectors(String),
+    #[error("search quality gate failed: {0}")]
+    QualityGate(String),
 }
 
 pub type Result<T> = std::result::Result<T, RelevanceError>;

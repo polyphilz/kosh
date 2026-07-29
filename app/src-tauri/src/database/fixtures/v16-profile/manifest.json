@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "profile": "v16-authored-tidbit",
+  "serialization": "sqlite-sql-dump",
+  "mainMigrationHead": 16,
+  "mediaMigrationHead": 2,
+  "mainSqlSha256": "fde5ebc55f6a5b035727e5c1417744b0d82026160cb259fbc7562c70cbea4f6d",
+  "mediaSqlSha256": "9f8cc25d3b18d3b6bd3388fed54c905a3e717bf0bd2ee8c7146dc79a0012a662",
+  "tidbitId": "019f547b-6200-7000-8000-000000000901",
+  "revisionId": "019f547b-6200-7000-8000-000000000902",
+  "passageId": "019f547b-6200-7000-8000-000000000904",
+  "sourceUrl": "https://example.com/migration-v16"
+}

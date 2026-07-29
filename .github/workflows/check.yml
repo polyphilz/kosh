@@ -48,8 +48,142 @@ jobs:
           cache: pnpm
           cache-dependency-path: app/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm fmt:check
+      - run: pnpm build
+      - run: pnpm test
+
+  browser-functional:
+    name: browser functional and accessibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm check:frontend
+      - run: pnpm test:browser:functional
+      - name: Retain failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-functional-failure-${{ github.run_id }}
+          path: app/test-results/playwright
+          retention-days: 7
+
+  browser-webkit:
+    name: WebKit editor and keyboard contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps webkit
+      - run: pnpm test:browser:webkit
+      - name: Retain failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-webkit-failure-${{ github.run_id }}
+          path: app/test-results/playwright
+          retention-days: 7
+
+  browser-visual:
+    name: pinned visual contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser:visual
+      - name: Retain visual diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-visual-failure-${{ github.run_id }}
+          path: app/test-results/playwright
+          retention-days: 7
+
+  bundle:
+    name: production bundle isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-safety-${{ github.run_id }}
+          path: app/test-results/bundle/report.json
+          retention-days: 14
+
+  relevance:
+    name: search and citation quality
+    runs-on: macos-15
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: cargo run --locked --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- quality-gate
+      - run: cargo run --release --locked --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- benchmark-lexical .data/relevance/reports/lexical-scale-v1.performance.json 10000 200
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relevance-quality-${{ github.run_id }}
+          path: app/.data/relevance/reports
+          retention-days: 14
 
   native:
     name: native
@@ -58,6 +192,32 @@ jobs:
     defaults:
       run:
         working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          components: clippy, rustfmt
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: pnpm install --frozen-lockfile
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-support -- -D warnings
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support
+
+  native-startup:
+    name: native startup, restart, search, and citation
+    runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -74,9 +234,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
-      - run: pnpm install --frozen-lockfile
-      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support
+      - run: pnpm --dir app install --frozen-lockfile
       - name: Launch and restart the real Tauri application
-        working-directory: .
         run: scripts/loop/runtime-gate.sh --ci
+      - name: Retain exact-head native receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-startup-${{ github.run_id }}
+          path: |
+            .kosh-loop/runtime-gate.json
+            .kosh-loop/runtime/launches/**/*.json
+            .kosh-loop/runtime/launches/**/*.log
+          if-no-files-found: error
+          retention-days: 14

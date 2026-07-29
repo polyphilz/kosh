@@ -26,9 +26,9 @@ import { Input } from "../components/Input";
 import { RichTextEditor, type RichTextEditorHandle } from "../markdown/RichTextEditor";
 import { classNames } from "../lib/classNames";
 import { registerQuitParticipant } from "../lifecycle/quit";
+import { TauriEvent } from "../tauriProtocol";
 
 const AUTOSAVE_DELAY_MS = 350;
-const FILE_DROP_EVENT = "kosh://file-drop";
 
 interface FileDropNotice {
   selections: Array<{
@@ -235,7 +235,7 @@ export const TidbitComposer = forwardRef<TidbitComposerHandle, TidbitComposerPro
       let active = true;
       let unlisten: (() => void) | undefined;
       void listen<FileDropNotice>(
-        FILE_DROP_EVENT,
+        TauriEvent.FileDrop,
         (event) => {
           const selectionIds = event.payload.selections.map((selection) => selection.selectionId);
           if (!active || !readyRef.current || busyRef.current) {

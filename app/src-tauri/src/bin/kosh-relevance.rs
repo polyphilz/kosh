@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use kosh_lib::relevance::{
-    benchmark_scale_lexical, generate_hybrid_vector_fixture, generate_scale_corpus,
-    measure_scale_generation, read_json, run_relevance_suite, write_pretty_json, write_text,
-    EmptyRetriever, HybridFixtureRetriever, HybridVectorFixture, LexicalFixtureRetriever,
-    RelevanceFixture, ScaleGenerationOptions,
+    benchmark_scale_lexical, enforce_quality_gate, generate_hybrid_vector_fixture,
+    generate_scale_corpus, measure_scale_generation, read_json, run_relevance_suite,
+    write_pretty_json, write_text, CitationAudit, EmptyRetriever, HybridFixtureRetriever,
+    HybridVectorFixture, LexicalFixtureRetriever, RelevanceFixture, ScaleGenerationOptions,
 };
 use kosh_lib::EmbeddingRuntime;
 
@@ -13,6 +13,8 @@ const DEFAULT_EMPTY_PREFIX: &str = ".data/relevance/reports/empty-v1";
 const DEFAULT_LEXICAL_PREFIX: &str = ".data/relevance/reports/lexical-v1";
 const DEFAULT_HYBRID_VECTOR_FIXTURE: &str = "fixtures/relevance/jina-v1-vectors.json";
 const DEFAULT_HYBRID_PREFIX: &str = ".data/relevance/reports/hybrid-v1";
+const DEFAULT_CITATION_AUDIT: &str = "fixtures/relevance/citation-audit-v1.json";
+const DEFAULT_QUALITY_GATE_OUTPUT: &str = ".data/relevance/reports/quality-gate-v1.json";
 const DEFAULT_SEMANTIC_DATA_ROOT: &str = ".data/relevance/semantic-runtime";
 const DEFAULT_RESOURCE_DIR: &str = "src-tauri/resources";
 const DEFAULT_SCALE_OUTPUT: &str = ".data/relevance/scale-v1.json";
@@ -162,6 +164,49 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
                 text_path.display()
             );
         }
+        "quality-gate" => {
+            expect_argument_count(&arguments, 1, 5)?;
+            let fixture_path =
+                PathBuf::from(arguments.get(1).map_or(DEFAULT_FIXTURE, String::as_str));
+            let vector_path = PathBuf::from(
+                arguments
+                    .get(2)
+                    .map_or(DEFAULT_HYBRID_VECTOR_FIXTURE, String::as_str),
+            );
+            let audit_path = PathBuf::from(
+                arguments
+                    .get(3)
+                    .map_or(DEFAULT_CITATION_AUDIT, String::as_str),
+            );
+            let output = PathBuf::from(
+                arguments
+                    .get(4)
+                    .map_or(DEFAULT_QUALITY_GATE_OUTPUT, String::as_str),
+            );
+            let fixture: RelevanceFixture =
+                read_json(&fixture_path).map_err(|error| error.to_string())?;
+            let vectors: HybridVectorFixture =
+                read_json(&vector_path).map_err(|error| error.to_string())?;
+            let audit: CitationAudit = read_json(&audit_path).map_err(|error| error.to_string())?;
+            let lexical = run_relevance_suite(&fixture, &mut LexicalFixtureRetriever)
+                .map_err(|error| error.to_string())?;
+            let mut hybrid_retriever = HybridFixtureRetriever::new(&fixture, vectors)
+                .map_err(|error| error.to_string())?;
+            let hybrid = run_relevance_suite(&fixture, &mut hybrid_retriever)
+                .map_err(|error| error.to_string())?;
+            let report = enforce_quality_gate(&fixture, &lexical, &hybrid, &audit)
+                .map_err(|error| error.to_string())?;
+            write_pretty_json(&output, &report).map_err(|error| error.to_string())?;
+            println!(
+                "search quality gate passed: {} queries, {} audited citations, hybrid Recall@10 {:.4}, MRR {:.4}, nDCG@10 {:.4}",
+                report.hybrid.query_count,
+                report.citation_audit_count,
+                report.hybrid.recall_at_10,
+                report.hybrid.mean_reciprocal_rank,
+                report.hybrid.ndcg_at_10,
+            );
+            println!("wrote {}", output.display());
+        }
         "generate-scale" => {
             expect_argument_count(&arguments, 1, 4)?;
             let output = PathBuf::from(
@@ -296,6 +341,7 @@ fn usage() -> String {
      kosh-relevance lexical-report [fixture] [output-prefix]\n  \
      kosh-relevance hybrid-vectors [fixture] [output] [data-root] [resource-dir]\n  \
      kosh-relevance hybrid-report [fixture] [vectors] [output-prefix]\n  \
+     kosh-relevance quality-gate [fixture] [vectors] [citation-audit] [output]\n  \
      kosh-relevance generate-scale [output] [count] [seed]\n  \
      kosh-relevance benchmark-lexical [output] [count] [queries] [seed]"
         .into()
