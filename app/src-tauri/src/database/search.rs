@@ -37,7 +37,9 @@ pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
 }
 
 pub(crate) fn trigram_candidate_limit(result_limit: u32) -> u32 {
-    candidate_limit(result_limit)
+    result_limit
+        .saturating_mul(4)
+        .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -351,6 +353,7 @@ pub(crate) fn search_passages_with_semantics(
         &query,
         candidate_limit,
         trigram_candidate_limit(input.limit),
+        input.limit as usize,
     )?;
     if input.mode == LexicalSearchMode::Exact {
         return Ok(SearchPassagesResponse {
@@ -417,6 +420,7 @@ fn lexical_ranked_candidates(
     query: &ParsedLexicalQuery,
     limit: u32,
     trigram_limit: u32,
+    result_limit: usize,
 ) -> Result<Vec<RankedLexicalDocument>> {
     let mut ranks = HashMap::<String, CandidateRanks>::new();
     if let Some(word_query) = query.word_match_query() {
@@ -426,17 +430,17 @@ fn lexical_ranked_candidates(
             CandidateIndex::Word,
         );
     }
-    if let Some(trigram_query) = query.trigram_match_query() {
-        install_ranks(
-            &mut ranks,
-            query_fts_index(
-                connection,
-                "passage_fts_trigram",
-                &trigram_query,
-                trigram_limit,
-            )?,
-            CandidateIndex::Trigram,
-        );
+    let trigram_query = query.trigram_match_query();
+    let mut trigram_saturated = false;
+    if let Some(trigram_query) = trigram_query.as_deref() {
+        let trigram_candidates = query_fts_index(
+            connection,
+            "passage_fts_trigram",
+            trigram_query,
+            trigram_limit,
+        )?;
+        trigram_saturated = trigram_candidates.len() == trigram_limit as usize;
+        install_ranks(&mut ranks, trigram_candidates, CandidateIndex::Trigram);
     }
     if let Some(short_query) = query.short_match_query() {
         install_ranks(
@@ -449,6 +453,36 @@ fn lexical_ranked_candidates(
         return Ok(Vec::new());
     }
 
+    let ranked = rank_candidate_documents(connection, query, ranks.clone(), limit)?;
+    if !trigram_saturated || trigram_limit >= limit || ranked.len() >= result_limit {
+        return Ok(ranked);
+    }
+
+    // Qualification uses immutable authored/extracted evidence after FTS
+    // nomination. If a bounded initial trigram pool is saturated but fails to
+    // fill the requested result page, widen to the full candidate budget so
+    // high-rank stale or single-atom rows cannot hide qualifying substrings.
+    install_ranks(
+        &mut ranks,
+        query_fts_index(
+            connection,
+            "passage_fts_trigram",
+            trigram_query
+                .as_deref()
+                .expect("saturation requires a trigram query"),
+            limit,
+        )?,
+        CandidateIndex::Trigram,
+    );
+    rank_candidate_documents(connection, query, ranks, limit)
+}
+
+fn rank_candidate_documents(
+    connection: &Connection,
+    query: &ParsedLexicalQuery,
+    ranks: HashMap<String, CandidateRanks>,
+    limit: u32,
+) -> Result<Vec<RankedLexicalDocument>> {
     let documents = load_search_documents(connection, ranks)?;
     Ok(rank_lexical_documents(query, documents, limit as usize))
 }
