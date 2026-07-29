@@ -10,7 +10,7 @@ export function StartupSmokeReady({ surface }: StartupSmokeReadyProps) {
   const backend = useBackend();
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (!import.meta.env.DEV || !("__TAURI_INTERNALS__" in window)) return;
 
     let canceled = false;
     void (async () => {
