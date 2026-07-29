@@ -315,7 +315,7 @@ pub(super) fn search_passages(
     .results)
 }
 
-pub(super) fn search_passages_with_semantics(
+pub(crate) fn search_passages_with_semantics(
     connection: &Connection,
     input: SearchPassagesInput,
     query_embedding: Option<&[f32]>,

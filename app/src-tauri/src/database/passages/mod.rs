@@ -423,7 +423,7 @@ pub(super) fn deactivate_tidbit(transaction: &Transaction<'_>, tidbit_id: &str) 
     Ok(())
 }
 
-pub(super) fn resolve_citation(
+pub(crate) fn resolve_citation(
     connection: &Connection,
     passage_id: &str,
 ) -> Result<CitationResolution> {

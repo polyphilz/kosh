@@ -360,7 +360,7 @@ pub(super) fn restore_tidbit(
     load_tidbit(connection, &input.id)
 }
 
-pub(super) fn load_tidbit(connection: &Connection, id: &str) -> Result<Tidbit> {
+pub(crate) fn load_tidbit(connection: &Connection, id: &str) -> Result<Tidbit> {
     validate_uuid_v7(id, "id")?;
     let mut tidbit = connection
         .query_row(

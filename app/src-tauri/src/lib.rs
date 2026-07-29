@@ -6,6 +6,7 @@ mod media;
 mod passage_embedding_indexer;
 mod pdf;
 pub mod relevance;
+pub mod research;
 mod runtime;
 mod windows;
 

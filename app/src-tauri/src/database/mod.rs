@@ -1,5 +1,5 @@
 pub(crate) mod commands;
-mod connection;
+pub(crate) mod connection;
 pub(crate) mod drafts;
 pub(crate) mod embedding_index;
 mod error;
@@ -9,7 +9,7 @@ pub(crate) mod passages;
 mod paths;
 pub(crate) mod search;
 pub(crate) mod settings;
-mod tidbits;
+pub(crate) mod tidbits;
 mod validation;
 mod writer;
 
