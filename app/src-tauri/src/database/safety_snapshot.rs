@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, MAIN_DB};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -211,11 +211,14 @@ fn validate_attachment_blob_relationship(main: &Connection, media: &Connection) 
             row.get::<_, i64>(2)?,
         ))
     })?;
-    let mut blob = media.prepare("SELECT byte_length FROM media_blob WHERE sha256 = ?1")?;
+    let mut blob = media.prepare("SELECT rowid, byte_length FROM media_blob WHERE sha256 = ?1")?;
+    let mut verified_digests = std::collections::HashSet::new();
     for row in rows {
         let (attachment_id, sha256, expected_bytes) = row?;
-        let actual_bytes = blob
-            .query_row(params![sha256], |row| row.get::<_, i64>(0))
+        let (rowid, actual_bytes) = blob
+            .query_row(params![&sha256], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
             .optional()?
             .ok_or_else(|| DatabaseError::Validation {
                 kind: "safety snapshot",
@@ -229,8 +232,33 @@ fn validate_attachment_blob_relationship(main: &Connection, media: &Connection) 
                 ),
             });
         }
+        if verified_digests.insert(sha256.clone()) {
+            let actual_sha256 = hash_media_blob(media, rowid)?;
+            if actual_sha256.as_slice() != sha256.as_slice() {
+                return Err(DatabaseError::Validation {
+                    kind: "safety snapshot",
+                    reason: format!(
+                        "attachment {attachment_id} references a media blob whose SHA-256 is corrupt"
+                    ),
+                });
+            }
+        }
     }
     Ok(())
+}
+
+fn hash_media_blob(media: &Connection, rowid: i64) -> Result<[u8; 32]> {
+    let mut blob = media.blob_open(MAIN_DB, "media_blob", "bytes", rowid, true)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = blob.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn table_exists(connection: &Connection, name: &str) -> Result<bool> {
@@ -281,7 +309,17 @@ fn write_manifest(directory: &Path, manifest: &SafetySnapshotManifest) -> Result
 }
 
 fn create_private_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(DatabaseError::InvalidInput(format!(
+                "safety snapshot directory is not a real directory: {}",
+                path.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(path)?,
+        Err(error) => return Err(error.into()),
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -419,11 +457,14 @@ mod tests {
     use super::*;
     use crate::database::{
         connection::FileState,
+        drafts::{SaveDraftInput, SaveDraftWrite},
         migrations,
         tidbits::{self, CreateTidbitWrite},
-        LexicalSearchMode, SearchPassagesInput, SourceDraft, TidbitDraft,
+        AttachmentIngestInput, LexicalSearchMode, MediaLimits, SearchPassagesInput, SourceDraft,
+        TidbitDraft,
     };
     use refinery::Target;
+    use std::io::{Cursor, Seek, SeekFrom};
 
     #[test]
     fn verified_snapshot_pair_reopens_with_search_and_citation_provenance() {
@@ -550,6 +591,98 @@ mod tests {
             fs::read(unowned.join("keep.txt")).expect("unowned file survives"),
             b"user data"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_creation_rejects_a_symlinked_snapshot_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("snapshot root");
+        let external = tempfile::tempdir().expect("external target");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        symlink(external.path(), paths.root.join(SNAPSHOT_DIRECTORY)).expect("snapshot symlink");
+
+        let error = database
+            .client()
+            .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+            .expect_err("symlinked snapshot root must fail");
+
+        assert!(matches!(error, DatabaseError::InvalidInput(_)));
+        assert_eq!(
+            fs::read_dir(external.path())
+                .expect("external directory")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn snapshot_creation_rejects_a_retained_blob_with_a_false_digest() {
+        let root = tempfile::tempdir().expect("corrupt snapshot pair");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        let draft_id = Uuid::now_v7().to_string();
+        database
+            .client()
+            .save_draft(SaveDraftWrite {
+                input: SaveDraftInput {
+                    context_key: "capture".into(),
+                    tidbit_id: None,
+                    base_revision_id: None,
+                    title: None,
+                    body_markdown: String::new(),
+                    sources: Vec::new(),
+                },
+                now_ms: 1,
+                draft_id: draft_id.clone(),
+                media_limits: MediaLimits::default(),
+            })
+            .expect("attachment draft");
+        let bytes = b"content-addressed evidence";
+        database
+            .ingest_attachment(
+                AttachmentIngestInput {
+                    draft_id,
+                    display_filename: "evidence.bin".into(),
+                    media_type: "application/octet-stream".into(),
+                    now_ms: 2,
+                    limits: MediaLimits::default(),
+                },
+                Cursor::new(bytes),
+            )
+            .expect("retained attachment");
+        let expected_sha256 = Sha256::digest(bytes).to_vec();
+        let media = Connection::open(&paths.media).expect("media writer");
+        let rowid = media
+            .query_row(
+                "SELECT rowid FROM media_blob WHERE sha256 = ?1",
+                params![expected_sha256],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("media rowid");
+        let mut blob = media
+            .blob_open(MAIN_DB, "media_blob", "bytes", rowid, false)
+            .expect("writable media blob");
+        blob.seek(SeekFrom::Start(0)).expect("seek media blob");
+        blob.write_all(b"X").expect("corrupt media blob");
+        drop(blob);
+        drop(media);
+
+        let error = database
+            .client()
+            .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+            .expect_err("corrupt media must fail snapshot verification");
+
+        assert!(matches!(error, DatabaseError::Validation { .. }));
+        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let published = snapshot_root.exists()
+            && fs::read_dir(snapshot_root)
+                .expect("snapshot root")
+                .filter_map(|entry| entry.ok())
+                .any(|entry| entry.path().join("manifest.json").is_file());
+        assert!(!published);
     }
 
     #[test]
