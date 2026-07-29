@@ -9,7 +9,7 @@ use std::{
         mpsc, Arc, Mutex, Weak,
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[cfg(unix)]
@@ -33,6 +33,7 @@ pub const RESEARCH_PROCESS_EVENT: &str = "kosh://research-process";
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_STDOUT_LINE_BYTES: usize = 256 * 1024;
 const MAX_STDOUT_MESSAGES_PER_POLL: usize = 256;
+const MAX_STALE_WORK_DIRECTORIES_PER_START: usize = 8;
 const MAX_STDERR_BYTES: usize = 32 * 1024;
 const MAX_STREAM_EVENT_COUNT: usize = 16_384;
 const MAX_STREAM_BYTES: usize = 16 * 1024 * 1024;
@@ -221,6 +222,8 @@ struct ManagerInner {
     binary: Option<PathBuf>,
     discover_binary: bool,
     work_root: PathBuf,
+    work_recovery_cutoff: SystemTime,
+    work_recovery_started: AtomicBool,
     default_timeout: Duration,
     active: Mutex<Option<ActiveProcess>>,
     owned_processes: Mutex<HashMap<String, ActiveProcess>>,
@@ -321,19 +324,56 @@ impl ClaudeProcessManager {
         default_timeout: Duration,
         discover_binary: bool,
     ) -> Self {
-        if let Err(error) = recover_work_directories(&work_root) {
-            log::warn!("could not recover old research work directories: {error}");
-        }
         Self {
             inner: Arc::new(ManagerInner {
                 binary,
                 discover_binary,
                 work_root,
+                work_recovery_cutoff: SystemTime::now(),
+                work_recovery_started: AtomicBool::new(false),
                 default_timeout,
                 active: Mutex::new(None),
                 owned_processes: Mutex::new(HashMap::new()),
                 shutting_down: AtomicBool::new(false),
             }),
+        }
+    }
+
+    pub(crate) fn recover_work_directories_async(&self) {
+        if let Err(error) = self.start_work_directory_recovery() {
+            log::warn!("could not start stale research workspace recovery: {error}");
+        }
+    }
+
+    fn start_work_directory_recovery(&self) -> std::io::Result<thread::JoinHandle<()>> {
+        if self
+            .inner
+            .work_recovery_started
+            .swap(true, Ordering::AcqRel)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "stale research workspace recovery already started",
+            ));
+        }
+        let root = self.inner.work_root.clone();
+        let cutoff = self.inner.work_recovery_cutoff;
+        match thread::Builder::new()
+            .name("kosh-research-recovery".into())
+            .spawn(move || {
+                if let Err(error) =
+                    recover_work_directories(&root, cutoff, MAX_STALE_WORK_DIRECTORIES_PER_START)
+                {
+                    log::warn!("could not recover old research work directories: {error}");
+                }
+            }) {
+            Ok(handle) => Ok(handle),
+            Err(error) => {
+                self.inner
+                    .work_recovery_started
+                    .store(false, Ordering::Release);
+                Err(error)
+            }
         }
     }
 
@@ -1168,7 +1208,7 @@ impl StreamParser {
                 let model = value
                     .get("model")
                     .and_then(Value::as_str)
-                    .map(|model| truncate_utf8(model, 128));
+                    .map(str::to_owned);
                 self.emitter
                     .emit(ResearchProcessEventDetail::Metadata { model })?;
             }
@@ -1413,13 +1453,19 @@ impl RunEmitter {
 
     fn redact_detail(&self, detail: &mut ResearchProcessEventDetail) {
         match detail {
+            ResearchProcessEventDetail::Metadata { model } => {
+                if let Some(model) = model {
+                    *model = truncate_utf8(&self.redact(model), 128);
+                }
+            }
+            ResearchProcessEventDetail::ToolActivity { tool, .. } => {
+                *tool = self.redact(tool);
+            }
             ResearchProcessEventDetail::UntrustedFinalOutput { text } => {
                 *text = self.redact(text);
             }
             ResearchProcessEventDetail::UntrustedTextDelta { .. }
             | ResearchProcessEventDetail::Started
-            | ResearchProcessEventDetail::Metadata { .. }
-            | ResearchProcessEventDetail::ToolActivity { .. }
             | ResearchProcessEventDetail::Finished { .. } => {}
         }
     }
@@ -1600,29 +1646,79 @@ impl Drop for OwnedWorkDirectory {
     }
 }
 
-fn recover_work_directories(root: &Path) -> std::io::Result<()> {
+fn recover_work_directories(
+    root: &Path,
+    created_before: SystemTime,
+    limit: usize,
+) -> std::io::Result<usize> {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(error),
     };
-    for entry in entries.flatten() {
+    let mut recovered = 0;
+    for entry in entries {
+        if recovered >= limit {
+            break;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                log::warn!("could not inspect a stale research workspace entry: {error}");
+                continue;
+            }
+        };
         let path = entry.path();
-        if path
+        let Some(identifier) = path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("run-"))
-            && path.is_dir()
-        {
-            if let Err(error) = fs::remove_dir_all(&path) {
+            .and_then(|name| name.strip_prefix("run-"))
+        else {
+            continue;
+        };
+        let owned_name = uuid::Uuid::parse_str(identifier).is_ok_and(|parsed| {
+            parsed.get_version_num() == 7 && parsed.hyphenated().to_string() == identifier
+        });
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
                 log::warn!(
-                    "could not remove stale research work directory {}: {error}",
+                    "could not inspect stale research workspace type {}: {error}",
                     path.display()
                 );
+                continue;
             }
+        };
+        if !owned_name || !file_type.is_dir() {
+            continue;
         }
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                log::warn!(
+                    "could not inspect stale research work directory {}: {error}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let stale = metadata
+            .modified()
+            .ok()
+            .is_some_and(|modified| modified < created_before);
+        if !stale {
+            continue;
+        }
+        if let Err(error) = fs::remove_dir_all(&path) {
+            log::warn!(
+                "could not remove stale research work directory {}: {error}",
+                path.display()
+            );
+            continue;
+        }
+        recovered += 1;
     }
-    Ok(())
+    Ok(recovered)
 }
 
 struct ProbeOutput {
@@ -2055,6 +2151,62 @@ wait
     }
 
     #[test]
+    fn stale_workspace_recovery_is_deferred_bounded_and_owned() {
+        let root = tempfile::tempdir().expect("workspace root");
+        let work_root = root.path().join("work");
+        fs::create_dir(&work_root).expect("create work root");
+        let deferred = work_root.join(format!("run-{}", uuid::Uuid::now_v7()));
+        fs::create_dir(&deferred).expect("create deferred workspace");
+        fs::write(deferred.join("artifact"), b"stale").expect("write stale artifact");
+        let unrelated = work_root.join("run-not-a-kosh-uuid");
+        fs::create_dir(&unrelated).expect("create unrelated directory");
+        #[cfg(unix)]
+        let external = {
+            let external = root.path().join("external");
+            fs::create_dir(&external).expect("create external directory");
+            fs::write(external.join("keep"), b"unowned").expect("write external artifact");
+            let link = work_root.join(format!("run-{}", uuid::Uuid::now_v7()));
+            std::os::unix::fs::symlink(&external, &link).expect("link unowned directory");
+            (external, link)
+        };
+
+        let manager = ClaudeProcessManager::new(None, work_root.clone(), Duration::from_secs(1));
+        assert!(deferred.exists());
+        manager
+            .start_work_directory_recovery()
+            .expect("start deferred recovery")
+            .join()
+            .expect("join deferred recovery");
+        assert!(manager.start_work_directory_recovery().is_err());
+        assert!(unrelated.exists());
+        if deferred.exists() {
+            fs::remove_dir_all(&deferred).expect("remove deferred fixture");
+        }
+
+        let stale = (0..3)
+            .map(|_| {
+                let path = work_root.join(format!("run-{}", uuid::Uuid::now_v7()));
+                fs::create_dir(&path).expect("create stale workspace");
+                fs::write(path.join("artifact"), b"stale").expect("write stale artifact");
+                path
+            })
+            .collect::<Vec<_>>();
+        let later_than_every_entry = SystemTime::now() + Duration::from_secs(1);
+        assert_eq!(
+            recover_work_directories(&work_root, later_than_every_entry, 2)
+                .expect("bounded recovery"),
+            2
+        );
+        assert_eq!(stale.iter().filter(|path| path.exists()).count(), 1);
+        assert!(unrelated.exists());
+        #[cfg(unix)]
+        {
+            assert!(external.0.join("keep").exists());
+            assert!(fs::symlink_metadata(&external.1).is_ok());
+        }
+    }
+
+    #[test]
     fn streams_partial_json_and_completes_successfully() {
         let root = tempfile::tempdir().expect("fake CLI root");
         let binary = write_fake_cli(
@@ -2176,6 +2328,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"d
             root.path(),
             r#"
 cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","model":"token-secret"}'
 printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"token-"}}}'
 printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"secret"}}}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"token-secret"}'
@@ -2214,6 +2367,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"t
         assert!(!encoded.contains("token-secret"));
         assert!(encoded.contains("[REDACTED]"));
         assert_eq!(streamed, "[REDACTED]");
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.detail,
+                ResearchProcessEventDetail::Metadata { model }
+                    if model.as_deref() == Some("[REDACTED]")
+            )
+        }));
     }
 
     #[test]

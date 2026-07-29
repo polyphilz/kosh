@@ -179,6 +179,9 @@ pub fn run() {
         let shortcut_settings = runtime.database_client().load_shortcut_settings()?;
         app.manage(runtime);
         windows::setup(app, shortcut_settings)?;
+        app.state::<RuntimeState>()
+            .claude_processes()
+            .recover_work_directories_async();
         Ok(())
     })
     .build(tauri::generate_context!())
