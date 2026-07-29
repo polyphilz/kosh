@@ -173,9 +173,9 @@ describe("global quick add", () => {
     const native = createNative();
     const quit = createQuitNative();
     let finishIngestion: ((image: ImageRecord) => void) | undefined;
-    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
-      "01980c8e-6c00-7000-8000-000000000286",
-    );
+    const captureClipboardImage = vi
+      .spyOn(backend, "captureClipboardImage")
+      .mockResolvedValue("01980c8e-6c00-7000-8000-000000000286");
     vi.spyOn(backend, "ingestClipboardImage").mockImplementation(
       () =>
         new Promise<ImageRecord>((resolve) => {
@@ -188,7 +188,8 @@ describe("global quick add", () => {
     fireEvent.paste(editor, {
       clipboardData: { items: [{ type: "image/png" }] },
     });
-    await screen.findByRole("button", { name: "Adding attachment…" });
+    await waitFor(() => expect(captureClipboardImage).toHaveBeenCalledOnce(), { timeout: 3_000 });
+    await screen.findByRole("button", { name: "Adding attachment…" }, { timeout: 3_000 });
     act(() => quit.prepare(42));
 
     await waitFor(() =>

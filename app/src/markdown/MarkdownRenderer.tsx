@@ -141,61 +141,77 @@ function rendererComponents(
   };
 }
 
-function injectTrustedCitationLinks(
+export function injectTrustedCitationLinks(
   source: string,
   mentions: GroundedCitationMention[],
   nonce: string,
 ): { source: string; hrefs: ReadonlyMap<string, number> } {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  const bytes = encoder.encode(source);
   const hrefs = new Map<string, number>();
-  const replacements = mentions
+  const candidates = mentions.filter(
+    (mention) =>
+      Number.isSafeInteger(mention.citationNumber) &&
+      mention.citationNumber >= 1 &&
+      Number.isSafeInteger(mention.startByte) &&
+      Number.isSafeInteger(mention.endByte) &&
+      mention.startByte >= 0 &&
+      mention.endByte > mention.startByte,
+  );
+  const requestedOffsets = new Set<number>();
+  for (const mention of candidates) {
+    requestedOffsets.add(mention.startByte);
+    requestedOffsets.add(mention.endByte);
+  }
+  const stringIndexes = utf8ByteOffsetsToStringIndexes(source, requestedOffsets);
+  const replacements = candidates
     .map((mention) => {
-      if (
-        !Number.isSafeInteger(mention.citationNumber) ||
-        mention.citationNumber < 1 ||
-        !Number.isSafeInteger(mention.startByte) ||
-        !Number.isSafeInteger(mention.endByte) ||
-        mention.startByte < 0 ||
-        mention.endByte <= mention.startByte ||
-        mention.endByte > bytes.length
-      ) {
+      const start = stringIndexes.get(mention.startByte);
+      const end = stringIndexes.get(mention.endByte);
+      const marker = `【${mention.citationNumber}】`;
+      if (start === undefined || end === undefined || source.slice(start, end) !== marker) {
         return null;
       }
-      try {
-        const start = decoder.decode(bytes.slice(0, mention.startByte)).length;
-        const end = decoder.decode(bytes.slice(0, mention.endByte)).length;
-        const marker = `【${mention.citationNumber}】`;
-        if (
-          source.slice(start, end) !== marker ||
-          encoder.encode(source.slice(0, start)).length !== mention.startByte ||
-          encoder.encode(source.slice(0, end)).length !== mention.endByte
-        ) {
-          return null;
-        }
-        return { start, end, marker, number: mention.citationNumber };
-      } catch {
-        return null;
-      }
+      return { start, end, marker, number: mention.citationNumber };
     })
     .filter((mention) => mention !== null)
     .sort((left, right) => right.start - left.start);
-  let transformed = source;
   let nextStart = source.length;
+  const accepted = [];
   for (const mention of replacements) {
     if (mention.end > nextStart) {
       continue;
     }
-    const href = `https://kosh.invalid/citation/${nonce}/${mention.number}`;
-    transformed =
-      transformed.slice(0, mention.start) +
-      `[${mention.marker}](${href})` +
-      transformed.slice(mention.end);
-    hrefs.set(href, mention.number);
+    accepted.push(mention);
     nextStart = mention.start;
   }
-  return { source: transformed, hrefs };
+  accepted.reverse();
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const mention of accepted) {
+    const href = `https://kosh.invalid/citation/${nonce}/${mention.number}`;
+    parts.push(source.slice(cursor, mention.start), `[${mention.marker}](${href})`);
+    hrefs.set(href, mention.number);
+    cursor = mention.end;
+  }
+  parts.push(source.slice(cursor));
+  return { source: parts.join(""), hrefs };
+}
+
+function utf8ByteOffsetsToStringIndexes(
+  source: string,
+  requestedOffsets: ReadonlySet<number>,
+): ReadonlyMap<number, number> {
+  const indexes = new Map<number, number>();
+  let byteOffset = 0;
+  let stringIndex = 0;
+  if (requestedOffsets.has(0)) indexes.set(0, 0);
+  while (stringIndex < source.length && indexes.size < requestedOffsets.size) {
+    const codePoint = source.codePointAt(stringIndex)!;
+    const stringWidth = codePoint > 0xffff ? 2 : 1;
+    byteOffset += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    stringIndex += stringWidth;
+    if (requestedOffsets.has(byteOffset)) indexes.set(byteOffset, stringIndex);
+  }
+  return indexes;
 }
 
 function parseImageTitle(

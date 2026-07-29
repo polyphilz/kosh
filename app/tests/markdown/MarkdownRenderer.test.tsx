@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
-import { MarkdownRenderer } from "../../src/markdown/MarkdownRenderer";
+import { MarkdownRenderer, injectTrustedCitationLinks } from "../../src/markdown/MarkdownRenderer";
 import { parseKoshMarkdown, serializeKoshMarkdown } from "../../src/markdown/markdownConversion";
 import { externalHttpUrl } from "../../src/markdown/urlPolicy";
 
@@ -198,6 +198,34 @@ it("turns only registry-confirmed byte ranges into citation controls", () => {
 
   fireEvent.click(getByRole("button", { name: "Open citation 1" }));
   expect(onOpenCitation).toHaveBeenCalledExactlyOnceWith(1);
+});
+
+it("indexes many UTF-8 citation offsets in one pass", () => {
+  const mentionCount = 2_048;
+  const chunks: string[] = [];
+  const mentions = [];
+  let byteOffset = 0;
+  for (let index = 0; index < mentionCount; index += 1) {
+    const prefix = `Résumé ${index} `;
+    const marker = `【${index + 1}】`;
+    chunks.push(prefix, marker, "\n");
+    byteOffset += new TextEncoder().encode(prefix).length;
+    const startByte = byteOffset;
+    byteOffset += new TextEncoder().encode(marker).length;
+    mentions.push({ citationNumber: index + 1, startByte, endByte: byteOffset });
+    byteOffset += 1;
+  }
+  const source = chunks.join("");
+  const decode = vi.spyOn(TextDecoder.prototype, "decode");
+
+  const trusted = injectTrustedCitationLinks(source, mentions, "linear-test");
+
+  expect(trusted.hrefs.size).toBe(mentionCount);
+  expect(trusted.source.match(/https:\/\/kosh\.invalid\/citation\/linear-test\//gu)).toHaveLength(
+    mentionCount,
+  );
+  expect(decode).not.toHaveBeenCalled();
+  decode.mockRestore();
 });
 
 it("does not trust model-authored markers, links, malformed ranges, or guessed attributes", () => {

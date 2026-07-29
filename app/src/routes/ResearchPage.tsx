@@ -85,13 +85,21 @@ export function ResearchPage() {
         setSetup(status);
         setModel(defaults.model ?? status.defaults.model ?? "");
         setEffort(defaults.effort ?? status.defaults.effort ?? "");
-        setHistory(page.items);
+        setHistory((items) => mergeSummaries(items, page.items));
         setHistoryCursor(page.nextCursor);
         const first = page.items[0];
         if (first) {
           selectedId.current = first.id;
           const record = await backend.loadResearchRun(first.id);
-          if (active && selectedId.current === first.id) setRun(record);
+          const storedSequence = record.events.at(-1)?.sequence ?? 0;
+          if (
+            active &&
+            selectedId.current === first.id &&
+            storedSequence >= (latestEventSequence.current.get(first.id) ?? 0)
+          ) {
+            setRun(record);
+            setHistory((items) => upsertSummary(items, record));
+          }
         }
       })
       .catch((reason: unknown) => {
@@ -568,10 +576,29 @@ function mergeSummaries(
   items: ResearchRunSummary[],
   additions: ResearchRunSummary[],
 ): ResearchRunSummary[] {
-  const additionIds = new Set(additions.map((item) => item.id));
-  return [...additions, ...items.filter((item) => !additionIds.has(item.id))].sort(
+  const merged = new Map(items.map((item) => [item.id, item]));
+  for (const addition of additions) {
+    const current = merged.get(addition.id);
+    if (!current || summaryIsNewer(addition, current)) merged.set(addition.id, addition);
+  }
+  return [...merged.values()].sort(
     (left, right) => right.updatedAtMs - left.updatedAtMs || right.id.localeCompare(left.id),
   );
+}
+
+function summaryIsNewer(candidate: ResearchRunSummary, current: ResearchRunSummary): boolean {
+  if (candidate.updatedAtMs !== current.updatedAtMs) {
+    return candidate.updatedAtMs > current.updatedAtMs;
+  }
+  const statusPhase = (status: ResearchRunStatus) =>
+    status === "QUEUED" ? 0 : status === "RUNNING" ? 1 : 2;
+  if (statusPhase(candidate.status) !== statusPhase(current.status)) {
+    return statusPhase(candidate.status) > statusPhase(current.status);
+  }
+  if (candidate.savedTidbitId !== current.savedTidbitId) {
+    return candidate.savedTidbitId !== null;
+  }
+  return false;
 }
 
 function statusLabel(status: ResearchRunStatus): string {

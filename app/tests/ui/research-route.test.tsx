@@ -1,5 +1,5 @@
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -235,6 +235,60 @@ describe("research route", () => {
     expect(await screen.findByText("Latest persisted answer.")).toBeInTheDocument();
     expect(loadRun).toHaveBeenCalledTimes(3);
     expect(maximumActiveReads).toBe(1);
+  });
+
+  it("does not let initial history replace a terminal live refresh", async () => {
+    const backend = new FakeBackend();
+    const runId = "run-racing-history";
+    const stale = researchRecord(runId, "Racing history", 1);
+    stale.status = "RUNNING";
+    stale.completedAtMs = null;
+    stale.finalAnswer = null;
+    const completed = researchRecord(runId, "Racing history", 2);
+    const terminalEvent: ResearchProcessEvent = {
+      runId,
+      sequence: 1,
+      kind: "FINISHED",
+      outcome: "SUCCEEDED",
+      stderrTruncated: false,
+    };
+    completed.events = [terminalEvent];
+    const initialPage = deferred<{
+      items: ResearchRunSummary[];
+      nextCursor: ResearchRunCursor | null;
+    }>();
+    const liveRefresh = deferred<ResearchRunRecord>();
+    let listener: ((event: ResearchProcessEvent) => void) | undefined;
+    vi.spyOn(backend, "listResearchRuns").mockReturnValue(initialPage.promise);
+    vi.spyOn(backend, "onResearchProcessEvent").mockImplementation(async (handler) => {
+      listener = handler;
+      return () => undefined;
+    });
+    const loadRun = vi.spyOn(backend, "loadResearchRun").mockImplementation(async () => {
+      return loadRun.mock.calls.length === 1 ? liveRefresh.promise : completed;
+    });
+
+    renderRoute(backend);
+    await waitFor(() => expect(listener).toBeDefined());
+    await act(async () => {
+      listener!(terminalEvent);
+    });
+    await waitFor(() => expect(loadRun).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      liveRefresh.resolve(completed);
+      await liveRefresh.promise;
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      initialPage.resolve({ items: [researchSummary(stale)], nextCursor: null });
+      await initialPage.promise;
+    });
+
+    const history = await screen.findByLabelText("Research history");
+    expect(await within(history).findByText(/Completed ·/u)).toBeInTheDocument();
+    expect(within(history).queryByText(/Running ·/u)).toBeNull();
+    expect(await screen.findByText(completed.finalAnswer!.markdown)).toBeInTheDocument();
   });
 });
 
