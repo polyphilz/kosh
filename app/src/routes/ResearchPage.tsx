@@ -239,6 +239,16 @@ export function ResearchPage() {
     run?.events.filter((event) => event.kind === "TOOL_ACTIVITY").map((event) => event) ?? [];
   const newerCitationCount =
     run?.citationFreshness.filter((citation) => citation.hasNewerRevision).length ?? 0;
+  const citationDetail = selectedCitation
+    ? {
+        ...selectedCitation.evidence,
+        state: run?.citationFreshness.find(
+          (freshness) => freshness.citationNumber === selectedCitation.number,
+        )?.hasNewerRevision
+          ? ("HISTORICAL" as const)
+          : selectedCitation.evidence.state,
+      }
+    : null;
 
   return (
     <main className="page research-page">
@@ -499,7 +509,7 @@ export function ResearchPage() {
         </section>
 
         <CitationDetail
-          citation={selectedCitation?.evidence ?? null}
+          citation={citationDetail}
           error={null}
           focusRef={citationRef}
           loading={false}

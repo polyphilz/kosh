@@ -53,6 +53,7 @@ describe("research route", () => {
     expect(screen.getByRole("link", { name: "Open saved tidbit" })).toBeInTheDocument();
     expect(screen.getByText(/1 cited tidbit has a newer revision/u)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open citation 1" }));
+    expect(screen.getByText("Historical passage", { exact: true })).toBeInTheDocument();
     expect(screen.getByText("The exact local passage.")).toBeInTheDocument();
   });
 
