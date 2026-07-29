@@ -19,6 +19,8 @@ may claim only the boundary it actually crosses.
 | search and citation quality | `pnpm relevance:gate` and the 10k benchmark | pinned lexical/hybrid metrics, manual provenance sample, forbidden hits and interactive lexical latency |
 | native unit and integration contracts | Rust tests and strict Clippy | migrations, writer serialization, files, workers, processes, search, citation and Tauri mock IPC |
 | native startup, restart, search and citation | `scripts/loop/runtime-gate.sh --ci` | real macOS Tauri process, both WKWebViews, fresh/restart persistence and actual runtime/search/citation IPC |
+| universal release structure and smoke | `pnpm release:build:app && pnpm release:smoke` | icons/metadata/CSP/capabilities/entitlements, dual-architecture app and sidecar, signatures/resources, fresh release startup and restart without Claude/model |
+| packaged release journeys | `app/tests/native/release-acceptance.md` | clean installed capture/search, media extraction, hybrid retrieval, grounded citations, restart, previous-release migration and separate-profile snapshot recovery |
 
 The branch loop additionally runs the native gate against the preserved local
 profile. Its receipt must name the exact committed HEAD before a PR can be

@@ -3,6 +3,11 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
+    "category": "Productivity",
+    "shortDescription": "Capture loose knowledge and find the exact passage that matters.",
+    "longDescription": "Kosh is a local-first note taker for capturing tidbits, searching their exact and semantic content, and producing source-grounded research.",
+    "copyright": "Copyright © 2026 Kosh contributors",
     "resources": {
       "resources/release/bin/llama-server": "bin/llama-server",
       "resources/release/llama-server.json": "release/llama-server.json",
@@ -13,7 +18,8 @@
     "macOS": {
       "minimumSystemVersion": "14.0",
       "signingIdentity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "entitlements": "Entitlements.plist"
     }
   }
 }

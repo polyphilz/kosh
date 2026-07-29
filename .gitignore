@@ -37,6 +37,9 @@ app/src-tauri/icons/Square*Logo.png
 app/src-tauri/icons/StoreLogo.png
 app/src-tauri/icons/icon.ico
 
+# Local source artwork
+/assets/
+
 # Secrets
 .env
 .env.*

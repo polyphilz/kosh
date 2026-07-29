@@ -9,7 +9,7 @@ VERIFY="$ROOT/scripts/verify-jina-v1.sh"
 STAGE="$ROOT/app/src-tauri/resources/release"
 MODEL_FILE=${1:-"$ROOT/models/v5-nano-retrieval-Q8_0.gguf"}
 
-for command in arch cmake curl git jq lipo otool shasum; do
+for command in arch cmake codesign curl git jq lipo otool shasum; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required command not found: $command" >&2
     exit 1
@@ -153,6 +153,9 @@ for architecture in $(jq -er '.target.architectures[]' "$PIN"); do
   LLAMA_SERVER="$LLAMA_SERVER" \
     "$VERIFY" "$MODEL_FILE"
 done
+
+codesign --force --sign - --timestamp=none "$LLAMA_SERVER"
+codesign --verify --strict --verbose=2 "$LLAMA_SERVER"
 
 BINARY_SHA256=$(shasum -a 256 "$LLAMA_SERVER" | awk '{print $1}')
 BINARY_SIZE=$(wc -c <"$LLAMA_SERVER" | tr -d ' ')
