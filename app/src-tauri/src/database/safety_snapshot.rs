@@ -20,6 +20,21 @@ const SNAPSHOT_DIRECTORY: &str = "safety-snapshots";
 const MAX_SNAPSHOTS: usize = 3;
 const SNAPSHOT_COPY_HEADROOM_BYTES: u64 = 64 * 1024 * 1024;
 
+#[derive(Default)]
+struct OrderedDigestTracker {
+    last_verified: Option<[u8; 32]>,
+}
+
+impl OrderedDigestTracker {
+    fn needs_verification(&self, digest: &[u8; 32]) -> bool {
+        self.last_verified.as_ref() != Some(digest)
+    }
+
+    fn mark_verified(&mut self, digest: [u8; 32]) {
+        self.last_verified = Some(digest);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum SafetySnapshotReason {
@@ -219,7 +234,8 @@ fn validate_attachment_blob_relationship(
     let sql = format!(
         "SELECT attachment.id, attachment.sha256, attachment.byte_length
          FROM attachment
-         WHERE {}",
+         WHERE {}
+         ORDER BY attachment.sha256, attachment.id",
         retained.join(" OR ")
     );
     let mut attachments = main.prepare(&sql)?;
@@ -231,7 +247,7 @@ fn validate_attachment_blob_relationship(
         ))
     })?;
     let mut blob = media.prepare("SELECT rowid, byte_length FROM media_blob WHERE sha256 = ?1")?;
-    let mut verified_digests = std::collections::HashSet::new();
+    let mut verified_digests = OrderedDigestTracker::default();
     for row in rows {
         let (attachment_id, sha256, expected_bytes) = row?;
         validate_media_blob_reference(
@@ -249,7 +265,8 @@ fn validate_attachment_blob_relationship(
             "SELECT attachment.id, image.preview_sha256, image.preview_byte_length
              FROM attachment_image AS image
              JOIN attachment ON attachment.id = image.attachment_id
-             WHERE {}",
+             WHERE {}
+             ORDER BY image.preview_sha256, attachment.id",
             retained.join(" OR ")
         );
         let mut previews = main.prepare(&sql)?;
@@ -260,6 +277,7 @@ fn validate_attachment_blob_relationship(
                 row.get::<_, i64>(2)?,
             ))
         })?;
+        let mut verified_digests = OrderedDigestTracker::default();
         for row in rows {
             let (attachment_id, sha256, expected_bytes) = row?;
             validate_media_blob_reference(
@@ -279,7 +297,7 @@ fn validate_attachment_blob_relationship(
 fn validate_media_blob_reference(
     media: &Connection,
     blob: &mut rusqlite::Statement<'_>,
-    verified_digests: &mut std::collections::HashSet<Vec<u8>>,
+    verified_digests: &mut OrderedDigestTracker,
     attachment_id: &str,
     role: &str,
     sha256: Vec<u8>,
@@ -302,9 +320,17 @@ fn validate_media_blob_reference(
             ),
         });
     }
-    if verified_digests.insert(sha256.clone()) {
+    let expected_sha256: [u8; 32] =
+        sha256
+            .as_slice()
+            .try_into()
+            .map_err(|_| DatabaseError::Validation {
+                kind: "safety snapshot",
+                reason: format!("attachment {attachment_id} has an invalid {role} SHA-256"),
+            })?;
+    if verified_digests.needs_verification(&expected_sha256) {
         let actual_sha256 = hash_media_blob(media, rowid)?;
-        if actual_sha256.as_slice() != sha256.as_slice() {
+        if actual_sha256 != expected_sha256 {
             return Err(DatabaseError::Validation {
                 kind: "safety snapshot",
                 reason: format!(
@@ -312,6 +338,7 @@ fn validate_media_blob_reference(
                 ),
             });
         }
+        verified_digests.mark_verified(expected_sha256);
     }
     Ok(())
 }
@@ -687,6 +714,19 @@ mod tests {
     };
     use refinery::Target;
     use std::io::{Cursor, Seek, SeekFrom};
+
+    #[test]
+    fn ordered_digest_tracking_stays_fixed_size_at_library_scale() {
+        assert!(std::mem::size_of::<OrderedDigestTracker>() <= 40);
+        let mut tracker = OrderedDigestTracker::default();
+        for ordinal in 0_u32..10_000 {
+            let mut digest = [0_u8; 32];
+            digest[..4].copy_from_slice(&ordinal.to_be_bytes());
+            assert!(tracker.needs_verification(&digest));
+            tracker.mark_verified(digest);
+            assert!(!tracker.needs_verification(&digest));
+        }
+    }
 
     #[test]
     fn verified_snapshot_pair_reopens_with_search_and_citation_provenance() {
