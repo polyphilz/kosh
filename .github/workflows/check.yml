@@ -171,6 +171,14 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux Tauri build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.0
@@ -197,6 +205,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.0
+          components: clippy, rustfmt
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: app/package.json
