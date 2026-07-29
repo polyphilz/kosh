@@ -135,14 +135,18 @@ pub enum ResearchProcessEventDetail {
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
-    TextDelta {
+    /// Untrusted CLI text for inert plaintext preview only. It must pass
+    /// through the grounded-output protocol before any citation or link UI.
+    UntrustedTextDelta {
         text: String,
     },
     ToolActivity {
         tool: String,
         phase: ResearchToolActivityPhase,
     },
-    FinalOutput {
+    /// Untrusted complete CLI output. Chunk 22's grounded-output boundary
+    /// consumes this value; clients must not treat its strings as citations.
+    UntrustedFinalOutput {
         text: String,
     },
     Finished {
@@ -1153,9 +1157,11 @@ impl StreamParser {
                             "Claude Code final output exceeded Kosh's limit.",
                         ));
                     }
-                    self.emitter.emit(ResearchProcessEventDetail::FinalOutput {
-                        text: text.to_owned(),
-                    })?;
+                    self.emitter.discard_pending_text();
+                    self.emitter
+                        .emit(ResearchProcessEventDetail::UntrustedFinalOutput {
+                            text: text.to_owned(),
+                        })?;
                     self.saw_success_result = true;
                 } else {
                     self.failure_message = value
@@ -1213,9 +1219,7 @@ impl StreamParser {
                     let text = delta.get("text").and_then(Value::as_str).ok_or_else(|| {
                         stream_error("Claude Code emitted an invalid text delta.")
                     })?;
-                    self.emitter.emit(ResearchProcessEventDetail::TextDelta {
-                        text: text.to_owned(),
-                    })?;
+                    self.emitter.emit_text_delta(text)?;
                 }
             }
             Some("content_block_stop") => {}
@@ -1266,6 +1270,7 @@ struct RunEmitter {
     run_id: String,
     sink: Arc<dyn ProcessEventSink>,
     state: Mutex<EmitterState>,
+    text_redactor: Mutex<StreamingRedactor>,
     sensitive_values: Vec<String>,
 }
 
@@ -1279,6 +1284,7 @@ struct EmitterState {
 
 impl RunEmitter {
     fn new(run_id: String, sink: Arc<dyn ProcessEventSink>, sensitive_values: Vec<String>) -> Self {
+        let text_redactor = StreamingRedactor::new(&sensitive_values);
         Self {
             run_id,
             sink,
@@ -1289,8 +1295,21 @@ impl RunEmitter {
                 visible_text_bytes: 0,
                 finished: false,
             }),
+            text_redactor: Mutex::new(text_redactor),
             sensitive_values,
         }
+    }
+
+    fn emit_text_delta(&self, text: &str) -> Result<(), ClaudeProcessError> {
+        let output = lock(&self.text_redactor).push(text);
+        if let Some(text) = output.filter(|text| !text.is_empty()) {
+            self.emit(ResearchProcessEventDetail::UntrustedTextDelta { text })?;
+        }
+        Ok(())
+    }
+
+    fn discard_pending_text(&self) {
+        lock(&self.text_redactor).discard();
     }
 
     fn emit(&self, mut detail: ResearchProcessEventDetail) -> Result<(), ClaudeProcessError> {
@@ -1364,11 +1383,11 @@ impl RunEmitter {
 
     fn redact_detail(&self, detail: &mut ResearchProcessEventDetail) {
         match detail {
-            ResearchProcessEventDetail::TextDelta { text }
-            | ResearchProcessEventDetail::FinalOutput { text } => {
+            ResearchProcessEventDetail::UntrustedFinalOutput { text } => {
                 *text = self.redact(text);
             }
-            ResearchProcessEventDetail::Started
+            ResearchProcessEventDetail::UntrustedTextDelta { .. }
+            | ResearchProcessEventDetail::Started
             | ResearchProcessEventDetail::Metadata { .. }
             | ResearchProcessEventDetail::ToolActivity { .. }
             | ResearchProcessEventDetail::Finished { .. } => {}
@@ -1376,19 +1395,68 @@ impl RunEmitter {
     }
 
     fn redact(&self, text: &str) -> String {
-        self.sensitive_values
-            .iter()
-            .filter(|value| !value.is_empty())
-            .fold(text.to_owned(), |text, value| {
-                text.replace(value, "[REDACTED]")
-            })
+        redact_values(text, &self.sensitive_values)
     }
+}
+
+struct StreamingRedactor {
+    pending: String,
+    secrets: Vec<String>,
+}
+
+impl StreamingRedactor {
+    fn new(secrets: &[String]) -> Self {
+        Self {
+            pending: String::new(),
+            secrets: secrets
+                .iter()
+                .filter(|secret| !secret.is_empty())
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn push(&mut self, text: &str) -> Option<String> {
+        self.pending.push_str(text);
+        self.pending = redact_values(&self.pending, &self.secrets);
+        let retained_bytes = self
+            .secrets
+            .iter()
+            .map(|secret| {
+                secret
+                    .char_indices()
+                    .skip(1)
+                    .map(|(index, _)| index)
+                    .filter(|index| self.pending.ends_with(&secret[..*index]))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+        let split = self.pending.len().saturating_sub(retained_bytes);
+        let emitted = self.pending[..split].to_owned();
+        self.pending.drain(..split);
+        (!emitted.is_empty()).then_some(emitted)
+    }
+
+    fn discard(&mut self) {
+        self.pending.clear();
+    }
+}
+
+fn redact_values(text: &str, secrets: &[String]) -> String {
+    secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .fold(text.to_owned(), |text, secret| {
+            text.replace(secret, "[REDACTED]")
+        })
 }
 
 fn visible_text_bytes(detail: &ResearchProcessEventDetail) -> usize {
     match detail {
-        ResearchProcessEventDetail::TextDelta { text }
-        | ResearchProcessEventDetail::FinalOutput { text } => text.len(),
+        ResearchProcessEventDetail::UntrustedTextDelta { text }
+        | ResearchProcessEventDetail::UntrustedFinalOutput { text } => text.len(),
         _ => 0,
     }
 }
@@ -1527,19 +1595,22 @@ struct ProbeOutput {
 }
 
 fn run_probe(binary: &Path, arguments: &[&str], timeout: Duration) -> Result<ProbeOutput, String> {
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Claude Code could not be launched: {error}"))?;
     let pipes = (child.stdout.take(), child.stderr.take());
     let (stdout, stderr) = match pipes {
         (Some(stdout), Some(stderr)) => (stdout, stderr),
         _ => {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_probe_process_group(&mut child);
             return Err("Claude Code setup check did not provide its output pipes.".into());
         }
     };
@@ -1549,8 +1620,7 @@ fn run_probe(binary: &Path, arguments: &[&str], timeout: Duration) -> Result<Pro
     {
         Ok(thread) => thread,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_probe_process_group(&mut child);
             return Err(format!(
                 "Kosh could not monitor the Claude Code setup check: {error}"
             ));
@@ -1562,8 +1632,7 @@ fn run_probe(binary: &Path, arguments: &[&str], timeout: Duration) -> Result<Pro
     {
         Ok(thread) => thread,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_probe_process_group(&mut child);
             let _ = stdout_thread.join();
             return Err(format!(
                 "Kosh could not monitor the Claude Code setup check: {error}"
@@ -1576,21 +1645,22 @@ fn run_probe(binary: &Path, arguments: &[&str], timeout: Duration) -> Result<Pro
             Ok(Some(status)) => break status,
             Ok(None) if start.elapsed() < timeout => thread::sleep(PROCESS_POLL_INTERVAL),
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_probe_process_group(&mut child);
                 let _ = stdout_thread.join();
                 let _ = stderr_thread.join();
                 return Err("Claude Code did not respond to its setup check.".into());
             }
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_probe_process_group(&mut child);
                 let _ = stdout_thread.join();
                 let _ = stderr_thread.join();
                 return Err(format!("Claude Code setup check failed: {error}"));
             }
         }
     };
+    // A setup command can exit after spawning a descendant that inherited its
+    // pipes. Terminate the owned group before joining readers on every path.
+    force_kill_process_group(child.id());
     let stdout = stdout_thread.join().unwrap_or_default();
     let stderr = stderr_thread.join().unwrap_or_default();
     Ok(ProbeOutput {
@@ -1598,6 +1668,12 @@ fn run_probe(binary: &Path, arguments: &[&str], timeout: Duration) -> Result<Pro
         stdout,
         stderr,
     })
+}
+
+fn stop_probe_process_group(child: &mut Child) {
+    force_kill_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn read_bounded_prefix(mut reader: impl Read, capacity: usize) -> Vec<u8> {
@@ -1915,6 +1991,33 @@ fi
     }
 
     #[test]
+    fn setup_probe_cleans_descendants_before_joining_inherited_pipes() {
+        let root = tempfile::tempdir().expect("fake CLI root");
+        let binary = write_fake_cli(
+            root.path(),
+            r#"
+sleep 30 &
+exit 0
+"#,
+        );
+        let started = Instant::now();
+        let output = run_probe(&binary, &[], Duration::from_millis(200)).expect("successful probe");
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        write_fake_cli(
+            root.path(),
+            r#"
+sleep 30 &
+wait
+"#,
+        );
+        let started = Instant::now();
+        assert!(run_probe(&binary, &[], Duration::from_millis(80)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
     fn streams_partial_json_and_completes_successfully() {
         let root = tempfile::tempdir().expect("fake CLI root");
         let binary = write_fake_cli(
@@ -1940,13 +2043,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"H
         assert!(events.iter().any(|event| {
             matches!(
                 &event.detail,
-                ResearchProcessEventDetail::TextDelta { text } if text == "Hello"
+                ResearchProcessEventDetail::UntrustedTextDelta { text } if text == "Hello"
             )
         }));
         assert!(events.iter().any(|event| {
             matches!(
                 &event.detail,
-                ResearchProcessEventDetail::FinalOutput { text } if text == "Hello"
+                ResearchProcessEventDetail::UntrustedFinalOutput { text } if text == "Hello"
             )
         }));
         assert!(!manager
@@ -2010,7 +2113,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"d
             root.path(),
             r#"
 cat >/dev/null
-printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"token-secret"}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"token-"}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"secret"}}}'
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"token-secret"}'
 "#,
         );
@@ -2032,6 +2136,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"t
             .expect("start redaction fixture");
         let (events, terminals) = receive_terminals(&receiver, 1);
         let encoded = serde_json::to_string(&events).expect("serialize events");
+        let streamed = events
+            .iter()
+            .filter_map(|event| match &event.detail {
+                ResearchProcessEventDetail::UntrustedTextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
 
         assert_eq!(
             terminals.get(&run_id),
@@ -2039,6 +2150,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"t
         );
         assert!(!encoded.contains("token-secret"));
         assert!(encoded.contains("[REDACTED]"));
+        assert_eq!(streamed, "[REDACTED]");
     }
 
     #[test]
