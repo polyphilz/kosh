@@ -154,7 +154,65 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             .expect("fresh media writer");
     migrations::run_media(&mut media).expect("media schema");
     main.execute_batch(
-        "INSERT INTO research_run(
+        "BEGIN;
+         INSERT INTO tidbit(
+            id, created_at, updated_at, current_revision_id
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000121',
+            1,
+            1,
+            '019f547b-6200-7000-8000-000000000122'
+         );
+         INSERT INTO tidbit_revision(
+            id, tidbit_id, revision_number, created_at, title,
+            body_markdown, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000122',
+            '019f547b-6200-7000-8000-000000000121',
+            1,
+            1,
+            'Legacy evidence',
+            'A broad passage containing exact legacy evidence.',
+            randomblob(32)
+         );
+         INSERT INTO source(
+            id, created_at, label, normalized_url
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000123',
+            1,
+            'Legacy source',
+            'https://example.com/legacy'
+         );
+         INSERT INTO tidbit_revision_source(
+            tidbit_revision_id, source_id, sort_order
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000122',
+            '019f547b-6200-7000-8000-000000000123',
+            0
+         );
+         INSERT INTO passage(
+            id, tidbit_revision_id, owner_kind, ordinal, content,
+            content_hash, locator_kind, locator_json, created_at,
+            construction_version, heading_context_json
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000124',
+            '019f547b-6200-7000-8000-000000000122',
+            'AUTHOR',
+            0,
+            'A broad passage containing exact legacy evidence.',
+            randomblob(32),
+            'MARKDOWN_BLOCKS',
+            '{\"start\":0,\"end\":0}',
+            1,
+            'legacy',
+            '[\"Legacy chapter\"]'
+         );
+         INSERT INTO active_passage(passage_id, tidbit_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000124',
+            '019f547b-6200-7000-8000-000000000121'
+         );
+         INSERT INTO research_run(
             id, query, status, created_at, started_at, completed_at, answer_markdown
          ) VALUES(
             '019f547b-6200-7000-8000-000000000111',
@@ -163,7 +221,15 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             10,
             11,
             12,
-            'A preserved legacy answer.'
+            'A preserved legacy answer.【1】'
+         );
+         INSERT INTO research_citation(
+            research_run_id, ordinal, passage_id, cited_text
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000111',
+            0,
+            '019f547b-6200-7000-8000-000000000124',
+            'exact legacy evidence'
          );
          INSERT INTO research_run(
             id, query, status, created_at, started_at
@@ -173,7 +239,8 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             'RUNNING',
             20,
             21
-         );",
+         );
+         COMMIT;",
     )
     .expect("legacy research rows");
     drop(main);
@@ -194,7 +261,36 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             .as_ref()
             .and_then(|answer| answer.get("markdown"))
             .and_then(serde_json::Value::as_str),
-        Some("A preserved legacy answer.")
+        Some("A preserved legacy answer.【1】")
+    );
+    let citation = completed
+        .final_answer
+        .as_ref()
+        .and_then(|answer| answer.get("citations"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|citations| citations.first())
+        .expect("migrated citation");
+    assert_eq!(
+        citation.get("number").and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        citation
+            .pointer("/evidence/passageId")
+            .and_then(serde_json::Value::as_str),
+        Some("019f547b-6200-7000-8000-000000000124")
+    );
+    assert_eq!(
+        citation
+            .pointer("/evidence/excerpt")
+            .and_then(serde_json::Value::as_str),
+        Some("exact legacy evidence")
+    );
+    assert_eq!(
+        citation
+            .pointer("/evidence/sources/0/url")
+            .and_then(serde_json::Value::as_str),
+        Some("https://example.com/legacy")
     );
     assert_eq!(
         database
@@ -211,6 +307,22 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             .summary
             .status,
         super::research_runs::ResearchRunStatus::Interrupted
+    );
+    database.shutdown().expect("close upgraded database");
+    drop(database);
+
+    let reopened = Database::initialize(pair.paths.clone()).expect("reopen durable upgrade");
+    let reopened_answer = reopened
+        .client()
+        .load_research_run("019f547b-6200-7000-8000-000000000111".into())
+        .expect("reopened migrated run")
+        .final_answer
+        .expect("reopened migrated answer");
+    assert_eq!(
+        reopened_answer
+            .pointer("/citations/0/evidence/passageId")
+            .and_then(serde_json::Value::as_str),
+        Some("019f547b-6200-7000-8000-000000000124")
     );
 }
 

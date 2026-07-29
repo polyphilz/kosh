@@ -1,10 +1,12 @@
-use refinery::{Migration, Runner};
-use rusqlite::{Connection, OptionalExtension};
+use refinery::{Migration, Runner, Target};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
     connection::DatabaseKind,
     error::{DatabaseError, Result},
+    passages,
 };
+use crate::research::{grounded_citation, GroundedResearchCitation};
 
 mod main_embedded {
     use refinery::embed_migrations;
@@ -52,16 +54,129 @@ pub fn inspect_media(connection: &mut Connection) -> Result<MigrationStatus> {
 
 pub fn run_main(connection: &mut Connection) -> Result<()> {
     // SQLite cannot rebuild a referenced parent table while foreign-key
-    // enforcement is enabled. Refinery still wraps the checksummed migration
-    // set in one transaction; validation runs immediately after enforcement
-    // is restored.
+    // enforcement is enabled. Refinery wraps each checksummed migration run in
+    // a transaction; validation runs immediately after enforcement is restored.
     connection.pragma_update(None, "foreign_keys", "OFF")?;
-    let migration = main_runner().run(connection).map_err(DatabaseError::from);
+    let migration = run_main_with_legacy_research_snapshot(connection);
     let restore = connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(DatabaseError::from);
     migration?;
     restore
+}
+
+fn run_main_with_legacy_research_snapshot(connection: &mut Connection) -> Result<()> {
+    if legacy_research_citation_count(connection)? > 0 {
+        // Citation snapshots need V11's complete passage provenance. Older
+        // databases advance to that released boundary first; a crash there is
+        // safe because the next launch repeats this read-only snapshot step.
+        if inspect_main(connection)?.head.unwrap_or_default() < 11 {
+            main_runner()
+                .set_target(Target::Version(11))
+                .run(connection)?;
+        }
+        snapshot_legacy_research_citations(connection)?;
+    }
+    main_runner().run(connection)?;
+    Ok(())
+}
+
+fn legacy_research_citation_count(connection: &Connection) -> Result<i64> {
+    let exists = connection
+        .query_row(
+            "SELECT 1
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = 'research_citation'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !exists {
+        return Ok(0);
+    }
+    Ok(
+        connection.query_row("SELECT count(*) FROM research_citation", [], |row| {
+            row.get(0)
+        })?,
+    )
+}
+
+fn snapshot_legacy_research_citations(connection: &mut Connection) -> Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS legacy_research_citation_snapshot (
+            run_id TEXT PRIMARY KEY,
+            citations_json TEXT NOT NULL
+                CHECK (
+                    json_valid(citations_json)
+                    AND json_type(citations_json) = 'array'
+                )
+         ) STRICT;",
+    )?;
+    let citation_rows = {
+        let mut statement = transaction.prepare(
+            "SELECT research_run_id, passage_id, cited_text
+             FROM research_citation
+             ORDER BY research_run_id, ordinal",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
+    };
+    let mut current_run_id: Option<String> = None;
+    let mut citations = Vec::<GroundedResearchCitation>::new();
+    for (run_id, passage_id, cited_text) in citation_rows {
+        if let Some(previous_run_id) = current_run_id
+            .as_deref()
+            .filter(|current| *current != run_id)
+        {
+            persist_legacy_research_snapshot(&transaction, previous_run_id, &citations)?;
+            citations.clear();
+        }
+        current_run_id = Some(run_id);
+        let mut evidence = passages::resolve_citation(&transaction, &passage_id)?;
+        // V1 stored the exact cited excerpt separately from the containing
+        // passage. Preserve that narrower text while retaining the passage
+        // identity, locator, owner, sources, and historical state.
+        evidence.excerpt = cited_text;
+        let number = u32::try_from(citations.len() + 1).map_err(|_| DatabaseError::Validation {
+            kind: "main",
+            reason: "legacy research answer has too many citations".into(),
+        })?;
+        citations.push(grounded_citation(number, evidence));
+    }
+    if let Some(run_id) = current_run_id {
+        persist_legacy_research_snapshot(&transaction, &run_id, &citations)?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn persist_legacy_research_snapshot(
+    connection: &Connection,
+    run_id: &str,
+    citations: &[GroundedResearchCitation],
+) -> Result<()> {
+    let citations_json =
+        serde_json::to_string(citations).map_err(|error| DatabaseError::Validation {
+            kind: "main",
+            reason: format!("legacy research citations could not be serialized: {error}"),
+        })?;
+    connection.execute(
+        "INSERT INTO legacy_research_citation_snapshot(run_id, citations_json)
+         VALUES(?1, ?2)
+         ON CONFLICT(run_id) DO UPDATE SET citations_json = excluded.citations_json",
+        params![run_id, citations_json],
+    )?;
+    Ok(())
 }
 
 pub fn run_media(connection: &mut Connection) -> Result<()> {

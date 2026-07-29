@@ -153,12 +153,7 @@ where
             (Some(number), _) => Some(number),
             (None, Some(evidence)) if citations.len() < MAX_CITATIONS => {
                 let number = citations.len() as u32 + 1;
-                citations.push(GroundedResearchCitation {
-                    number,
-                    label: citation_label(&evidence),
-                    evidence_kind: evidence_kind(&evidence.locator),
-                    evidence,
-                });
+                citations.push(grounded_citation(number, evidence));
                 citation_numbers.insert(handle.to_owned(), number);
                 Some(number)
             }
@@ -263,6 +258,18 @@ fn evidence_kind(locator: &CitationLocator) -> GroundedEvidenceKind {
         CitationLocator::PdfPage { .. } => GroundedEvidenceKind::PdfPage,
         CitationLocator::OcrRegion { .. } => GroundedEvidenceKind::ImageOcr,
         CitationLocator::TextLines { .. } => GroundedEvidenceKind::TextLines,
+    }
+}
+
+pub(crate) fn grounded_citation(
+    number: u32,
+    evidence: CitationResolution,
+) -> GroundedResearchCitation {
+    GroundedResearchCitation {
+        number,
+        label: citation_label(&evidence),
+        evidence_kind: evidence_kind(&evidence.locator),
+        evidence,
     }
 }
 
