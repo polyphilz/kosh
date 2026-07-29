@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::database::{CitationLocator, CitationResolution};
 
@@ -12,12 +12,13 @@ const MAX_TOKEN_BYTES: usize = 128;
 const MAX_CITATIONS: usize = 256;
 const MAX_MENTIONS: usize = 2_048;
 const MAX_ISSUES: usize = 256;
+const MAX_CITATION_NUMBER_DIGITS: usize = 10;
 const TRUSTED_MARKER_OPEN: char = '【';
 const TRUSTED_MARKER_CLOSE: char = '】';
 const UNKNOWN_MARKER: &str = "⟦unverified citation⟧";
 const MALFORMED_MARKER: &str = "⟦malformed citation⟧";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum GroundedEvidenceKind {
     AuthoredTidbit,
@@ -26,7 +27,7 @@ pub enum GroundedEvidenceKind {
     TextLines,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedResearchCitation {
     pub number: u32,
@@ -35,7 +36,7 @@ pub struct GroundedResearchCitation {
     pub evidence: CitationResolution,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedCitationMention {
     pub citation_number: u32,
@@ -43,7 +44,7 @@ pub struct GroundedCitationMention {
     pub end_byte: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum GroundedOutputIssueCode {
     UnknownCitation,
@@ -53,7 +54,7 @@ pub enum GroundedOutputIssueCode {
     CitationLimitExceeded,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedOutputIssue {
     pub code: GroundedOutputIssueCode,
@@ -62,7 +63,7 @@ pub struct GroundedOutputIssue {
     pub message: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroundedResearchAnswer {
     pub markdown: String,
@@ -153,12 +154,7 @@ where
             (Some(number), _) => Some(number),
             (None, Some(evidence)) if citations.len() < MAX_CITATIONS => {
                 let number = citations.len() as u32 + 1;
-                citations.push(GroundedResearchCitation {
-                    number,
-                    label: citation_label(&evidence),
-                    evidence_kind: evidence_kind(&evidence.locator),
-                    evidence,
-                });
+                citations.push(grounded_citation(number, evidence));
                 citation_numbers.insert(handle.to_owned(), number);
                 Some(number)
             }
@@ -264,6 +260,68 @@ fn evidence_kind(locator: &CitationLocator) -> GroundedEvidenceKind {
         CitationLocator::OcrRegion { .. } => GroundedEvidenceKind::ImageOcr,
         CitationLocator::TextLines { .. } => GroundedEvidenceKind::TextLines,
     }
+}
+
+pub(crate) fn grounded_citation(
+    number: u32,
+    evidence: CitationResolution,
+) -> GroundedResearchCitation {
+    GroundedResearchCitation {
+        number,
+        label: citation_label(&evidence),
+        evidence_kind: evidence_kind(&evidence.locator),
+        evidence,
+    }
+}
+
+pub(crate) fn grounded_mentions_for_registry(
+    markdown: &str,
+    citation_count: usize,
+) -> Vec<GroundedCitationMention> {
+    if citation_count == 0 {
+        return Vec::new();
+    }
+    let mut mentions = Vec::new();
+    for range in markdown_structure(markdown).citation_text_ranges {
+        let mut cursor = range.start;
+        while cursor < range.end && mentions.len() < MAX_MENTIONS {
+            let Some(relative_start) = markdown[cursor..range.end].find(TRUSTED_MARKER_OPEN) else {
+                break;
+            };
+            let start = cursor + relative_start;
+            let body_start = start + TRUSTED_MARKER_OPEN.len_utf8();
+            let mut search_end = body_start
+                .saturating_add(MAX_CITATION_NUMBER_DIGITS + TRUSTED_MARKER_CLOSE.len_utf8())
+                .min(range.end);
+            while !markdown.is_char_boundary(search_end) {
+                search_end -= 1;
+            }
+            let Some(relative_end) = markdown[body_start..search_end].find(TRUSTED_MARKER_CLOSE)
+            else {
+                cursor = body_start;
+                continue;
+            };
+            let body_end = body_start + relative_end;
+            let end = body_end + TRUSTED_MARKER_CLOSE.len_utf8();
+            let body = &markdown[body_start..body_end];
+            let citation_number = body
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+                .then(|| body.parse::<u32>().ok())
+                .flatten();
+            if let Some(citation_number) = citation_number.filter(|number| {
+                *number > 0 && usize::try_from(*number).is_ok_and(|number| number <= citation_count)
+            }) {
+                mentions.push(GroundedCitationMention {
+                    citation_number,
+                    start_byte: start,
+                    end_byte: end,
+                });
+            }
+            cursor = end;
+        }
+    }
+    mentions
 }
 
 fn citation_label(citation: &CitationResolution) -> String {
@@ -698,6 +756,26 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == GroundedOutputIssueCode::UncitedParagraph));
+    }
+
+    #[test]
+    fn reconstructs_only_visible_registered_legacy_markers() {
+        let markdown =
+            "Résumé 【1】 and [linked 【2】](https://example.com).\n\n`code 【2】`\n\nVisible 【2】 and unknown 【3】.";
+        let mentions = grounded_mentions_for_registry(markdown, 2);
+
+        assert_eq!(mentions.len(), 2);
+        assert_eq!(mentions[0].citation_number, 1);
+        assert_eq!(
+            &markdown[mentions[0].start_byte..mentions[0].end_byte],
+            "【1】"
+        );
+        assert_eq!(mentions[1].citation_number, 2);
+        assert_eq!(
+            &markdown[mentions[1].start_byte..mentions[1].end_byte],
+            "【2】"
+        );
+        assert!(mentions[1].start_byte > markdown.find("`code").expect("code marker"));
     }
 
     #[test]

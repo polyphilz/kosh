@@ -948,3 +948,25 @@
     scroll-behavior: auto !important;
   }
 }
+
+.kosh-markdown__citation {
+  display: inline;
+  margin: 0 1px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font: inherit;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.kosh-markdown__citation:hover {
+  text-decoration: underline;
+}
+
+.kosh-markdown__citation:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}

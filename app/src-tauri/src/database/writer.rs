@@ -21,6 +21,10 @@ use super::{
     },
     migrations::MigrationHeads,
     passages::CitationResolution,
+    research_runs::{
+        AppendResearchEventWrite, CreateResearchRunWrite, ListResearchRunsInput, ResearchRunPage,
+        ResearchRunRecord, SaveResearchAnswerWrite,
+    },
     search::{
         PassageSearchResult, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
     },
@@ -207,6 +211,36 @@ pub(super) enum WriterMessage {
     RestoreTidbit {
         input: RestoreTidbitInput,
         now_ms: i64,
+        reply: SyncSender<Result<Tidbit>>,
+    },
+    CreateResearchRun {
+        write: CreateResearchRunWrite,
+        reply: SyncSender<Result<ResearchRunRecord>>,
+    },
+    AppendResearchEvent {
+        write: AppendResearchEventWrite,
+        reply: SyncSender<Result<()>>,
+    },
+    FailResearchRunStart {
+        run_id: String,
+        error: String,
+        now_ms: i64,
+        reply: SyncSender<Result<()>>,
+    },
+    InterruptActiveResearchRuns {
+        now_ms: i64,
+        reply: SyncSender<Result<u64>>,
+    },
+    ListResearchRuns {
+        input: ListResearchRunsInput,
+        reply: SyncSender<Result<ResearchRunPage>>,
+    },
+    LoadResearchRun {
+        id: String,
+        reply: SyncSender<Result<ResearchRunRecord>>,
+    },
+    SaveResearchAnswer {
+        write: SaveResearchAnswerWrite,
         reply: SyncSender<Result<Tidbit>>,
     },
     ResolveCitation {
@@ -794,6 +828,95 @@ impl DatabaseClient {
                 now_ms,
                 reply,
             })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn create_research_run(
+        &self,
+        write: CreateResearchRunWrite,
+    ) -> Result<ResearchRunRecord> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::CreateResearchRun { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn append_research_event(&self, write: AppendResearchEventWrite) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::AppendResearchEvent { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn fail_research_run_start(
+        &self,
+        run_id: String,
+        error: String,
+        now_ms: i64,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::FailResearchRunStart {
+                run_id,
+                error,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn interrupt_active_research_runs(&self, now_ms: i64) -> Result<u64> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::InterruptActiveResearchRuns { now_ms, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn list_research_runs(
+        &self,
+        input: ListResearchRunsInput,
+    ) -> Result<ResearchRunPage> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ListResearchRuns { input, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_research_run(&self, id: String) -> Result<ResearchRunRecord> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadResearchRun { id, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn save_research_answer_as_tidbit(
+        &self,
+        write: SaveResearchAnswerWrite,
+    ) -> Result<Tidbit> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::SaveResearchAnswer { write, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

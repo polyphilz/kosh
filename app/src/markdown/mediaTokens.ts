@@ -31,6 +31,54 @@ export interface KoshPdfToken {
 
 export type KoshMediaToken = KoshImageToken | KoshAttachmentToken | KoshPdfToken;
 
+export function neutralizeUntrustedMediaReferences(markdown: string): string {
+  const replacements: ReadonlyArray<readonly [string, string]> = [
+    ["{{kosh:image:", "{{kosh-reference:image:"],
+    ["{{kosh:attachment:", "{{kosh-reference:attachment:"],
+    ["{{kosh:pdf:", "{{kosh-reference:pdf:"],
+    ["kosh-media://localhost/attachment/", "kosh-reference://localhost/attachment/"],
+  ];
+  const neutralized = replacements.reduce(
+    (value, [from, to]) => value.replaceAll(from, to),
+    markdown,
+  );
+  const decoded = decodeCapabilityEntities(neutralized);
+  if (
+    [
+      "{{kosh:image:",
+      "{{kosh:attachment:",
+      "{{kosh:pdf:",
+      "kosh-media://localhost/attachment/",
+    ].some((prefix) => decoded.includes(prefix))
+  ) {
+    throw new Error("research answer contains an encoded local media capability");
+  }
+  return neutralized;
+}
+
+function decodeCapabilityEntities(value: string): string {
+  const named: Record<string, string> = {
+    colon: ":",
+    lbrace: "{",
+    lcub: "{",
+    rbrace: "}",
+    rcub: "}",
+    sol: "/",
+  };
+  return value
+    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));?/giu, (entity, hex: string, decimal: string) => {
+      const codePoint = Number.parseInt(hex || decimal, hex ? 16 : 10);
+      try {
+        return String.fromCodePoint(codePoint);
+      } catch {
+        return entity;
+      }
+    })
+    .replace(/&(colon|lbrace|lcub|rbrace|rcub|sol);/giu, (entity, name: string) => {
+      return named[name.toLowerCase()] ?? entity;
+    });
+}
+
 export function parseKoshMediaToken(value: string): KoshMediaToken | null {
   const image = imagePattern.exec(value);
   if (image) {

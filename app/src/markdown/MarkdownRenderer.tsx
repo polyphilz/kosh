@@ -1,15 +1,39 @@
-import { Children, Component, useMemo, type ErrorInfo, type ReactNode } from "react";
+import { Children, Component, useMemo, useRef, type ErrorInfo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import { rehypePlugins, remarkPlugins } from "./rendererConfig";
+import type { GroundedCitationMention } from "../backend/contracts";
+import { inertRemarkPlugins, rehypePlugins, remarkPlugins } from "./rendererConfig";
 import { externalHttpUrl, localMediaAttachmentId, markdownUrlTransform } from "./urlPolicy";
 
 interface MarkdownRendererProps {
+  allowLocalMedia?: boolean;
+  citationMentions?: GroundedCitationMention[];
+  onOpenCitation?: (citationNumber: number) => void;
   onOpenExternalUrl?: (url: string) => Promise<void> | void;
   source: string;
 }
 
-export function MarkdownRenderer({ onOpenExternalUrl, source }: MarkdownRendererProps) {
-  const components = useMemo(() => rendererComponents(onOpenExternalUrl), [onOpenExternalUrl]);
+export function MarkdownRenderer({
+  allowLocalMedia = true,
+  citationMentions = [],
+  onOpenCitation,
+  onOpenExternalUrl,
+  source,
+}: MarkdownRendererProps) {
+  const nonce = useRef<string>(globalThis.crypto.randomUUID()).current;
+  const trustedCitations = useMemo(
+    () => injectTrustedCitationLinks(source, citationMentions, nonce),
+    [citationMentions, nonce, source],
+  );
+  const components = useMemo(
+    () =>
+      rendererComponents(
+        onOpenExternalUrl,
+        onOpenCitation,
+        trustedCitations.hrefs,
+        allowLocalMedia,
+      ),
+    [allowLocalMedia, onOpenCitation, onOpenExternalUrl, trustedCitations.hrefs],
+  );
 
   return (
     <MarkdownErrorBoundary key={source} source={source}>
@@ -17,10 +41,10 @@ export function MarkdownRenderer({ onOpenExternalUrl, source }: MarkdownRenderer
         <ReactMarkdown
           components={components}
           rehypePlugins={rehypePlugins}
-          remarkPlugins={remarkPlugins}
+          remarkPlugins={allowLocalMedia ? remarkPlugins : inertRemarkPlugins}
           urlTransform={markdownUrlTransform}
         >
-          {source}
+          {trustedCitations.source}
         </ReactMarkdown>
       </div>
     </MarkdownErrorBoundary>
@@ -29,9 +53,25 @@ export function MarkdownRenderer({ onOpenExternalUrl, source }: MarkdownRenderer
 
 function rendererComponents(
   onOpenExternalUrl: ((url: string) => Promise<void> | void) | undefined,
+  onOpenCitation: ((citationNumber: number) => void) | undefined,
+  trustedCitationHrefs: ReadonlyMap<string, number>,
+  allowLocalMedia: boolean,
 ): Components {
   return {
     a({ children, href }) {
+      const citationNumber = href ? trustedCitationHrefs.get(href) : undefined;
+      if (citationNumber !== undefined && onOpenCitation) {
+        return (
+          <button
+            aria-label={`Open citation ${citationNumber}`}
+            className="kosh-markdown__citation"
+            onClick={() => onOpenCitation(citationNumber)}
+            type="button"
+          >
+            {children}
+          </button>
+        );
+      }
       const url = externalHttpUrl(href);
       if (!url || !onOpenExternalUrl) {
         return <span className="kosh-markdown__inert-link">{children}</span>;
@@ -54,7 +94,7 @@ function rendererComponents(
       );
     },
     img({ alt, src, title }) {
-      const attachmentId = localMediaAttachmentId(src);
+      const attachmentId = allowLocalMedia ? localMediaAttachmentId(src) : null;
       if (attachmentId && title === "kosh-pdf") {
         return (
           <figure className="kosh-markdown__pdf">
@@ -99,6 +139,79 @@ function rendererComponents(
       );
     },
   };
+}
+
+export function injectTrustedCitationLinks(
+  source: string,
+  mentions: GroundedCitationMention[],
+  nonce: string,
+): { source: string; hrefs: ReadonlyMap<string, number> } {
+  const hrefs = new Map<string, number>();
+  const candidates = mentions.filter(
+    (mention) =>
+      Number.isSafeInteger(mention.citationNumber) &&
+      mention.citationNumber >= 1 &&
+      Number.isSafeInteger(mention.startByte) &&
+      Number.isSafeInteger(mention.endByte) &&
+      mention.startByte >= 0 &&
+      mention.endByte > mention.startByte,
+  );
+  const requestedOffsets = new Set<number>();
+  for (const mention of candidates) {
+    requestedOffsets.add(mention.startByte);
+    requestedOffsets.add(mention.endByte);
+  }
+  const stringIndexes = utf8ByteOffsetsToStringIndexes(source, requestedOffsets);
+  const replacements = candidates
+    .map((mention) => {
+      const start = stringIndexes.get(mention.startByte);
+      const end = stringIndexes.get(mention.endByte);
+      const marker = `【${mention.citationNumber}】`;
+      if (start === undefined || end === undefined || source.slice(start, end) !== marker) {
+        return null;
+      }
+      return { start, end, marker, number: mention.citationNumber };
+    })
+    .filter((mention) => mention !== null)
+    .sort((left, right) => right.start - left.start);
+  let nextStart = source.length;
+  const accepted = [];
+  for (const mention of replacements) {
+    if (mention.end > nextStart) {
+      continue;
+    }
+    accepted.push(mention);
+    nextStart = mention.start;
+  }
+  accepted.reverse();
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const mention of accepted) {
+    const href = `https://kosh.invalid/citation/${nonce}/${mention.number}`;
+    parts.push(source.slice(cursor, mention.start), `[${mention.marker}](${href})`);
+    hrefs.set(href, mention.number);
+    cursor = mention.end;
+  }
+  parts.push(source.slice(cursor));
+  return { source: parts.join(""), hrefs };
+}
+
+function utf8ByteOffsetsToStringIndexes(
+  source: string,
+  requestedOffsets: ReadonlySet<number>,
+): ReadonlyMap<number, number> {
+  const indexes = new Map<number, number>();
+  let byteOffset = 0;
+  let stringIndex = 0;
+  if (requestedOffsets.has(0)) indexes.set(0, 0);
+  while (stringIndex < source.length && indexes.size < requestedOffsets.size) {
+    const codePoint = source.codePointAt(stringIndex)!;
+    const stringWidth = codePoint > 0xffff ? 2 : 1;
+    byteOffset += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    stringIndex += stringWidth;
+    if (requestedOffsets.has(byteOffset)) indexes.set(byteOffset, stringIndex);
+  }
+  return indexes;
 }
 
 function parseImageTitle(

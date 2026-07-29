@@ -6,6 +6,7 @@ use super::{
     error::{DatabaseError, Result},
     media, search,
 };
+use crate::research;
 
 pub const MAIN_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KOSH");
 pub const MEDIA_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KMED");
@@ -189,6 +190,26 @@ fn configure_writer(connection: &Connection, kind: DatabaseKind) -> Result<()> {
                     &markdown,
                     &attachment_id,
                 ))
+            },
+        )?;
+        connection.create_scalar_function(
+            "kosh_research_citation_mentions",
+            2,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
+            |context| {
+                let markdown = context.get::<String>(0)?;
+                let citation_count = context.get::<i64>(1)?;
+                let citation_count = usize::try_from(citation_count).map_err(|_| {
+                    rusqlite::Error::UserFunctionError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "citation count is outside the supported range",
+                    )))
+                })?;
+                let mentions = research::grounded_mentions_for_registry(&markdown, citation_count);
+                serde_json::to_string(&mentions)
+                    .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
             },
         )?;
     }

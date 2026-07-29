@@ -49,9 +49,43 @@ Consumers must render citations exclusively from `answer.citations` and
 navigation targets come from the embedded `CitationResolution`, never from
 Claude's text. The raw final CLI result is not emitted on the production path.
 
+The Markdown renderer verifies each trusted UTF-8 byte range against its exact
+`【n】` marker before making it interactive. It then assigns an unguessable
+per-render target that raw model-authored Markdown cannot claim. Plain markers,
+HTML attributes, guessed links, malformed ranges, and overlapping ranges stay
+inert.
+
+Research answers also disable Kosh media-token and `kosh-media://` expansion.
+Claude-authored Markdown cannot display an attachment by guessing its UUID.
+Saving an answer as a tidbit neutralizes every reserved media token and local
+media URL at the native database boundary. Parser-decoded or entity-encoded
+variants are rejected rather than allowed to cross that boundary; only media
+explicitly attached through an authored draft can become live content.
+
 Source URLs are provenance supplied to Kosh by the user. They may be displayed
 or opened from trusted citation detail, but Kosh Research does not fetch them
 and has no web-search or web-fetch tool.
+
+## Durable run history
+
+Kosh creates a queued history record before launching Claude. Every visible
+event is written through the single SQLite writer before it is emitted to the
+webview. Event identities are contiguous and bound to their run; raw final
+output is rejected at the database boundary. A successful terminal event is
+valid only after one grounded answer snapshot has been stored.
+
+The snapshot includes the complete numbered registry and exact
+`CitationResolution` values used at answer time. Loading an older run compares
+its cited tidbit revisions with current revisions only to display a freshness
+notice. Deleted or otherwise inactive evidence is also labeled historical and
+cannot offer a live tidbit link. Opening a marker always uses the historical
+snapshot and never silently retargets.
+
+Queued or running rows are marked `INTERRUPTED` during the next app startup.
+Kosh never attempts to resurrect an operating-system process after restart.
+Rerun creates a new run with explicit lineage. Saving an answer creates a
+normal authored tidbit and links it to the completed run in the same
+transaction.
 
 ## Required adversarial coverage
 
@@ -61,6 +95,7 @@ Tests must continue to cover:
 - copied URLs and citation-looking plain text;
 - repeated handles and exact evidence identity;
 - stale revision snapshots;
+- guessed local-media tokens and protocol URLs;
 - prompt injection embedded in tidbits;
 - citation tokens inside code;
 - uncited substantive claims;

@@ -6,10 +6,12 @@ use crate::runtime::RuntimeState;
 
 use super::{
     drafts::SaveDraftWrite,
+    research_runs::SaveResearchAnswerWrite,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     CitationResolution, ClearDraftInput, DatabaseError, DeleteTidbitInput, Draft, EditTidbitInput,
-    ListTidbitsInput, RestoreTidbitInput, SaveDraftInput, SearchPassagesInput,
-    SearchPassagesResponse, SemanticSearchReadiness, Tidbit, TidbitDraft, TidbitListPage,
+    ListResearchRunsInput, ListTidbitsInput, ResearchRunPage, ResearchRunRecord,
+    RestoreTidbitInput, SaveDraftInput, SearchPassagesInput, SearchPassagesResponse,
+    SemanticSearchReadiness, Tidbit, TidbitDraft, TidbitListPage,
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -135,6 +137,41 @@ pub(crate) async fn restore_tidbit(
     let client = state.database_client();
     let now_ms = state.now_ms();
     run_writer(move || client.restore_tidbit(input, now_ms)).await
+}
+
+#[tauri::command]
+pub(crate) async fn list_research_runs(
+    state: State<'_, RuntimeState>,
+    input: ListResearchRunsInput,
+) -> CommandResult<ResearchRunPage> {
+    let client = state.database_client();
+    run_writer(move || client.list_research_runs(input)).await
+}
+
+#[tauri::command]
+pub(crate) async fn load_research_run(
+    state: State<'_, RuntimeState>,
+    id: String,
+) -> CommandResult<ResearchRunRecord> {
+    let client = state.database_client();
+    run_writer(move || client.load_research_run(id)).await
+}
+
+#[tauri::command]
+pub(crate) async fn save_research_answer_as_tidbit(
+    state: State<'_, RuntimeState>,
+    run_id: String,
+) -> CommandResult<Tidbit> {
+    let client = state.database_client();
+    let now_ms = state.now_ms();
+    let mut ids = state.next_ids(2).into_iter();
+    let write = SaveResearchAnswerWrite {
+        run_id,
+        tidbit_id: ids.next().expect("requested tidbit ID"),
+        revision_id: ids.next().expect("requested revision ID"),
+        now_ms,
+    };
+    run_writer(move || client.save_research_answer_as_tidbit(write)).await
 }
 
 #[tauri::command]

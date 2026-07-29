@@ -1,6 +1,9 @@
 import type {
   Backend,
+  BeginResearchProcessInput,
   CitationResolution,
+  ClaudeCliDefaults,
+  ClaudeSetupStatus,
   ClearDraftInput,
   DeleteTidbitInput,
   DraftRecord,
@@ -11,10 +14,15 @@ import type {
   ImageRecord,
   ImageStatusRecord,
   ListTidbitsInput,
+  ListResearchRunsInput,
   PassageEmbeddingIndexStatus,
   PdfRecord,
   PdfStatusRecord,
   RuntimeProbe,
+  GroundedResearchAnswer,
+  ResearchProcessEvent,
+  ResearchRunPage,
+  ResearchRunRecord,
   SelectedAttachmentRecord,
   RestoreTidbitInput,
   SaveDraftInput,
@@ -30,8 +38,10 @@ import type {
   TidbitListPage,
   TidbitRecord,
   TidbitSource,
+  StartResearchProcessOutput,
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
+import { neutralizeUntrustedMediaReferences } from "../markdown/mediaTokens";
 
 interface FakeCitationSnapshot {
   revision: TidbitRecord;
@@ -59,6 +69,9 @@ export class FakeBackend implements Backend {
   private readonly citations = new Map<string, FakeCitationSnapshot>();
   private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
+  private readonly researchRuns = new Map<string, ResearchRunRecord>();
+  private readonly researchListeners = new Set<(event: ResearchProcessEvent) => void>();
+  private readonly researchTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private shortcutSettings: ShortcutSettingsSnapshot = {
     revision: 1,
     keyboardBindings: DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
@@ -543,6 +556,321 @@ export class FakeBackend implements Backend {
     return cloneShortcutSettings(this.shortcutSettings);
   }
 
+  async claudeSetupStatus(): Promise<ClaudeSetupStatus> {
+    return {
+      phase: "READY",
+      binaryPath: "/usr/local/bin/claude",
+      version: "fixture",
+      defaults: { model: "sonnet", effort: "high" },
+      message: "Claude Code is ready for Kosh research.",
+    };
+  }
+
+  async claudeCliDefaults(): Promise<ClaudeCliDefaults> {
+    return { model: "sonnet", effort: "high" };
+  }
+
+  async startResearchProcess(
+    input: BeginResearchProcessInput,
+  ): Promise<StartResearchProcessOutput> {
+    if (!input.prompt.trim()) {
+      throw new Error("the research prompt must not be empty");
+    }
+    for (const active of this.researchRuns.values()) {
+      if (active.status === "QUEUED" || active.status === "RUNNING") {
+        const timer = this.researchTimers.get(active.id);
+        if (timer) clearTimeout(timer);
+        this.researchTimers.delete(active.id);
+        this.emitResearch({
+          runId: active.id,
+          sequence: active.events.length + 1,
+          kind: "FINISHED",
+          outcome: "REPLACED",
+          stderrTruncated: false,
+        });
+      }
+    }
+    const sequence = this.nextSequence();
+    const runId = `fake-research-${sequence}`;
+    const now = this.probe.nowMs + sequence;
+    this.researchRuns.set(runId, {
+      id: runId,
+      rerunOfId: null,
+      query: input.prompt,
+      status: "QUEUED",
+      requestedModel: input.model,
+      requestedEffort: input.effort,
+      actualModel: null,
+      createdAtMs: now,
+      startedAtMs: null,
+      completedAtMs: null,
+      updatedAtMs: now,
+      error: null,
+      stderrTruncated: false,
+      savedTidbitId: null,
+      events: [],
+      finalAnswer: null,
+      citationFreshness: [],
+    });
+    this.emitResearch({ runId, sequence: 1, kind: "STARTED" });
+    this.scheduleResearch(runId, input.prompt);
+    return { runId };
+  }
+
+  async rerunResearchProcess(runId: string): Promise<StartResearchProcessOutput> {
+    const previous = this.requireResearchRun(runId);
+    const output = await this.startResearchProcess({
+      prompt: previous.query,
+      model: previous.requestedModel,
+      effort: previous.requestedEffort,
+      timeoutSeconds: null,
+    });
+    this.requireResearchRun(output.runId).rerunOfId = runId;
+    return output;
+  }
+
+  async cancelResearchProcess(runId: string): Promise<boolean> {
+    const run = this.requireResearchRun(runId);
+    if (run.status !== "QUEUED" && run.status !== "RUNNING") {
+      return false;
+    }
+    const timer = this.researchTimers.get(runId);
+    if (timer) {
+      clearTimeout(timer);
+      this.researchTimers.delete(runId);
+    }
+    this.emitResearch({
+      runId,
+      sequence: run.events.length + 1,
+      kind: "FINISHED",
+      outcome: "CANCELED",
+      stderrTruncated: false,
+    });
+    return true;
+  }
+
+  async listResearchRuns(input: ListResearchRunsInput): Promise<ResearchRunPage> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new Error("limit must be between 1 and 100");
+    }
+    const sorted = [...this.researchRuns.values()].sort(
+      (left, right) => right.updatedAtMs - left.updatedAtMs || right.id.localeCompare(left.id),
+    );
+    const start = input.cursor
+      ? sorted.findIndex(
+          (run) =>
+            run.updatedAtMs < input.cursor!.updatedAtMs ||
+            (run.updatedAtMs === input.cursor!.updatedAtMs && run.id < input.cursor!.id),
+        )
+      : 0;
+    const normalizedStart = start < 0 ? sorted.length : start;
+    const items = sorted.slice(normalizedStart, normalizedStart + input.limit);
+    const hasMore = normalizedStart + input.limit < sorted.length;
+    const last = items.at(-1);
+    return {
+      items: items.map(researchSummary),
+      nextCursor: hasMore && last ? { updatedAtMs: last.updatedAtMs, id: last.id } : null,
+    };
+  }
+
+  async loadResearchRun(id: string): Promise<ResearchRunRecord> {
+    const record = cloneResearchRun(this.requireResearchRun(id));
+    record.citationFreshness = (record.finalAnswer?.citations ?? []).map((citation) => {
+      const citedRevisionId = citation.evidence.tidbit?.revisionId ?? null;
+      const currentTidbit = citation.evidence.tidbit
+        ? this.tidbits.get(citation.evidence.tidbit.id)
+        : undefined;
+      const currentRevisionId = currentTidbit?.currentRevisionId ?? null;
+      const tidbitDeleted =
+        citation.evidence.tidbit !== null &&
+        (currentTidbit === undefined || currentTidbit.deletedAtMs !== null);
+      const hasNewerRevision = citedRevisionId !== null && citedRevisionId !== currentRevisionId;
+      return {
+        citationNumber: citation.number,
+        citedRevisionId,
+        currentRevisionId,
+        hasNewerRevision,
+        isHistorical:
+          citedRevisionId !== null &&
+          (hasNewerRevision || tidbitDeleted || currentTidbit === undefined),
+        tidbitDeleted,
+      };
+    });
+    return record;
+  }
+
+  async saveResearchAnswerAsTidbit(runId: string): Promise<TidbitRecord> {
+    const run = this.requireResearchRun(runId);
+    if (run.status !== "COMPLETED" || !run.finalAnswer) {
+      throw new Error("only completed research answers can become tidbits");
+    }
+    if (run.savedTidbitId) {
+      return cloneTidbit(this.requireTidbit(run.savedTidbitId));
+    }
+    const tidbit = await this.createTidbit({
+      title: `Research: ${truncate(run.query, 86)}`,
+      bodyMarkdown: neutralizeUntrustedMediaReferences(run.finalAnswer.markdown),
+      sources: [],
+    });
+    run.savedTidbitId = tidbit.id;
+    run.updatedAtMs = Math.max(run.updatedAtMs + 1, tidbit.updatedAtMs);
+    return tidbit;
+  }
+
+  async onResearchProcessEvent(
+    handler: (event: ResearchProcessEvent) => void,
+  ): Promise<() => void> {
+    this.researchListeners.add(handler);
+    return () => {
+      this.researchListeners.delete(handler);
+    };
+  }
+
+  private scheduleResearch(runId: string, prompt: string): void {
+    const delay = prompt.includes("[slow]") ? 500 : 20;
+    const timer = setTimeout(() => {
+      this.researchTimers.delete(runId);
+      void this.completeResearch(runId, prompt);
+    }, delay);
+    this.researchTimers.set(runId, timer);
+  }
+
+  private async completeResearch(runId: string, prompt: string): Promise<void> {
+    const run = this.researchRuns.get(runId);
+    if (!run || (run.status !== "QUEUED" && run.status !== "RUNNING")) {
+      return;
+    }
+    let sequence = run.events.length + 1;
+    this.emitResearch({
+      runId,
+      sequence: sequence++,
+      kind: "METADATA",
+      model: run.requestedModel ?? "sonnet",
+    });
+    if (prompt.includes("[fail]")) {
+      this.emitResearch({
+        runId,
+        sequence,
+        kind: "FINISHED",
+        outcome: "FAILED",
+        error: "Fixture research failed safely.",
+        stderrTruncated: false,
+      });
+      return;
+    }
+    this.emitResearch({
+      runId,
+      sequence: sequence++,
+      kind: "TOOL_ACTIVITY",
+      tool: "kosh_v1_hybrid_search",
+      phase: "STARTED",
+    });
+    this.emitResearch({
+      runId,
+      sequence: sequence++,
+      kind: "UNTRUSTED_TEXT_DELTA",
+      text: "Inspecting the most relevant passages…",
+    });
+    this.emitResearch({
+      runId,
+      sequence: sequence++,
+      kind: "TOOL_ACTIVITY",
+      tool: "kosh_v1_hybrid_search",
+      phase: "FINISHED",
+    });
+    const answer = await this.fixtureResearchAnswer();
+    this.emitResearch({
+      runId,
+      sequence: sequence++,
+      kind: "GROUNDED_FINAL_OUTPUT",
+      answer,
+    });
+    this.emitResearch({
+      runId,
+      sequence,
+      kind: "FINISHED",
+      outcome: "SUCCEEDED",
+      stderrTruncated: false,
+    });
+  }
+
+  private async fixtureResearchAnswer(): Promise<GroundedResearchAnswer> {
+    const first = [...this.tidbits.values()].find((tidbit) => tidbit.deletedAtMs === null);
+    const evidence = first
+      ? await this.resolveCitation(`fake-passage:${first.currentRevisionId}`)
+      : fallbackCitation();
+    const markdown = `Kosh found a durable answer in your local library.【1】`;
+    const markerStart = new TextEncoder().encode(markdown.slice(0, markdown.indexOf("【"))).length;
+    return {
+      markdown,
+      citations: [
+        {
+          number: 1,
+          label:
+            evidence.tidbit?.displayTitle ?? evidence.attachment?.displayFilename ?? "Evidence",
+          evidenceKind: evidence.tidbit ? "AUTHORED_TIDBIT" : "TEXT_LINES",
+          evidence,
+        },
+      ],
+      mentions: [
+        {
+          citationNumber: 1,
+          startByte: markerStart,
+          endByte: new TextEncoder().encode(markdown).length,
+        },
+      ],
+      issues: [],
+    };
+  }
+
+  private emitResearch(event: ResearchProcessEvent): void {
+    const run = this.requireResearchRun(event.runId);
+    if (event.sequence !== run.events.length + 1) {
+      throw new Error("fake research event sequence is not contiguous");
+    }
+    run.events.push(cloneValue(event));
+    run.updatedAtMs = Math.max(run.updatedAtMs + 1, this.probe.nowMs + this.nextSequence());
+    if (event.kind === "STARTED") {
+      run.status = "RUNNING";
+      run.startedAtMs = run.updatedAtMs;
+    } else if (event.kind === "METADATA") {
+      run.actualModel = event.model ?? null;
+    } else if (event.kind === "GROUNDED_FINAL_OUTPUT") {
+      run.finalAnswer = cloneValue(event.answer);
+      run.citationFreshness = event.answer.citations.map((citation) => ({
+        citationNumber: citation.number,
+        citedRevisionId: citation.evidence.tidbit?.revisionId ?? null,
+        currentRevisionId: citation.evidence.tidbit?.revisionId ?? null,
+        hasNewerRevision: false,
+        isHistorical: citation.evidence.state === "HISTORICAL",
+        tidbitDeleted: citation.evidence.tidbit?.deleted ?? false,
+      }));
+    } else if (event.kind === "FINISHED") {
+      run.status =
+        event.outcome === "SUCCEEDED"
+          ? "COMPLETED"
+          : event.outcome === "CANCELED" || event.outcome === "REPLACED"
+            ? "CANCELED"
+            : event.outcome === "SHUTDOWN"
+              ? "INTERRUPTED"
+              : "FAILED";
+      run.completedAtMs = run.updatedAtMs;
+      run.error = event.error ?? null;
+      run.stderrTruncated = event.stderrTruncated;
+    }
+    for (const listener of this.researchListeners) {
+      listener(cloneValue(event));
+    }
+  }
+
+  private requireResearchRun(id: string): ResearchRunRecord {
+    const run = this.researchRuns.get(id);
+    if (!run) {
+      throw new Error(`research run ${id} was not found`);
+    }
+    return run;
+  }
+
   private nextSequence(): number {
     this.sequence += 1;
     return this.sequence;
@@ -620,6 +948,43 @@ function cloneShortcutSettings(settings: ShortcutSettingsSnapshot): ShortcutSett
     ...settings,
     keyboardBindings: settings.keyboardBindings.map((binding) => ({ ...binding })),
     shortcutErrors: [...settings.shortcutErrors],
+  };
+}
+
+function researchSummary(run: ResearchRunRecord) {
+  const { events: _events, finalAnswer: _answer, citationFreshness: _freshness, ...summary } = run;
+  return { ...summary };
+}
+
+function cloneResearchRun(run: ResearchRunRecord): ResearchRunRecord {
+  return cloneValue(run);
+}
+
+function cloneValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function fallbackCitation(): CitationResolution {
+  return {
+    passageId: "fake-passage:fallback",
+    excerpt: "Kosh fixture evidence is stored locally and cited exactly.",
+    headingContext: [],
+    constructionVersion: "fake-text-lines-v1",
+    state: "CURRENT",
+    locator: {
+      kind: "TEXT_LINES",
+      startLine: 1,
+      endLine: 1,
+    },
+    tidbit: null,
+    attachment: {
+      id: "fake-attachment-fallback",
+      extractionId: "fake-extraction-fallback",
+      displayFilename: "fixture.txt",
+      mediaType: "text/plain",
+      deleted: false,
+    },
+    sources: [],
   };
 }
 

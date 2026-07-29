@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  neutralizeUntrustedMediaReferences,
   parseKoshMediaToken,
   serializeKoshAttachmentToken,
   serializeKoshImageToken,
@@ -84,5 +85,35 @@ describe("reserved Kosh media tokens", () => {
       caption: "~~Draft~~ (v1)!",
     });
     expect(parseKoshMediaToken(`{{kosh:image:${imageId};width=80%;alt=*System*}}`)).toBeNull();
+  });
+
+  it("neutralizes reserved media capabilities in untrusted Markdown", () => {
+    const source = [
+      `{{kosh:image:${imageId};width=70%}}`,
+      `{{kosh:pdf:${attachmentId}}}`,
+      `{{kosh:attachment:${attachmentId}}}`,
+      `![direct](kosh-media://localhost/attachment/${attachmentId})`,
+    ].join("\n");
+    const neutralized = neutralizeUntrustedMediaReferences(source);
+
+    expect(neutralized).not.toContain("{{kosh:image:");
+    expect(neutralized).not.toContain("{{kosh:pdf:");
+    expect(neutralized).not.toContain("{{kosh:attachment:");
+    expect(neutralized).not.toContain("kosh-media://localhost/attachment/");
+    expect(neutralized).toContain("{{kosh-reference:image:");
+    expect(neutralized).toContain("{{kosh-reference:pdf:");
+    expect(neutralized).toContain("{{kosh-reference:attachment:");
+    expect(neutralized).toContain("kosh-reference://localhost/attachment/");
+  });
+
+  it("rejects entity-encoded media capabilities in untrusted Markdown", () => {
+    expect(() =>
+      neutralizeUntrustedMediaReferences(`&lcub;&lcub;kosh&#58;image:${imageId};width=70%}}`),
+    ).toThrow("encoded local media capability");
+    expect(() =>
+      neutralizeUntrustedMediaReferences(
+        `![direct](kosh-media&#x3a;&sol;&sol;localhost/attachment/${attachmentId})`,
+      ),
+    ).toThrow("encoded local media capability");
   });
 });

@@ -2,6 +2,7 @@ use std::sync::{Arc, Barrier};
 
 use refinery::Target;
 use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{
@@ -137,6 +138,354 @@ fn pending_migrations_apply_to_an_identified_empty_pair() {
             .expect("diagnostics")
             .migration_heads,
         migrations::expected_heads()
+    );
+}
+
+#[test]
+fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_tables() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(11))
+        .run(&mut main)
+        .expect("main schema through shortcut settings");
+    let mut media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
+            .expect("fresh media writer");
+    migrations::run_media(&mut media).expect("media schema");
+    main.execute_batch(
+        "BEGIN;
+         INSERT INTO tidbit(
+            id, created_at, updated_at, current_revision_id
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000121',
+            1,
+            1,
+            '019f547b-6200-7000-8000-000000000122'
+         );
+         INSERT INTO tidbit_revision(
+            id, tidbit_id, revision_number, created_at, title,
+            body_markdown, content_hash
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000122',
+            '019f547b-6200-7000-8000-000000000121',
+            1,
+            1,
+            'Legacy evidence',
+            'A broad passage containing exact legacy evidence.',
+            randomblob(32)
+         );
+         INSERT INTO source(
+            id, created_at, label, normalized_url
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000123',
+            1,
+            'Legacy source',
+            'https://example.com/legacy'
+         );
+         INSERT INTO tidbit_revision_source(
+            tidbit_revision_id, source_id, sort_order
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000122',
+            '019f547b-6200-7000-8000-000000000123',
+            0
+         );
+         INSERT INTO passage(
+            id, tidbit_revision_id, owner_kind, ordinal, content,
+            content_hash, locator_kind, locator_json, created_at,
+            construction_version, heading_context_json
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000124',
+            '019f547b-6200-7000-8000-000000000122',
+            'AUTHOR',
+            0,
+            'A broad passage containing exact legacy evidence.',
+            randomblob(32),
+            'MARKDOWN_BLOCKS',
+            '{\"start\":0,\"end\":0}',
+            1,
+            'legacy',
+            '[\"Legacy chapter\"]'
+         );
+         INSERT INTO active_passage(passage_id, tidbit_id)
+         VALUES(
+            '019f547b-6200-7000-8000-000000000124',
+            '019f547b-6200-7000-8000-000000000121'
+         );
+         INSERT INTO research_run(
+            id, query, status, created_at, started_at, completed_at, answer_markdown
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000111',
+            'Legacy completed question',
+            'COMPLETED',
+            10,
+            11,
+            12,
+            'A preserved legacy answer.【1】'
+         );
+         INSERT INTO research_citation(
+            research_run_id, ordinal, passage_id, cited_text
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000111',
+            0,
+            '019f547b-6200-7000-8000-000000000124',
+            'exact legacy evidence'
+         );
+         INSERT INTO research_run(
+            id, query, status, created_at, started_at
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000112',
+            'Legacy active question',
+            'RUNNING',
+            20,
+            21
+         );
+         COMMIT;",
+    )
+    .expect("legacy research rows");
+    let oversized_query = "q".repeat(65_537);
+    main.execute(
+        "INSERT INTO research_run(
+            id, query, status, created_at, started_at, completed_at, error
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000113',
+            ?1,
+            'FAILED',
+            30,
+            31,
+            32,
+            'Legacy failure'
+         )",
+        [&oversized_query],
+    )
+    .expect("oversized legacy query");
+    drop(main);
+    drop(media);
+
+    let database = Database::initialize(pair.paths.clone()).expect("durable research upgrade");
+    let completed = database
+        .client()
+        .load_research_run("019f547b-6200-7000-8000-000000000111".into())
+        .expect("migrated completed run");
+    assert_eq!(
+        completed.summary.status,
+        super::research_runs::ResearchRunStatus::Completed
+    );
+    assert_eq!(
+        completed
+            .final_answer
+            .as_ref()
+            .and_then(|answer| answer.get("markdown"))
+            .and_then(serde_json::Value::as_str),
+        Some("A preserved legacy answer.【1】")
+    );
+    let citation = completed
+        .final_answer
+        .as_ref()
+        .and_then(|answer| answer.get("citations"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|citations| citations.first())
+        .expect("migrated citation");
+    assert_eq!(
+        citation.get("number").and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        citation
+            .pointer("/evidence/passageId")
+            .and_then(serde_json::Value::as_str),
+        Some("019f547b-6200-7000-8000-000000000124")
+    );
+    assert_eq!(
+        citation
+            .pointer("/evidence/excerpt")
+            .and_then(serde_json::Value::as_str),
+        Some("exact legacy evidence")
+    );
+    assert_eq!(
+        citation
+            .pointer("/evidence/sources/0/url")
+            .and_then(serde_json::Value::as_str),
+        Some("https://example.com/legacy")
+    );
+    let mention = completed
+        .final_answer
+        .as_ref()
+        .and_then(|answer| answer.get("mentions"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|mentions| mentions.first())
+        .expect("migrated citation mention");
+    let answer_markdown = "A preserved legacy answer.【1】";
+    let marker_start = answer_markdown.find('【').expect("legacy marker");
+    assert_eq!(
+        mention
+            .get("citationNumber")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        mention.get("startByte").and_then(serde_json::Value::as_u64),
+        Some(marker_start as u64)
+    );
+    assert_eq!(
+        mention.get("endByte").and_then(serde_json::Value::as_u64),
+        Some(answer_markdown.len() as u64)
+    );
+    let oversized = database
+        .client()
+        .load_research_run("019f547b-6200-7000-8000-000000000113".into())
+        .expect("migrated oversized query");
+    assert_eq!(oversized.summary.query.chars().count(), 65_536);
+    assert_eq!(
+        oversized.summary.status,
+        super::research_runs::ResearchRunStatus::Failed
+    );
+    assert_eq!(
+        database
+            .client()
+            .interrupt_active_research_runs(30)
+            .expect("recover migrated active run"),
+        1
+    );
+    assert_eq!(
+        database
+            .client()
+            .load_research_run("019f547b-6200-7000-8000-000000000112".into())
+            .expect("migrated active run")
+            .summary
+            .status,
+        super::research_runs::ResearchRunStatus::Interrupted
+    );
+    database.shutdown().expect("close upgraded database");
+    drop(database);
+
+    let reopened = Database::initialize(pair.paths.clone()).expect("reopen durable upgrade");
+    let reopened_answer = reopened
+        .client()
+        .load_research_run("019f547b-6200-7000-8000-000000000111".into())
+        .expect("reopened migrated run")
+        .final_answer
+        .expect("reopened migrated answer");
+    assert_eq!(
+        reopened_answer
+            .pointer("/citations/0/evidence/passageId")
+            .and_then(serde_json::Value::as_str),
+        Some("019f547b-6200-7000-8000-000000000124")
+    );
+    assert_eq!(
+        reopened_answer
+            .pointer("/mentions/0/citationNumber")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+}
+
+#[test]
+fn research_media_upgrade_backfills_durable_attachment_references() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(14))
+        .run(&mut main)
+        .expect("main schema through research citation mentions");
+    let mut media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
+            .expect("fresh media writer");
+    migrations::run_media(&mut media).expect("media schema");
+    let hash = Sha256::digest(b"x").to_vec();
+    main.execute(
+        "INSERT INTO attachment(
+            id, created_at, updated_at, deleted_at, sha256, display_filename,
+            media_type, byte_length, kind, extraction_state
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000151',
+            1, 20, 20, ?1, 'legacy-research.txt', 'text/plain', 1,
+            'TEXT', 'READY'
+         )",
+        params![&hash],
+    )
+    .expect("legacy research attachment");
+    media
+        .execute(
+            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+             VALUES(?1, x'78', 1, 1)",
+            params![&hash],
+        )
+        .expect("legacy research media");
+    let final_answer = serde_json::json!({
+        "markdown": "Retained attachment evidence.【1】",
+        "citations": [{
+            "number": 1,
+            "label": "legacy-research.txt, lines 1–1",
+            "evidenceKind": "TEXT_LINES",
+            "evidence": {
+                "passageId": "019f547b-6200-7000-8000-000000000152",
+                "excerpt": "x",
+                "headingContext": [],
+                "constructionVersion": "legacy",
+                "state": "CURRENT",
+                "locator": {
+                    "kind": "TEXT_LINES",
+                    "startLine": 1,
+                    "endLine": 1
+                },
+                "tidbit": null,
+                "attachment": {
+                    "id": "019f547b-6200-7000-8000-000000000151",
+                    "extractionId": "019f547b-6200-7000-8000-000000000153",
+                    "displayFilename": "legacy-research.txt",
+                    "mediaType": "text/plain",
+                    "deleted": false
+                },
+                "sources": []
+            }
+        }],
+        "mentions": [],
+        "issues": []
+    })
+    .to_string();
+    main.execute(
+        "INSERT INTO research_run(
+            id, query, status, created_at, started_at, completed_at, updated_at,
+            final_answer_json
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000154',
+            'Legacy attachment question',
+            'COMPLETED',
+            10, 11, 12, 12, ?1
+         )",
+        params![final_answer],
+    )
+    .expect("legacy durable research answer");
+    drop(main);
+    drop(media);
+
+    let database = Database::initialize(pair.paths.clone()).expect("research media upgrade");
+    let main = database.open_main_read_only().expect("main reader");
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*)
+             FROM research_run_attachment
+             WHERE research_run_id =
+                       '019f547b-6200-7000-8000-000000000154'
+               AND attachment_id =
+                       '019f547b-6200-7000-8000-000000000151'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("backfilled research attachment"),
+        1
+    );
+    drop(main);
+    assert_eq!(
+        database
+            .client()
+            .load_media_payload("019f547b-6200-7000-8000-000000000151".into(), 30, None, 64,)
+            .expect("backfilled research media remains readable")
+            .bytes,
+        b"x"
     );
 }
 

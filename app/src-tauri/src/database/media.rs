@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use pulldown_cmark::{Event, Parser, Tag};
 use rusqlite::{
     blob::ZeroBlob, params, Connection, OptionalExtension, Transaction, TransactionBehavior,
     MAIN_DB,
@@ -28,6 +29,7 @@ pub(crate) const PDF_RECOVERY_BATCH_SIZE: usize = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
 const PDF_TOKEN_PREFIX: &str = "{{kosh:pdf:";
+const MEDIA_PROTOCOL_PREFIX: &str = "kosh-media://localhost/attachment/";
 const TOKEN_SUFFIX: &str = "}}";
 const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
 const IMAGE_OCR_EXTRACTOR: &str = "ocr";
@@ -1384,17 +1386,33 @@ pub(crate) fn load_media_payload(
                     SELECT 1
                     FROM tidbit_revision_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
+                    UNION ALL
+                    SELECT 1
+                    FROM research_run_attachment AS research_membership
+                    WHERE research_membership.attachment_id = attachment.id
                 )
              FROM attachment
              LEFT JOIN attachment_image AS image
                ON image.attachment_id = attachment.id
              WHERE attachment.id = ?1
-               AND attachment.deleted_at IS NULL
+               AND (
+                    attachment.deleted_at IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM research_run_attachment AS research_membership
+                        WHERE research_membership.attachment_id = attachment.id
+                    )
+               )
                AND (
                     EXISTS (
                         SELECT 1
                         FROM tidbit_revision_attachment AS membership
                         WHERE membership.attachment_id = attachment.id
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM research_run_attachment AS research_membership
+                        WHERE research_membership.attachment_id = attachment.id
                     )
                     OR EXISTS (
                         SELECT 1
@@ -3412,6 +3430,9 @@ fn load_integrity_attachment_batch(
             EXISTS(
                 SELECT 1 FROM tidbit_revision_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
+                UNION ALL
+                SELECT 1 FROM research_run_attachment AS research_membership
+                WHERE research_membership.attachment_id = attachment.id
             ),
             (
                 EXISTS(
@@ -3580,6 +3601,61 @@ pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference>
         cursor = payload_start + end + TOKEN_SUFFIX.len();
     }
     references
+}
+
+pub(crate) fn neutralize_untrusted_media_references(markdown: &str) -> Result<String> {
+    let neutralized = [
+        (IMAGE_TOKEN_PREFIX, "{{kosh-reference:image:"),
+        (ATTACHMENT_TOKEN_PREFIX, "{{kosh-reference:attachment:"),
+        (PDF_TOKEN_PREFIX, "{{kosh-reference:pdf:"),
+        (
+            MEDIA_PROTOCOL_PREFIX,
+            "kosh-reference://localhost/attachment/",
+        ),
+    ]
+    .into_iter()
+    .fold(markdown.to_owned(), |value, (from, to)| {
+        value.replace(from, to)
+    });
+    if decoded_markdown_contains_local_media_capability(&neutralized) {
+        return Err(DatabaseError::InvalidInput(
+            "research answer contains an encoded local media capability".into(),
+        ));
+    }
+    Ok(neutralized)
+}
+
+fn decoded_markdown_contains_local_media_capability(markdown: &str) -> bool {
+    let mut adjacent_text = String::new();
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Text(text) => {
+                adjacent_text.push_str(&text);
+                if contains_local_media_capability(&adjacent_text) {
+                    return true;
+                }
+            }
+            Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) => {
+                adjacent_text.clear();
+                if contains_local_media_capability(&dest_url) {
+                    return true;
+                }
+            }
+            _ => adjacent_text.clear(),
+        }
+    }
+    false
+}
+
+fn contains_local_media_capability(value: &str) -> bool {
+    [
+        IMAGE_TOKEN_PREFIX,
+        ATTACHMENT_TOKEN_PREFIX,
+        PDF_TOKEN_PREFIX,
+        MEDIA_PROTOCOL_PREFIX,
+    ]
+    .into_iter()
+    .any(|prefix| value.contains(prefix))
 }
 
 pub(crate) fn markdown_references_attachment(markdown: &str, attachment_id: &str) -> bool {
@@ -4050,9 +4126,16 @@ fn reconcile_and_reap_from(
            AND expires_at <= ?1
            AND (
                 attachment_id IS NULL
-                OR NOT EXISTS (
-                    SELECT 1 FROM tidbit_revision_attachment AS membership
-                    WHERE membership.attachment_id = media_ingest_lease.attachment_id
+                OR (
+                    NOT EXISTS (
+                        SELECT 1 FROM tidbit_revision_attachment AS membership
+                        WHERE membership.attachment_id = media_ingest_lease.attachment_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM research_run_attachment AS research_membership
+                        WHERE research_membership.attachment_id =
+                              media_ingest_lease.attachment_id
+                    )
                 )
            )",
             params![now_ms],
@@ -4065,6 +4148,10 @@ fn reconcile_and_reap_from(
            AND NOT EXISTS (
                 SELECT 1 FROM tidbit_revision_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
+           )
+           AND NOT EXISTS (
+                SELECT 1 FROM research_run_attachment AS research_membership
+                WHERE research_membership.attachment_id = attachment.id
            )
            AND NOT EXISTS (
                 SELECT 1 FROM media_ingest_lease AS lease
@@ -4183,6 +4270,10 @@ fn reconcile_and_reap_from(
                     SELECT 1 FROM tidbit_revision_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
                )
+               OR EXISTS (
+                    SELECT 1 FROM research_run_attachment AS research_membership
+                    WHERE research_membership.attachment_id = attachment.id
+               )
             UNION
             SELECT image.preview_sha256
             FROM attachment_image AS image
@@ -4191,6 +4282,10 @@ fn reconcile_and_reap_from(
                OR EXISTS (
                     SELECT 1 FROM tidbit_revision_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
+               )
+               OR EXISTS (
+                    SELECT 1 FROM research_run_attachment AS research_membership
+                    WHERE research_membership.attachment_id = attachment.id
                )
          )",
             [],
@@ -4256,6 +4351,10 @@ fn reconcile_and_reap_from(
                            SELECT 1 FROM tidbit_revision_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                        )
+                       OR EXISTS (
+                           SELECT 1 FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
+                       )
                   )
                 UNION ALL
                 SELECT image.attachment_id
@@ -4267,6 +4366,10 @@ fn reconcile_and_reap_from(
                        OR EXISTS (
                            SELECT 1 FROM tidbit_revision_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
+                       )
+                       OR EXISTS (
+                           SELECT 1 FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
                        )
                   )
              )",
@@ -4374,6 +4477,11 @@ fn reconcile_blob_candidate_batch(
                                FROM tidbit_revision_attachment AS membership
                                WHERE membership.attachment_id = attachment.id
                            )
+                           OR EXISTS (
+                               SELECT 1
+                               FROM research_run_attachment AS research_membership
+                               WHERE research_membership.attachment_id = attachment.id
+                           )
                       )
                     UNION ALL
                     SELECT 1
@@ -4386,6 +4494,11 @@ fn reconcile_blob_candidate_batch(
                                SELECT 1
                                FROM tidbit_revision_attachment AS membership
                                WHERE membership.attachment_id = attachment.id
+                           )
+                           OR EXISTS (
+                               SELECT 1
+                               FROM research_run_attachment AS research_membership
+                               WHERE research_membership.attachment_id = attachment.id
                            )
                       )
                  )",
