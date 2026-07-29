@@ -222,6 +222,7 @@ struct ManagerInner {
     work_root: PathBuf,
     default_timeout: Duration,
     active: Mutex<Option<ActiveProcess>>,
+    owned_processes: Mutex<HashMap<String, ActiveProcess>>,
     shutting_down: AtomicBool,
 }
 
@@ -329,6 +330,7 @@ impl ClaudeProcessManager {
                 work_root,
                 default_timeout,
                 active: Mutex::new(None),
+                owned_processes: Mutex::new(HashMap::new()),
                 shutting_down: AtomicBool::new(false),
             }),
         }
@@ -495,6 +497,7 @@ impl ClaudeProcessManager {
                     "Kosh is shutting down and cannot start another research process",
                 ));
             }
+            lock(&self.inner.owned_processes).insert(generation.clone(), active.clone());
             let replaced = active_slot.replace(active);
             replaced.and_then(|process| {
                 terminate_active(&process, TerminationReason::Replaced).then_some(process.run_id)
@@ -511,6 +514,7 @@ impl ClaudeProcessManager {
                 let mut slot = lock(&self.inner.active);
                 slot.take_if(|active| active.generation == generation);
             }
+            lock(&self.inner.owned_processes).remove(&generation);
             force_kill_process_group(process_id);
             let _ = child.wait();
             return Err(error);
@@ -548,6 +552,7 @@ impl ClaudeProcessManager {
                 if let Some(active) = active {
                     terminate_active(&active, TerminationReason::Canceled);
                 }
+                lock(&self.inner.owned_processes).remove(&generation);
                 if let Some(mut child) = lock(&child_slot).take() {
                     force_kill_process_group(child.id());
                     let _ = child.wait();
@@ -581,10 +586,14 @@ impl ClaudeProcessManager {
         if self.inner.shutting_down.swap(true, Ordering::AcqRel) {
             return;
         }
-        if let Some(active) = lock(&self.inner.active).as_ref().cloned() {
-            if terminate_active(&active, TerminationReason::Shutdown) {
-                force_kill_process_group(active.process_id);
-            }
+        let active = lock(&self.inner.active);
+        let processes = lock(&self.inner.owned_processes)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        drop(active);
+        for process in processes {
+            force_owned_process_for_shutdown(&process);
         }
     }
 
@@ -606,10 +615,8 @@ impl ClaudeProcessManager {
 impl Drop for ManagerInner {
     fn drop(&mut self) {
         self.shutting_down.store(true, Ordering::Release);
-        if let Some(active) = lock(&self.active).as_ref() {
-            if terminate_active(active, TerminationReason::Shutdown) {
-                force_kill_process_group(active.process_id);
-            }
+        for process in lock(&self.owned_processes).values() {
+            force_owned_process_for_shutdown(process);
         }
     }
 }
@@ -904,10 +911,7 @@ fn monitor_process(process: MonitoredProcess) {
             .join()
             .map_err(|_| std::io::Error::other("prompt writer panicked"))?
     });
-    if let Ok(thread) = stdout_thread {
-        let _ = thread.join();
-    }
-    while let Ok(message) = stdout_receiver.try_recv() {
+    while let Ok(message) = stdout_receiver.recv() {
         match message {
             StdoutMessage::Line(line) => {
                 let reason = TerminationReason::from_atomic(termination.load(Ordering::Acquire));
@@ -926,8 +930,11 @@ fn monitor_process(process: MonitoredProcess) {
             StdoutMessage::Error(error) => {
                 process_error.get_or_insert(error);
             }
-            StdoutMessage::Eof => {}
+            StdoutMessage::Eof => break,
         }
+    }
+    if let Ok(thread) = stdout_thread {
+        let _ = thread.join();
     }
     if let Ok(thread) = stderr_thread {
         let _ = thread.join();
@@ -941,6 +948,7 @@ fn monitor_process(process: MonitoredProcess) {
         {
             *active = None;
         }
+        lock(&manager.owned_processes).remove(&generation);
     }
 
     let stderr = lock(&stderr_tail);
@@ -1478,6 +1486,15 @@ fn request_termination(termination: &AtomicU8, reason: TerminationReason, proces
 
 fn terminate_active(active: &ActiveProcess, reason: TerminationReason) -> bool {
     request_termination(&active.termination, reason, active.process_id)
+}
+
+fn force_owned_process_for_shutdown(process: &ActiveProcess) {
+    let reason = TerminationReason::from_atomic(process.termination.load(Ordering::Acquire));
+    if reason == TerminationReason::Completed {
+        return;
+    }
+    let _ = terminate_active(process, TerminationReason::Shutdown);
+    force_kill_process_group(process.process_id);
 }
 
 #[cfg(unix)]
@@ -2058,6 +2075,32 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"H
     }
 
     #[test]
+    fn drains_a_stdout_burst_larger_than_the_channel_before_joining() {
+        let root = tempfile::tempdir().expect("fake CLI root");
+        let binary = write_fake_cli(
+            root.path(),
+            r#"
+cat >/dev/null
+i=0
+while [ "$i" -lt 200 ]; do
+  printf '%s\n' '{"type":"rate_limit_event"}'
+  i=$((i + 1))
+done
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'
+"#,
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let (sender, receiver) = mpsc::channel();
+        let started = start_fake(&manager, request("burst"), &sender);
+        let (_, terminals) = receive_terminals(&receiver, 1);
+
+        assert_eq!(
+            terminals.get(&started.run_id),
+            Some(&ResearchProcessOutcome::Succeeded)
+        );
+    }
+
+    #[test]
     fn streams_only_compact_authorized_tool_activity() {
         let root = tempfile::tempdir().expect("fake CLI root");
         let binary = write_fake_cli(
@@ -2326,6 +2369,42 @@ sleep 30
                 .expect_err("shutdown rejects new work")
                 .code,
             ClaudeProcessErrorCode::ShuttingDown
+        );
+    }
+
+    #[test]
+    fn shutdown_force_kills_a_process_already_in_cancellation() {
+        let root = tempfile::tempdir().expect("fake CLI root");
+        let binary = write_fake_cli(
+            root.path(),
+            r#"
+trap '' TERM
+cat >/dev/null
+sleep 30
+"#,
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let (sender, receiver) = mpsc::channel();
+        let started = start_fake(&manager, request("cancel then shutdown"), &sender);
+        let process_id = lock(&manager.inner.active)
+            .as_ref()
+            .expect("active process")
+            .process_id;
+        assert!(manager.cancel(&started.run_id).expect("cancel run"));
+        manager.shutdown();
+        let (_, terminals) = receive_terminals(&receiver, 1);
+
+        assert_eq!(
+            terminals.get(&started.run_id),
+            Some(&ResearchProcessOutcome::Canceled)
+        );
+        let process_id = i32::try_from(process_id).expect("test process ID");
+        // SAFETY: The negative PID is the fake CLI's isolated process group.
+        let result = unsafe { libc::kill(-process_id, 0) };
+        assert_eq!(result, -1, "the canceled process group must be gone");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
         );
     }
 
