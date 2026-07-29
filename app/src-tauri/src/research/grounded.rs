@@ -118,7 +118,10 @@ where
         let token_start = cursor + relative_token;
         markdown.push_str(&output[cursor..token_start]);
         let body_start = token_start + CITATION_TOKEN_PREFIX.len();
-        let search_end = body_start.saturating_add(MAX_TOKEN_BYTES).min(next_code);
+        let mut search_end = body_start.saturating_add(MAX_TOKEN_BYTES).min(next_code);
+        while !output.is_char_boundary(search_end) {
+            search_end -= 1;
+        }
         let closing = output[body_start..search_end]
             .find(CITATION_TOKEN_SUFFIX)
             .map(|relative| body_start + relative);
@@ -607,6 +610,23 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == GroundedOutputIssueCode::UncitedParagraph));
+    }
+
+    #[test]
+    fn malformed_unicode_at_the_token_scan_boundary_is_inert_without_panicking() {
+        let output = format!(
+            "Before {CITATION_TOKEN_PREFIX}{}é after",
+            "a".repeat(MAX_TOKEN_BYTES - 1)
+        );
+        let grounded = ground_research_output(&output, |_| None);
+
+        assert!(grounded.markdown.contains(MALFORMED_MARKER));
+        assert!(grounded.citations.is_empty());
+        assert!(grounded.mentions.is_empty());
+        assert!(grounded
+            .issues
+            .iter()
+            .any(|issue| issue.code == GroundedOutputIssueCode::MalformedCitation));
     }
 
     #[test]
