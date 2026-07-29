@@ -619,6 +619,13 @@ pub(crate) enum MediaMaintenanceScanStep {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MediaBlobReclamationPreflight {
+    Continue,
+    Eligible,
+    NotNeeded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AttachmentDisplayRole {
     Inline,
     Attachment,
@@ -3344,10 +3351,19 @@ impl MediaMaintenanceScan {
         })
     }
 
+    pub(crate) fn now_ms(&self) -> i64 {
+        self.now_ms
+    }
+
+    pub(crate) fn limits(&self) -> MediaLimits {
+        self.limits
+    }
+
     pub(crate) fn step(
         mut self,
         main: &mut Connection,
         media: &mut Connection,
+        reaping_authorized: bool,
     ) -> Result<MediaMaintenanceScanStep> {
         match &self.phase {
             MediaMaintenancePhase::Lifecycle {
@@ -3361,7 +3377,15 @@ impl MediaMaintenanceScan {
                     self.limits,
                     cursor.clone(),
                     false,
-                    *first_batch,
+                    if *first_batch {
+                        if reaping_authorized {
+                            MediaLifecycleMode::SnapshotBackedMaintenance
+                        } else {
+                            MediaLifecycleMode::StartupRecovery
+                        }
+                    } else {
+                        MediaLifecycleMode::ReconcileOnly
+                    },
                 )?;
                 accumulate_cleanup(&mut self.cleanup, cleanup)?;
                 if let Some(cursor) = next_cursor {
@@ -4070,6 +4094,159 @@ fn validate_draft_capacity(
     Ok(())
 }
 
+pub(crate) fn attachment_reclamation_is_eligible(main: &Connection, now_ms: i64) -> Result<bool> {
+    validate_timestamp(now_ms, "nowMs")?;
+    main.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM attachment
+            WHERE attachment.deleted_at IS NULL
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM tidbit_revision_attachment AS membership
+                   WHERE membership.attachment_id = attachment.id
+              )
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM research_run_attachment AS research_membership
+                   WHERE research_membership.attachment_id = attachment.id
+              )
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM media_ingest_lease AS lease
+                   WHERE lease.attachment_id = attachment.id
+                     AND lease.state = 'COMMITTED'
+                     AND lease.expires_at > ?1
+              )
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM media_ingest_lease AS lease
+                   JOIN draft_media_lease AS draft_lease
+                     ON draft_lease.media_ingest_lease_id = lease.id
+                   JOIN draft ON draft.id = draft_lease.draft_id
+                   WHERE lease.attachment_id = attachment.id
+                     AND lease.state = 'COMMITTED'
+                     AND kosh_markdown_references_attachment(
+                         draft.body_markdown,
+                         attachment.id
+                     )
+              )
+        )",
+        params![now_ms],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub(crate) fn media_blob_reclamation_preflight(
+    main: &mut Connection,
+    media: &Connection,
+    now_ms: i64,
+    limits: MediaLimits,
+) -> Result<MediaBlobReclamationPreflight> {
+    validate_timestamp(now_ms, "nowMs")?;
+    let limits = limits.validate()?;
+    let cutoff = now_ms.saturating_sub(limits.orphan_grace_period_ms);
+    let candidates = main
+        .prepare(
+            "SELECT sha256
+             FROM media_blob_reap_candidate
+             WHERE orphaned_at <= ?1
+             ORDER BY orphaned_at, sha256
+             LIMIT ?2",
+        )?
+        .query_map(
+            params![cutoff, i64::from(limits.max_reaps_per_maintenance)],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let batch_is_full = candidates.len()
+        == usize::try_from(limits.max_reaps_per_maintenance)
+            .expect("validated media reap limit fits usize");
+    for hash in candidates {
+        let referenced: bool = main.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM attachment
+                WHERE attachment.sha256 = ?1
+                  AND (
+                       attachment.deleted_at IS NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM tidbit_revision_attachment AS membership
+                           WHERE membership.attachment_id = attachment.id
+                       )
+                       OR EXISTS (
+                           SELECT 1
+                           FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
+                       )
+                  )
+                UNION ALL
+                SELECT 1
+                FROM attachment_image AS image
+                JOIN attachment ON attachment.id = image.attachment_id
+                WHERE image.preview_sha256 = ?1
+                  AND (
+                       attachment.deleted_at IS NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM tidbit_revision_attachment AS membership
+                           WHERE membership.attachment_id = attachment.id
+                       )
+                       OR EXISTS (
+                           SELECT 1
+                           FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
+                       )
+                  )
+            )",
+            params![&hash],
+            |row| row.get(0),
+        )?;
+        if referenced {
+            main.execute(
+                "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
+                params![&hash],
+            )?;
+            continue;
+        }
+        let active_lease: bool = media.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM media_blob_lease
+                WHERE sha256 = ?1 AND expires_at > ?2
+            )",
+            params![&hash, now_ms],
+            |row| row.get(0),
+        )?;
+        if active_lease {
+            main.execute(
+                "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
+                params![&hash],
+            )?;
+            continue;
+        }
+        let blob_exists: bool = media.query_row(
+            "SELECT EXISTS(SELECT 1 FROM media_blob WHERE sha256 = ?1)",
+            params![&hash],
+            |row| row.get(0),
+        )?;
+        if blob_exists {
+            return Ok(MediaBlobReclamationPreflight::Eligible);
+        }
+        main.execute(
+            "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
+            params![&hash],
+        )?;
+    }
+    Ok(if batch_is_full {
+        MediaBlobReclamationPreflight::Continue
+    } else {
+        MediaBlobReclamationPreflight::NotNeeded
+    })
+}
+
 pub(crate) fn recover_media_lifecycle_batch(
     main: &mut Connection,
     media: &mut Connection,
@@ -4080,9 +4257,37 @@ pub(crate) fn recover_media_lifecycle_batch(
     validate_timestamp(now_ms, "nowMs")?;
     let limits = limits.validate()?;
     let first_batch = cursor.is_none();
-    let (_, next_cursor) =
-        reconcile_and_reap_from(main, media, now_ms, limits, cursor, false, first_batch)?;
+    let (_, next_cursor) = reconcile_and_reap_from(
+        main,
+        media,
+        now_ms,
+        limits,
+        cursor,
+        false,
+        if first_batch {
+            MediaLifecycleMode::StartupRecovery
+        } else {
+            MediaLifecycleMode::ReconcileOnly
+        },
+    )?;
     Ok(next_cursor)
+}
+
+#[derive(Clone, Copy)]
+enum MediaLifecycleMode {
+    ReconcileOnly,
+    StartupRecovery,
+    SnapshotBackedMaintenance,
+}
+
+impl MediaLifecycleMode {
+    fn runs_lifecycle_work(self) -> bool {
+        !matches!(self, Self::ReconcileOnly)
+    }
+
+    fn allows_reaping(self) -> bool {
+        matches!(self, Self::SnapshotBackedMaintenance)
+    }
 }
 
 fn reconcile_and_reap_from(
@@ -4092,9 +4297,9 @@ fn reconcile_and_reap_from(
     limits: MediaLimits,
     cursor: Option<Vec<u8>>,
     scan_all_blobs: bool,
-    run_lifecycle_work: bool,
+    mode: MediaLifecycleMode,
 ) -> Result<(MediaCleanupResult, Option<Vec<u8>>)> {
-    let retired_attachment_count = if run_lifecycle_work {
+    let retired_attachment_count = if mode.runs_lifecycle_work() {
         let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let renewed_expiry = checked_timestamp_add(
             now_ms,
@@ -4313,7 +4518,7 @@ fn reconcile_and_reap_from(
     } else {
         reconcile_blob_candidate_batch(main, media, now_ms, cursor.as_deref())?
     };
-    if !run_lifecycle_work {
+    if !mode.allows_reaping() {
         return Ok((MediaCleanupResult::default(), next_cursor));
     }
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -4553,13 +4758,15 @@ fn load_media_blob_hash_batch(
     Ok(hashes)
 }
 
-fn validate_filename(filename: &str) -> Result<()> {
+pub(super) fn validate_filename(filename: &str) -> Result<()> {
     if filename.trim() != filename
         || filename.is_empty()
         || filename.chars().count() > MAX_FILENAME_CHARS
-        || filename
-            .chars()
-            .any(|character| character.is_control() || matches!(character, '/' | '\\' | ':'))
+        || filename.chars().any(|character| {
+            character.is_control()
+                || is_bidi_control(character)
+                || matches!(character, '/' | '\\' | ':')
+        })
         || matches!(filename, "." | "..")
     {
         return Err(DatabaseError::InvalidInput(
@@ -4567,6 +4774,17 @@ fn validate_filename(filename: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn is_bidi_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
 }
 
 fn validate_media_type(media_type: &str) -> Result<()> {

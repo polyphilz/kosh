@@ -57,6 +57,7 @@ pub(crate) struct MaintenanceOutcome {
     pub operation: &'static str,
     pub changed_items: u64,
     pub reclaimed_bytes: u64,
+    pub safety_snapshot_id: Option<String>,
     pub message: String,
     pub completed_at_ms: i64,
 }
@@ -129,6 +130,7 @@ pub(crate) async fn rebuild_search_indexes(
             operation: "REBUILD_SEARCH",
             changed_items: documents,
             reclaimed_bytes: 0,
+            safety_snapshot_id: None,
             message: format!(
                 "Rebuilt passages and full-text indexes for {documents} searchable passage{}.",
                 if documents == 1 { "" } else { "s" }
@@ -156,6 +158,7 @@ pub(crate) async fn rebuild_embedding_index(
             operation: "REBUILD_EMBEDDINGS",
             changed_items: invalidated,
             reclaimed_bytes: 0,
+            safety_snapshot_id: None,
             message: if invalidated == 0 {
                 "Embedding rebuild is already queued; indexing will continue when the local model is ready."
                     .into()
@@ -193,6 +196,7 @@ pub(crate) async fn retry_failed_extractions(
             operation: "RETRY_EXTRACTIONS",
             changed_items: changed,
             reclaimed_bytes: 0,
+            safety_snapshot_id: None,
             message: if changed == 0 {
                 "No current failed OCR or PDF extractions needed a retry.".into()
             } else {
@@ -222,11 +226,17 @@ pub(crate) async fn reclaim_eligible_media(
     let limits = state.media_limits();
     run_blocking(move || {
         let _guard = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let report = client.maintain_media(now_ms, limits)?;
+        let (snapshot, report) = client.maintain_media_with_safety_snapshot(now_ms, limits)?;
         let changed = report
             .cleanup
             .retired_attachment_count
             .saturating_add(report.cleanup.deleted_blob_count);
+        if changed > 0 && snapshot.is_none() {
+            return Err(DatabaseError::Validation {
+                kind: "media",
+                reason: "media reclamation completed without a verified safety snapshot".into(),
+            });
+        }
         log::info!(
             "maintenance reclaimed {} bytes across {changed} media records",
             report.cleanup.reclaimed_bytes
@@ -235,6 +245,7 @@ pub(crate) async fn reclaim_eligible_media(
             operation: "RECLAIM_MEDIA",
             changed_items: changed,
             reclaimed_bytes: report.cleanup.reclaimed_bytes,
+            safety_snapshot_id: snapshot.map(|snapshot| snapshot.id),
             message: if changed == 0 {
                 "No expired or unreferenced media was eligible for reclamation.".into()
             } else {

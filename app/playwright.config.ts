@@ -14,7 +14,12 @@ export default defineConfig({
   projects: [
     {
       name: "chromium-functional",
-      testIgnore: [/visual\.spec\.ts/, /webkit-contract\.spec\.ts/],
+      testIgnore: [
+        /visual\.spec\.ts/,
+        /webkit-contract\.spec\.ts/,
+        /hardening\.spec\.ts/,
+        /hidpi\.spec\.ts/,
+      ],
       use: { ...devices["Desktop Chrome"] },
     },
     {
@@ -26,6 +31,16 @@ export default defineConfig({
       name: "chromium-visual",
       testMatch: /visual\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "chromium-hardening",
+      testMatch: /hardening\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], deviceScaleFactor: 2 },
+    },
+    {
+      name: "chromium-hidpi",
+      testMatch: /hidpi\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], deviceScaleFactor: 2 },
     },
   ],
   webServer: {

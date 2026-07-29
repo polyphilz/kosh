@@ -137,10 +137,14 @@ pub(crate) async fn maintain_media(
     let client = state.database_client();
     let now_ms = state.now_ms();
     let limits = state.media_limits();
-    tauri::async_runtime::spawn_blocking(move || client.maintain_media(now_ms, limits))
-        .await
-        .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
-        .map_err(Into::into)
+    tauri::async_runtime::spawn_blocking(move || {
+        client
+            .maintain_media_with_safety_snapshot(now_ms, limits)
+            .map(|(_, report)| report)
+    })
+    .await
+    .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
+    .map_err(Into::into)
 }
 
 #[derive(Clone, Debug, Serialize)]

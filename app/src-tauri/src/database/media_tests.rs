@@ -14,10 +14,11 @@ use tempfile::TempDir;
 use super::{
     drafts::SaveDraftWrite,
     media::{
-        recover_media_lifecycle_batch, referenced_attachments, split_pdf_page_passages,
-        AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
-        IngestAttachmentMetadata, IngestAttachmentWrite, IngestGenericAttachmentWrite,
-        IngestImageWrite, IngestPdfWrite, MediaByteRange, MediaRangeRequest, PdfExtractionStatus,
+        media_blob_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
+        split_pdf_page_passages, validate_filename, AttachmentDisplayRole, CanonicalImage,
+        ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata, IngestAttachmentWrite,
+        IngestGenericAttachmentWrite, IngestImageWrite, IngestPdfWrite,
+        MediaBlobReclamationPreflight, MediaByteRange, MediaRangeRequest, PdfExtractionStatus,
         PdfPageExtraction, PdfPageSource, StagedAttachment, TextFileSegment,
         MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
         PDF_RECOVERY_BATCH_SIZE,
@@ -25,11 +26,51 @@ use super::{
     research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CitationLocator,
-    ClearDraftInput, Database, DatabaseError, DatabasePaths, EditTidbitInput, LexicalSearchMode,
-    MediaLimits, SaveDraftInput, SearchPassagesInput, SourceDraft, TidbitDraft,
+    ClearDraftInput, Database, DatabaseClient, DatabaseError, DatabasePaths, EditTidbitInput,
+    LexicalSearchMode, MediaLimits, MediaMaintenanceReport, SaveDraftInput, SearchPassagesInput,
+    SourceDraft, TidbitDraft,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
+
+trait MaintainMediaForTest {
+    fn maintain_media(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> super::Result<MediaMaintenanceReport>;
+}
+
+impl MaintainMediaForTest for DatabaseClient {
+    fn maintain_media(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> super::Result<MediaMaintenanceReport> {
+        self.maintain_media_with_safety_snapshot(now_ms, limits)
+            .map(|(_, report)| report)
+    }
+}
+
+#[test]
+fn display_filenames_reject_paths_controls_and_bidirectional_spoofing() {
+    for filename in [
+        "../notes.txt",
+        r"folder\notes.txt",
+        "volume:notes.txt",
+        "line\nbreak.txt",
+        "invoice\u{202e}fdp.exe",
+        "\u{2066}isolated\u{2069}.txt",
+        ".",
+        "..",
+    ] {
+        assert!(
+            validate_filename(filename).is_err(),
+            "unsafe filename was accepted: {filename:?}"
+        );
+    }
+    validate_filename("考え-notes (final).pdf").expect("ordinary Unicode filename");
+}
 
 struct TestLibrary {
     _root: TempDir,
@@ -2381,6 +2422,245 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     assert_eq!(after_grace.cleanup.deleted_blob_count, 1);
     assert_eq!(after_grace.cleanup.reclaimed_bytes, 9);
     assert_eq!(blob_count(&library.database), 0);
+}
+
+#[test]
+fn reclamation_preflight_cleans_stale_candidate_windows_incrementally() {
+    let library = TestLibrary::new();
+    library
+        .database
+        .shutdown()
+        .expect("stop writer before direct preflight");
+    let mut main = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("direct main writer");
+    let media = super::connection::open_writer(
+        &library.paths.media,
+        super::connection::DatabaseKind::Media,
+        super::connection::FileState::Existing,
+    )
+    .expect("direct media writer");
+    let limits = MediaLimits {
+        orphan_grace_period_ms: 1,
+        max_reaps_per_maintenance: 2,
+        ..MediaLimits::default()
+    };
+
+    for byte in [1_u8, 2] {
+        main.execute(
+            "INSERT INTO media_blob_reap_candidate(sha256, orphaned_at, reason)
+             VALUES(?1, 1, 'stale test candidate')",
+            params![[byte; 32].as_slice()],
+        )
+        .expect("insert stale missing-blob candidate");
+    }
+    let eligible_hash = Sha256::digest(b"eligible after stale candidates");
+    main.execute(
+        "INSERT INTO media_blob_reap_candidate(sha256, orphaned_at, reason)
+         VALUES(?1, 2, 'eligible test candidate')",
+        params![eligible_hash.as_slice()],
+    )
+    .expect("insert eligible candidate");
+    media
+        .execute(
+            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+             VALUES(?1, ?2, ?3, 1)",
+            params![
+                eligible_hash.as_slice(),
+                b"eligible after stale candidates".as_slice(),
+                i64::try_from(b"eligible after stale candidates".len())
+                    .expect("eligible byte length")
+            ],
+        )
+        .expect("insert eligible orphan blob");
+
+    assert_eq!(
+        media_blob_reclamation_preflight(&mut main, &media, 10, limits)
+            .expect("clean bounded stale candidate window"),
+        MediaBlobReclamationPreflight::Continue
+    );
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM media_blob_reap_candidate",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("remaining candidate count"),
+        1
+    );
+    assert_eq!(
+        media_blob_reclamation_preflight(&mut main, &media, 10, limits)
+            .expect("resume after yielding"),
+        MediaBlobReclamationPreflight::Eligible
+    );
+}
+
+#[test]
+fn attachment_eligibility_is_rechecked_after_candidate_preflight_yields() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 1,
+        orphan_grace_period_ms: 1,
+        max_reaps_per_maintenance: 1,
+        ..MediaLimits::default()
+    };
+    let attachment = library.ingest(
+        (0x6f0, 0x6f1, 0x6f2),
+        "queued-clear.txt",
+        "text/plain",
+        b"queued clear evidence",
+        11,
+        limits,
+    );
+    library.save_capture(
+        &format!("Before clear ![queued](/media/{})", attachment.id),
+        12,
+    );
+    library
+        .database
+        .shutdown()
+        .expect("stop writer before inserting stale candidate");
+    let main = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("main writer");
+    main.execute(
+        "INSERT INTO media_blob_reap_candidate(sha256, orphaned_at, reason)
+         VALUES(?1, 0, 'queued clear regression')",
+        params![vec![0xa5_u8; 32]],
+    )
+    .expect("insert one full stale candidate batch");
+    drop(main);
+
+    let restarted = Database::initialize(library.paths.clone()).expect("restart database");
+    let client = restarted.client();
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    client
+        .pause_for_test(started_tx, release_rx)
+        .expect("queue writer pause");
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("writer paused");
+
+    let maintenance = client
+        .enqueue_media_maintenance_for_test(20, limits)
+        .expect("queue maintenance");
+    let clear = client
+        .enqueue_clear_draft_for_test(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: 12,
+            },
+            20,
+        )
+        .expect("queue draft clear behind initial maintenance");
+    release_tx.send(()).expect("release writer");
+
+    assert!(clear
+        .recv_timeout(Duration::from_secs(2))
+        .expect("clear reply")
+        .expect("clear draft"));
+    let (snapshot, report) = maintenance
+        .recv_timeout(Duration::from_secs(2))
+        .expect("maintenance reply")
+        .expect("maintenance after queued clear");
+    assert!(
+        snapshot.is_some(),
+        "the post-yield attachment mutation must be snapshot-backed"
+    );
+    assert_eq!(report.cleanup.retired_attachment_count, 1);
+}
+
+#[test]
+fn startup_lifecycle_recovery_never_reaps_without_a_verified_snapshot() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 10,
+        orphan_grace_period_ms: 50,
+        ..MediaLimits::default()
+    };
+    library.ingest(
+        (0x733, 0x734, 0x735),
+        "restart-orphan.txt",
+        "text/plain",
+        b"restart orphan",
+        11,
+        limits,
+    );
+    assert!(library
+        .database
+        .client()
+        .clear_draft_at(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: 10,
+            },
+            12,
+        )
+        .expect("cancel draft"));
+    library
+        .database
+        .shutdown()
+        .expect("stop writer before startup recovery probes");
+
+    let mut main = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("main writer");
+    let mut media = super::connection::open_writer(
+        &library.paths.media,
+        super::connection::DatabaseKind::Media,
+        super::connection::FileState::Existing,
+    )
+    .expect("media writer");
+    assert_eq!(
+        recover_media_lifecycle_batch(&mut main, &mut media, 12, limits, None)
+            .expect("initial startup recovery"),
+        None
+    );
+    assert_eq!(
+        recover_media_lifecycle_batch(&mut main, &mut media, 62, limits, None)
+            .expect("eligible startup recovery"),
+        None
+    );
+    assert_eq!(
+        media
+            .query_row("SELECT count(*) FROM media_blob", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("preserved startup blob"),
+        1
+    );
+    assert_eq!(
+        media
+            .query_row(
+                "SELECT count(*) FROM media_blob_reap_authorization",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("startup authorization count"),
+        0
+    );
+    drop(main);
+    drop(media);
+
+    let restarted = Database::initialize(library.paths.clone()).expect("restart database");
+    let (snapshot, maintenance) = restarted
+        .client()
+        .maintain_media_with_safety_snapshot(62, limits)
+        .expect("explicit snapshot-backed reclamation");
+    let snapshot = snapshot.expect("reclamation requires a verified snapshot");
+    assert!(snapshot.directory.join("manifest.json").is_file());
+    assert_eq!(maintenance.cleanup.deleted_blob_count, 1);
+    assert_eq!(blob_count(&restarted), 0);
 }
 
 #[test]

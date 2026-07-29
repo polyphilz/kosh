@@ -162,6 +162,12 @@ fn diagnostics_and_empty_maintenance_are_available_through_typed_ipc() {
     assert_eq!(first["operation"], "REBUILD_SEARCH");
     assert_eq!(first["changedItems"], 0);
     assert_eq!(second["changedItems"], 0);
+
+    let reclaim = invoke_json(&window, "reclaim_eligible_media");
+    assert_eq!(reclaim["operation"], "RECLAIM_MEDIA");
+    assert_eq!(reclaim["changedItems"], 0);
+    assert!(reclaim["safetySnapshotId"].is_null());
+    assert!(!data_root.path().join("safety-snapshots").exists());
 }
 
 fn invoke_json(

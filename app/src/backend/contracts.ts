@@ -146,6 +146,7 @@ export interface MaintenanceOutcome {
   operation: MaintenanceOperation;
   changedItems: number;
   reclaimedBytes: number;
+  safetySnapshotId: string | null;
   message: string;
   completedAtMs: number;
 }

@@ -12,6 +12,7 @@ may claim only the boundary it actually crosses.
 | repository policy | `scripts/check-repository.sh` | shell syntax, secret and ignored-data hygiene, negative tests for merge/runtime/bundle guards |
 | frontend unit and type contracts | TypeScript, Oxlint, Oxfmt, Vitest | types, reducers, parsers, React state, typed Tauri protocol registry and Rust drift detection |
 | browser functional and accessibility | Chromium Playwright plus axe | stateful capture, library, search, citation, research, settings, focus and accessibility journeys |
+| browser hardening | pinned DPR-2 Chromium Playwright plus axe | every primary route in light/dark, keyboard order, 200% reflow, reduced motion, high-DPI semantics |
 | WebKit editor and keyboard contracts | WebKit Playwright | ProseMirror input, save, search selection and citation-focus behavior in Tauri's browser engine family |
 | pinned visual contracts | single-worker Chromium Playwright | light/dark catalog, dialog, library and settings pixels at fixed viewports |
 | production bundle isolation | `pnpm check:bundle` | no fake backend, fixtures, local data, model, database, test or environment material; explicit byte budgets |
@@ -79,7 +80,13 @@ pnpm relevance:lexical-scale
 pnpm check:bundle
 ```
 
-After committing, from the repository root:
+After committing, aggregate the commit-bound hardening evidence from `app/`:
+
+```sh
+pnpm hardening:report
+```
+
+Then, from the repository root:
 
 ```sh
 scripts/loop/runtime-gate.sh

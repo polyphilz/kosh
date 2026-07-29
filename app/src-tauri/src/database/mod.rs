@@ -9,6 +9,7 @@ mod migrations;
 pub(crate) mod passages;
 mod paths;
 mod research_runs;
+mod safety_snapshot;
 pub(crate) mod search;
 pub(crate) mod settings;
 pub(crate) mod tidbits;
@@ -23,6 +24,8 @@ mod embedding_index_tests;
 mod maintenance_tests;
 #[cfg(test)]
 mod media_tests;
+#[cfg(test)]
+mod reliability_tests;
 #[cfg(test)]
 mod research_runs_tests;
 #[cfg(test)]
@@ -59,6 +62,7 @@ pub use passages::{
 pub use paths::DatabasePaths;
 pub(crate) use research_runs::{AppendResearchEventWrite, CreateResearchRunWrite};
 pub use research_runs::{ListResearchRunsInput, ResearchRunPage, ResearchRunRecord};
+pub(crate) use safety_snapshot::SafetySnapshotReason;
 pub use search::{
     LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
     SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
@@ -74,6 +78,7 @@ pub use tidbits::{
     TidbitRevisionPage, TidbitRevisionSummary, TidbitSource, TIDBIT_PURGE_DELAY_MS,
 };
 pub(crate) use writer::LexicalBenchmarkAttachmentWrite;
+use writer::MediaMaintenanceSnapshotState;
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
@@ -137,6 +142,21 @@ impl Database {
         let mut media = connection::open_writer(&paths.media, DatabaseKind::Media, media_state)?;
         let main_status = migrations::inspect_main(&mut main)?;
         let media_status = migrations::inspect_media(&mut media)?;
+        if (main_status.pending || media_status.pending)
+            && main_state == FileState::Existing
+            && media_state == FileState::Existing
+        {
+            let report = safety_snapshot::create(
+                &mut main,
+                &mut media,
+                &paths,
+                SafetySnapshotReason::Migration,
+            )?;
+            log::info!(
+                "created verified pre-migration safety snapshot {}",
+                report.id
+            );
+        }
         // Grouped migrations are transactional within each file. Cross-file work is
         // ordered media-first so a crash can leave only an orphaned media capability,
         // never authored metadata pointing at bytes that were not committed.
@@ -158,9 +178,10 @@ impl Database {
 
         let (sender, receiver) = mpsc::channel();
         let client = DatabaseClient::new(sender.clone());
+        let writer_paths = paths.clone();
         let writer_thread = thread::Builder::new()
             .name("kosh-database-writer".into())
-            .spawn(move || writer_loop(main, media, receiver, sender))?;
+            .spawn(move || writer_loop(main, media, writer_paths, receiver, sender))?;
 
         let database = Self {
             paths,
@@ -252,6 +273,7 @@ impl Drop for Database {
 fn writer_loop(
     mut main: Connection,
     mut media: Connection,
+    paths: DatabasePaths,
     receiver: Receiver<WriterMessage>,
     sender: mpsc::Sender<WriterMessage>,
 ) {
@@ -478,25 +500,115 @@ fn writer_loop(
                     let _ = reply.send(Err(error));
                 }
             },
-            WriterMessage::MaintainMedia { scan, reply } => {
-                match scan.step(&mut main, &mut media) {
-                    Ok(media::MediaMaintenanceScanStep::Continue(scan)) => {
-                        if let Err(error) =
-                            sender.send(WriterMessage::MaintainMedia { scan, reply })
-                        {
-                            let WriterMessage::MaintainMedia { reply, .. } = error.0 else {
-                                unreachable!("failed message retained its variant");
-                            };
-                            let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+            WriterMessage::MaintainMediaWithSafetySnapshot {
+                scan,
+                snapshot,
+                reply,
+            } => {
+                let snapshot = match snapshot {
+                    MediaMaintenanceSnapshotState::PendingCandidates => {
+                        match media::media_blob_reclamation_preflight(
+                            &mut main,
+                            &media,
+                            scan.now_ms(),
+                            scan.limits(),
+                        ) {
+                            Ok(media::MediaBlobReclamationPreflight::Continue) => {
+                                if let Err(error) =
+                                    sender.send(WriterMessage::MaintainMediaWithSafetySnapshot {
+                                        scan,
+                                        snapshot: MediaMaintenanceSnapshotState::PendingCandidates,
+                                        reply,
+                                    })
+                                {
+                                    let WriterMessage::MaintainMediaWithSafetySnapshot {
+                                        reply,
+                                        ..
+                                    } = error.0
+                                    else {
+                                        unreachable!("failed message retained its variant");
+                                    };
+                                    let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                                }
+                                continue;
+                            }
+                            Ok(media::MediaBlobReclamationPreflight::Eligible) => {
+                                safety_snapshot::create(
+                                    &mut main,
+                                    &mut media,
+                                    &paths,
+                                    SafetySnapshotReason::MediaReclaim,
+                                )
+                                .map(MediaMaintenanceSnapshotState::Verified)
+                            }
+                            Ok(media::MediaBlobReclamationPreflight::NotNeeded) => {
+                                match media::attachment_reclamation_is_eligible(
+                                    &main,
+                                    scan.now_ms(),
+                                ) {
+                                    Ok(true) => safety_snapshot::create(
+                                        &mut main,
+                                        &mut media,
+                                        &paths,
+                                        SafetySnapshotReason::MediaReclaim,
+                                    )
+                                    .map(MediaMaintenanceSnapshotState::Verified),
+                                    Ok(false) => Ok(MediaMaintenanceSnapshotState::NotNeeded),
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Err(error) => Err(error),
                         }
                     }
-                    Ok(media::MediaMaintenanceScanStep::Complete(report)) => {
-                        let _ = reply.send(Ok(report));
-                    }
+                    snapshot => Ok(snapshot),
+                };
+                match snapshot {
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
+                    Ok(snapshot) => match scan.step(
+                        &mut main,
+                        &mut media,
+                        matches!(&snapshot, MediaMaintenanceSnapshotState::Verified(_)),
+                    ) {
+                        Ok(media::MediaMaintenanceScanStep::Continue(scan)) => {
+                            if let Err(error) =
+                                sender.send(WriterMessage::MaintainMediaWithSafetySnapshot {
+                                    scan,
+                                    snapshot,
+                                    reply,
+                                })
+                            {
+                                let WriterMessage::MaintainMediaWithSafetySnapshot {
+                                    reply, ..
+                                } = error.0
+                                else {
+                                    unreachable!("failed message retained its variant");
+                                };
+                                let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                            }
+                        }
+                        Ok(media::MediaMaintenanceScanStep::Complete(report)) => {
+                            let snapshot = match snapshot {
+                                MediaMaintenanceSnapshotState::Verified(snapshot) => Some(snapshot),
+                                MediaMaintenanceSnapshotState::NotNeeded => None,
+                                MediaMaintenanceSnapshotState::PendingCandidates => {
+                                    unreachable!("maintenance preflight was not resolved")
+                                }
+                            };
+                            let _ = reply.send(Ok((snapshot, report)));
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                        }
+                    },
                 }
+            }
+            #[cfg(test)]
+            WriterMessage::CreateSafetySnapshotForTest { reason, reply } => {
+                let _ = reply.send(safety_snapshot::create(
+                    &mut main, &mut media, &paths, reason,
+                ));
             }
             WriterMessage::RecoverMediaLifecycleBatch {
                 now_ms,
@@ -641,6 +753,11 @@ fn writer_loop(
             }
             WriterMessage::SetShortcutSettings { input, reply } => {
                 let _ = reply.send(settings::set_shortcut_settings(&mut main, input));
+            }
+            #[cfg(test)]
+            WriterMessage::PauseForTest { started, release } => {
+                let _ = started.send(());
+                let _ = release.recv();
             }
             WriterMessage::Shutdown => break,
         }

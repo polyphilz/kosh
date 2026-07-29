@@ -14,6 +14,7 @@ use super::{
 const MAX_QUERY_CHARACTERS: usize = 512;
 const MAX_SEARCH_LIMIT: u32 = 100;
 const MAX_HIGHLIGHTS_PER_RESULT: usize = 32;
+const LEXICAL_CANDIDATE_EXPANSION: u32 = 16;
 const MIN_CANDIDATE_LIMIT: u32 = 64;
 const MAX_CANDIDATE_LIMIT: u32 = 512;
 const RRF_RANK_CONSTANT: f64 = 60.0;
@@ -32,7 +33,7 @@ pub(super) const FTS_VERSION: &str = "lexical-v3";
 
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
     result_limit
-        .saturating_mul(16)
+        .saturating_mul(LEXICAL_CANDIDATE_EXPANSION)
         .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
 }
 
@@ -423,13 +424,33 @@ fn lexical_ranked_candidates(
     result_limit: usize,
 ) -> Result<Vec<RankedLexicalDocument>> {
     let mut ranks = HashMap::<String, CandidateRanks>::new();
-    if let Some(word_query) = query.word_match_query() {
-        install_ranks(
-            &mut ranks,
-            query_fts_index(connection, "passage_fts_word", &word_query, limit)?,
-            CandidateIndex::Word,
-        );
+    let word_query = query.word_match_query();
+    let mut word_saturated = false;
+    if let Some(word_query) = word_query.as_deref() {
+        let word_candidates = query_fts_index(connection, "passage_fts_word", word_query, limit)?;
+        word_saturated = word_candidates.len() == limit as usize;
+        install_ranks(&mut ranks, word_candidates, CandidateIndex::Word);
     }
+    let short_query = query.short_match_query();
+    let mut short_saturated = false;
+    if let Some(short_query) = short_query.as_deref() {
+        let short_candidates =
+            query_fts_index(connection, "passage_fts_short", short_query, limit)?;
+        short_saturated = short_candidates.len() == limit as usize;
+        install_ranks(&mut ranks, short_candidates, CandidateIndex::Short);
+    }
+
+    // Exact-token evidence is preferable to substrings. Avoid scanning the
+    // trigram index across the whole corpus when a saturated word pool already
+    // produces a complete page after authoritative qualification. Rare,
+    // tampered, and underfilled word pools still continue through trigrams.
+    if word_saturated && !ranks.is_empty() {
+        let word_ranked = rank_candidate_documents(connection, query, ranks.clone(), limit)?;
+        if word_ranked.len() >= result_limit {
+            return Ok(word_ranked);
+        }
+    }
+
     let trigram_query = query.trigram_match_query();
     let mut trigram_saturated = false;
     if let Some(trigram_query) = trigram_query.as_deref() {
@@ -442,39 +463,65 @@ fn lexical_ranked_candidates(
         trigram_saturated = trigram_candidates.len() == trigram_limit as usize;
         install_ranks(&mut ranks, trigram_candidates, CandidateIndex::Trigram);
     }
-    if let Some(short_query) = query.short_match_query() {
-        install_ranks(
-            &mut ranks,
-            query_fts_index(connection, "passage_fts_short", &short_query, limit)?,
-            CandidateIndex::Short,
-        );
-    }
     if ranks.is_empty() {
         return Ok(Vec::new());
     }
 
     let ranked = rank_candidate_documents(connection, query, ranks.clone(), limit)?;
-    if !trigram_saturated || trigram_limit >= limit || ranked.len() >= result_limit {
+    let saturated_pools_are_exhausted = (!word_saturated || limit >= MAX_CANDIDATE_LIMIT)
+        && (!trigram_saturated || trigram_limit >= MAX_CANDIDATE_LIMIT)
+        && (!short_saturated || limit >= MAX_CANDIDATE_LIMIT);
+    if ranked.len() >= result_limit || saturated_pools_are_exhausted {
         return Ok(ranked);
     }
 
-    // Qualification uses immutable authored/extracted evidence after FTS
-    // nomination. If a bounded initial trigram pool is saturated but fails to
-    // fill the requested result page, widen to the full candidate budget so
-    // high-rank stale or single-atom rows cannot hide qualifying substrings.
-    install_ranks(
-        &mut ranks,
-        query_fts_index(
-            connection,
-            "passage_fts_trigram",
-            trigram_query
-                .as_deref()
-                .expect("saturation requires a trigram query"),
-            limit,
-        )?,
-        CandidateIndex::Trigram,
-    );
-    rank_candidate_documents(connection, query, ranks, limit)
+    // FTS rows nominate candidates, while immutable authored/extracted evidence
+    // decides whether they qualify. Widen only saturated pools when the
+    // authoritative pass underfills so stale or tampered derived rows cannot
+    // hide a valid result without charging every healthy query for 512 rows.
+    if word_saturated {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(
+                connection,
+                "passage_fts_word",
+                word_query
+                    .as_deref()
+                    .expect("word saturation requires a word query"),
+                MAX_CANDIDATE_LIMIT,
+            )?,
+            CandidateIndex::Word,
+        );
+    }
+    if trigram_saturated {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(
+                connection,
+                "passage_fts_trigram",
+                trigram_query
+                    .as_deref()
+                    .expect("trigram saturation requires a trigram query"),
+                MAX_CANDIDATE_LIMIT,
+            )?,
+            CandidateIndex::Trigram,
+        );
+    }
+    if short_saturated {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(
+                connection,
+                "passage_fts_short",
+                short_query
+                    .as_deref()
+                    .expect("short saturation requires a short query"),
+                MAX_CANDIDATE_LIMIT,
+            )?,
+            CandidateIndex::Short,
+        );
+    }
+    rank_candidate_documents(connection, query, ranks, MAX_CANDIDATE_LIMIT)
 }
 
 fn rank_candidate_documents(
@@ -2139,14 +2186,14 @@ mod tests {
     }
 
     #[test]
-    fn saturated_word_candidates_cannot_hide_a_qualifying_substring_result() {
+    fn independently_saturated_candidate_pools_cannot_hide_a_qualifying_substring_result() {
         let root = tempfile::tempdir().expect("temporary saturated search library");
         let paths = DatabasePaths::new(root.path());
         let database = Database::initialize(paths.clone()).expect("search database");
         let client = database.client();
 
-        for index in 0..64_u64 {
-            let atom = if index < 32 { "apple" } else { "orange" };
+        for index in 0..544_u64 {
+            let atom = if index < 272 { "apple" } else { "orange" };
             client
                 .create_tidbit(CreateTidbitWrite {
                     input: TidbitDraft {
@@ -2189,7 +2236,13 @@ mod tests {
             .execute(
                 "UPDATE passage_search_document
                  SET title = 'apple orange apple orange apple orange'
-                 WHERE tidbit_id <> ?1",
+                 WHERE rowid IN (
+                    SELECT rowid
+                    FROM passage_search_document
+                    WHERE tidbit_id <> ?1
+                    ORDER BY rowid
+                    LIMIT 256
+                 )",
                 params![target.id],
             )
             .expect("simulate stale high-rank derived candidates");
@@ -2199,7 +2252,7 @@ mod tests {
             SearchPassagesInput {
                 query: "apple orange".into(),
                 mode: LexicalSearchMode::Default,
-                limit: 10,
+                limit: 32,
             },
         )
         .expect("search saturated word and trigram candidates");
