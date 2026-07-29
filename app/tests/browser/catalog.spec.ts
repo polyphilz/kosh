@@ -58,7 +58,7 @@ test("supported compact windows retain visible navigation labels", async ({ page
   await page.goto("/#/");
 
   const links = page.getByRole("navigation", { name: "Primary" }).getByRole("link");
-  await expect(links).toHaveCount(4);
+  await expect(links).toHaveText(["Search", "Add", "Library", "Research", "Settings"]);
 
   for (const link of await links.all()) {
     await expect(link).not.toHaveCSS("color", "rgba(0, 0, 0, 0)");

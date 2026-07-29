@@ -41,13 +41,17 @@ describe("FakeBackend tidbits", () => {
       }),
     ).rejects.toThrow("stale");
 
-    expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toHaveLength(1);
+    expect(
+      (await backend.listTidbits({ limit: 10, cursor: null, scope: "ACTIVE" })).items,
+    ).toHaveLength(1);
     const deleted = await backend.deleteTidbit({
       id: edited.id,
       expectedRevisionId: edited.currentRevisionId,
     });
     expect(deleted.deletedAtMs).not.toBeNull();
-    expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toEqual([]);
+    expect((await backend.listTidbits({ limit: 10, cursor: null, scope: "ACTIVE" })).items).toEqual(
+      [],
+    );
     expect((await backend.loadTidbit(deleted.id)).deletedAtMs).toBe(deleted.deletedAtMs);
   });
 
@@ -104,7 +108,9 @@ describe("FakeBackend tidbits", () => {
 
     expect(created.id).toBe("fake-tidbit-8");
     expect(await backend.loadTidbit(seeded.id)).toEqual(seeded);
-    expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toHaveLength(2);
+    expect(
+      (await backend.listTidbits({ limit: 10, cursor: null, scope: "ACTIVE" })).items,
+    ).toHaveLength(2);
   });
 
   it("reuses immutable source IDs across tidbits and edits", async () => {

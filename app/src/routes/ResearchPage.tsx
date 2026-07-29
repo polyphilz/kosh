@@ -520,7 +520,12 @@ export function ResearchPage() {
                       <Link
                         className="search-citation-detail__link"
                         params={{ tidbitId: run.savedTidbitId }}
-                        search={{ passage: undefined }}
+                        search={{
+                          from: "research",
+                          passage: undefined,
+                          revision: undefined,
+                          view: undefined,
+                        }}
                         to="/tidbits/$tidbitId"
                       >
                         Open saved tidbit
@@ -553,6 +558,7 @@ export function ResearchPage() {
             }
           }}
           result={undefined}
+          tidbitOrigin="research"
         />
       </div>
     </main>

@@ -12,6 +12,7 @@ const MAX_LIST_LIMIT: u32 = 100;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const DISPLAY_TITLE_LIMIT: usize = 96;
 const BODY_PREVIEW_LIMIT: usize = 240;
+pub const TIDBIT_PURGE_DELAY_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,6 +57,21 @@ pub struct RestoreTidbitInput {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PurgeTidbitInput {
+    pub id: String,
+    pub expected_revision_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TidbitListScope {
+    #[default]
+    Active,
+    Deleted,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TidbitListCursor {
     pub updated_at_ms: i64,
     pub id: String,
@@ -66,6 +82,8 @@ pub struct TidbitListCursor {
 pub struct ListTidbitsInput {
     pub limit: u32,
     pub cursor: Option<TidbitListCursor>,
+    #[serde(default)]
+    pub scope: TidbitListScope,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -98,6 +116,8 @@ pub struct TidbitListItem {
     pub current_revision_id: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    pub deleted_at_ms: Option<i64>,
+    pub purge_eligible_at_ms: Option<i64>,
     pub title: Option<String>,
     pub display_title: String,
     pub body_preview: String,
@@ -108,6 +128,65 @@ pub struct TidbitListItem {
 pub struct TidbitListPage {
     pub items: Vec<TidbitListItem>,
     pub next_cursor: Option<TidbitListCursor>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListTidbitRevisionsInput {
+    pub tidbit_id: String,
+    pub limit: u32,
+    pub before_revision_number: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TidbitRevisionSummary {
+    pub id: String,
+    pub revision_number: i64,
+    pub created_at_ms: i64,
+    pub title: Option<String>,
+    pub display_title: String,
+    pub body_preview: String,
+    pub source_count: i64,
+    pub attachment_count: i64,
+    pub is_current: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TidbitRevisionPage {
+    pub items: Vec<TidbitRevisionSummary>,
+    pub next_before_revision_number: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TidbitRevisionAttachment {
+    pub id: String,
+    pub display_filename: String,
+    pub media_type: String,
+    pub byte_length: i64,
+    pub kind: String,
+    pub extraction_state: String,
+    pub display_role: String,
+    pub sort_order: i64,
+    pub deleted_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TidbitRevision {
+    pub id: String,
+    pub tidbit_id: String,
+    pub revision_number: i64,
+    pub created_at_ms: i64,
+    pub title: Option<String>,
+    pub display_title: String,
+    pub body_markdown: String,
+    pub sources: Vec<TidbitSource>,
+    pub attachments: Vec<TidbitRevisionAttachment>,
+    pub is_current: bool,
+    pub tidbit_deleted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -432,35 +511,47 @@ pub(super) fn list_tidbits(
     let (cursor_time, cursor_id) = input.cursor.as_ref().map_or((None, None), |cursor| {
         (Some(cursor.updated_at_ms), Some(cursor.id.as_str()))
     });
+    let scope = match input.scope {
+        TidbitListScope::Active => "ACTIVE",
+        TidbitListScope::Deleted => "DELETED",
+    };
     let mut statement = connection.prepare(
         "SELECT
             tidbit.id,
             tidbit.current_revision_id,
             tidbit.created_at,
             tidbit.updated_at,
+            tidbit.deleted_at,
             revision.title,
             revision.body_markdown
          FROM tidbit
          JOIN tidbit_revision AS revision
            ON revision.id = tidbit.current_revision_id
           AND revision.tidbit_id = tidbit.id
-         WHERE tidbit.deleted_at IS NULL
+         WHERE (
+                (?3 = 'ACTIVE' AND tidbit.deleted_at IS NULL)
+                OR (?3 = 'DELETED' AND tidbit.deleted_at IS NOT NULL)
+           )
            AND (
                 ?1 IS NULL
                 OR tidbit.updated_at < ?1
                 OR (tidbit.updated_at = ?1 AND tidbit.id < ?2)
            )
          ORDER BY tidbit.updated_at DESC, tidbit.id DESC
-         LIMIT ?3",
+         LIMIT ?4",
     )?;
-    let rows = statement.query_map(params![cursor_time, cursor_id, fetch_limit], |row| {
-        let title = row.get::<_, Option<String>>(4)?;
-        let body = row.get::<_, String>(5)?;
+    let rows = statement.query_map(params![cursor_time, cursor_id, scope, fetch_limit], |row| {
+        let deleted_at_ms = row.get::<_, Option<i64>>(4)?;
+        let title = row.get::<_, Option<String>>(5)?;
+        let body = row.get::<_, String>(6)?;
         Ok(TidbitListItem {
             id: row.get(0)?,
             current_revision_id: row.get(1)?,
             created_at_ms: row.get(2)?,
             updated_at_ms: row.get(3)?,
+            deleted_at_ms,
+            purge_eligible_at_ms: deleted_at_ms
+                .and_then(|deleted_at| deleted_at.checked_add(TIDBIT_PURGE_DELAY_MS)),
             display_title: derive_display_title(title.as_deref(), &body),
             body_preview: derive_body_preview(&body),
             title,
@@ -480,6 +571,319 @@ pub(super) fn list_tidbits(
     });
 
     Ok(TidbitListPage { items, next_cursor })
+}
+
+pub(super) fn list_tidbit_revisions(
+    connection: &Connection,
+    input: ListTidbitRevisionsInput,
+) -> Result<TidbitRevisionPage> {
+    validate_uuid_v7(&input.tidbit_id, "tidbitId")?;
+    if input.limit == 0 || input.limit > MAX_LIST_LIMIT {
+        return Err(DatabaseError::InvalidInput(format!(
+            "limit must be between 1 and {MAX_LIST_LIMIT}"
+        )));
+    }
+    if input
+        .before_revision_number
+        .is_some_and(|revision_number| revision_number <= 0)
+    {
+        return Err(DatabaseError::InvalidInput(
+            "beforeRevisionNumber must be positive".into(),
+        ));
+    }
+    let current_revision_id = connection
+        .query_row(
+            "SELECT current_revision_id FROM tidbit WHERE id = ?1",
+            params![input.tidbit_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| DatabaseError::NotFound {
+            entity: "tidbit",
+            id: input.tidbit_id.clone(),
+        })?;
+    let fetch_limit = i64::from(input.limit) + 1;
+    let mut statement = connection.prepare(
+        "SELECT
+            revision.id,
+            revision.revision_number,
+            revision.created_at,
+            revision.title,
+            revision.body_markdown,
+            (SELECT count(*)
+             FROM tidbit_revision_source AS source_membership
+             WHERE source_membership.tidbit_revision_id = revision.id),
+            (SELECT count(*)
+             FROM tidbit_revision_attachment AS attachment_membership
+             WHERE attachment_membership.tidbit_revision_id = revision.id)
+         FROM tidbit_revision AS revision
+         WHERE revision.tidbit_id = ?1
+           AND (?2 IS NULL OR revision.revision_number < ?2)
+         ORDER BY revision.revision_number DESC
+         LIMIT ?3",
+    )?;
+    let rows = statement.query_map(
+        params![input.tidbit_id, input.before_revision_number, fetch_limit],
+        |row| {
+            let id = row.get::<_, String>(0)?;
+            let title = row.get::<_, Option<String>>(3)?;
+            let body = row.get::<_, String>(4)?;
+            Ok(TidbitRevisionSummary {
+                is_current: id == current_revision_id,
+                id,
+                revision_number: row.get(1)?,
+                created_at_ms: row.get(2)?,
+                display_title: derive_display_title(title.as_deref(), &body),
+                body_preview: derive_body_preview(&body),
+                source_count: row.get(5)?,
+                attachment_count: row.get(6)?,
+                title,
+            })
+        },
+    )?;
+    let mut items = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    let has_more = items.len() > input.limit as usize;
+    if has_more {
+        items.pop();
+    }
+    let next_before_revision_number = has_more.then(|| {
+        items
+            .last()
+            .expect("a paginated revision page has an item")
+            .revision_number
+    });
+    Ok(TidbitRevisionPage {
+        items,
+        next_before_revision_number,
+    })
+}
+
+pub(super) fn load_tidbit_revision(
+    connection: &Connection,
+    tidbit_id: &str,
+    revision_id: &str,
+) -> Result<TidbitRevision> {
+    validate_uuid_v7(tidbit_id, "tidbitId")?;
+    validate_uuid_v7(revision_id, "revisionId")?;
+    let mut revision = connection
+        .query_row(
+            "SELECT
+                revision.id,
+                revision.tidbit_id,
+                revision.revision_number,
+                revision.created_at,
+                revision.title,
+                revision.body_markdown,
+                tidbit.current_revision_id = revision.id,
+                tidbit.deleted_at IS NOT NULL
+             FROM tidbit_revision AS revision
+             JOIN tidbit ON tidbit.id = revision.tidbit_id
+             WHERE revision.tidbit_id = ?1 AND revision.id = ?2",
+            params![tidbit_id, revision_id],
+            |row| {
+                let title = row.get::<_, Option<String>>(4)?;
+                let body_markdown = row.get::<_, String>(5)?;
+                Ok(TidbitRevision {
+                    id: row.get(0)?,
+                    tidbit_id: row.get(1)?,
+                    revision_number: row.get(2)?,
+                    created_at_ms: row.get(3)?,
+                    display_title: derive_display_title(title.as_deref(), &body_markdown),
+                    title,
+                    body_markdown,
+                    sources: Vec::new(),
+                    attachments: Vec::new(),
+                    is_current: row.get(6)?,
+                    tidbit_deleted: row.get(7)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| DatabaseError::NotFound {
+            entity: "tidbit revision",
+            id: revision_id.to_owned(),
+        })?;
+    revision.sources = load_sources(connection, revision_id)?;
+    revision.attachments = load_revision_attachments(connection, revision_id)?;
+    Ok(revision)
+}
+
+pub(super) fn load_source_url(connection: &Connection, source_id: &str) -> Result<String> {
+    validate_uuid_v7(source_id, "sourceId")?;
+    connection
+        .query_row(
+            "SELECT normalized_url FROM source WHERE id = ?1 AND normalized_url IS NOT NULL",
+            params![source_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| DatabaseError::NotFound {
+            entity: "source URL",
+            id: source_id.to_owned(),
+        })
+}
+
+pub(super) fn purge_tidbit(
+    connection: &mut Connection,
+    input: PurgeTidbitInput,
+    now_ms: i64,
+) -> Result<bool> {
+    validate_timestamp(now_ms, "nowMs")?;
+    validate_uuid_v7(&input.id, "id")?;
+    validate_uuid_v7(&input.expected_revision_id, "expectedRevisionId")?;
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // tidbit and tidbit_revision intentionally form a mutually validating
+    // current-revision relationship. Defer even RESTRICT actions until commit
+    // so the complete graph can be removed atomically and then revalidated.
+    transaction.pragma_update(None, "defer_foreign_keys", "ON")?;
+    let current = load_current_revision(&transaction, &input.id)?;
+    let deleted_at_ms = current.deleted_at_ms.ok_or_else(|| {
+        DatabaseError::InvalidInput(format!("tidbit {} is not deleted", input.id))
+    })?;
+    if current.revision_id != input.expected_revision_id {
+        return Err(DatabaseError::StaleTidbit {
+            id: input.id,
+            expected_revision_id: input.expected_revision_id,
+            actual_revision_id: current.revision_id,
+        });
+    }
+    let purge_eligible_at_ms = deleted_at_ms
+        .checked_add(TIDBIT_PURGE_DELAY_MS)
+        .ok_or_else(|| {
+            DatabaseError::InvalidInput("purge eligibility timestamp overflow".into())
+        })?;
+    if now_ms < purge_eligible_at_ms {
+        return Err(DatabaseError::InvalidInput(format!(
+            "tidbit {} cannot be permanently deleted until {purge_eligible_at_ms}",
+            input.id
+        )));
+    }
+    transaction.execute(
+        "INSERT INTO tidbit_purge_authorization(
+            tidbit_id, expected_revision_id, authorized_at
+         ) VALUES(?1, ?2, ?3)",
+        params![input.id, input.expected_revision_id, now_ms],
+    )?;
+
+    transaction.execute(
+        "DELETE FROM draft
+         WHERE id IN (
+            SELECT draft_id FROM draft_context WHERE tidbit_id = ?1
+         )",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "UPDATE research_run SET saved_tidbit_id = NULL WHERE saved_tidbit_id = ?1",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "DELETE FROM active_passage WHERE tidbit_id = ?1",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "DELETE FROM passage_search_document
+         WHERE tidbit_id = ?1
+            OR passage_id IN (
+                SELECT passage.id
+                FROM passage
+                JOIN tidbit_revision
+                  ON tidbit_revision.id = passage.tidbit_revision_id
+                WHERE tidbit_revision.tidbit_id = ?1
+                  AND passage.owner_kind = 'AUTHOR'
+            )",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "DELETE FROM attachment_passage_revision
+         WHERE tidbit_revision_id IN (
+            SELECT id FROM tidbit_revision WHERE tidbit_id = ?1
+         )",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "DELETE FROM passage_embedding
+         WHERE passage_id IN (
+            SELECT passage.id
+            FROM passage
+            JOIN tidbit_revision
+              ON tidbit_revision.id = passage.tidbit_revision_id
+            WHERE tidbit_revision.tidbit_id = ?1
+              AND passage.owner_kind = 'AUTHOR'
+         )",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO passage_embedding_reap_queue(passage_rowid)
+         SELECT passage.rowid
+         FROM passage
+         JOIN tidbit_revision
+           ON tidbit_revision.id = passage.tidbit_revision_id
+         WHERE tidbit_revision.tidbit_id = ?1
+           AND passage.owner_kind = 'AUTHOR'",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "DELETE FROM passage
+         WHERE owner_kind = 'AUTHOR'
+           AND tidbit_revision_id IN (
+                SELECT id FROM tidbit_revision WHERE tidbit_id = ?1
+           )",
+        params![input.id],
+    )?;
+    let source_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT DISTINCT source_id
+             FROM tidbit_revision_source
+             WHERE tidbit_revision_id IN (
+                SELECT id FROM tidbit_revision WHERE tidbit_id = ?1
+             )",
+        )?;
+        let source_ids = statement
+            .query_map(params![input.id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        source_ids
+    };
+    for source_id in &source_ids {
+        transaction.execute(
+            "DELETE FROM source
+             WHERE id = ?1
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM tidbit_revision_source AS membership
+                    JOIN tidbit_revision
+                      ON tidbit_revision.id = membership.tidbit_revision_id
+                    WHERE membership.source_id = ?1
+                      AND tidbit_revision.tidbit_id != ?2
+               )",
+            params![source_id, input.id],
+        )?;
+    }
+    transaction.execute(
+        "DELETE FROM tidbit_revision_source
+         WHERE tidbit_revision_id IN (
+            SELECT id FROM tidbit_revision WHERE tidbit_id = ?1
+         )",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "DELETE FROM tidbit_revision_attachment
+         WHERE tidbit_revision_id IN (
+            SELECT id FROM tidbit_revision WHERE tidbit_id = ?1
+         )",
+        params![input.id],
+    )?;
+    transaction.execute(
+        "DELETE FROM tidbit_revision WHERE tidbit_id = ?1",
+        params![input.id],
+    )?;
+    transaction.execute("DELETE FROM tidbit WHERE id = ?1", params![input.id])?;
+    transaction.execute(
+        "DELETE FROM tidbit_purge_authorization WHERE tidbit_id = ?1",
+        params![input.id],
+    )?;
+    transaction.commit()?;
+    Ok(true)
 }
 
 fn prepare_revision(
@@ -643,6 +1047,42 @@ pub(super) fn load_sources(
             id: row.get(0)?,
             label: row.get(1)?,
             url: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn load_revision_attachments(
+    connection: &Connection,
+    revision_id: &str,
+) -> Result<Vec<TidbitRevisionAttachment>> {
+    let mut statement = connection.prepare(
+        "SELECT
+            attachment.id,
+            attachment.display_filename,
+            attachment.media_type,
+            attachment.byte_length,
+            attachment.kind,
+            attachment.extraction_state,
+            membership.display_role,
+            membership.sort_order,
+            attachment.deleted_at
+         FROM tidbit_revision_attachment AS membership
+         JOIN attachment ON attachment.id = membership.attachment_id
+         WHERE membership.tidbit_revision_id = ?1
+         ORDER BY membership.sort_order",
+    )?;
+    let rows = statement.query_map(params![revision_id], |row| {
+        Ok(TidbitRevisionAttachment {
+            id: row.get(0)?,
+            display_filename: row.get(1)?,
+            media_type: row.get(2)?,
+            byte_length: row.get(3)?,
+            kind: row.get(4)?,
+            extraction_state: row.get(5)?,
+            display_role: row.get(6)?,
+            sort_order: row.get(7)?,
+            deleted_at_ms: row.get(8)?,
         })
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)

@@ -349,6 +349,8 @@ export function SearchPage() {
             loading={citationLoading}
             onOpenAttachment={(attachmentId) => backend.openAttachmentExternal(attachmentId)}
             result={selectedResult}
+            tidbitOrigin="search"
+            tidbitReturnSearch={{ exact: routeExact, q: routeQuery }}
           />
         </div>
       </section>

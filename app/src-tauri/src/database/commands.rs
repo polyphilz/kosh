@@ -9,9 +9,10 @@ use super::{
     research_runs::SaveResearchAnswerWrite,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     CitationResolution, ClearDraftInput, DatabaseError, DeleteTidbitInput, Draft, EditTidbitInput,
-    ListResearchRunsInput, ListTidbitsInput, ResearchRunPage, ResearchRunRecord,
-    RestoreTidbitInput, SaveDraftInput, SearchPassagesInput, SearchPassagesResponse,
-    SemanticSearchReadiness, Tidbit, TidbitDraft, TidbitListPage,
+    ListResearchRunsInput, ListTidbitRevisionsInput, ListTidbitsInput, PurgeTidbitInput,
+    ResearchRunPage, ResearchRunRecord, RestoreTidbitInput, SaveDraftInput, SearchPassagesInput,
+    SearchPassagesResponse, SemanticSearchReadiness, Tidbit, TidbitDraft, TidbitListPage,
+    TidbitRevision, TidbitRevisionPage,
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -103,6 +104,25 @@ pub(crate) async fn list_tidbits(
 }
 
 #[tauri::command]
+pub(crate) async fn list_tidbit_revisions(
+    state: State<'_, RuntimeState>,
+    input: ListTidbitRevisionsInput,
+) -> CommandResult<TidbitRevisionPage> {
+    let client = state.database_client();
+    run_writer(move || client.list_tidbit_revisions(input)).await
+}
+
+#[tauri::command]
+pub(crate) async fn load_tidbit_revision(
+    state: State<'_, RuntimeState>,
+    tidbit_id: String,
+    revision_id: String,
+) -> CommandResult<TidbitRevision> {
+    let client = state.database_client();
+    run_writer(move || client.load_tidbit_revision(tidbit_id, revision_id)).await
+}
+
+#[tauri::command]
 pub(crate) async fn edit_tidbit(
     state: State<'_, RuntimeState>,
     input: EditTidbitInput,
@@ -137,6 +157,16 @@ pub(crate) async fn restore_tidbit(
     let client = state.database_client();
     let now_ms = state.now_ms();
     run_writer(move || client.restore_tidbit(input, now_ms)).await
+}
+
+#[tauri::command]
+pub(crate) async fn purge_tidbit(
+    state: State<'_, RuntimeState>,
+    input: PurgeTidbitInput,
+) -> CommandResult<bool> {
+    let client = state.database_client();
+    let now_ms = state.now_ms();
+    run_writer(move || client.purge_tidbit(input, now_ms)).await
 }
 
 #[tauri::command]

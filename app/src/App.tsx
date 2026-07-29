@@ -12,6 +12,7 @@ const OPEN_SETTINGS_EVENT = "kosh://open-settings";
 const destinations = [
   { label: "Search", to: "/" },
   { label: "Add", to: "/add" },
+  { label: "Library", to: "/library" },
   { label: "Research", to: "/research" },
   { label: "Settings", to: "/settings" },
 ] as const;

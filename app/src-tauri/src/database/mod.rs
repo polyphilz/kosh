@@ -64,8 +64,10 @@ pub use settings::{
     ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR, DEFAULT_QUICK_ADD_ACCELERATOR,
 };
 pub use tidbits::{
-    DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
-    TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
+    DeleteTidbitInput, EditTidbitInput, ListTidbitRevisionsInput, ListTidbitsInput,
+    PurgeTidbitInput, RestoreTidbitInput, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor,
+    TidbitListItem, TidbitListPage, TidbitListScope, TidbitRevision, TidbitRevisionAttachment,
+    TidbitRevisionPage, TidbitRevisionSummary, TidbitSource, TIDBIT_PURGE_DELAY_MS,
 };
 pub(crate) use writer::LexicalBenchmarkAttachmentWrite;
 use writer::WriterMessage;
@@ -508,6 +510,23 @@ fn writer_loop(
             WriterMessage::ListTidbits { input, reply } => {
                 let _ = reply.send(tidbits::list_tidbits(&main, input));
             }
+            WriterMessage::ListTidbitRevisions { input, reply } => {
+                let _ = reply.send(tidbits::list_tidbit_revisions(&main, input));
+            }
+            WriterMessage::LoadTidbitRevision {
+                tidbit_id,
+                revision_id,
+                reply,
+            } => {
+                let _ = reply.send(tidbits::load_tidbit_revision(
+                    &main,
+                    &tidbit_id,
+                    &revision_id,
+                ));
+            }
+            WriterMessage::LoadSourceUrl { source_id, reply } => {
+                let _ = reply.send(tidbits::load_source_url(&main, &source_id));
+            }
             WriterMessage::EditTidbit { write, reply } => {
                 let _ = reply.send(tidbits::edit_tidbit(&mut main, write));
             }
@@ -524,6 +543,13 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(tidbits::restore_tidbit(&mut main, input, now_ms));
+            }
+            WriterMessage::PurgeTidbit {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(tidbits::purge_tidbit(&mut main, input, now_ms));
             }
             WriterMessage::CreateResearchRun { write, reply } => {
                 let _ = reply.send(research_runs::create(&mut main, write));

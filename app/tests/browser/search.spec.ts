@@ -147,6 +147,9 @@ test("a citation edited after search opens as historical and focuses its exact p
   await expect(citedPassage).toContainText("The original immutable passage mentions cobalt.");
   await expect(page.getByText("The current passage now mentions indigo.")).toBeVisible();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.getByRole("link", { name: "← Back to search" }).click();
+  await expect(page.getByRole("searchbox", { name: "Search tidbits" })).toHaveValue("cobalt");
+  await expect(page.getByRole("heading", { name: "No supporting passages" })).toBeVisible();
 });
 
 test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
