@@ -1489,11 +1489,9 @@ fn terminate_active(active: &ActiveProcess, reason: TerminationReason) -> bool {
 }
 
 fn force_owned_process_for_shutdown(process: &ActiveProcess) {
-    let reason = TerminationReason::from_atomic(process.termination.load(Ordering::Acquire));
-    if reason == TerminationReason::Completed {
-        return;
-    }
     let _ = terminate_active(process, TerminationReason::Shutdown);
+    // Completed describes the direct child, not the whole process group. A
+    // descendant can still own inherited pipes until the monitor tears it down.
     force_kill_process_group(process.process_id);
 }
 
@@ -2402,6 +2400,47 @@ sleep 30
         // SAFETY: The negative PID is the fake CLI's isolated process group.
         let result = unsafe { libc::kill(-process_id, 0) };
         assert_eq!(result, -1, "the canceled process group must be gone");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[test]
+    fn shutdown_force_kills_an_owned_group_after_parent_completion_is_observed() {
+        let root = tempfile::tempdir().expect("fake CLI root");
+        let binary = write_fake_cli(
+            root.path(),
+            r#"
+trap '' TERM
+cat >/dev/null
+sleep 30
+"#,
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let (sender, receiver) = mpsc::channel();
+        let started = start_fake(&manager, request("completed parent race"), &sender);
+        let active = lock(&manager.inner.active)
+            .as_ref()
+            .expect("active process")
+            .clone();
+        active
+            .termination
+            .store(TerminationReason::Completed as u8, Ordering::Release);
+        manager.shutdown();
+        let (_, terminals) = receive_terminals(&receiver, 1);
+
+        assert_eq!(
+            terminals.get(&started.run_id),
+            Some(&ResearchProcessOutcome::Failed)
+        );
+        let process_id = i32::try_from(active.process_id).expect("test process ID");
+        // SAFETY: The negative PID is the fake CLI's isolated process group.
+        let result = unsafe { libc::kill(-process_id, 0) };
+        assert_eq!(
+            result, -1,
+            "the completed parent's process group must be gone"
+        );
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
