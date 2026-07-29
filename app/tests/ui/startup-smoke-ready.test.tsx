@@ -12,16 +12,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 describe("StartupSmokeReady", () => {
   beforeEach(() => {
     vi.mocked(emit).mockReset().mockResolvedValue();
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(1);
-      return 1;
-    });
-    vi.stubGlobal("cancelAnimationFrame", () => undefined);
   });
 
   afterEach(() => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    vi.unstubAllGlobals();
   });
 
   it("does nothing outside the Tauri runtime", () => {
