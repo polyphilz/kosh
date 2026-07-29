@@ -105,6 +105,8 @@ pub struct ResearchCitationFreshness {
     pub cited_revision_id: Option<String>,
     pub current_revision_id: Option<String>,
     pub has_newer_revision: bool,
+    pub is_historical: bool,
+    pub tidbit_deleted: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -456,7 +458,7 @@ pub(super) fn save_answer_as_tidbit(
         .and_then(Value::as_str)
         .filter(|markdown| !markdown.trim().is_empty())
         .ok_or_else(|| DatabaseError::InvalidInput("research answer has no Markdown".into()))?;
-    let body_markdown = super::media::neutralize_untrusted_media_references(body_markdown);
+    let body_markdown = super::media::neutralize_untrusted_media_references(body_markdown)?;
     let title = format!(
         "Research: {}",
         truncate_chars(query.trim(), MAX_TITLE_CHARS - 10)
@@ -738,22 +740,52 @@ fn citation_freshness(
             let tidbit_id = tidbit
                 .and_then(|value| value.get("id"))
                 .and_then(Value::as_str);
-            let current_revision_id = tidbit_id
+            let passage_id = citation
+                .get("evidence")
+                .and_then(|value| value.get("passageId"))
+                .and_then(Value::as_str);
+            let current = tidbit_id
                 .map(|tidbit_id| {
                     connection
                         .query_row(
-                            "SELECT current_revision_id FROM tidbit WHERE id = ?1",
-                            params![tidbit_id],
-                            |row| row.get::<_, String>(0),
+                            "SELECT
+                                 current_revision_id,
+                                 deleted_at IS NOT NULL,
+                                 EXISTS(
+                                     SELECT 1
+                                     FROM active_passage
+                                     WHERE active_passage.tidbit_id = tidbit.id
+                                       AND active_passage.passage_id = ?2
+                                 )
+                             FROM tidbit
+                             WHERE id = ?1",
+                            params![tidbit_id, passage_id],
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, bool>(1)?,
+                                    row.get::<_, bool>(2)?,
+                                ))
+                            },
                         )
                         .optional()
                 })
                 .transpose()?
                 .flatten();
+            let current_revision_id = current
+                .as_ref()
+                .map(|(revision_id, _, _)| revision_id.clone());
+            let tidbit_deleted =
+                tidbit_id.is_some() && current.as_ref().is_none_or(|(_, deleted, _)| *deleted);
+            let passage_is_active = current.as_ref().is_some_and(|(_, _, is_active)| *is_active);
+            let has_newer_revision =
+                cited_revision_id.is_some() && current_revision_id != cited_revision_id;
             Ok(ResearchCitationFreshness {
                 citation_number: number,
-                has_newer_revision: cited_revision_id.is_some()
-                    && current_revision_id != cited_revision_id,
+                has_newer_revision,
+                is_historical: cited_revision_id.is_some()
+                    && (has_newer_revision || tidbit_deleted || !passage_is_active),
+                tidbit_deleted,
                 cited_revision_id,
                 current_revision_id,
             })

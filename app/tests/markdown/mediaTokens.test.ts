@@ -105,4 +105,15 @@ describe("reserved Kosh media tokens", () => {
     expect(neutralized).toContain("{{kosh-reference:attachment:");
     expect(neutralized).toContain("kosh-reference://localhost/attachment/");
   });
+
+  it("rejects entity-encoded media capabilities in untrusted Markdown", () => {
+    expect(() =>
+      neutralizeUntrustedMediaReferences(`&lcub;&lcub;kosh&#58;image:${imageId};width=70%}}`),
+    ).toThrow("encoded local media capability");
+    expect(() =>
+      neutralizeUntrustedMediaReferences(
+        `![direct](kosh-media&#x3a;&sol;&sol;localhost/attachment/${attachmentId})`,
+      ),
+    ).toThrow("encoded local media capability");
+  });
 });

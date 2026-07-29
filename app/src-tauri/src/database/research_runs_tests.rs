@@ -3,7 +3,8 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use super::{
-    passages, research_runs::*, tidbits, Database, DatabasePaths, EditTidbitInput, TidbitDraft,
+    passages, research_runs::*, tidbits, Database, DatabasePaths, DeleteTidbitInput,
+    EditTidbitInput, TidbitDraft,
 };
 
 fn id() -> String {
@@ -164,6 +165,53 @@ fn durable_run_preserves_grounded_snapshot_and_reports_newer_revisions() {
         .expect("load historical run");
     assert_eq!(historical.final_answer, Some(grounded_answer(&evidence)));
     assert!(historical.citation_freshness[0].has_newer_revision);
+    assert!(historical.citation_freshness[0].is_historical);
+}
+
+#[test]
+fn deleted_citation_is_historical_without_a_newer_revision() {
+    let (_root, database) = open();
+    let (tidbit, evidence) = create_evidence(&database);
+    let run_id = id();
+    create_run(&database, &run_id, None);
+    append(&database, &run_id, 1, "STARTED", json!({}));
+    append(
+        &database,
+        &run_id,
+        2,
+        "GROUNDED_FINAL_OUTPUT",
+        json!({"answer": grounded_answer(&evidence)}),
+    );
+    append(
+        &database,
+        &run_id,
+        3,
+        "FINISHED",
+        json!({"outcome": "SUCCEEDED", "stderrTruncated": false}),
+    );
+    database
+        .client()
+        .delete_tidbit(
+            DeleteTidbitInput {
+                id: tidbit.id,
+                expected_revision_id: tidbit.current_revision_id.clone(),
+            },
+            200,
+        )
+        .expect("delete cited tidbit");
+
+    let record = database
+        .client()
+        .load_research_run(run_id)
+        .expect("load run with deleted citation");
+    let freshness = &record.citation_freshness[0];
+    assert_eq!(
+        freshness.current_revision_id.as_deref(),
+        Some(tidbit.current_revision_id.as_str())
+    );
+    assert!(!freshness.has_newer_revision);
+    assert!(freshness.tidbit_deleted);
+    assert!(freshness.is_historical);
 }
 
 #[test]
@@ -352,4 +400,44 @@ fn saved_research_answer_neutralizes_every_local_media_capability() {
         .body_markdown
         .contains("kosh-reference://localhost/attachment/"));
     assert!(super::media::referenced_attachments(&saved.body_markdown).is_empty());
+}
+
+#[test]
+fn saved_research_answer_rejects_entity_encoded_media_capabilities() {
+    let (_root, database) = open();
+    let (_source, evidence) = create_evidence(&database);
+    let run_id = id();
+    let attachment_id = id();
+    let mut answer = grounded_answer(&evidence);
+    answer["markdown"] = json!(format!(
+        "The durable fact is forty-two.【1】\n\n\
+         {{{{kosh&#58;image:{attachment_id};width=70%}}}}"
+    ));
+    create_run(&database, &run_id, None);
+    append(&database, &run_id, 1, "STARTED", json!({}));
+    append(
+        &database,
+        &run_id,
+        2,
+        "GROUNDED_FINAL_OUTPUT",
+        json!({"answer": answer}),
+    );
+    append(
+        &database,
+        &run_id,
+        3,
+        "FINISHED",
+        json!({"outcome": "SUCCEEDED", "stderrTruncated": false}),
+    );
+
+    let error = database
+        .client()
+        .save_research_answer_as_tidbit(SaveResearchAnswerWrite {
+            run_id,
+            tidbit_id: id(),
+            revision_id: id(),
+            now_ms: 200,
+        })
+        .expect_err("encoded media capability must not enter authored content");
+    assert!(error.to_string().contains("encoded local media capability"));
 }

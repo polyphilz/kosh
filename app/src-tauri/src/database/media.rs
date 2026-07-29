@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use pulldown_cmark::{Event, Parser, Tag};
 use rusqlite::{
     blob::ZeroBlob, params, Connection, OptionalExtension, Transaction, TransactionBehavior,
     MAIN_DB,
@@ -3583,8 +3584,8 @@ pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference>
     references
 }
 
-pub(crate) fn neutralize_untrusted_media_references(markdown: &str) -> String {
-    [
+pub(crate) fn neutralize_untrusted_media_references(markdown: &str) -> Result<String> {
+    let neutralized = [
         (IMAGE_TOKEN_PREFIX, "{{kosh-reference:image:"),
         (ATTACHMENT_TOKEN_PREFIX, "{{kosh-reference:attachment:"),
         (PDF_TOKEN_PREFIX, "{{kosh-reference:pdf:"),
@@ -3596,7 +3597,46 @@ pub(crate) fn neutralize_untrusted_media_references(markdown: &str) -> String {
     .into_iter()
     .fold(markdown.to_owned(), |value, (from, to)| {
         value.replace(from, to)
-    })
+    });
+    if decoded_markdown_contains_local_media_capability(&neutralized) {
+        return Err(DatabaseError::InvalidInput(
+            "research answer contains an encoded local media capability".into(),
+        ));
+    }
+    Ok(neutralized)
+}
+
+fn decoded_markdown_contains_local_media_capability(markdown: &str) -> bool {
+    let mut adjacent_text = String::new();
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Text(text) => {
+                adjacent_text.push_str(&text);
+                if contains_local_media_capability(&adjacent_text) {
+                    return true;
+                }
+            }
+            Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) => {
+                adjacent_text.clear();
+                if contains_local_media_capability(&dest_url) {
+                    return true;
+                }
+            }
+            _ => adjacent_text.clear(),
+        }
+    }
+    false
+}
+
+fn contains_local_media_capability(value: &str) -> bool {
+    [
+        IMAGE_TOKEN_PREFIX,
+        ATTACHMENT_TOKEN_PREFIX,
+        PDF_TOKEN_PREFIX,
+        MEDIA_PROTOCOL_PREFIX,
+    ]
+    .into_iter()
+    .any(|prefix| value.contains(prefix))
 }
 
 pub(crate) fn markdown_references_attachment(markdown: &str, attachment_id: &str) -> bool {

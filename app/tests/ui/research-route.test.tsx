@@ -39,12 +39,16 @@ describe("research route", () => {
     await user.click(screen.getByRole("button", { name: "Save answer as tidbit" }));
     expect(await screen.findByRole("link", { name: "Open saved tidbit" })).toBeInTheDocument();
     expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toHaveLength(2);
-    await backend.editTidbit({
+    const revisedEvidence = await backend.editTidbit({
       id: evidence.id,
       expectedRevisionId: evidence.currentRevisionId,
       title: "Revised local evidence",
       bodyMarkdown: "A newer passage that must not replace the cited snapshot.",
       sources: evidence.sources,
+    });
+    await backend.deleteTidbit({
+      id: revisedEvidence.id,
+      expectedRevisionId: revisedEvidence.currentRevisionId,
     });
 
     first.unmount();
@@ -55,6 +59,7 @@ describe("research route", () => {
     await user.click(screen.getByRole("button", { name: "Open citation 1" }));
     expect(screen.getByText("Historical passage", { exact: true })).toBeInTheDocument();
     expect(screen.getByText("The exact local passage.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open tidbit at passage" })).toBeNull();
   });
 
   it("supports cancellation and safe failure without losing rerun controls", async () => {

@@ -677,14 +677,23 @@ export class FakeBackend implements Backend {
     const record = cloneResearchRun(this.requireResearchRun(id));
     record.citationFreshness = (record.finalAnswer?.citations ?? []).map((citation) => {
       const citedRevisionId = citation.evidence.tidbit?.revisionId ?? null;
-      const currentRevisionId = citation.evidence.tidbit
-        ? (this.tidbits.get(citation.evidence.tidbit.id)?.currentRevisionId ?? null)
-        : null;
+      const currentTidbit = citation.evidence.tidbit
+        ? this.tidbits.get(citation.evidence.tidbit.id)
+        : undefined;
+      const currentRevisionId = currentTidbit?.currentRevisionId ?? null;
+      const tidbitDeleted =
+        citation.evidence.tidbit !== null &&
+        (currentTidbit === undefined || currentTidbit.deletedAtMs !== null);
+      const hasNewerRevision = citedRevisionId !== null && citedRevisionId !== currentRevisionId;
       return {
         citationNumber: citation.number,
         citedRevisionId,
         currentRevisionId,
-        hasNewerRevision: citedRevisionId !== null && citedRevisionId !== currentRevisionId,
+        hasNewerRevision,
+        isHistorical:
+          citedRevisionId !== null &&
+          (hasNewerRevision || tidbitDeleted || currentTidbit === undefined),
+        tidbitDeleted,
       };
     });
     return record;
@@ -833,6 +842,8 @@ export class FakeBackend implements Backend {
         citedRevisionId: citation.evidence.tidbit?.revisionId ?? null,
         currentRevisionId: citation.evidence.tidbit?.revisionId ?? null,
         hasNewerRevision: false,
+        isHistorical: citation.evidence.state === "HISTORICAL",
+        tidbitDeleted: citation.evidence.tidbit?.deleted ?? false,
       }));
     } else if (event.kind === "FINISHED") {
       run.status =

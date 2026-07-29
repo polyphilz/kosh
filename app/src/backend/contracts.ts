@@ -500,6 +500,8 @@ export interface ResearchCitationFreshness {
   citedRevisionId: string | null;
   currentRevisionId: string | null;
   hasNewerRevision: boolean;
+  isHistorical: boolean;
+  tidbitDeleted: boolean;
 }
 
 export interface ResearchRunRecord extends ResearchRunSummary {

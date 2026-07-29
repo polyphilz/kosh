@@ -239,14 +239,28 @@ export function ResearchPage() {
     run?.events.filter((event) => event.kind === "TOOL_ACTIVITY").map((event) => event) ?? [];
   const newerCitationCount =
     run?.citationFreshness.filter((citation) => citation.hasNewerRevision).length ?? 0;
+  const inactiveCitationCount =
+    run?.citationFreshness.filter((citation) => citation.isHistorical && !citation.hasNewerRevision)
+      .length ?? 0;
+  const selectedFreshness = selectedCitation
+    ? run?.citationFreshness.find(
+        (freshness) => freshness.citationNumber === selectedCitation.number,
+      )
+    : undefined;
   const citationDetail = selectedCitation
     ? {
         ...selectedCitation.evidence,
-        state: run?.citationFreshness.find(
-          (freshness) => freshness.citationNumber === selectedCitation.number,
-        )?.hasNewerRevision
+        state: selectedFreshness?.isHistorical
           ? ("HISTORICAL" as const)
           : selectedCitation.evidence.state,
+        tidbit: selectedCitation.evidence.tidbit
+          ? {
+              ...selectedCitation.evidence.tidbit,
+              deleted:
+                selectedCitation.evidence.tidbit.deleted ||
+                (selectedFreshness?.tidbitDeleted ?? false),
+            }
+          : null,
       }
     : null;
 
@@ -431,6 +445,15 @@ export function ResearchPage() {
                       {newerCitationCount} cited{" "}
                       {newerCitationCount === 1 ? "tidbit has" : "tidbits have"} a newer revision.
                       This answer still opens the exact historical evidence it used.
+                    </p>
+                  )}
+                  {inactiveCitationCount > 0 && (
+                    <p className="research-result__freshness" role="status">
+                      {inactiveCitationCount} cited{" "}
+                      {inactiveCitationCount === 1
+                        ? "tidbit is no longer active"
+                        : "tidbits are no longer active"}
+                      . This answer still opens the exact historical evidence it used.
                     </p>
                   )}
                   <article className="research-answer">

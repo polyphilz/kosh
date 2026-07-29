@@ -58,8 +58,9 @@ inert.
 Research answers also disable Kosh media-token and `kosh-media://` expansion.
 Claude-authored Markdown cannot display an attachment by guessing its UUID.
 Saving an answer as a tidbit neutralizes every reserved media token and local
-media URL at the native database boundary; only media explicitly attached
-through an authored draft can become live content.
+media URL at the native database boundary. Parser-decoded or entity-encoded
+variants are rejected rather than allowed to cross that boundary; only media
+explicitly attached through an authored draft can become live content.
 
 Source URLs are provenance supplied to Kosh by the user. They may be displayed
 or opened from trusted citation detail, but Kosh Research does not fetch them
@@ -76,8 +77,9 @@ valid only after one grounded answer snapshot has been stored.
 The snapshot includes the complete numbered registry and exact
 `CitationResolution` values used at answer time. Loading an older run compares
 its cited tidbit revisions with current revisions only to display a freshness
-notice; opening a marker always uses the historical snapshot and never
-silently retargets.
+notice. Deleted or otherwise inactive evidence is also labeled historical and
+cannot offer a live tidbit link. Opening a marker always uses the historical
+snapshot and never silently retargets.
 
 Queued or running rows are marked `INTERRUPTED` during the next app startup.
 Kosh never attempts to resurrect an operating-system process after restart.
