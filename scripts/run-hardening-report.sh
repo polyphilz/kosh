@@ -54,6 +54,10 @@ cargo test \
   fail "lexical performance report is missing"
 [[ -f "$bundle_report" && ! -L "$bundle_report" ]] ||
   fail "bundle report is missing"
+[[ "$(git -C "$repo_root" rev-parse HEAD)" == "$head_sha" ]] ||
+  fail "HEAD changed while the hardening gates were running"
+[[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]] ||
+  fail "worktree changed while the hardening gates were running"
 
 completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 completed_epoch="$(date +%s)"
