@@ -552,6 +552,19 @@ fn attachment_segments_are_bounded_paginated_and_citable() {
         .expect("attachment evidence")
         .iter()
         .all(|item| item["citationHandle"].as_str().is_some()));
+    let third = run
+        .call_tool(
+            INSPECT_ATTACHMENT_SEGMENTS_TOOL,
+            json!({
+                "cursor": second["nextCursor"]
+                    .as_str()
+                    .expect("final attachment continuation"),
+                "limit": 2,
+            }),
+        )
+        .expect("final attachment page");
+    assert_eq!(third["items"].as_array().map(Vec::len), Some(1));
+    assert!(third["nextCursor"].is_null());
 }
 
 #[test]

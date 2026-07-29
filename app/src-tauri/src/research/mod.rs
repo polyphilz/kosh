@@ -264,7 +264,6 @@ enum ResearchCursor {
         owner_handle: String,
         display_filename: String,
         media_type: String,
-        passages: Vec<CitationResolution>,
         offset: usize,
     },
     Sources {
@@ -814,7 +813,9 @@ impl ResearchRun {
         match (input.owner_handle, input.cursor) {
             (Some(owner_handle), None) => {
                 let snapshot = self.resolve_resource_handle(&owner_handle)?.clone();
-                let passages = self.library.current_attachment_passages(&snapshot)?;
+                let (passages, has_more) = self
+                    .library
+                    .current_attachment_passage_page(&snapshot, 0, limit)?;
                 let ResearchResourceSnapshot::Attachment {
                     display_filename,
                     media_type,
@@ -832,7 +833,7 @@ impl ResearchRun {
                     media_type,
                     passages,
                     0,
-                    limit,
+                    has_more,
                 )
             }
             (None, Some(cursor)) => {
@@ -840,7 +841,6 @@ impl ResearchRun {
                     owner_handle,
                     display_filename,
                     media_type,
-                    passages,
                     offset,
                 } = self.take_cursor(&cursor, "inspect attachment segments")?
                 else {
@@ -850,14 +850,16 @@ impl ResearchRun {
                     ));
                 };
                 let snapshot = self.resolve_resource_handle(&owner_handle)?.clone();
-                self.library.current_attachment_passages(&snapshot)?;
+                let (passages, has_more) = self
+                    .library
+                    .current_attachment_passage_page(&snapshot, offset, limit)?;
                 self.attachment_page(
                     owner_handle,
                     display_filename,
                     media_type,
                     passages,
                     offset,
-                    limit,
+                    has_more,
                 )
             }
             _ => Err(ResearchError::invalid(
@@ -873,20 +875,19 @@ impl ResearchRun {
         media_type: String,
         passages: Vec<CitationResolution>,
         offset: usize,
-        limit: usize,
+        has_more: bool,
     ) -> Result<(Value, usize), ResearchError> {
-        let end = (offset + limit).min(passages.len());
-        let page = passages[offset..end]
+        let item_count = passages.len();
+        let page = passages
             .iter()
             .map(|passage| self.evidence(passage, None))
             .collect::<Result<Vec<_>, _>>()?;
-        let next_cursor = (end < passages.len()).then(|| {
+        let next_cursor = has_more.then(|| {
             self.store_cursor(ResearchCursor::Attachment {
                 owner_handle: owner_handle.clone(),
                 display_filename: display_filename.clone(),
                 media_type: media_type.clone(),
-                passages,
-                offset: end,
+                offset: offset.saturating_add(item_count),
             })
         });
         let output = json!({
@@ -897,7 +898,7 @@ impl ResearchRun {
             "items": page,
             "nextCursor": next_cursor,
         });
-        Ok((output, end - offset))
+        Ok((output, item_count))
     }
 
     fn evidence(

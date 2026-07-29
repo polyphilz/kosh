@@ -132,12 +132,17 @@ impl ResearchLibrary {
         Ok((tidbit, passages))
     }
 
-    pub(super) fn current_attachment_passages(
+    pub(super) fn current_attachment_passage_page(
         &self,
         snapshot: &ResearchResourceSnapshot,
-    ) -> Result<Vec<CitationResolution>, ResearchError> {
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<CitationResolution>, bool), ResearchError> {
         let ResearchResourceSnapshot::Attachment {
-            id, extraction_id, ..
+            id,
+            extraction_id,
+            provenance_passage_id,
+            ..
         } = snapshot
         else {
             return Err(ResearchError::new(
@@ -166,14 +171,65 @@ impl ResearchLibrary {
                 "the attachment was deleted after this research handle was issued",
             ));
         }
-        let ids = self.attachment_passage_ids(id, extraction_id)?;
-        if ids.is_empty() {
+        let provenance_is_current = self
+            .connection
+            .query_row(
+                "SELECT EXISTS (
+                    SELECT 1
+                    FROM current_attachment_passage
+                    WHERE passage_id = ?1
+                      AND attachment_id = ?2
+                      AND extraction_id = ?3
+                 )",
+                params![provenance_passage_id, id, extraction_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(ResearchError::from_sqlite)?;
+        if !provenance_is_current {
             return Err(ResearchError::new(
                 ResearchErrorCode::StaleContent,
                 "the attachment extraction changed after this research handle was issued",
             ));
         }
-        self.resolve_current_passages(ids)
+        let query_limit = i64::try_from(limit.saturating_add(1)).map_err(|_| {
+            ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the attachment page limit is too large",
+            )
+        })?;
+        let query_offset = i64::try_from(offset).map_err(|_| {
+            ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the attachment page offset is too large",
+            )
+        })?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT passage.id
+                 FROM current_attachment_passage AS current
+                 JOIN passage ON passage.id = current.passage_id
+                 JOIN attachment_segment AS segment
+                   ON segment.id = passage.attachment_segment_id
+                 WHERE current.attachment_id = ?1
+                   AND current.extraction_id = ?2
+                 ORDER BY segment.ordinal, passage.ordinal
+                 LIMIT ?3 OFFSET ?4",
+            )
+            .map_err(ResearchError::from_sqlite)?;
+        let rows = statement
+            .query_map(
+                params![id, extraction_id, query_limit, query_offset],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(ResearchError::from_sqlite)?;
+        let mut ids = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(ResearchError::from_sqlite)?;
+        let has_more = ids.len() > limit;
+        ids.truncate(limit);
+        let passages = self.resolve_current_passages(ids)?;
+        Ok((passages, has_more))
     }
 
     fn resolve_current_passages(
