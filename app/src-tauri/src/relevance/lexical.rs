@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
 use crate::database::search::{
     candidate_limit, diversify_ranked, normalize_for_search, parse_lexical_query,
-    rank_lexical_documents, short_grams_for_search, LexicalDocument, LexicalSearchMode,
-    RankedLexicalDocument, SearchDiversityKey, SearchEvidenceKind, SearchField, FTS_BM25_WEIGHTS,
+    rank_lexical_documents, short_grams_for_search, trigram_candidate_limit, LexicalDocument,
+    LexicalSearchMode, RankedLexicalDocument, SearchDiversityKey, SearchEvidenceKind, SearchField,
+    FTS_BM25_WEIGHTS,
 };
 use crate::database::{
     Database, DatabaseClient, DatabasePaths, LexicalBenchmarkAttachmentWrite, SearchPassagesInput,
@@ -171,7 +172,8 @@ pub(crate) fn fixture_candidate_ranks(
             .map_err(|error| error.to_string())?;
     }
 
-    let limit = candidate_limit(u32::try_from(result_limit).unwrap_or(u32::MAX));
+    let result_limit = u32::try_from(result_limit).unwrap_or(u32::MAX);
+    let limit = candidate_limit(result_limit);
     let mut candidates = BTreeMap::new();
     if let Some(word_query) = query.word_match_query() {
         install_fixture_ranks(
@@ -188,7 +190,7 @@ pub(crate) fn fixture_candidate_ranks(
             &connection,
             "fixture_trigram",
             &trigram_query,
-            limit,
+            trigram_candidate_limit(result_limit),
             &mut candidates,
             1,
         )?;
@@ -218,7 +220,8 @@ fn install_fixture_ranks(
         "SELECT rowid
          FROM {index}
          WHERE {index} MATCH ?1
-         ORDER BY bm25({index}, {FTS_BM25_WEIGHTS})
+           AND {index}.rank MATCH 'bm25({FTS_BM25_WEIGHTS})'
+         ORDER BY {index}.rank
          LIMIT ?2"
     );
     let mut statement = connection

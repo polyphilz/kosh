@@ -42,12 +42,14 @@ merged.
 
 ## Upgrade and citation evidence
 
-`src-tauri/src/database/fixtures/v16-profile/` is a reviewed, hashed SQLite
-pair containing authored text, immutable revision, exact-search passage and
-URL-bearing source. The normal suite validates its manifest, upgrades a copy,
-proves exact search and citation provenance, closes the database, then repeats
-the proof after restart. Changing an already-shipped migration invalidates the
-fixture checksum and blocks startup rather than silently rewriting history.
+`src-tauri/src/database/fixtures/v16-profile/` is a reviewed, hashed plaintext
+SQL serialization containing authored text, immutable revision, exact-search
+passage, URL-bearing source, and historical refinery checksums. The normal
+suite validates its manifest, materializes a temporary database pair, upgrades
+it, proves exact search and citation provenance, closes the database, then
+repeats the proof after restart. Changing an already-shipped migration blocks
+the upgrade rather than silently rewriting history. No local database file is
+committed.
 
 The relevance suite has at least 25 realistic queries and checked model vectors.
 The release gate requires:

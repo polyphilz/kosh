@@ -16,6 +16,7 @@ const MAX_SEARCH_LIMIT: u32 = 100;
 const MAX_HIGHLIGHTS_PER_RESULT: usize = 32;
 const MIN_CANDIDATE_LIMIT: u32 = 64;
 const MAX_CANDIDATE_LIMIT: u32 = 512;
+const TRIGRAM_CANDIDATE_EXPANSION: u32 = 4;
 const RRF_RANK_CONSTANT: f64 = 60.0;
 const LEXICAL_RRF_WEIGHT: f64 = 1.0;
 const SEMANTIC_RRF_WEIGHT: f64 = 0.85;
@@ -33,6 +34,12 @@ pub(super) const FTS_VERSION: &str = "lexical-v3";
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
     result_limit
         .saturating_mul(16)
+        .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
+}
+
+pub(crate) fn trigram_candidate_limit(result_limit: u32) -> u32 {
+    result_limit
+        .saturating_mul(TRIGRAM_CANDIDATE_EXPANSION)
         .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
 }
 
@@ -342,7 +349,12 @@ pub(crate) fn search_passages_with_semantics(
         });
     };
     let candidate_limit = candidate_limit(input.limit);
-    let lexical = lexical_ranked_candidates(connection, &query, candidate_limit)?;
+    let lexical = lexical_ranked_candidates(
+        connection,
+        &query,
+        candidate_limit,
+        trigram_candidate_limit(input.limit),
+    )?;
     if input.mode == LexicalSearchMode::Exact {
         return Ok(SearchPassagesResponse {
             results: hydrate_ranked_passages(connection, lexical, input.limit as usize, false)?,
@@ -407,25 +419,27 @@ fn lexical_ranked_candidates(
     connection: &Connection,
     query: &ParsedLexicalQuery,
     limit: u32,
+    trigram_limit: u32,
 ) -> Result<Vec<RankedLexicalDocument>> {
     let mut ranks = HashMap::<String, CandidateRanks>::new();
-    let mut word_candidates_saturated = false;
     if let Some(word_query) = query.word_match_query() {
-        let word_candidates = query_fts_index(connection, "passage_fts_word", &word_query, limit)?;
-        word_candidates_saturated = word_candidates.len() == limit as usize;
-        install_ranks(&mut ranks, word_candidates, CandidateIndex::Word);
+        install_ranks(
+            &mut ranks,
+            query_fts_index(connection, "passage_fts_word", &word_query, limit)?,
+            CandidateIndex::Word,
+        );
     }
-    // Exact token matches dominate substring fallbacks. Once the word index has
-    // filled the bounded reranking pool, a second broad trigram scan can only
-    // displace stronger evidence while materially increasing interactive cost.
-    if !word_candidates_saturated {
-        if let Some(trigram_query) = query.trigram_match_query() {
-            install_ranks(
-                &mut ranks,
-                query_fts_index(connection, "passage_fts_trigram", &trigram_query, limit)?,
-                CandidateIndex::Trigram,
-            );
-        }
+    if let Some(trigram_query) = query.trigram_match_query() {
+        install_ranks(
+            &mut ranks,
+            query_fts_index(
+                connection,
+                "passage_fts_trigram",
+                &trigram_query,
+                trigram_limit,
+            )?,
+            CandidateIndex::Trigram,
+        );
     }
     if let Some(short_query) = query.short_match_query() {
         install_ranks(
@@ -1236,7 +1250,8 @@ fn query_fts_index(
          JOIN passage_search_document AS document
            ON document.rowid = {index}.rowid
          WHERE {index} MATCH ?1
-         ORDER BY bm25({index}, {FTS_BM25_WEIGHTS}),
+           AND {index}.rank MATCH 'bm25({FTS_BM25_WEIGHTS})'
+         ORDER BY {index}.rank,
                   document.updated_at DESC,
                   document.passage_id
          LIMIT ?2"
@@ -2089,6 +2104,66 @@ mod tests {
                 .expect("restored search")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn saturated_word_candidates_cannot_hide_a_qualifying_substring_result() {
+        let root = tempfile::tempdir().expect("temporary saturated search library");
+        let database =
+            Database::initialize(DatabasePaths::new(root.path())).expect("search database");
+        let client = database.client();
+
+        for index in 0..64_u64 {
+            client
+                .create_tidbit(CreateTidbitWrite {
+                    input: TidbitDraft {
+                        title: None,
+                        body_markdown: format!("apple-only decoy {index}"),
+                        sources: Vec::new(),
+                    },
+                    now_ms: i64::try_from(index).expect("bounded timestamp"),
+                    tidbit_id: format!("019f547b-6200-7000-8000-{:012x}", index * 2 + 1),
+                    revision_id: format!("019f547b-6200-7000-8000-{:012x}", index * 2 + 2),
+                    source_ids: Vec::new(),
+                })
+                .expect("create word-only decoy");
+        }
+        let target = client
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: None,
+                    body_markdown: "The pineapple and bloodorange pairing is the answer.".into(),
+                    sources: Vec::new(),
+                },
+                now_ms: 100,
+                tidbit_id: "019f547b-6200-7000-8000-000000001001".into(),
+                revision_id: "019f547b-6200-7000-8000-000000001002".into(),
+                source_ids: Vec::new(),
+            })
+            .expect("create substring target");
+
+        let results = client
+            .search_passages(SearchPassagesInput {
+                query: "apple orange".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 1,
+            })
+            .expect("search saturated word and trigram candidates");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0]
+                .citation
+                .tidbit
+                .as_ref()
+                .map(|citation| citation.id.as_str()),
+            Some(target.id.as_str())
+        );
+        assert_eq!(
+            results[0].matched_fields,
+            vec![SearchField::Body],
+            "both atoms must be proven from immutable authored text"
         );
     }
 

@@ -173,33 +173,36 @@ fn pushed_v16_profile_upgrades_without_checksum_divergence() {
 }
 
 #[test]
-fn checked_in_v16_profile_preserves_authored_search_and_citation_across_upgrade() {
-    const MAIN_BYTES: &[u8] = include_bytes!("fixtures/v16-profile/kosh.sqlite3");
-    const MEDIA_BYTES: &[u8] = include_bytes!("fixtures/v16-profile/media.sqlite3");
+fn serialized_v16_profile_preserves_authored_search_and_citation_across_upgrade() {
+    const MAIN_SQL: &str = include_str!("fixtures/v16-profile/main-v16.sql");
+    const MEDIA_SQL: &str = include_str!("fixtures/v16-profile/media-v2.sql");
     let manifest: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/v16-profile/manifest.json"))
             .expect("migration fixture manifest");
-    assert_eq!(manifest["schemaVersion"], 1);
+    assert_eq!(manifest["schemaVersion"], 2);
+    assert_eq!(manifest["serialization"], "sqlite-sql-dump");
     assert_eq!(manifest["mainMigrationHead"], 16);
     assert_eq!(manifest["mediaMigrationHead"], 2);
     assert_eq!(
-        sha256_hex(MAIN_BYTES),
-        manifest["mainSha256"].as_str().expect("main fixture hash")
+        sha256_hex(MAIN_SQL.as_bytes()),
+        manifest["mainSqlSha256"]
+            .as_str()
+            .expect("main SQL fixture hash")
     );
     assert_eq!(
-        sha256_hex(MEDIA_BYTES),
-        manifest["mediaSha256"]
+        sha256_hex(MEDIA_SQL.as_bytes()),
+        manifest["mediaSqlSha256"]
             .as_str()
-            .expect("media fixture hash")
+            .expect("media SQL fixture hash")
     );
 
     let pair = TestPair::new();
-    std::fs::write(&pair.paths.main, MAIN_BYTES).expect("copy main fixture");
-    std::fs::write(&pair.paths.media, MEDIA_BYTES).expect("copy media fixture");
+    materialize_sql_fixture(&pair.paths.main, MAIN_SQL);
+    materialize_sql_fixture(&pair.paths.media, MEDIA_SQL);
 
     for launch in 0..2 {
         let database =
-            Database::initialize(pair.paths.clone()).expect("upgrade checked V16 fixture");
+            Database::initialize(pair.paths.clone()).expect("upgrade serialized V16 fixture");
         assert_eq!(
             database
                 .client()
@@ -261,144 +264,21 @@ fn checked_in_v16_profile_preserves_authored_search_and_citation_across_upgrade(
     }
 }
 
-#[test]
-#[ignore = "writes the reviewed migration fixture; set KOSH_REGENERATE_MIGRATION_FIXTURE=1"]
-fn regenerate_checked_in_v16_profile() {
+fn materialize_sql_fixture(path: &std::path::Path, sql: &str) {
+    let connection = Connection::open(path).expect("open serialized migration fixture");
+    connection
+        .execute_batch(sql)
+        .expect("materialize serialized migration fixture");
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("enable fixture foreign keys");
     assert_eq!(
-        std::env::var("KOSH_REGENERATE_MIGRATION_FIXTURE").as_deref(),
-        Ok("1"),
-        "fixture regeneration requires an explicit opt-in"
-    );
-    let root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/database/fixtures/v16-profile");
-    std::fs::create_dir_all(&root).expect("migration fixture directory");
-    let paths = DatabasePaths::new(&root);
-    for path in [&paths.main, &paths.media] {
-        if path.exists() {
-            std::fs::remove_file(path).expect("replace reviewed fixture database");
-        }
-    }
-
-    let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("fresh fixture main writer");
-    main.pragma_update(None, "foreign_keys", "OFF")
-        .expect("disable foreign keys for grouped migration");
-    migrations::main_runner()
-        .set_target(Target::Version(16))
-        .run(&mut main)
-        .expect("fixture main schema through V16");
-    main.pragma_update(None, "foreign_keys", "ON")
-        .expect("restore foreign keys");
-    let mut media = connection::open_writer(&paths.media, DatabaseKind::Media, FileState::Fresh)
-        .expect("fresh fixture media writer");
-    migrations::run_media(&mut media).expect("fixture media schema");
-
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(
-            id, created_at, updated_at, current_revision_id
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000901',
-            1785201600000,
-            1785201600000,
-            '019f547b-6200-7000-8000-000000000902'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, title,
-            body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000902',
-            '019f547b-6200-7000-8000-000000000901',
-            1,
-            1785201600000,
-            'Checked migration evidence',
-            'The checked migration profile preserves exact amber evidence.',
-            X'6D4A8C55F25D2B1DE5EAF1EC9D1D5F3123EC130E5C9FC32D1721CC78EE931B97'
-         );
-         INSERT INTO source(
-            id, created_at, label, normalized_url
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000903',
-            1785201600000,
-            'Migration notebook',
-            'https://example.com/migration-v16'
-         );
-         INSERT INTO tidbit_revision_source(
-            tidbit_revision_id, source_id, sort_order
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000902',
-            '019f547b-6200-7000-8000-000000000903',
-            0
-         );
-         INSERT INTO passage(
-            id, tidbit_revision_id, owner_kind, ordinal, content,
-            content_hash, locator_kind, locator_json, created_at,
-            construction_version, heading_context_json
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000904',
-            '019f547b-6200-7000-8000-000000000902',
-            'AUTHOR',
-            0,
-            'The checked migration profile preserves exact amber evidence.',
-            X'6D4A8C55F25D2B1DE5EAF1EC9D1D5F3123EC130E5C9FC32D1721CC78EE931B97',
-            'MARKDOWN_BLOCKS',
-            '{\"start\":0,\"end\":0}',
-            1785201600000,
-            'markdown-blocks-v2',
-            '[]'
-         );
-         INSERT INTO active_passage(passage_id, tidbit_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000904',
-            '019f547b-6200-7000-8000-000000000901'
-         );
-         COMMIT;",
-    )
-    .expect("authored fixture data");
-    main.execute(
-        "UPDATE refinery_schema_history SET applied_on = '2026-07-29T00:00:00Z'",
-        [],
-    )
-    .expect("stable main migration timestamps");
-    media
-        .execute(
-            "UPDATE refinery_schema_history SET applied_on = '2026-07-29T00:00:00Z'",
-            [],
-        )
-        .expect("stable media migration timestamps");
-    assert_eq!(
-        main.query_row("PRAGMA foreign_key_check", [], |_| Ok(1))
-            .optional()
-            .expect("main fixture foreign key check"),
-        None
-    );
-    assert_eq!(
-        media
+        connection
             .query_row("PRAGMA foreign_key_check", [], |_| Ok(1))
             .optional()
-            .expect("media fixture foreign key check"),
+            .expect("serialized fixture foreign key check"),
         None
     );
-    main.pragma_update(None, "journal_mode", "DELETE")
-        .expect("compact main fixture");
-    media
-        .pragma_update(None, "journal_mode", "DELETE")
-        .expect("compact media fixture");
-    main.execute_batch("VACUUM;").expect("vacuum main fixture");
-    media
-        .execute_batch("VACUUM;")
-        .expect("vacuum media fixture");
-    drop(main);
-    drop(media);
-
-    for path in [&paths.main, &paths.media] {
-        let digest = Sha256::digest(std::fs::read(path).expect("fixture bytes"));
-        let digest = digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        eprintln!("{} {digest}", path.display());
-    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
