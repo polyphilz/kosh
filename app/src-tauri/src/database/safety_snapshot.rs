@@ -62,7 +62,7 @@ struct SafetySnapshotManifest {
     media: SnapshotFile,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SnapshotFile {
     filename: String,
@@ -614,6 +614,19 @@ fn read_owned_manifest(directory: &Path, expected_id: &str) -> Result<SafetySnap
             "snapshot manifest ownership does not match its directory".into(),
         ));
     }
+    if manifest.main.filename != "kosh.sqlite3" || manifest.media.filename != "media.sqlite3" {
+        return Err(DatabaseError::InvalidInput(
+            "snapshot manifest contains an unexpected database filename".into(),
+        ));
+    }
+    let actual_main = inspect_snapshot_file(&directory.join("kosh.sqlite3"), "kosh.sqlite3")?;
+    let actual_media = inspect_snapshot_file(&directory.join("media.sqlite3"), "media.sqlite3")?;
+    if manifest.main != actual_main || manifest.media != actual_media {
+        return Err(DatabaseError::Validation {
+            kind: "safety snapshot",
+            reason: format!("published snapshot {expected_id} no longer matches its manifest"),
+        });
+    }
     Ok(manifest)
 }
 
@@ -774,6 +787,54 @@ mod tests {
         let unchanged = owned_published_snapshots(&snapshot_root).expect("latest snapshot");
         assert_eq!(unchanged.len(), 1);
         assert_eq!(unchanged[0].1, newest_id);
+    }
+
+    #[test]
+    fn capacity_preflight_preserves_the_newest_valid_pair_instead_of_a_corrupt_newer_pair() {
+        let root = tempfile::tempdir().expect("snapshot corruption capacity");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        for _ in 0..MAX_SNAPSHOTS {
+            database
+                .client()
+                .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+                .expect("snapshot");
+        }
+        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let before = owned_published_snapshots(&snapshot_root).expect("owned snapshots");
+        let newest_valid_id = before[before.len() - 2].1.clone();
+        let corrupt_id = before.last().expect("newest snapshot").1.clone();
+        let corrupt_path = before
+            .last()
+            .expect("newest snapshot")
+            .2
+            .join("media.sqlite3");
+        let original_length = fs::metadata(&corrupt_path)
+            .expect("corrupt target metadata")
+            .len();
+        File::options()
+            .write(true)
+            .open(&corrupt_path)
+            .expect("corrupt target")
+            .set_len(original_length.saturating_sub(1))
+            .expect("truncate snapshot");
+
+        let valid = owned_published_snapshots(&snapshot_root).expect("valid snapshots");
+        assert_eq!(valid.len(), MAX_SNAPSHOTS - 1);
+        assert!(valid.iter().all(|(_, id, _)| id != &corrupt_id));
+
+        prepare_snapshot_capacity_with(&snapshot_root, 128, |_| {
+            let count = owned_published_snapshots(&snapshot_root)
+                .expect("remaining valid snapshots")
+                .len();
+            Ok(if count == 1 { 128 } else { 0 })
+        })
+        .expect("capacity recovered without trusting corrupt snapshot");
+
+        let after = owned_published_snapshots(&snapshot_root).expect("preserved valid snapshot");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].1, newest_valid_id);
+        assert!(snapshot_root.join(corrupt_id).is_dir());
     }
 
     #[test]

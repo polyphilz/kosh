@@ -62,7 +62,9 @@ The exact tests are deliberately distributed beside the state machines:
   main-plus-media copy budget with 64 MiB filesystem headroom, and checks free
   space. It may rotate additional old pairs when necessary but never deletes
   the newest recovery point merely to make room; insufficient storage then
-  fails before either new database copy is allocated.
+  fails before either new database copy is allocated. Retention re-hashes both
+  database files against the manifest, so a damaged newer pair cannot displace
+  the newest still-valid recovery point.
 
 Machine timings other than the 10k lexical budget are recorded rather than
 asserted across unlike developer hardware. A regression is investigated from
