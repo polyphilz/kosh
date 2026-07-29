@@ -97,11 +97,15 @@ jq -e \
   --arg data "$persistent_data" \
   --arg tidbit "$(jq -r '.persistent.receipt.canary.tidbitId' "$receipt")" \
   --arg revision "$(jq -r '.persistent.receipt.canary.revisionId' "$receipt")" \
+  --arg passage "$(jq -r '.persistent.receipt.canary.passageId' "$receipt")" \
   '
-    .schemaVersion == 1
+    .schemaVersion == 2
+    and (.citationBaselineAtHead | type) == "string"
+    and (.citationBaselineAtHead | length) > 0
     and .dataDir == $data
     and .canaryTidbitId == $tidbit
     and .canaryRevisionId == $revision
+    and .canaryPassageId == $passage
   ' \
   "$marker" >/dev/null || fail "the preserved-profile marker does not match the live receipt"
 

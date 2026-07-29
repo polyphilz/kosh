@@ -58,6 +58,9 @@ idempotently ensures its canary, atomically promotes the profile, and launches
 the promoted path again before marking it established. An interrupted
 bootstrap resumes only this gate-owned state; it never asks the operator to
 delete a database whose provenance is uncertain.
+The marker pins the canary's tidbit, revision, and passage IDs. Its one-time
+schema-v1 upgrade establishes the passage baseline from a verified live
+receipt without replacing or editing the preserved database profile.
 
 Normal slice verification uses `scripts/loop/runtime-gate.sh` with no flags.
 The script requires a clean worktree and writes an ignored, exact-commit

@@ -291,15 +291,48 @@ if [[ ! -f "$persistent_marker" ]]; then
     --arg data "$(cd "$persistent_data" && pwd -P)" \
     --arg tidbit "$(jq -r '.canary.tidbitId' "$persistent_receipt")" \
     --arg revision "$(jq -r '.canary.revisionId' "$persistent_receipt")" \
+    --arg passage "$(jq -r '.canary.passageId' "$persistent_receipt")" \
     '{
-      schemaVersion: 1,
+      schemaVersion: 2,
       establishedAtHead: $head,
+      citationBaselineAtHead: $head,
       dataDir: $data,
       canaryTidbitId: $tidbit,
-      canaryRevisionId: $revision
+      canaryRevisionId: $revision,
+      canaryPassageId: $passage
     }' >"$marker_temporary"
   mv "$marker_temporary" "$persistent_marker"
   unlink "$bootstrap_owner"
+elif jq -e '.schemaVersion == 1' "$persistent_marker" >/dev/null; then
+  marker_data="$(cd "$persistent_data" && pwd -P)"
+  marker_tidbit="$(jq -r '.canary.tidbitId' "$persistent_receipt")"
+  marker_revision="$(jq -r '.canary.revisionId' "$persistent_receipt")"
+  marker_passage="$(jq -r '.canary.passageId' "$persistent_receipt")"
+  jq -e \
+    --arg data "$marker_data" \
+    --arg tidbit "$marker_tidbit" \
+    --arg revision "$marker_revision" \
+    '
+      .schemaVersion == 1
+      and (.establishedAtHead | type) == "string"
+      and (.establishedAtHead | length) > 0
+      and .dataDir == $data
+      and .canaryTidbitId == $tidbit
+      and .canaryRevisionId == $revision
+    ' \
+    "$persistent_marker" >/dev/null ||
+    fail "the legacy preserved-profile marker does not match the live receipt"
+  marker_temporary="$persistent_marker.$$.tmp"
+  jq \
+    --arg baseline "$head_sha" \
+    --arg passage "$marker_passage" \
+    '
+      .schemaVersion = 2
+      | .citationBaselineAtHead = $baseline
+      | .canaryPassageId = $passage
+    ' \
+    "$persistent_marker" >"$marker_temporary"
+  mv "$marker_temporary" "$persistent_marker"
 fi
 
 temporary="$aggregate_receipt.$$.tmp"

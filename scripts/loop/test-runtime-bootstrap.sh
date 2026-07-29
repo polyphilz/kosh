@@ -137,6 +137,10 @@ run_gate() {
   KOSH_LOOP_STATE_ROOT="$1" "$runtime_gate" --bootstrap-persistent
 }
 
+run_normal_gate() {
+  KOSH_LOOP_STATE_ROOT="$1" "$runtime_gate"
+}
+
 stage_loop="$temp_dir/stage-interruption"
 export FAKE_FAIL_STAGE_MARKER="$temp_dir/failed-stage-once"
 if run_gate "$stage_loop" >"$temp_dir/stage-first.log" 2>&1; then
@@ -181,5 +185,28 @@ run_gate "$promoted_loop" >/dev/null
   { echo "promoted-profile retry was not established" >&2; exit 1; }
 [[ ! -e "$promoted_loop/progressive-profile/bootstrap-owned.json" ]] ||
   { echo "successful promoted retry retained its owner record" >&2; exit 1; }
+
+promoted_marker="$promoted_loop/progressive-profile/established.json"
+jq -e \
+  '
+    .schemaVersion == 2
+    and (.canaryPassageId | type) == "string"
+    and (.canaryPassageId | length) > 0
+  ' \
+  "$promoted_marker" >/dev/null ||
+  { echo "new bootstrap did not preserve the canary passage" >&2; exit 1; }
+jq \
+  'del(.citationBaselineAtHead, .canaryPassageId) | .schemaVersion = 1' \
+  "$promoted_marker" >"$promoted_marker.legacy"
+mv "$promoted_marker.legacy" "$promoted_marker"
+run_normal_gate "$promoted_loop" >/dev/null
+jq -e \
+  '
+    .schemaVersion == 2
+    and (.citationBaselineAtHead | type) == "string"
+    and (.canaryPassageId | type) == "string"
+  ' \
+  "$promoted_marker" >/dev/null ||
+  { echo "legacy marker did not upgrade without replacing its profile" >&2; exit 1; }
 
 echo "runtime bootstrap recovery tests passed"

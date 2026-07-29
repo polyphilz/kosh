@@ -105,11 +105,13 @@ persistent="$(
 jq -n \
   --arg data "$persistent_data" \
   '{
-    schemaVersion: 1,
+    schemaVersion: 2,
     establishedAtHead: "previous",
+    citationBaselineAtHead: "previous",
     dataDir: $data,
     canaryTidbitId: "00000000-0000-7000-8000-000000000011",
-    canaryRevisionId: "00000000-0000-7000-8000-000000000012"
+    canaryRevisionId: "00000000-0000-7000-8000-000000000012",
+    canaryPassageId: "00000000-0000-7000-8000-000000000013"
   }' >"$marker"
 
 write_aggregate() {
@@ -194,6 +196,14 @@ write_aggregate local "$head_sha" false present "$persistent"
 KOSH_PROGRESSIVE_PROFILE_ROOT="$profile_root" \
   "$verifier" "$head_sha" "$receipt" >/dev/null
 
+jq '.canaryPassageId = "00000000-0000-7000-8000-000000000099"' \
+  "$marker" >"$marker.invalid"
+mv "$marker.invalid" "$marker"
+expect_blocked "preserved marker silently retargets the canary passage"
+
+jq '.canaryPassageId = "00000000-0000-7000-8000-000000000013"' \
+  "$marker" >"$marker.valid"
+mv "$marker.valid" "$marker"
 jq '.canaryRevisionId = "00000000-0000-7000-8000-000000000099"' \
   "$marker" >"$marker.invalid"
 mv "$marker.invalid" "$marker"
