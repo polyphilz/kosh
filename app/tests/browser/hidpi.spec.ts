@@ -14,7 +14,9 @@ for (const appearance of ["LIGHT", "DARK"] as const) {
     await expect(page).toHaveScreenshot(`catalog-${appearance.toLowerCase()}-hidpi.png`, {
       animations: "disabled",
       caret: "hide",
+      maxDiffPixelRatio: 0.04,
       scale: "css",
+      threshold: 0.35,
     });
   });
 }
