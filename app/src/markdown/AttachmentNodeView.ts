@@ -113,7 +113,7 @@ export function attachmentNodeView(
   };
 
   const installStatus = (record: GenericAttachmentStatusRecord) => {
-    if (destroyed) return;
+    if (destroyed || record.attachmentId !== node.attrs.attachmentId) return;
     const position = getPos();
     if (position === undefined) return;
     view.dispatch(

@@ -6,6 +6,7 @@ import { NodeSelection, TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
 import type {
   GenericAttachmentRecord,
+  GenericAttachmentStatusRecord,
   ImageRecord,
   PdfRecord,
   SelectedAttachmentRecord,
@@ -644,8 +645,12 @@ it("inserts, captions, opens, reveals, and replaces a generic attachment", async
     "BINARY",
   );
   let resolveReplacement!: (record: SelectedAttachmentRecord | null) => void;
+  let resolveFirstStatus!: (record: GenericAttachmentStatusRecord) => void;
   const replacement = new Promise<SelectedAttachmentRecord | null>((resolve) => {
     resolveReplacement = resolve;
+  });
+  const firstStatus = new Promise<GenericAttachmentStatusRecord>((resolve) => {
+    resolveFirstStatus = resolve;
   });
   const pickAttachment = vi
     .fn()
@@ -660,6 +665,7 @@ it("inserts, captions, opens, reveals, and replaces a generic attachment", async
       ariaLabel="Body"
       attachmentStatus={async (attachmentId) => {
         const record = attachmentId === first.id ? first : second;
+        if (attachmentId === first.id) return firstStatus;
         return {
           attachmentId,
           byteLength: record.byteLength,
@@ -702,6 +708,20 @@ it("inserts, captions, opens, reveals, and replaces a generic attachment", async
   await result.findByText("archive.zip");
   expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
   expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${second.id}}}`);
+  await act(async () => {
+    resolveFirstStatus({
+      attachmentId: first.id,
+      byteLength: first.byteLength,
+      displayFilename: "stale-notes.md",
+      extractedLineCount: first.extractedLineCount,
+      extractionError: first.extractionError,
+      extractionStatus: first.extractionStatus,
+      kind: first.kind,
+      mediaType: first.mediaType,
+    });
+  });
+  expect(result.queryByText("stale-notes.md")).not.toBeInTheDocument();
+  expect(result.getByText("archive.zip")).toBeVisible();
 });
 
 it("disables PDF extraction retries while the editor is disabled", async () => {
