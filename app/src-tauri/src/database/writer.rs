@@ -329,7 +329,8 @@ pub(super) enum WriterMessage {
 }
 
 pub(super) enum MediaMaintenanceSnapshotState {
-    Pending,
+    PendingAttachments,
+    PendingCandidates,
     NotNeeded,
     Verified(SafetySnapshotReport),
 }
@@ -631,7 +632,7 @@ impl DatabaseClient {
         self.sender
             .send(WriterMessage::MaintainMediaWithSafetySnapshot {
                 scan: MediaMaintenanceScan::new(now_ms, limits)?,
-                snapshot: MediaMaintenanceSnapshotState::Pending,
+                snapshot: MediaMaintenanceSnapshotState::PendingAttachments,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;

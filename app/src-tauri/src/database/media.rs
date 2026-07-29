@@ -619,7 +619,7 @@ pub(crate) enum MediaMaintenanceScanStep {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MediaReclamationPreflight {
+pub(crate) enum MediaBlobReclamationPreflight {
     Continue,
     Eligible,
     NotNeeded,
@@ -4094,15 +4094,9 @@ fn validate_draft_capacity(
     Ok(())
 }
 
-pub(crate) fn media_reclamation_preflight(
-    main: &mut Connection,
-    media: &Connection,
-    now_ms: i64,
-    limits: MediaLimits,
-) -> Result<MediaReclamationPreflight> {
+pub(crate) fn attachment_reclamation_is_eligible(main: &Connection, now_ms: i64) -> Result<bool> {
     validate_timestamp(now_ms, "nowMs")?;
-    let limits = limits.validate()?;
-    let attachment_is_eligible: bool = main.query_row(
+    main.query_row(
         "SELECT EXISTS(
             SELECT 1
             FROM attachment
@@ -4140,11 +4134,18 @@ pub(crate) fn media_reclamation_preflight(
         )",
         params![now_ms],
         |row| row.get(0),
-    )?;
-    if attachment_is_eligible {
-        return Ok(MediaReclamationPreflight::Eligible);
-    }
+    )
+    .map_err(Into::into)
+}
 
+pub(crate) fn media_blob_reclamation_preflight(
+    main: &mut Connection,
+    media: &Connection,
+    now_ms: i64,
+    limits: MediaLimits,
+) -> Result<MediaBlobReclamationPreflight> {
+    validate_timestamp(now_ms, "nowMs")?;
+    let limits = limits.validate()?;
     let cutoff = now_ms.saturating_sub(limits.orphan_grace_period_ms);
     let candidates = main
         .prepare(
@@ -4232,7 +4233,7 @@ pub(crate) fn media_reclamation_preflight(
             |row| row.get(0),
         )?;
         if blob_exists {
-            return Ok(MediaReclamationPreflight::Eligible);
+            return Ok(MediaBlobReclamationPreflight::Eligible);
         }
         main.execute(
             "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
@@ -4240,9 +4241,9 @@ pub(crate) fn media_reclamation_preflight(
         )?;
     }
     Ok(if batch_is_full {
-        MediaReclamationPreflight::Continue
+        MediaBlobReclamationPreflight::Continue
     } else {
-        MediaReclamationPreflight::NotNeeded
+        MediaBlobReclamationPreflight::NotNeeded
     })
 }
 

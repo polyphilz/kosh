@@ -14,13 +14,14 @@ use tempfile::TempDir;
 use super::{
     drafts::SaveDraftWrite,
     media::{
-        media_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
+        media_blob_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
         split_pdf_page_passages, validate_filename, AttachmentDisplayRole, CanonicalImage,
         ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata, IngestAttachmentWrite,
-        IngestGenericAttachmentWrite, IngestImageWrite, IngestPdfWrite, MediaByteRange,
-        MediaRangeRequest, MediaReclamationPreflight, PdfExtractionStatus, PdfPageExtraction,
-        PdfPageSource, StagedAttachment, TextFileSegment, MEDIA_RECONCILE_BATCH_SIZE,
-        PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS, PDF_RECOVERY_BATCH_SIZE,
+        IngestGenericAttachmentWrite, IngestImageWrite, IngestPdfWrite,
+        MediaBlobReclamationPreflight, MediaByteRange, MediaRangeRequest, PdfExtractionStatus,
+        PdfPageExtraction, PdfPageSource, StagedAttachment, TextFileSegment,
+        MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
+        PDF_RECOVERY_BATCH_SIZE,
     },
     research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
@@ -2477,9 +2478,9 @@ fn reclamation_preflight_cleans_stale_candidate_windows_incrementally() {
         .expect("insert eligible orphan blob");
 
     assert_eq!(
-        media_reclamation_preflight(&mut main, &media, 10, limits)
+        media_blob_reclamation_preflight(&mut main, &media, 10, limits)
             .expect("clean bounded stale candidate window"),
-        MediaReclamationPreflight::Continue
+        MediaBlobReclamationPreflight::Continue
     );
     assert_eq!(
         main.query_row(
@@ -2491,8 +2492,9 @@ fn reclamation_preflight_cleans_stale_candidate_windows_incrementally() {
         1
     );
     assert_eq!(
-        media_reclamation_preflight(&mut main, &media, 10, limits).expect("resume after yielding"),
-        MediaReclamationPreflight::Eligible
+        media_blob_reclamation_preflight(&mut main, &media, 10, limits)
+            .expect("resume after yielding"),
+        MediaBlobReclamationPreflight::Eligible
     );
 }
 
