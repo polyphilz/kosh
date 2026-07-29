@@ -28,6 +28,7 @@ jobs:
         run: |
           scripts/loop/test-gate.sh
           scripts/loop/test-runtime-gate.sh
+          scripts/loop/test-runtime-bootstrap.sh
 
   frontend:
     name: frontend

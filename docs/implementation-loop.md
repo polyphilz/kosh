@@ -49,6 +49,12 @@ workstation, initialize it exactly once with:
 scripts/loop/runtime-gate.sh --bootstrap-persistent
 ```
 
+Bootstrap is recoverable: the gate first establishes an owned staging profile,
+idempotently ensures its canary, atomically promotes the profile, and launches
+the promoted path again before marking it established. An interrupted
+bootstrap resumes only this gate-owned state; it never asks the operator to
+delete a database whose provenance is uncertain.
+
 Normal slice verification uses `scripts/loop/runtime-gate.sh` with no flags.
 The script requires a clean worktree and writes an ignored, exact-commit
 receipt to `.kosh-loop/runtime-gate.json`. A later commit invalidates that

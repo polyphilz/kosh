@@ -76,7 +76,7 @@ restart="$(
 )"
 persistent="$(
   launch_receipt \
-    absent false true "$persistent_data" \
+    present true false "$persistent_data" \
     00000000-0000-7000-8000-000000000011 \
     00000000-0000-7000-8000-000000000012 \
     00000000-0000-7000-8000-000000000013
@@ -129,36 +129,29 @@ expect_blocked() {
   fi
 }
 
-write_aggregate local "$head_sha" true absent "$persistent"
+write_aggregate local "$head_sha" true present "$persistent"
 KOSH_PROGRESSIVE_PROFILE_ROOT="$profile_root" \
   "$verifier" "$head_sha" "$receipt" >/dev/null
 
-write_aggregate local ffffffffffffffffffffffffffffffffffffffff true absent "$persistent"
+write_aggregate local ffffffffffffffffffffffffffffffffffffffff true present "$persistent"
 expect_blocked "receipt names another head"
 
-write_aggregate ci "$head_sha" true absent "$persistent"
+write_aggregate ci "$head_sha" true present "$persistent"
 expect_blocked "CI-only receipt used for a local merge"
 
 bad_restart="$(jq '.canary.revisionId = "00000000-0000-7000-8000-000000000099"' <<<"$restart")"
 original_restart="$restart"
 restart="$bad_restart"
-write_aggregate local "$head_sha" true absent "$persistent"
+write_aggregate local "$head_sha" true present "$persistent"
 expect_blocked "fresh restart silently retargets the citation"
 restart="$original_restart"
 
 rm "$persistent_data/media.sqlite3"
-write_aggregate local "$head_sha" true absent "$persistent"
+write_aggregate local "$head_sha" true present "$persistent"
 expect_blocked "preserved database pair is incomplete"
 : >"$persistent_data/media.sqlite3"
 
-present="$(
-  launch_receipt \
-    present true false "$persistent_data" \
-    00000000-0000-7000-8000-000000000011 \
-    00000000-0000-7000-8000-000000000012 \
-    00000000-0000-7000-8000-000000000013
-)"
-write_aggregate local "$head_sha" false present "$present"
+write_aggregate local "$head_sha" false present "$persistent"
 KOSH_PROGRESSIVE_PROFILE_ROOT="$profile_root" \
   "$verifier" "$head_sha" "$receipt" >/dev/null
 

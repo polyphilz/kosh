@@ -13,8 +13,9 @@ fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 expected_head="$1"
-receipt="${2:-$repo_root/.kosh-loop/runtime-gate.json}"
-profile_root="${KOSH_PROGRESSIVE_PROFILE_ROOT:-$repo_root/.kosh-loop/progressive-profile}"
+loop_root="${KOSH_LOOP_STATE_ROOT:-$repo_root/.kosh-loop}"
+receipt="${2:-$loop_root/runtime-gate.json}"
+profile_root="${KOSH_PROGRESSIVE_PROFILE_ROOT:-$loop_root/progressive-profile}"
 marker="$profile_root/established.json"
 
 [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] ||
@@ -46,13 +47,11 @@ jq -e \
     and .fresh.seed.canary.passageId == .fresh.restart.canary.passageId
     and .persistent.receipt.schemaVersion == 1
     and .persistent.receipt.headSha == $head
-    and .persistent.receipt.canaryPreexisting == (.persistent.expectation == "present")
-    and .persistent.receipt.canaryCreated == (.persistent.expectation == "absent")
-    and (
-      (.persistent.bootstrap == true and .persistent.expectation == "absent")
-      or
-      (.persistent.bootstrap == false and .persistent.expectation == "present")
-    )
+    and .persistent.expectation == "present"
+    and .persistent.receipt.expectation == "present"
+    and .persistent.receipt.canaryPreexisting == true
+    and .persistent.receipt.canaryCreated == false
+    and (.persistent.bootstrap | type) == "boolean"
     and (.fresh.seed.windows | sort) == ["main", "quick-add"]
     and (.fresh.restart.windows | sort) == ["main", "quick-add"]
     and (.persistent.receipt.windows | sort) == ["main", "quick-add"]

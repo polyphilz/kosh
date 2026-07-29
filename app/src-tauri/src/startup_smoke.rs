@@ -29,6 +29,7 @@ const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operab
 enum CanaryExpectation {
     Absent,
     Present,
+    Ensure,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,9 +74,10 @@ pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bo
     let expectation = match required_environment_text(EXPECT_ENV)?.as_str() {
         "absent" => CanaryExpectation::Absent,
         "present" => CanaryExpectation::Present,
+        "ensure" => CanaryExpectation::Ensure,
         _ => {
             return Err(invalid(
-                "the startup smoke expectation must be absent or present",
+                "the startup smoke expectation must be absent, present, or ensure",
             ));
         }
     };
@@ -93,10 +95,15 @@ pub(crate) fn run_if_requested(app: &App, state: &RuntimeState) -> io::Result<bo
                 "the startup smoke canary did not survive the previous launch",
             ));
         }
+        (CanaryExpectation::Ensure, _) => {}
         _ => {}
     }
 
-    let created = if expectation == CanaryExpectation::Absent {
+    let created = if existing.is_none()
+        && matches!(
+            expectation,
+            CanaryExpectation::Absent | CanaryExpectation::Ensure
+        ) {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| invalid(format!("the system clock is invalid: {error}")))?

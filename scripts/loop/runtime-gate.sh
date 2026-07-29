@@ -30,24 +30,30 @@ elif (($# > 1)); then
   exit 2
 fi
 
-[[ "$(uname -s)" == "Darwin" ]] || fail "real Tauri startup verification requires macOS"
-command -v cargo >/dev/null 2>&1 || fail "cargo is unavailable"
+platform="${KOSH_RUNTIME_GATE_PLATFORM:-$(uname -s)}"
+cargo_bin="${CARGO_BIN:-cargo}"
+git_bin="${GIT_BIN:-git}"
+[[ "$platform" == "Darwin" ]] || fail "real Tauri startup verification requires macOS"
+command -v "$cargo_bin" >/dev/null 2>&1 || fail "cargo is unavailable"
+command -v "$git_bin" >/dev/null 2>&1 || fail "git is unavailable"
 command -v jq >/dev/null 2>&1 || fail "jq is unavailable"
 
-repo_root="$(git rev-parse --show-toplevel)"
-head_sha="$(git -C "$repo_root" rev-parse HEAD)"
+repo_root="$("$git_bin" rev-parse --show-toplevel)"
+head_sha="$("$git_bin" -C "$repo_root" rev-parse HEAD)"
 [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || fail "could not resolve the current Git head"
-[[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=normal)" ]] ||
+[[ -z "$("$git_bin" -C "$repo_root" status --porcelain --untracked-files=normal)" ]] ||
   fail "tracked and untracked source changes must be committed before runtime verification"
-[[ ! -L "$repo_root/.kosh-loop" ]] ||
+loop_root="${KOSH_LOOP_STATE_ROOT:-$repo_root/.kosh-loop}"
+[[ "$loop_root" == /* ]] || fail "the loop-state root must be absolute"
+[[ ! -L "$loop_root" ]] ||
   fail "the ignored loop-state root must not be a symlink"
 
-runtime_root="$repo_root/.kosh-loop/runtime"
+runtime_root="$loop_root/runtime"
 launch_root="$runtime_root/launches/$head_sha"
-persistent_root="$repo_root/.kosh-loop/progressive-profile"
+persistent_root="$loop_root/progressive-profile"
 persistent_data="$persistent_root/data"
 persistent_marker="$persistent_root/established.json"
-aggregate_receipt="$repo_root/.kosh-loop/runtime-gate.json"
+aggregate_receipt="$loop_root/runtime-gate.json"
 [[ ! -L "$runtime_root" && ! -L "$persistent_root" && ! -L "$persistent_data" ]] ||
   fail "runtime gate directories must not be symlinks"
 [[ ! -L "$persistent_marker" ]] ||
@@ -80,7 +86,7 @@ run_launch() {
     KOSH_STARTUP_SMOKE_RECEIPT="$receipt" \
     KOSH_STARTUP_SMOKE_HEAD="$head_sha" \
     KOSH_STARTUP_SMOKE_EXPECT="$expectation" \
-    cargo run \
+    "$cargo_bin" run \
       --quiet \
       --locked \
       --manifest-path "$repo_root/app/src-tauri/Cargo.toml" \
@@ -114,6 +120,15 @@ run_launch() {
         ($expectation == "absent" and .canaryPreexisting == false and .canaryCreated == true)
         or
         ($expectation == "present" and .canaryPreexisting == true and .canaryCreated == false)
+        or
+        (
+          $expectation == "ensure"
+          and (
+            (.canaryPreexisting == false and .canaryCreated == true)
+            or
+            (.canaryPreexisting == true and .canaryCreated == false)
+          )
+        )
       )
     ' \
     "$receipt" >/dev/null || fail "the real Tauri $expectation receipt is invalid"
@@ -142,13 +157,53 @@ if [[ "$mode" == "ci" ]]; then
   exit 0
 fi
 
-persistent_expectation="present"
 if [[ ! -f "$persistent_marker" ]]; then
   [[ "$bootstrap_persistent" == "true" ]] ||
     fail "the preserved profile is not established; run once with --bootstrap-persistent"
-  [[ ! -e "$persistent_data" ]] ||
-    fail "unmarked preserved-profile data already exists and will not be overwritten"
-  persistent_expectation="absent"
+  bootstrap_staging="$persistent_root/bootstrap-incomplete"
+  bootstrap_owner="$persistent_root/bootstrap-owned.json"
+  [[ ! -L "$bootstrap_staging" && ! -L "$bootstrap_owner" ]] ||
+    fail "bootstrap recovery state must not use symlinks"
+  if [[ ! -f "$bootstrap_owner" ]]; then
+    [[ ! -e "$bootstrap_staging" && ! -e "$persistent_data" ]] ||
+      fail "unowned preserved-profile bootstrap data already exists"
+    owner_temporary="$bootstrap_owner.$$.tmp"
+    jq -n \
+      --arg head "$head_sha" \
+      --arg staging "$bootstrap_staging" \
+      --arg data "$persistent_data" \
+      '{
+        schemaVersion: 1,
+        establishedAtHead: $head,
+        stagingDir: $staging,
+        dataDir: $data
+      }' >"$owner_temporary"
+    mv "$owner_temporary" "$bootstrap_owner"
+  fi
+  [[ -f "$bootstrap_owner" && ! -L "$bootstrap_owner" ]] ||
+    fail "the preserved-profile bootstrap owner is invalid"
+  jq -e \
+    --arg staging "$bootstrap_staging" \
+    --arg data "$persistent_data" \
+    '
+      .schemaVersion == 1
+      and .stagingDir == $staging
+      and .dataDir == $data
+    ' \
+    "$bootstrap_owner" >/dev/null ||
+    fail "the preserved-profile bootstrap owner does not match this repository"
+  [[ ! ( -e "$bootstrap_staging" && -e "$persistent_data" ) ]] ||
+    fail "both staged and promoted bootstrap profiles exist"
+
+  if [[ ! -e "$persistent_data" ]]; then
+    bootstrap_receipt="$launch_root/persistent-bootstrap.json"
+    run_launch \
+      "$bootstrap_staging" \
+      "$bootstrap_receipt" \
+      "ensure" \
+      "$launch_root/persistent-bootstrap.log"
+    mv "$bootstrap_staging" "$persistent_data"
+  fi
 elif [[ "$bootstrap_persistent" == "true" ]]; then
   fail "the preserved profile is already established; bootstrap cannot run again"
 fi
@@ -157,10 +212,10 @@ persistent_receipt="$launch_root/persistent.json"
 run_launch \
   "$persistent_data" \
   "$persistent_receipt" \
-  "$persistent_expectation" \
+  "present" \
   "$launch_root/persistent.log"
 
-if [[ "$persistent_expectation" == "absent" ]]; then
+if [[ ! -f "$persistent_marker" ]]; then
   marker_temporary="$persistent_marker.$$.tmp"
   jq -n \
     --arg head "$head_sha" \
@@ -175,12 +230,12 @@ if [[ "$persistent_expectation" == "absent" ]]; then
       canaryRevisionId: $revision
     }' >"$marker_temporary"
   mv "$marker_temporary" "$persistent_marker"
+  unlink "$bootstrap_owner"
 fi
 
 temporary="$aggregate_receipt.$$.tmp"
 jq -n \
   --arg head "$head_sha" \
-  --arg expectation "$persistent_expectation" \
   --argjson bootstrap "$bootstrap_persistent" \
   --slurpfile seed "$fresh_seed_receipt" \
   --slurpfile restart "$fresh_restart_receipt" \
@@ -193,7 +248,7 @@ jq -n \
     fresh: {seed: $seed[0], restart: $restart[0]},
     persistent: {
       bootstrap: $bootstrap,
-      expectation: $expectation,
+      expectation: "present",
       receipt: $persistent[0]
     }
   }' >"$temporary"
