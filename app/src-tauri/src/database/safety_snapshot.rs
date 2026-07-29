@@ -33,6 +33,10 @@ impl SafetySnapshotReason {
             Self::MediaReclaim => "media-reclaim",
         }
     }
+
+    fn verifies_derived_media(self) -> bool {
+        matches!(self, Self::MediaReclaim)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -71,7 +75,7 @@ pub(super) fn create(
     paths: &DatabasePaths,
     reason: SafetySnapshotReason,
 ) -> Result<SafetySnapshotReport> {
-    verify_pair_connections(main, media)?;
+    verify_pair_connections(main, media, reason)?;
     let created_at_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| DatabaseError::InvalidInput("system time predates the Unix epoch".into()))?
@@ -119,7 +123,7 @@ fn create_in_staging(
     let snapshot_paths = DatabasePaths::new(staging);
     vacuum_into(main, &snapshot_paths.main)?;
     vacuum_into(media, &snapshot_paths.media)?;
-    verify_pair(&snapshot_paths)?;
+    verify_pair(&snapshot_paths, reason)?;
 
     let main_file = inspect_snapshot_file(&snapshot_paths.main, "kosh.sqlite3")?;
     let media_file = inspect_snapshot_file(&snapshot_paths.media, "media.sqlite3")?;
@@ -163,20 +167,28 @@ fn vacuum_into(connection: &mut Connection, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn verify_pair(paths: &DatabasePaths) -> Result<()> {
+fn verify_pair(paths: &DatabasePaths, reason: SafetySnapshotReason) -> Result<()> {
     let main = connection::open_read_only(&paths.main, DatabaseKind::Main)?;
     let media = connection::open_read_only(&paths.media, DatabaseKind::Media)?;
-    verify_pair_connections(&main, &media)
+    verify_pair_connections(&main, &media, reason)
 }
 
-fn verify_pair_connections(main: &Connection, media: &Connection) -> Result<()> {
+fn verify_pair_connections(
+    main: &Connection,
+    media: &Connection,
+    reason: SafetySnapshotReason,
+) -> Result<()> {
     validation::full_integrity_check_pair(main, media)?;
     validation::validate_foreign_keys(main, DatabaseKind::Main)?;
     validation::validate_foreign_keys(media, DatabaseKind::Media)?;
-    validate_attachment_blob_relationship(main, media)
+    validate_attachment_blob_relationship(main, media, reason.verifies_derived_media())
 }
 
-fn validate_attachment_blob_relationship(main: &Connection, media: &Connection) -> Result<()> {
+fn validate_attachment_blob_relationship(
+    main: &Connection,
+    media: &Connection,
+    verify_derived_media: bool,
+) -> Result<()> {
     if !table_exists(main, "attachment")? || !table_exists(media, "media_blob")? {
         return Ok(());
     }
@@ -225,7 +237,7 @@ fn validate_attachment_blob_relationship(main: &Connection, media: &Connection) 
             expected_bytes,
         )?;
     }
-    if table_exists(main, "attachment_image")? {
+    if verify_derived_media && table_exists(main, "attachment_image")? {
         let sql = format!(
             "SELECT attachment.id, image.preview_sha256, image.preview_byte_length
              FROM attachment_image AS image
@@ -737,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_creation_rejects_a_retained_image_with_a_corrupt_preview() {
+    fn media_reclaim_rejects_a_corrupt_preview_without_blocking_migration_snapshots() {
         let root = tempfile::tempdir().expect("corrupt image snapshot pair");
         let paths = DatabasePaths::new(root.path());
         let database = crate::database::Database::initialize(paths.clone()).expect("database");
@@ -810,6 +822,25 @@ mod tests {
             .expect_err("corrupt preview must fail snapshot verification");
 
         assert!(matches!(error, DatabaseError::Validation { .. }));
+
+        database.shutdown().expect("shutdown database");
+        drop(database);
+        let mut main =
+            connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+                .expect("main writer");
+        let mut media =
+            connection::open_writer(&paths.media, DatabaseKind::Media, FileState::Existing)
+                .expect("media writer");
+        let report = create(
+            &mut main,
+            &mut media,
+            &paths,
+            SafetySnapshotReason::Migration,
+        )
+        .expect("derived preview corruption must not block migration snapshot");
+
+        assert_eq!(report.reason, SafetySnapshotReason::Migration);
+        assert!(report.directory.join("manifest.json").is_file());
     }
 
     #[test]
