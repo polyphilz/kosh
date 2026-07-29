@@ -1,5 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 
 use crate::database::{CitationLocator, CitationResolution};
@@ -397,88 +398,34 @@ fn text_outside_ranges(
 
 fn markdown_code_ranges(markdown: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
-    let mut fence: Option<(u8, usize, usize)> = None;
-    let mut offset = 0;
-    for line in markdown.split_inclusive('\n') {
-        let line_end = offset + line.len();
-        let trimmed = line.trim_start_matches(' ');
-        let indentation = line.len() - trimmed.len();
-        let marker = fence_marker(trimmed);
-        match fence {
-            Some((character, minimum, start)) => {
-                if marker
-                    .is_some_and(|(candidate, count)| candidate == character && count >= minimum)
-                {
-                    ranges.push(start..line_end);
-                    fence = None;
+    let mut code_block_start = None;
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_MATH);
+    let parser = Parser::new_ext(markdown, options).into_offset_iter();
+    for (event, range) in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                code_block_start = Some(range.start);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = code_block_start.take() {
+                    ranges.push(start..range.end.max(start));
                 }
             }
-            None if indentation <= 3 && marker.is_some() => {
-                let (character, count) = marker.expect("checked fence marker");
-                fence = Some((character, count, offset));
+            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_)
+                if code_block_start.is_none() =>
+            {
+                ranges.push(range);
             }
-            None if line.starts_with("    ") || line.starts_with('\t') => {
-                ranges.push(offset..line_end);
-            }
-            None => inline_code_ranges(line, offset, &mut ranges),
+            _ => {}
         }
-        offset = line_end;
     }
-    if let Some((_, _, start)) = fence {
+    if let Some(start) = code_block_start {
         ranges.push(start..markdown.len());
     }
     ranges.sort_by_key(|range| range.start);
     merge_ranges(ranges)
-}
-
-fn fence_marker(line: &str) -> Option<(u8, usize)> {
-    let byte = *line.as_bytes().first()?;
-    if !matches!(byte, b'`' | b'~') {
-        return None;
-    }
-    let count = line
-        .bytes()
-        .take_while(|candidate| *candidate == byte)
-        .count();
-    (count >= 3).then_some((byte, count))
-}
-
-fn inline_code_ranges(line: &str, base: usize, ranges: &mut Vec<Range<usize>>) {
-    let bytes = line.as_bytes();
-    let mut cursor = 0;
-    while cursor < bytes.len() {
-        if bytes[cursor] != b'`' {
-            cursor += 1;
-            continue;
-        }
-        let count = bytes[cursor..]
-            .iter()
-            .take_while(|byte| **byte == b'`')
-            .count();
-        let mut closing = cursor + count;
-        let mut found = None;
-        while closing < bytes.len() {
-            if bytes[closing] != b'`' {
-                closing += 1;
-                continue;
-            }
-            let candidate = bytes[closing..]
-                .iter()
-                .take_while(|byte| **byte == b'`')
-                .count();
-            if candidate == count {
-                found = Some(closing + candidate);
-                break;
-            }
-            closing += candidate;
-        }
-        if let Some(end) = found {
-            ranges.push(base + cursor..base + end);
-            cursor = end;
-        } else {
-            cursor += count;
-        }
-    }
 }
 
 fn merge_ranges(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
@@ -646,6 +593,46 @@ mod tests {
                 .filter(|issue| issue.code == GroundedOutputIssueCode::CitationInCode)
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn multiline_code_spans_keep_citation_syntax_inert() {
+        let known = handle('d');
+        let token = format!("{CITATION_TOKEN_PREFIX}{known}{CITATION_TOKEN_SUFFIX}");
+        let output = format!("Use `{token}\nacross lines` literally.");
+        let grounded = ground_research_output(&output, |_| Some(authored("passage")));
+
+        assert_eq!(grounded.markdown, output);
+        assert!(grounded.citations.is_empty());
+        assert!(grounded.mentions.is_empty());
+        assert_eq!(
+            grounded
+                .issues
+                .iter()
+                .filter(|issue| issue.code == GroundedOutputIssueCode::CitationInCode)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fence_prefix_with_trailing_text_does_not_close_the_code_block() {
+        let known = handle('e');
+        let token = format!("{CITATION_TOKEN_PREFIX}{known}{CITATION_TOKEN_SUFFIX}");
+        let output = format!("```text\nliteral\n```not-a-close\n{token}\n```\n");
+        let grounded = ground_research_output(&output, |_| Some(authored("passage")));
+
+        assert_eq!(grounded.markdown, output);
+        assert!(grounded.citations.is_empty());
+        assert!(grounded.mentions.is_empty());
+        assert_eq!(
+            grounded
+                .issues
+                .iter()
+                .filter(|issue| issue.code == GroundedOutputIssueCode::CitationInCode)
+                .count(),
+            1
         );
     }
 
