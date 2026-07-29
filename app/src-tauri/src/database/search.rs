@@ -409,19 +409,23 @@ fn lexical_ranked_candidates(
     limit: u32,
 ) -> Result<Vec<RankedLexicalDocument>> {
     let mut ranks = HashMap::<String, CandidateRanks>::new();
+    let mut word_candidates_saturated = false;
     if let Some(word_query) = query.word_match_query() {
-        install_ranks(
-            &mut ranks,
-            query_fts_index(connection, "passage_fts_word", &word_query, limit)?,
-            CandidateIndex::Word,
-        );
+        let word_candidates = query_fts_index(connection, "passage_fts_word", &word_query, limit)?;
+        word_candidates_saturated = word_candidates.len() == limit as usize;
+        install_ranks(&mut ranks, word_candidates, CandidateIndex::Word);
     }
-    if let Some(trigram_query) = query.trigram_match_query() {
-        install_ranks(
-            &mut ranks,
-            query_fts_index(connection, "passage_fts_trigram", &trigram_query, limit)?,
-            CandidateIndex::Trigram,
-        );
+    // Exact token matches dominate substring fallbacks. Once the word index has
+    // filled the bounded reranking pool, a second broad trigram scan can only
+    // displace stronger evidence while materially increasing interactive cost.
+    if !word_candidates_saturated {
+        if let Some(trigram_query) = query.trigram_match_query() {
+            install_ranks(
+                &mut ranks,
+                query_fts_index(connection, "passage_fts_trigram", &trigram_query, limit)?,
+                CandidateIndex::Trigram,
+            );
+        }
     }
     if let Some(short_query) = query.short_match_query() {
         install_ranks(
