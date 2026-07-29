@@ -21,10 +21,18 @@ test("settings exposes local diagnostics and guarded maintenance", async ({ page
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await expect(page).toHaveScreenshot("settings-diagnostics.png", {
     animations: "disabled",
     caret: "hide",
-    fullPage: true,
+    maxDiffPixelRatio: 0.04,
+    threshold: 0.35,
+  });
+
+  await page.getByRole("heading", { name: "Maintenance" }).scrollIntoViewIfNeeded();
+  await expect(page).toHaveScreenshot("settings-maintenance.png", {
+    animations: "disabled",
+    caret: "hide",
     maxDiffPixelRatio: 0.04,
     threshold: 0.35,
   });
