@@ -243,6 +243,22 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
          COMMIT;",
     )
     .expect("legacy research rows");
+    let oversized_query = "q".repeat(65_537);
+    main.execute(
+        "INSERT INTO research_run(
+            id, query, status, created_at, started_at, completed_at, error
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000113',
+            ?1,
+            'FAILED',
+            30,
+            31,
+            32,
+            'Legacy failure'
+         )",
+        [&oversized_query],
+    )
+    .expect("oversized legacy query");
     drop(main);
     drop(media);
 
@@ -292,6 +308,38 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             .and_then(serde_json::Value::as_str),
         Some("https://example.com/legacy")
     );
+    let mention = completed
+        .final_answer
+        .as_ref()
+        .and_then(|answer| answer.get("mentions"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|mentions| mentions.first())
+        .expect("migrated citation mention");
+    let answer_markdown = "A preserved legacy answer.【1】";
+    let marker_start = answer_markdown.find('【').expect("legacy marker");
+    assert_eq!(
+        mention
+            .get("citationNumber")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        mention.get("startByte").and_then(serde_json::Value::as_u64),
+        Some(marker_start as u64)
+    );
+    assert_eq!(
+        mention.get("endByte").and_then(serde_json::Value::as_u64),
+        Some(answer_markdown.len() as u64)
+    );
+    let oversized = database
+        .client()
+        .load_research_run("019f547b-6200-7000-8000-000000000113".into())
+        .expect("migrated oversized query");
+    assert_eq!(oversized.summary.query.chars().count(), 65_536);
+    assert_eq!(
+        oversized.summary.status,
+        super::research_runs::ResearchRunStatus::Failed
+    );
     assert_eq!(
         database
             .client()
@@ -323,6 +371,12 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             .pointer("/citations/0/evidence/passageId")
             .and_then(serde_json::Value::as_str),
         Some("019f547b-6200-7000-8000-000000000124")
+    );
+    assert_eq!(
+        reopened_answer
+            .pointer("/mentions/0/citationNumber")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
     );
 }
 

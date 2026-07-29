@@ -66,7 +66,11 @@ pub fn run_main(connection: &mut Connection) -> Result<()> {
 }
 
 fn run_main_with_legacy_research_snapshot(connection: &mut Connection) -> Result<()> {
-    if legacy_research_citation_count(connection)? > 0 {
+    let head = inspect_main(connection)?.head.unwrap_or_default();
+    if head < 12 {
+        normalize_legacy_research_queries(connection)?;
+    }
+    if head < 12 && legacy_research_citation_count(connection)? > 0 {
         // Citation snapshots need V11's complete passage provenance. Older
         // databases advance to that released boundary first; a crash there is
         // safe because the next launch repeats this read-only snapshot step.
@@ -78,6 +82,28 @@ fn run_main_with_legacy_research_snapshot(connection: &mut Connection) -> Result
         snapshot_legacy_research_citations(connection)?;
     }
     main_runner().run(connection)?;
+    Ok(())
+}
+
+fn normalize_legacy_research_queries(connection: &Connection) -> Result<()> {
+    let exists = connection
+        .query_row(
+            "SELECT 1
+             FROM sqlite_schema
+             WHERE type = 'table' AND name = 'research_run'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if exists {
+        connection.execute(
+            "UPDATE research_run
+             SET query = substr(query, 1, 65536)
+             WHERE length(query) > 65536",
+            [],
+        )?;
+    }
     Ok(())
 }
 

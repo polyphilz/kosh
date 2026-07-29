@@ -20,7 +20,9 @@ use crate::database::{
 
 use library::ResearchLibrary;
 
-pub(crate) use grounded::{grounded_citation, grounded_research_prompt};
+pub(crate) use grounded::{
+    grounded_citation, grounded_mentions_for_registry, grounded_research_prompt,
+};
 pub use grounded::{
     GroundedCitationMention, GroundedEvidenceKind, GroundedOutputIssue, GroundedOutputIssueCode,
     GroundedResearchAnswer, GroundedResearchCitation,
