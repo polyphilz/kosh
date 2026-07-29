@@ -413,16 +413,18 @@ fn owned_published_snapshots(snapshot_root: &Path) -> Result<Vec<OwnedSnapshot>>
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        if !file_type.is_dir()
-            || name.starts_with('.')
-            || !(name.starts_with("migration-") || name.starts_with("media-reclaim-"))
-        {
+        if !file_type.is_dir() || !is_owned_snapshot_name(&name) {
             continue;
         }
         let path = entry.path();
         let manifest = match read_owned_manifest_identity(&path, &name) {
             Ok(manifest) => manifest,
-            Err(_) => continue,
+            Err(error) => {
+                log::warn!("removing owned safety snapshot {name} with invalid manifest: {error}");
+                fs::remove_dir_all(&path)?;
+                removed_invalid = true;
+                continue;
+            }
         };
         if let Err(error) = validate_owned_snapshot_files(&path, &name, &manifest) {
             log::warn!("removing invalid owned safety snapshot {name}: {error}");
@@ -599,6 +601,10 @@ fn is_owned_staging_name(name: &str) -> bool {
     else {
         return false;
     };
+    is_owned_snapshot_name(id)
+}
+
+fn is_owned_snapshot_name(id: &str) -> bool {
     let tail = id
         .strip_prefix("migration-")
         .or_else(|| id.strip_prefix("media-reclaim-"));
@@ -901,6 +907,35 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].1, newest_valid_id);
         assert!(!snapshot_root.join(corrupt_id).exists());
+        assert_eq!(
+            fs::read(unowned.join("keep.txt")).expect("unowned marker survives"),
+            b"user data"
+        );
+    }
+
+    #[test]
+    fn unreadable_owned_manifest_is_removed_without_touching_unowned_data() {
+        let root = tempfile::tempdir().expect("unreadable manifest cleanup");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        database
+            .client()
+            .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
+            .expect("snapshot");
+        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let snapshot = owned_published_snapshots(&snapshot_root)
+            .expect("owned snapshots")
+            .pop()
+            .expect("published snapshot");
+        fs::write(snapshot.2.join("manifest.json"), b"{").expect("truncate owned manifest");
+        let unowned = snapshot_root.join("migration-user-folder");
+        fs::create_dir(&unowned).expect("unowned directory");
+        fs::write(unowned.join("keep.txt"), b"user data").expect("unowned marker");
+
+        assert!(owned_published_snapshots(&snapshot_root)
+            .expect("cleanup unreadable manifest")
+            .is_empty());
+        assert!(!snapshot.2.exists());
         assert_eq!(
             fs::read(unowned.join("keep.txt")).expect("unowned marker survives"),
             b"user data"
