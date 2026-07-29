@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "fixtureId": "kosh-relevance-v1",
-  "fixtureDigest": "29392576875c47f4e47cbc86c0f55bc047167cdb49546d380b682a848c085cee",
+  "fixtureDigest": "8f3dc39b80d74ac2ce333cf7bb4ce8d4b846bca0a02a2cdc29e8822d9b1798e6",
   "retriever": "kosh-hybrid-jina-v1",
   "resultLimit": 10,
   "passed": true,
   "summary": {
-    "queryCount": 17,
-    "passedQueryCount": 17,
-    "recallAt5": 1.0,
+    "queryCount": 20,
+    "passedQueryCount": 20,
+    "recallAt5": 0.9833333333333334,
     "recallAt10": 1.0,
     "meanReciprocalRank": 1.0,
-    "ndcgAt10": 0.9989907192886318,
+    "ndcgAt10": 0.9947548752053512,
     "citationLocatorAccuracy": 1.0,
     "exactPhraseSuccess": 1.0,
     "forbiddenHitsAt10": 0
@@ -84,12 +84,23 @@
       "forbiddenHitsAt10": 0
     },
     "PDF": {
-      "queryCount": 1,
-      "passedQueryCount": 1,
+      "queryCount": 2,
+      "passedQueryCount": 2,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "MEDIA_VOLUME": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 0.6666666666666666,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 0.9122552762002856,
       "citationLocatorAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
@@ -130,6 +141,17 @@
     "SYNONYM": {
       "queryCount": 2,
       "passedQueryCount": 2,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "TEXT_ATTACHMENT": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
@@ -316,7 +338,7 @@
       "hits": [
         {
           "passageId": "passage-ocr-receipt",
-          "score": 0.03360655737704918,
+          "score": 0.030819672131147544,
           "locator": {
             "kind": "OCR_REGION",
             "page": null,
@@ -351,13 +373,12 @@
       "hits": [
         {
           "passageId": "passage-pdf-transformer",
-          "score": 0.03524590163934427,
+          "score": 0.03221311475409836,
           "locator": {
             "kind": "PDF_PAGE",
             "page": 42
           },
           "matchedFields": [
-            "headingContext",
             "extractedText"
           ]
         }
@@ -488,7 +509,7 @@
       "hits": [
         {
           "passageId": "passage-code-resolve-citation",
-          "score": 25.0327868852459,
+          "score": 25.5327868852459,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -561,7 +582,7 @@
       "hits": [
         {
           "passageId": "passage-filename-model",
-          "score": 33.0327868852459,
+          "score": 34.0327868852459,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -617,28 +638,6 @@
           ]
         },
         {
-          "passageId": "passage-source-rust",
-          "score": 0.03419026328862394,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "title",
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
           "passageId": "passage-synonym-automobile",
           "score": 0.03412698412698413,
           "locator": {
@@ -656,6 +655,28 @@
             "title",
             "headingContext",
             "body"
+          ]
+        },
+        {
+          "passageId": "passage-source-rust",
+          "score": 0.03363031598954621,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 94,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body",
+            "sourceLabel",
+            "sourceDomain"
           ]
         },
         {
@@ -680,7 +701,7 @@
         },
         {
           "passageId": "passage-heat-caloric",
-          "score": 0.03307291666666667,
+          "score": 0.03282051282051282,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -699,28 +720,8 @@
           ]
         },
         {
-          "passageId": "passage-formula-fourier",
-          "score": 0.032499999999999994,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 72,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "title",
-            "headingContext",
-            "body"
-          ]
-        },
-        {
           "passageId": "passage-heat-modern",
-          "score": 0.032454228421970356,
+          "score": 0.03133359559402046,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -741,8 +742,28 @@
           ]
         },
         {
+          "passageId": "passage-formula-fourier",
+          "score": 0.03133333333333333,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 10,
+            "sourceEndByte": 72,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
           "passageId": "passage-misspelling-concurrency",
-          "score": 0.030931677018633544,
+          "score": 0.02975563909774436,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -761,7 +782,7 @@
         },
         {
           "passageId": "passage-unicode-cafe",
-          "score": 0.03064613526570048,
+          "score": 0.029600073381031003,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -781,7 +802,7 @@
         },
         {
           "passageId": "passage-formula-bayes",
-          "score": 0.030301857585139317,
+          "score": 0.02911764705882353,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1000,6 +1021,169 @@
           },
           "matchedFields": [
             "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-text-attachment-lines",
+      "text": "cobalt_index release-notes.log",
+      "searchMode": "DEFAULT",
+      "category": "TEXT_ATTACHMENT",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-text-release-log",
+          "score": 0.03290983606557377,
+          "locator": {
+            "kind": "TEXT_LINES",
+            "startLine": 18,
+            "endLine": 20
+          },
+          "matchedFields": [
+            "attachmentName",
+            "extractedText"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-authored-over-pdf-volume",
+      "text": "vector clock reconciliation causal order",
+      "searchMode": "DEFAULT",
+      "category": "MEDIA_VOLUME",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 0.6666666666666666,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 0.9122552762002856,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-authored-vector-clock",
+          "score": 0.03524590163934427,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 2,
+            "endBlock": 2,
+            "sourceStartByte": 31,
+            "sourceEndByte": 164,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-pdf-distributed-112",
+          "score": 0.03149769585253456,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 112
+          },
+          "matchedFields": [
+            "extractedText"
+          ]
+        },
+        {
+          "passageId": "passage-pdf-conference-clock",
+          "score": 0.03143753200204813,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 9
+          },
+          "matchedFields": [
+            "extractedText"
+          ]
+        },
+        {
+          "passageId": "passage-pdf-distributed-115",
+          "score": 0.030703125,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 115
+          },
+          "matchedFields": [
+            "extractedText"
+          ]
+        },
+        {
+          "passageId": "passage-pdf-distributed-114",
+          "score": 0.03023076923076923,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 114
+          },
+          "matchedFields": [
+            "extractedText"
+          ]
+        },
+        {
+          "passageId": "passage-pdf-distributed-110",
+          "score": 0.029599728629579374,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 110
+          },
+          "matchedFields": [
+            "extractedText"
+          ]
+        },
+        {
+          "passageId": "passage-pdf-distributed-111",
+          "score": 0.029546585255540478,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 111
+          },
+          "matchedFields": [
+            "extractedText"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-pdf-fencing-page",
+      "text": "lease fencing token epoch 47",
+      "searchMode": "DEFAULT",
+      "category": "PDF",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "citationLocatorCorrect": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "passageId": "passage-pdf-distributed-113",
+          "score": 0.03221311475409836,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 113
+          },
+          "matchedFields": [
+            "extractedText"
           ]
         }
       ]

@@ -6,7 +6,7 @@ use super::{
     connection::{self, DatabaseKind},
     embedding_index,
     error::{DatabaseError, Result},
-    migrations,
+    migrations, search,
 };
 
 const MAIN_TABLES: &[&str] = &[
@@ -295,7 +295,7 @@ pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
         "passage_fts_trigram",
         "passage_fts_short",
     ];
-    const VERSION: &str = "lexical-v2";
+    const VERSION: &str = search::FTS_VERSION;
     let existing_version = connection
         .query_row(
             "SELECT version FROM index_state WHERE name = 'PASSAGE_FTS'",

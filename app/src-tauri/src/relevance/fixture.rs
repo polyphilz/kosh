@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use super::{RelevanceError, Result};
 
-pub const FIXTURE_SCHEMA_VERSION: u32 = 1;
+pub const FIXTURE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -21,7 +21,9 @@ pub struct RelevanceFixture {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EvaluationPassage {
     pub id: String,
-    pub tidbit_id: String,
+    pub owner_kind: EvaluationOwnerKind,
+    pub tidbit_id: Option<String>,
+    pub evidence_attachment_id: Option<String>,
     pub title: Option<String>,
     #[serde(default)]
     pub heading_context: Vec<String>,
@@ -31,6 +33,13 @@ pub struct EvaluationPassage {
     #[serde(default)]
     pub attachments: Vec<EvaluationAttachment>,
     pub locator: EvaluationLocator,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EvaluationOwnerKind {
+    Author,
+    Attachment,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,10 +106,12 @@ pub enum QueryCategory {
     NearDuplicate,
     Ocr,
     Pdf,
+    MediaVolume,
     Phrase,
     Prose,
     SourceDomain,
     Synonym,
+    TextAttachment,
     Unicode,
 }
 
@@ -168,12 +179,53 @@ impl RelevanceFixture {
         let mut passages = HashMap::with_capacity(self.corpus.len());
         for passage in &self.corpus {
             require_nonempty("passage.id", &passage.id)?;
-            require_nonempty("passage.tidbitId", &passage.tidbit_id)?;
             require_nonempty("passage.content", &passage.content)?;
             if !passage_ids.insert(passage.id.as_str()) {
                 return invalid(format!("duplicate passage id {}", passage.id));
             }
             passage.locator.validate(&passage.id)?;
+            match passage.owner_kind {
+                EvaluationOwnerKind::Author => {
+                    let Some(tidbit_id) = passage.tidbit_id.as_deref() else {
+                        return invalid(format!(
+                            "authored passage {} must name a tidbitId",
+                            passage.id
+                        ));
+                    };
+                    require_nonempty("passage.tidbitId", tidbit_id)?;
+                    if passage.evidence_attachment_id.is_some()
+                        || !matches!(passage.locator, EvaluationLocator::MarkdownBlocks { .. })
+                    {
+                        return invalid(format!(
+                            "authored passage {} has attachment provenance",
+                            passage.id
+                        ));
+                    }
+                }
+                EvaluationOwnerKind::Attachment => {
+                    if passage.tidbit_id.is_some()
+                        || matches!(passage.locator, EvaluationLocator::MarkdownBlocks { .. })
+                    {
+                        return invalid(format!(
+                            "attachment passage {} has authored provenance",
+                            passage.id
+                        ));
+                    }
+                    let Some(attachment_id) = passage.evidence_attachment_id.as_deref() else {
+                        return invalid(format!(
+                            "attachment passage {} must name an evidenceAttachmentId",
+                            passage.id
+                        ));
+                    };
+                    require_nonempty("passage.evidenceAttachmentId", attachment_id)?;
+                    if passage.attachments.len() != 1 {
+                        return invalid(format!(
+                            "attachment passage {} must describe exactly one attachment",
+                            passage.id
+                        ));
+                    }
+                }
+            }
             for source in &passage.sources {
                 require_nonempty("source.label", &source.label)?;
                 require_nonempty("source.domain", &source.domain)?;
@@ -400,8 +452,10 @@ mod tests {
             QueryCategory::NearDuplicate,
             QueryCategory::Ocr,
             QueryCategory::Pdf,
+            QueryCategory::MediaVolume,
             QueryCategory::SourceDomain,
             QueryCategory::Synonym,
+            QueryCategory::TextAttachment,
         ] {
             assert!(
                 fixture
@@ -423,5 +477,22 @@ mod tests {
             .expect_err("mismatched citation must fail")
             .to_string()
             .contains("differs from corpus provenance"));
+    }
+
+    #[test]
+    fn fixture_rejects_owner_and_locator_provenance_mismatches() {
+        let mut fixture = checked_in_fixture();
+        let attachment = fixture
+            .corpus
+            .iter_mut()
+            .find(|passage| passage.evidence_attachment_id.is_some())
+            .expect("attachment evidence");
+        attachment.tidbit_id = Some("fabricated-owner".into());
+
+        assert!(fixture
+            .validate()
+            .expect_err("attachment evidence cannot masquerade as authored")
+            .to_string()
+            .contains("has authored provenance"));
     }
 }

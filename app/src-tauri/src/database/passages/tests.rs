@@ -90,7 +90,7 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("FTS status");
-    assert_eq!(fts_status, ("IDLE".into(), "lexical-v2".into()));
+    assert_eq!(fts_status, ("IDLE".into(), "lexical-v3".into()));
 
     let heading = library
         .database
