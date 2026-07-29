@@ -8,6 +8,7 @@ mod migrations;
 pub(crate) mod passages;
 mod paths;
 pub(crate) mod search;
+pub(crate) mod settings;
 mod tidbits;
 mod validation;
 mod writer;
@@ -18,6 +19,8 @@ mod drafts_tests;
 mod embedding_index_tests;
 #[cfg(test)]
 mod media_tests;
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -50,6 +53,10 @@ pub use paths::DatabasePaths;
 pub use search::{
     LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
     SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
+};
+pub use settings::{
+    validate_complete_bindings, KeyboardBinding, KoshCommand, SetShortcutSettingsInput,
+    ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR, DEFAULT_QUICK_ADD_ACCELERATOR,
 };
 pub use tidbits::{
     DeleteTidbitInput, EditTidbitInput, ListTidbitsInput, RestoreTidbitInput, SourceDraft, Tidbit,
@@ -136,6 +143,7 @@ impl Database {
         // database reference check.
         media.execute("DELETE FROM media_blob_reap_authorization", [])?;
         validation::validate_migrated_pair(&mut main, &mut media, &paths.main, &paths.media)?;
+        settings::load_shortcut_settings(&main)?;
 
         let (sender, receiver) = mpsc::channel();
         let client = DatabaseClient::new(sender.clone());
@@ -554,6 +562,12 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(drafts::clear_draft(&mut main, input, now_ms));
+            }
+            WriterMessage::LoadShortcutSettings { reply } => {
+                let _ = reply.send(settings::load_shortcut_settings(&main));
+            }
+            WriterMessage::SetShortcutSettings { input, reply } => {
+                let _ = reply.send(settings::set_shortcut_settings(&mut main, input));
             }
             WriterMessage::Shutdown => break,
         }

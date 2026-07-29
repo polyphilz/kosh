@@ -1,10 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -59,7 +56,7 @@ pub(crate) struct RuntimeState {
     pending_clipboard_images: Mutex<HashMap<String, PendingClipboardImage>>,
     pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
     pending_file_selections: Mutex<HashMap<String, PendingFileSelection>>,
-    file_drop_consumer_active: AtomicBool,
+    file_drop_consumers: Mutex<HashSet<String>>,
 }
 
 struct PendingClipboardImage {
@@ -74,7 +71,7 @@ struct PendingImageDrop {
 
 struct PendingFileSelection {
     created_at_ms: i64,
-    dropped: bool,
+    drop_consumer: Option<String>,
     path: PathBuf,
 }
 
@@ -131,7 +128,7 @@ impl RuntimeState {
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
-            file_drop_consumer_active: AtomicBool::new(false),
+            file_drop_consumers: Mutex::new(HashSet::new()),
         };
         if let Err(error) = state
             .database
@@ -177,7 +174,7 @@ impl RuntimeState {
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
-            file_drop_consumer_active: AtomicBool::new(false),
+            file_drop_consumers: Mutex::new(HashSet::new()),
         }
     }
 
@@ -355,25 +352,26 @@ impl RuntimeState {
     }
 
     pub(crate) fn register_file_selection(&self, path: PathBuf) -> crate::database::Result<String> {
-        self.register_file_selection_with_origin(path, false)
+        self.register_file_selection_with_origin(path, None)
     }
 
     pub(crate) fn register_dropped_file_selection(
         &self,
+        consumer: &str,
         path: PathBuf,
     ) -> crate::database::Result<String> {
-        if !self.file_drop_consumer_active() {
+        if !self.file_drop_consumer_active(consumer) {
             return Err(crate::database::DatabaseError::InvalidInput(
                 "no editor is accepting dropped files".into(),
             ));
         }
-        self.register_file_selection_with_origin(path, true)
+        self.register_file_selection_with_origin(path, Some(consumer))
     }
 
     fn register_file_selection_with_origin(
         &self,
         path: PathBuf,
-        dropped: bool,
+        drop_consumer: Option<&str>,
     ) -> crate::database::Result<String> {
         if !path.is_file() {
             return Err(crate::database::DatabaseError::InvalidInput(
@@ -388,10 +386,12 @@ impl RuntimeState {
         pending.retain(|_, selection| {
             now_ms.saturating_sub(selection.created_at_ms) <= FILE_SELECTION_TTL_MS
         });
-        if dropped && !self.file_drop_consumer_active() {
-            return Err(crate::database::DatabaseError::InvalidInput(
-                "no editor is accepting dropped files".into(),
-            ));
+        if let Some(consumer) = drop_consumer {
+            if !self.file_drop_consumer_active(consumer) {
+                return Err(crate::database::DatabaseError::InvalidInput(
+                    "no editor is accepting dropped files".into(),
+                ));
+            }
         }
         if pending.len() >= MAX_PENDING_FILE_SELECTIONS {
             return Err(crate::database::DatabaseError::InvalidInput(
@@ -407,28 +407,36 @@ impl RuntimeState {
             selection_id.clone(),
             PendingFileSelection {
                 created_at_ms: now_ms,
-                dropped,
+                drop_consumer: drop_consumer.map(str::to_owned),
                 path,
             },
         );
         Ok(selection_id)
     }
 
-    pub(crate) fn set_file_drop_consumer_active(&self, active: bool) {
-        self.file_drop_consumer_active
-            .store(active, Ordering::Release);
+    pub(crate) fn set_file_drop_consumer_active(&self, consumer: &str, active: bool) {
+        let mut consumers = self
+            .file_drop_consumers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if active {
+            consumers.insert(consumer.to_owned());
             return;
         }
+        consumers.remove(consumer);
+        drop(consumers);
         let mut pending = self
             .pending_file_selections
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.retain(|_, selection| !selection.dropped);
+        pending.retain(|_, selection| selection.drop_consumer.as_deref() != Some(consumer));
     }
 
-    pub(crate) fn file_drop_consumer_active(&self) -> bool {
-        self.file_drop_consumer_active.load(Ordering::Acquire)
+    pub(crate) fn file_drop_consumer_active(&self, consumer: &str) -> bool {
+        self.file_drop_consumers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(consumer)
     }
 
     pub(crate) fn discard_file_drop_selections(
@@ -450,7 +458,7 @@ impl RuntimeState {
         for selection_id in selection_ids {
             if pending
                 .get(selection_id)
-                .is_some_and(|selection| selection.dropped)
+                .is_some_and(|selection| selection.drop_consumer.is_some())
             {
                 pending.remove(selection_id);
             }
@@ -703,18 +711,25 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary file drop directory");
         let picker_pdf = directory.path().join("picker.pdf");
         let dropped_pdf = directory.path().join("dropped.txt");
+        let quick_drop = directory.path().join("quick.txt");
         std::fs::write(&picker_pdf, b"%PDF-picker").expect("picker file fixture");
         std::fs::write(&dropped_pdf, b"dropped text").expect("dropped file fixture");
+        std::fs::write(&quick_drop, b"quick text").expect("quick drop fixture");
         let picker_id = "019f547b-6200-7000-8000-000000000993".to_owned();
         let dropped_id = "019f547b-6200-7000-8000-000000000994".to_owned();
+        let quick_drop_id = "019f547b-6200-7000-8000-000000000995".to_owned();
         let state = RuntimeState::deterministic(
             directory.path().join("data"),
             Arc::new(deterministic::FixedClock(100)),
-            deterministic::SequenceIds::new([picker_id.clone(), dropped_id.clone()]),
+            deterministic::SequenceIds::new([
+                picker_id.clone(),
+                dropped_id.clone(),
+                quick_drop_id.clone(),
+            ]),
         );
 
         assert!(matches!(
-            state.register_dropped_file_selection(dropped_pdf.clone()),
+            state.register_dropped_file_selection("main", dropped_pdf.clone()),
             Err(crate::database::DatabaseError::InvalidInput(_))
         ));
         assert_eq!(
@@ -723,15 +738,22 @@ mod tests {
                 .expect("picker selection"),
             picker_id
         );
-        state.set_file_drop_consumer_active(true);
+        state.set_file_drop_consumer_active("main", true);
         assert_eq!(
             state
-                .register_dropped_file_selection(dropped_pdf)
+                .register_dropped_file_selection("main", dropped_pdf)
                 .expect("dropped selection"),
             dropped_id
         );
+        state.set_file_drop_consumer_active("quick-add", true);
+        assert_eq!(
+            state
+                .register_dropped_file_selection("quick-add", quick_drop.clone())
+                .expect("quick-add dropped selection"),
+            quick_drop_id
+        );
 
-        state.set_file_drop_consumer_active(false);
+        state.set_file_drop_consumer_active("main", false);
         assert_eq!(
             state
                 .take_file_selection(&picker_id)
@@ -742,6 +764,12 @@ mod tests {
             state.take_file_selection(&dropped_id),
             Err(crate::database::DatabaseError::NotFound { .. })
         ));
+        assert_eq!(
+            state
+                .take_file_selection(&quick_drop_id)
+                .expect("other window drop survives"),
+            quick_drop
+        );
     }
 
     #[test]

@@ -2075,6 +2075,92 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
 }
 
 #[test]
+fn quick_add_media_lease_and_draft_survive_restart() {
+    let library = TestLibrary::new();
+    let draft_id = id(0x731);
+    let initial = library
+        .database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "quick-add".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: String::new(),
+                sources: Vec::new(),
+            },
+            now_ms: 11,
+            draft_id: draft_id.clone(),
+            media_limits: MediaLimits::default(),
+        })
+        .expect("create quick-add draft");
+    assert_eq!(initial.id, draft_id);
+    let attachment = library
+        .database
+        .ingest_attachment(
+            AttachmentIngestInput {
+                draft_id: draft_id.clone(),
+                display_filename: "quick-note.txt".into(),
+                media_type: "text/plain".into(),
+                now_ms: 12,
+                limits: MediaLimits::default(),
+            },
+            Cursor::new(b"quick add attachment"),
+        )
+        .expect("ingest quick-add attachment");
+    let body = format!("{{{{kosh:attachment:{}}}}}", attachment.id);
+    let saved = library
+        .database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "quick-add".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: Some("Quick attachment".into()),
+                body_markdown: body,
+                sources: Vec::new(),
+            },
+            now_ms: 13,
+            draft_id: id(0x732),
+            media_limits: MediaLimits::default(),
+        })
+        .expect("save quick-add media draft");
+    assert_eq!(
+        library
+            .database
+            .open_main_read_only()
+            .expect("main reader")
+            .query_row(
+                "SELECT count(*) FROM draft_media_lease WHERE draft_id = ?1",
+                params![draft_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("quick-add draft lease count"),
+        1
+    );
+
+    library.database.shutdown().expect("clean shutdown");
+    let reopened = Database::initialize(library.paths.clone()).expect("reopened database");
+    assert_eq!(
+        reopened
+            .client()
+            .load_draft("quick-add".into())
+            .expect("recovered quick-add draft"),
+        Some(saved)
+    );
+    assert_eq!(
+        reopened
+            .client()
+            .load_media_payload(attachment.id, 14, None, 64)
+            .expect("recovered quick-add attachment")
+            .bytes,
+        b"quick add attachment"
+    );
+}
+
+#[test]
 fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
     let library = TestLibrary::new();
     let limits = MediaLimits {

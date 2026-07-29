@@ -1,5 +1,6 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { resolve } from "node:path";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -11,6 +12,12 @@ export default defineConfig({
     target: "safari13",
     minify: process.env.TAURI_ENV_DEBUG ? false : "oxc",
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    rollupOptions: {
+      input: {
+        main: resolve(import.meta.dirname, "index.html"),
+        quickAdd: resolve(import.meta.dirname, "quick-add.html"),
+      },
+    },
   },
   server: {
     port: 1420,

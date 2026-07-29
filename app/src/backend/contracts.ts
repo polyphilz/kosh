@@ -182,6 +182,42 @@ export interface ClearDraftInput {
   expectedUpdatedAtMs: number;
 }
 
+export const KoshCommand = {
+  MainWindow: "MAIN_WINDOW",
+  QuickAdd: "QUICK_ADD",
+} as const;
+
+export type KoshCommand = (typeof KoshCommand)[keyof typeof KoshCommand];
+
+export interface KeyboardBinding {
+  command: KoshCommand;
+  accelerator: string;
+}
+
+export interface ShortcutSettingsSnapshot {
+  revision: number;
+  keyboardBindings: KeyboardBinding[];
+  shortcutErrors: string[];
+}
+
+export interface SetShortcutSettingsInput {
+  expectedRevision: number;
+  keyboardBindings: KeyboardBinding[];
+}
+
+export const DEFAULT_QUICK_ADD_ACCELERATOR = "control+alt+super+KeyK";
+export const DEFAULT_MAIN_WINDOW_ACCELERATOR = "control+alt+super+KeyO";
+export const DEFAULT_KEYBOARD_BINDINGS: readonly KeyboardBinding[] = [
+  {
+    accelerator: DEFAULT_QUICK_ADD_ACCELERATOR,
+    command: KoshCommand.QuickAdd,
+  },
+  {
+    accelerator: DEFAULT_MAIN_WINDOW_ACCELERATOR,
+    command: KoshCommand.MainWindow,
+  },
+];
+
 export interface DraftRecord extends SaveDraftInput {
   id: string;
   createdAtMs: number;
@@ -348,6 +384,8 @@ export interface Backend {
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;
+  loadShortcutSettings(): Promise<ShortcutSettingsSnapshot>;
+  setShortcutSettings(input: SetShortcutSettingsInput): Promise<ShortcutSettingsSnapshot>;
   selectImage(): Promise<string | null>;
   ingestSelectedImage(selectionId: string, draftId: string): Promise<ImageRecord>;
   captureClipboardImage(): Promise<string>;

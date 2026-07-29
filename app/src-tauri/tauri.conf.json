@@ -10,10 +10,12 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Kosh",
+        "visible": false,
         "width": 1000,
         "height": 720,
         "minWidth": 720,
@@ -23,7 +25,7 @@
     ],
     "security": {
       "freezePrototype": true,
-      "capabilities": ["default"],
+      "capabilities": ["default", "quick-add"],
       "csp": {
         "default-src": "'self'",
         "connect-src": "ipc: http://ipc.localhost",

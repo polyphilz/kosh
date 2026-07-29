@@ -23,12 +23,15 @@ import type {
   SearchPassagesResponse,
   SemanticRuntimeLogs,
   SemanticRuntimeStatus,
+  SetShortcutSettingsInput,
+  ShortcutSettingsSnapshot,
   SourceDraft,
   TidbitDraft,
   TidbitListPage,
   TidbitRecord,
   TidbitSource,
 } from "./contracts";
+import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
 
 interface FakeCitationSnapshot {
   revision: TidbitRecord;
@@ -56,6 +59,11 @@ export class FakeBackend implements Backend {
   private readonly citations = new Map<string, FakeCitationSnapshot>();
   private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
+  private shortcutSettings: ShortcutSettingsSnapshot = {
+    revision: 1,
+    keyboardBindings: DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
+    shortcutErrors: [],
+  };
   private sequence = 0;
 
   constructor(probe: RuntimeProbe = browserRuntimeProbe, tidbits: TidbitRecord[] = []) {
@@ -504,6 +512,37 @@ export class FakeBackend implements Backend {
     return this.drafts.delete(input.contextKey);
   }
 
+  async loadShortcutSettings(): Promise<ShortcutSettingsSnapshot> {
+    return cloneShortcutSettings(this.shortcutSettings);
+  }
+
+  async setShortcutSettings(input: SetShortcutSettingsInput): Promise<ShortcutSettingsSnapshot> {
+    if (input.expectedRevision !== this.shortcutSettings.revision) {
+      throw new Error(
+        `shortcut settings changed before this update: revision is ${this.shortcutSettings.revision}, expected ${input.expectedRevision}`,
+      );
+    }
+    if (
+      input.keyboardBindings.length !== DEFAULT_KEYBOARD_BINDINGS.length ||
+      new Set(input.keyboardBindings.map((binding) => binding.command)).size !==
+        DEFAULT_KEYBOARD_BINDINGS.length
+    ) {
+      throw new Error("keyboardBindings must contain every Kosh command exactly once");
+    }
+    if (
+      new Set(input.keyboardBindings.map((binding) => binding.accelerator.toLowerCase())).size !==
+      input.keyboardBindings.length
+    ) {
+      throw new Error("two Kosh commands cannot use the same shortcut");
+    }
+    this.shortcutSettings = {
+      revision: this.shortcutSettings.revision + 1,
+      keyboardBindings: input.keyboardBindings.map((binding) => ({ ...binding })),
+      shortcutErrors: [],
+    };
+    return cloneShortcutSettings(this.shortcutSettings);
+  }
+
   private nextSequence(): number {
     this.sequence += 1;
     return this.sequence;
@@ -547,7 +586,7 @@ export class FakeBackend implements Backend {
 
   private validateDraftContext(input: SaveDraftInput): void {
     validateDraftContextKey(input.contextKey);
-    if (input.contextKey === "capture") {
+    if (input.contextKey === "capture" || input.contextKey === "quick-add") {
       if (input.tidbitId !== null || input.baseRevisionId !== null) {
         throw new Error("capture draft must not have edit metadata");
       }
@@ -576,11 +615,19 @@ function cloneDraft(draft: DraftRecord): DraftRecord {
   };
 }
 
+function cloneShortcutSettings(settings: ShortcutSettingsSnapshot): ShortcutSettingsSnapshot {
+  return {
+    ...settings,
+    keyboardBindings: settings.keyboardBindings.map((binding) => ({ ...binding })),
+    shortcutErrors: [...settings.shortcutErrors],
+  };
+}
+
 function validateDraftContextKey(contextKey: string): void {
-  if (contextKey === "capture" || /^edit:.+/u.test(contextKey)) {
+  if (contextKey === "capture" || contextKey === "quick-add" || /^edit:.+/u.test(contextKey)) {
     return;
   }
-  throw new Error("draft context must be capture or edit:<tidbitId>");
+  throw new Error("draft context must be capture, quick-add, or edit:<tidbitId>");
 }
 
 function normalizeText(value: string | null): string | null {

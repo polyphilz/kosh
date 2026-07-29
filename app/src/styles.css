@@ -1045,6 +1045,44 @@ button {
   line-height: 1.4;
 }
 
+.shortcut-recorder {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+
+.shortcut-recorder .kosh-button {
+  min-width: 104px;
+  justify-content: center;
+}
+
+.shortcut-recorder__button--recording {
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+  background: var(--accent-soft) !important;
+}
+
+.shortcut-recorder > span,
+.settings-list__error {
+  color: var(--danger);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.shortcut-recorder > span:last-child:not([role="alert"]) {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.settings-list__error {
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-list__reset {
+  margin: 12px 18px 16px;
+}
+
 .catalog-page {
   padding-bottom: 96px;
 }

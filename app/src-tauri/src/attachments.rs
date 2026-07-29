@@ -134,8 +134,12 @@ pub(crate) async fn reveal_attachment_in_finder<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub(crate) fn set_file_drop_consumer_active(state: State<'_, RuntimeState>, active: bool) {
-    state.set_file_drop_consumer_active(active);
+pub(crate) fn set_file_drop_consumer_active<R: tauri::Runtime>(
+    window: tauri::Window<R>,
+    state: State<'_, RuntimeState>,
+    active: bool,
+) {
+    state.set_file_drop_consumer_active(window.label(), active);
 }
 
 #[tauri::command]
@@ -158,7 +162,7 @@ pub(crate) fn handle_file_drop<R: tauri::Runtime>(
     let Some(state) = window.try_state::<RuntimeState>() else {
         return;
     };
-    if !state.file_drop_consumer_active() {
+    if !state.file_drop_consumer_active(window.label()) {
         return;
     }
     let selections = paths
@@ -166,13 +170,14 @@ pub(crate) fn handle_file_drop<R: tauri::Runtime>(
         .filter(|path| path.is_file())
         .take(MAX_FILES_PER_DROP)
         .filter_map(|path| {
-            let selection_id = match state.register_dropped_file_selection(path.clone()) {
-                Ok(id) => id,
-                Err(error) => {
-                    log::warn!("could not register a dropped file: {error}");
-                    return None;
-                }
-            };
+            let selection_id =
+                match state.register_dropped_file_selection(window.label(), path.clone()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        log::warn!("could not register a dropped file: {error}");
+                        return None;
+                    }
+                };
             Some(FileDropSelection {
                 selection_id,
                 filename: path

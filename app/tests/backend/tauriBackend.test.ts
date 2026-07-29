@@ -8,6 +8,7 @@ import type {
   RestoreTidbitInput,
   SaveDraftInput,
   SearchPassagesInput,
+  SetShortcutSettingsInput,
   TidbitDraft,
 } from "../../src/backend/contracts";
 import { tauriBackend } from "../../src/backend/tauriBackend";
@@ -57,6 +58,13 @@ describe("tauriBackend tidbit gateway", () => {
       mode: "EXACT",
       limit: 20,
     };
+    const shortcuts: SetShortcutSettingsInput = {
+      expectedRevision: 1,
+      keyboardBindings: [
+        { command: "QUICK_ADD", accelerator: "control+alt+super+KeyK" },
+        { command: "MAIN_WINDOW", accelerator: "control+alt+super+KeyO" },
+      ],
+    };
 
     await tauriBackend.createTidbit(draft);
     await tauriBackend.loadTidbit("tidbit-1");
@@ -69,6 +77,8 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.saveDraft(savedDraft);
     await tauriBackend.loadDraft("capture");
     await tauriBackend.clearDraft(clearDraft);
+    await tauriBackend.loadShortcutSettings();
+    await tauriBackend.setShortcutSettings(shortcuts);
     await tauriBackend.selectImage();
     await tauriBackend.ingestSelectedImage("selection-1", "draft-1");
     await tauriBackend.captureClipboardImage();
@@ -102,6 +112,8 @@ describe("tauriBackend tidbit gateway", () => {
       ["save_draft", { input: savedDraft }],
       ["load_draft", { contextKey: "capture" }],
       ["clear_draft", { input: clearDraft }],
+      ["load_shortcut_settings"],
+      ["set_shortcut_settings", { input: shortcuts }],
       ["select_image"],
       ["ingest_selected_image", { selectionId: "selection-1", draftId: "draft-1" }],
       ["capture_clipboard_image"],

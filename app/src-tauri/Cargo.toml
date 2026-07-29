@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Capture loose knowledge and find the exact passage that matters"
 edition = "2021"
 rust-version = "1.97.0"
+default-run = "kosh"
 
 [lib]
 name = "kosh_lib"
@@ -29,7 +30,9 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"
 sqlite-vec = "=0.1.9"
-tauri = { version = "=2.11.3", features = [] }
+tauri = { version = "=2.11.3", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-global-shortcut = "=2.3.2"
+tauri-plugin-single-instance = "=2.4.2"
 tempfile = { version = "=3.23.0", optional = true }
 thiserror = { version = "=2.0.19" }
 unicode-normalization = "=0.1.25"
