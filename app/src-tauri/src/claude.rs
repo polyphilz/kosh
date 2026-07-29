@@ -498,6 +498,17 @@ impl ClaudeProcessManager {
                     "Kosh is shutting down and cannot start another research process",
                 ));
             }
+            if active_slot
+                .as_ref()
+                .is_some_and(|active| active.run_id == request.run_id)
+            {
+                drop(active_slot);
+                force_kill_process_group(process_id);
+                let _ = child.wait();
+                return Err(ClaudeProcessError::invalid(
+                    "a research process for this runId is already active",
+                ));
+            }
             lock(&self.inner.owned_processes).insert(generation.clone(), active.clone());
             let replaced = active_slot.replace(active);
             replaced.and_then(|process| {
@@ -2347,6 +2358,67 @@ fi
         assert_eq!(
             terminals.get(&second.run_id),
             Some(&ResearchProcessOutcome::Succeeded)
+        );
+    }
+
+    #[test]
+    fn reusing_an_active_run_id_is_rejected_without_ambiguous_events() {
+        let root = tempfile::tempdir().expect("fake CLI root");
+        let binary = write_fake_cli(
+            root.path(),
+            r#"
+trap 'exit 0' TERM
+cat >/dev/null
+sleep 30
+"#,
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let (sender, receiver) = mpsc::channel();
+        let first = start_fake(&manager, request("original"), &sender);
+        let duplicate = StartResearchProcessInput {
+            run_id: first.run_id.clone(),
+            ..request("duplicate")
+        };
+
+        let error = manager
+            .start_with_invocation(
+                duplicate,
+                invocation(),
+                Arc::new(ChannelSink {
+                    sender: sender.clone(),
+                }),
+            )
+            .expect_err("active run ID must not be reused");
+        assert_eq!(error.code, ClaudeProcessErrorCode::InvalidInput);
+        assert!(error.message.contains("already active"));
+        assert!(manager.cancel(&first.run_id).expect("cancel original run"));
+
+        let (mut events, terminals) = receive_terminals(&receiver, 1);
+        thread::sleep(Duration::from_millis(50));
+        events.extend(receiver.try_iter());
+        assert_eq!(
+            terminals.get(&first.run_id),
+            Some(&ResearchProcessOutcome::Canceled)
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| {
+                    event.run_id == first.run_id
+                        && matches!(event.detail, ResearchProcessEventDetail::Started)
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| {
+                    event.run_id == first.run_id
+                        && matches!(event.detail, ResearchProcessEventDetail::Finished { .. })
+                })
+                .count(),
+            1
         );
     }
 
