@@ -140,11 +140,13 @@ export function LibraryPage() {
                   <footer>
                     <span>
                       {view === "trash" ? "Deleted" : "Updated"}{" "}
-                      {new Date(
-                        view === "trash"
-                          ? (item.deletedAtMs ?? item.updatedAtMs)
-                          : item.updatedAtMs,
-                      ).toLocaleString()}
+                      <LibraryTime
+                        value={
+                          view === "trash"
+                            ? (item.deletedAtMs ?? item.updatedAtMs)
+                            : item.updatedAtMs
+                        }
+                      />
                     </span>
                     {view === "trash" && <small>{purgeTiming(item.purgeEligibleAtMs)}</small>}
                     <span aria-hidden="true">→</span>
@@ -169,6 +171,11 @@ export function LibraryPage() {
       )}
     </main>
   );
+}
+
+function LibraryTime({ value }: { value: number }) {
+  const date = new Date(value);
+  return <time dateTime={date.toISOString()}>{date.toLocaleString()}</time>;
 }
 
 function LibraryTab({

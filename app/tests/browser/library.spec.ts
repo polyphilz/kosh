@@ -43,6 +43,8 @@ test("library surface stays visually stable", async ({ page }) => {
   await expect(page).toHaveScreenshot("library-recent.png", {
     animations: "disabled",
     fullPage: true,
+    mask: [page.locator(".library-list time")],
+    maskColor: "#d8d2ca",
   });
 });
 

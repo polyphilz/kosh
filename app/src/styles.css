@@ -1284,6 +1284,11 @@ button {
   color: var(--warning);
 }
 
+.library-list footer time {
+  display: inline-block;
+  width: 142px;
+}
+
 .library-list footer > span:last-child {
   color: var(--accent);
   font-size: 14px;
