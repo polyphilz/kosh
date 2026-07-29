@@ -41,6 +41,10 @@ use super::{
 #[cfg(test)]
 use super::safety_snapshot::SafetySnapshotReason;
 
+#[cfg(test)]
+type MediaMaintenanceReplyReceiver =
+    mpsc::Receiver<Result<(Option<SafetySnapshotReport>, MediaMaintenanceReport)>>;
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseDiagnostics {
@@ -325,11 +329,15 @@ pub(super) enum WriterMessage {
         input: SetShortcutSettingsInput,
         reply: SyncSender<Result<ShortcutSettings>>,
     },
+    #[cfg(test)]
+    PauseForTest {
+        started: SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    },
     Shutdown,
 }
 
 pub(super) enum MediaMaintenanceSnapshotState {
-    PendingAttachments,
     PendingCandidates,
     NotNeeded,
     Verified(SafetySnapshotReport),
@@ -632,7 +640,7 @@ impl DatabaseClient {
         self.sender
             .send(WriterMessage::MaintainMediaWithSafetySnapshot {
                 scan: MediaMaintenanceScan::new(now_ms, limits)?,
-                snapshot: MediaMaintenanceSnapshotState::PendingAttachments,
+                snapshot: MediaMaintenanceSnapshotState::PendingCandidates,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
@@ -1172,6 +1180,51 @@ impl DatabaseClient {
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enqueue_media_maintenance_for_test(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> Result<MediaMaintenanceReplyReceiver> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MaintainMediaWithSafetySnapshot {
+                scan: MediaMaintenanceScan::new(now_ms, limits)?,
+                snapshot: MediaMaintenanceSnapshotState::PendingCandidates,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        Ok(receiver)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enqueue_clear_draft_for_test(
+        &self,
+        input: ClearDraftInput,
+        now_ms: i64,
+    ) -> Result<mpsc::Receiver<Result<bool>>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ClearDraft {
+                input,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        Ok(receiver)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_for_test(
+        &self,
+        started: SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    ) -> Result<()> {
+        self.sender
+            .send(WriterMessage::PauseForTest { started, release })
+            .map_err(|_| DatabaseError::WriterUnavailable)
     }
 
     pub(crate) fn load_shortcut_settings(&self) -> Result<ShortcutSettings> {

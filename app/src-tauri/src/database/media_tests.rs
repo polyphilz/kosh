@@ -2499,6 +2499,85 @@ fn reclamation_preflight_cleans_stale_candidate_windows_incrementally() {
 }
 
 #[test]
+fn attachment_eligibility_is_rechecked_after_candidate_preflight_yields() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 1,
+        orphan_grace_period_ms: 1,
+        max_reaps_per_maintenance: 1,
+        ..MediaLimits::default()
+    };
+    let attachment = library.ingest(
+        (0x6f0, 0x6f1, 0x6f2),
+        "queued-clear.txt",
+        "text/plain",
+        b"queued clear evidence",
+        11,
+        limits,
+    );
+    library.save_capture(
+        &format!("Before clear ![queued](/media/{})", attachment.id),
+        12,
+    );
+    library
+        .database
+        .shutdown()
+        .expect("stop writer before inserting stale candidate");
+    let main = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("main writer");
+    main.execute(
+        "INSERT INTO media_blob_reap_candidate(sha256, orphaned_at, reason)
+         VALUES(?1, 0, 'queued clear regression')",
+        params![vec![0xa5_u8; 32]],
+    )
+    .expect("insert one full stale candidate batch");
+    drop(main);
+
+    let restarted = Database::initialize(library.paths.clone()).expect("restart database");
+    let client = restarted.client();
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    client
+        .pause_for_test(started_tx, release_rx)
+        .expect("queue writer pause");
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("writer paused");
+
+    let maintenance = client
+        .enqueue_media_maintenance_for_test(20, limits)
+        .expect("queue maintenance");
+    let clear = client
+        .enqueue_clear_draft_for_test(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: 12,
+            },
+            20,
+        )
+        .expect("queue draft clear behind initial maintenance");
+    release_tx.send(()).expect("release writer");
+
+    assert!(clear
+        .recv_timeout(Duration::from_secs(2))
+        .expect("clear reply")
+        .expect("clear draft"));
+    let (snapshot, report) = maintenance
+        .recv_timeout(Duration::from_secs(2))
+        .expect("maintenance reply")
+        .expect("maintenance after queued clear");
+    assert!(
+        snapshot.is_some(),
+        "the post-yield attachment mutation must be snapshot-backed"
+    );
+    assert_eq!(report.cleanup.retired_attachment_count, 1);
+}
+
+#[test]
 fn startup_lifecycle_recovery_never_reaps_without_a_verified_snapshot() {
     let library = TestLibrary::new();
     let limits = MediaLimits {

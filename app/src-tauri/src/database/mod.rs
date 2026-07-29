@@ -506,37 +506,6 @@ fn writer_loop(
                 reply,
             } => {
                 let snapshot = match snapshot {
-                    MediaMaintenanceSnapshotState::PendingAttachments => {
-                        match media::attachment_reclamation_is_eligible(&main, scan.now_ms()) {
-                            Ok(true) => safety_snapshot::create(
-                                &mut main,
-                                &mut media,
-                                &paths,
-                                SafetySnapshotReason::MediaReclaim,
-                            )
-                            .map(MediaMaintenanceSnapshotState::Verified),
-                            Ok(false) => {
-                                if let Err(error) =
-                                    sender.send(WriterMessage::MaintainMediaWithSafetySnapshot {
-                                        scan,
-                                        snapshot: MediaMaintenanceSnapshotState::PendingCandidates,
-                                        reply,
-                                    })
-                                {
-                                    let WriterMessage::MaintainMediaWithSafetySnapshot {
-                                        reply,
-                                        ..
-                                    } = error.0
-                                    else {
-                                        unreachable!("failed message retained its variant");
-                                    };
-                                    let _ = reply.send(Err(DatabaseError::WriterUnavailable));
-                                }
-                                continue;
-                            }
-                            Err(error) => Err(error),
-                        }
-                    }
                     MediaMaintenanceSnapshotState::PendingCandidates => {
                         match media::media_blob_reclamation_preflight(
                             &mut main,
@@ -573,7 +542,20 @@ fn writer_loop(
                                 .map(MediaMaintenanceSnapshotState::Verified)
                             }
                             Ok(media::MediaBlobReclamationPreflight::NotNeeded) => {
-                                Ok(MediaMaintenanceSnapshotState::NotNeeded)
+                                match media::attachment_reclamation_is_eligible(
+                                    &main,
+                                    scan.now_ms(),
+                                ) {
+                                    Ok(true) => safety_snapshot::create(
+                                        &mut main,
+                                        &mut media,
+                                        &paths,
+                                        SafetySnapshotReason::MediaReclaim,
+                                    )
+                                    .map(MediaMaintenanceSnapshotState::Verified),
+                                    Ok(false) => Ok(MediaMaintenanceSnapshotState::NotNeeded),
+                                    Err(error) => Err(error),
+                                }
                             }
                             Err(error) => Err(error),
                         }
@@ -610,8 +592,7 @@ fn writer_loop(
                             let snapshot = match snapshot {
                                 MediaMaintenanceSnapshotState::Verified(snapshot) => Some(snapshot),
                                 MediaMaintenanceSnapshotState::NotNeeded => None,
-                                MediaMaintenanceSnapshotState::PendingAttachments
-                                | MediaMaintenanceSnapshotState::PendingCandidates => {
+                                MediaMaintenanceSnapshotState::PendingCandidates => {
                                     unreachable!("maintenance preflight was not resolved")
                                 }
                             };
@@ -772,6 +753,11 @@ fn writer_loop(
             }
             WriterMessage::SetShortcutSettings { input, reply } => {
                 let _ = reply.send(settings::set_shortcut_settings(&mut main, input));
+            }
+            #[cfg(test)]
+            WriterMessage::PauseForTest { started, release } => {
+                let _ = started.send(());
+                let _ = release.recv();
             }
             WriterMessage::Shutdown => break,
         }
