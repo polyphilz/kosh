@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
+    claude::ClaudeProcessManager,
     database::{Database, DatabaseClient, DatabasePaths, MediaLimits},
     embedding_runtime::{
         EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimeStatus,
@@ -45,6 +46,7 @@ impl IdGenerator for UuidV7Generator {
 
 pub(crate) struct RuntimeState {
     data_dir: PathBuf,
+    claude_processes: ClaudeProcessManager,
     passage_embedding_indexer: PassageEmbeddingIndexer,
     database: Arc<Database>,
     embedding_runtime: Arc<EmbeddingRuntime>,
@@ -116,6 +118,7 @@ impl RuntimeState {
         let pdf_extraction = start_optional_pdf_extraction(database.client());
         let media_limits = MediaLimits::default().validate()?;
         let state = Self {
+            claude_processes: ClaudeProcessManager::production(&data_dir),
             data_dir,
             passage_embedding_indexer,
             database: Arc::new(database),
@@ -162,6 +165,7 @@ impl RuntimeState {
         let database =
             Database::initialize(DatabasePaths::new(&data_dir)).expect("temporary Kosh database");
         Self {
+            claude_processes: ClaudeProcessManager::production(&data_dir),
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
             passage_embedding_indexer: PassageEmbeddingIndexer::disabled(),
@@ -180,6 +184,14 @@ impl RuntimeState {
 
     pub(crate) fn database_client(&self) -> DatabaseClient {
         self.database.client()
+    }
+
+    pub(crate) fn database_paths(&self) -> &DatabasePaths {
+        self.database.paths()
+    }
+
+    pub(crate) fn claude_processes(&self) -> &ClaudeProcessManager {
+        &self.claude_processes
     }
 
     pub(crate) fn embedding_runtime(&self) -> Arc<EmbeddingRuntime> {
