@@ -47,6 +47,7 @@ launch_receipt() {
           rendered: true,
           documentReadyState: "complete",
           rootChildCount: 1,
+          frontendOrigin: "http://127.0.0.1:1420",
           probeDataDir: $data,
           probeRequestId: "00000000-0000-7000-8000-000000000004"
         },
@@ -55,6 +56,7 @@ launch_receipt() {
           rendered: true,
           documentReadyState: "complete",
           rootChildCount: 1,
+          frontendOrigin: "http://127.0.0.1:1420",
           probeDataDir: $data,
           probeRequestId: "00000000-0000-7000-8000-000000000005"
         }
@@ -175,6 +177,12 @@ bad_ipc="$(jq '.webviews[0].probeRequestId = ""' <<<"$persistent")"
 persistent="$bad_ipc"
 write_aggregate local "$head_sha" true present "$persistent"
 expect_blocked "a webview has no backend IPC evidence"
+persistent="$original_persistent"
+
+bad_origin="$(jq '.webviews[0].frontendOrigin = "http://localhost:1420"' <<<"$persistent")"
+persistent="$bad_origin"
+write_aggregate local "$head_sha" true present "$persistent"
+expect_blocked "a webview loaded from an unowned frontend origin"
 persistent="$original_persistent"
 
 rm "$persistent_data/media.sqlite3"

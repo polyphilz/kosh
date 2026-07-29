@@ -93,6 +93,7 @@ jq -n \
         rendered: true,
         documentReadyState: "complete",
         rootChildCount: 1,
+        frontendOrigin: "http://127.0.0.1:1420",
         probeDataDir: $data,
         probeRequestId: "00000000-0000-7000-8000-000000000004"
       },
@@ -101,6 +102,7 @@ jq -n \
         rendered: true,
         documentReadyState: "complete",
         rootChildCount: 1,
+        frontendOrigin: "http://127.0.0.1:1420",
         probeDataDir: $data,
         probeRequestId: "00000000-0000-7000-8000-000000000005"
       }

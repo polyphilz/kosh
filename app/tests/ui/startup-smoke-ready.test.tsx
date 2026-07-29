@@ -60,6 +60,7 @@ describe("StartupSmokeReady", () => {
         rendered: true,
         documentReadyState: "complete",
         rootChildCount: 1,
+        frontendOrigin: window.location.origin,
         probeDataDir: "/tmp/kosh-startup",
         probeRequestId: "probe-1",
       });

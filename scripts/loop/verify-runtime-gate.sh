@@ -65,6 +65,7 @@ jq -e \
         .rendered == true
         and .rootChildCount > 0
         and (.documentReadyState == "interactive" or .documentReadyState == "complete")
+        and .frontendOrigin == "http://127.0.0.1:1420"
         and .probeDataDir == $launch.dataDir
         and (.probeRequestId | type) == "string"
         and (.probeRequestId | length) > 0

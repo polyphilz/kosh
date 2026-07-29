@@ -41,12 +41,13 @@ debug Tauri binary three times:
 
 Each launch also starts the exact-head Vite frontend and proves that the main
 and quick-add windows are constructed, both React roots render, both surfaces
-complete a distinct Tauri IPC probe against the expected data directory, both
-database files use WAL and foreign keys, and both embedded migration heads are
-applied. A blank/error webview therefore cannot issue a passing receipt. The
-fresh profile is disposable. The preserved profile is not: never delete,
-replace, or edit it to make a slice pass. On a genuinely new workstation,
-initialize it exactly once with:
+load from the gate-owned pinned IPv4 origin, both complete a distinct Tauri IPC
+probe against the expected data directory, both database files use WAL and
+foreign keys, and both embedded migration heads are applied. A blank, stale,
+or error webview therefore cannot issue a passing receipt. The fresh profile is
+disposable. The preserved profile is not: never delete, replace, or edit it to
+make a slice pass. On a genuinely new workstation, initialize it exactly once
+with:
 
 ```bash
 scripts/loop/runtime-gate.sh --bootstrap-persistent

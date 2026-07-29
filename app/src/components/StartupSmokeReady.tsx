@@ -22,6 +22,7 @@ export function StartupSmokeReady({ surface }: StartupSmokeReadyProps) {
         rendered: Boolean(root?.firstElementChild),
         documentReadyState: document.readyState,
         rootChildCount: root?.childElementCount ?? 0,
+        frontendOrigin: window.location.origin,
         probeDataDir: probe.dataDir,
         probeRequestId: probe.requestId,
       });

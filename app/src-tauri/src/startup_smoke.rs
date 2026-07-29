@@ -25,6 +25,7 @@ const HEAD_ENV: &str = "KOSH_STARTUP_SMOKE_HEAD";
 const EXPECT_ENV: &str = "KOSH_STARTUP_SMOKE_EXPECT";
 const READY_EVENT: &str = "kosh://startup-smoke-ready";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const FRONTEND_ORIGIN: &str = "http://127.0.0.1:1420";
 const CANARY: &str = "koshstartupcanaryv1";
 const CANARY_TITLE: &str = "Kosh progressive startup canary";
 const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
@@ -54,6 +55,7 @@ struct WebviewReady {
     rendered: bool,
     document_ready_state: String,
     root_child_count: u32,
+    frontend_origin: String,
     probe_data_dir: String,
     probe_request_id: String,
 }
@@ -304,6 +306,12 @@ fn wait_for_webviews(receiver: &mpsc::Receiver<String>) -> io::Result<Vec<Webvie
             return Err(invalid(format!(
                 "the {} webview emitted readiness while the document was {}",
                 ready.surface, ready.document_ready_state
+            )));
+        }
+        if ready.frontend_origin != FRONTEND_ORIGIN {
+            return Err(invalid(format!(
+                "the {} webview loaded from unexpected frontend origin {}",
+                ready.surface, ready.frontend_origin
             )));
         }
         if ready.probe_data_dir.is_empty() || ready.probe_request_id.is_empty() {
