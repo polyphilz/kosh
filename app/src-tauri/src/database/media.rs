@@ -1386,17 +1386,33 @@ pub(crate) fn load_media_payload(
                     SELECT 1
                     FROM tidbit_revision_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
+                    UNION ALL
+                    SELECT 1
+                    FROM research_run_attachment AS research_membership
+                    WHERE research_membership.attachment_id = attachment.id
                 )
              FROM attachment
              LEFT JOIN attachment_image AS image
                ON image.attachment_id = attachment.id
              WHERE attachment.id = ?1
-               AND attachment.deleted_at IS NULL
+               AND (
+                    attachment.deleted_at IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM research_run_attachment AS research_membership
+                        WHERE research_membership.attachment_id = attachment.id
+                    )
+               )
                AND (
                     EXISTS (
                         SELECT 1
                         FROM tidbit_revision_attachment AS membership
                         WHERE membership.attachment_id = attachment.id
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM research_run_attachment AS research_membership
+                        WHERE research_membership.attachment_id = attachment.id
                     )
                     OR EXISTS (
                         SELECT 1
@@ -3414,6 +3430,9 @@ fn load_integrity_attachment_batch(
             EXISTS(
                 SELECT 1 FROM tidbit_revision_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
+                UNION ALL
+                SELECT 1 FROM research_run_attachment AS research_membership
+                WHERE research_membership.attachment_id = attachment.id
             ),
             (
                 EXISTS(
@@ -4107,9 +4126,16 @@ fn reconcile_and_reap_from(
            AND expires_at <= ?1
            AND (
                 attachment_id IS NULL
-                OR NOT EXISTS (
-                    SELECT 1 FROM tidbit_revision_attachment AS membership
-                    WHERE membership.attachment_id = media_ingest_lease.attachment_id
+                OR (
+                    NOT EXISTS (
+                        SELECT 1 FROM tidbit_revision_attachment AS membership
+                        WHERE membership.attachment_id = media_ingest_lease.attachment_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM research_run_attachment AS research_membership
+                        WHERE research_membership.attachment_id =
+                              media_ingest_lease.attachment_id
+                    )
                 )
            )",
             params![now_ms],
@@ -4122,6 +4148,10 @@ fn reconcile_and_reap_from(
            AND NOT EXISTS (
                 SELECT 1 FROM tidbit_revision_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
+           )
+           AND NOT EXISTS (
+                SELECT 1 FROM research_run_attachment AS research_membership
+                WHERE research_membership.attachment_id = attachment.id
            )
            AND NOT EXISTS (
                 SELECT 1 FROM media_ingest_lease AS lease
@@ -4240,6 +4270,10 @@ fn reconcile_and_reap_from(
                     SELECT 1 FROM tidbit_revision_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
                )
+               OR EXISTS (
+                    SELECT 1 FROM research_run_attachment AS research_membership
+                    WHERE research_membership.attachment_id = attachment.id
+               )
             UNION
             SELECT image.preview_sha256
             FROM attachment_image AS image
@@ -4248,6 +4282,10 @@ fn reconcile_and_reap_from(
                OR EXISTS (
                     SELECT 1 FROM tidbit_revision_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
+               )
+               OR EXISTS (
+                    SELECT 1 FROM research_run_attachment AS research_membership
+                    WHERE research_membership.attachment_id = attachment.id
                )
          )",
             [],
@@ -4313,6 +4351,10 @@ fn reconcile_and_reap_from(
                            SELECT 1 FROM tidbit_revision_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                        )
+                       OR EXISTS (
+                           SELECT 1 FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
+                       )
                   )
                 UNION ALL
                 SELECT image.attachment_id
@@ -4324,6 +4366,10 @@ fn reconcile_and_reap_from(
                        OR EXISTS (
                            SELECT 1 FROM tidbit_revision_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
+                       )
+                       OR EXISTS (
+                           SELECT 1 FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
                        )
                   )
              )",
@@ -4431,6 +4477,11 @@ fn reconcile_blob_candidate_batch(
                                FROM tidbit_revision_attachment AS membership
                                WHERE membership.attachment_id = attachment.id
                            )
+                           OR EXISTS (
+                               SELECT 1
+                               FROM research_run_attachment AS research_membership
+                               WHERE research_membership.attachment_id = attachment.id
+                           )
                       )
                     UNION ALL
                     SELECT 1
@@ -4443,6 +4494,11 @@ fn reconcile_blob_candidate_batch(
                                SELECT 1
                                FROM tidbit_revision_attachment AS membership
                                WHERE membership.attachment_id = attachment.id
+                           )
+                           OR EXISTS (
+                               SELECT 1
+                               FROM research_run_attachment AS research_membership
+                               WHERE research_membership.attachment_id = attachment.id
                            )
                       )
                  )",

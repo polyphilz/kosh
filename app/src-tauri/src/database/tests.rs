@@ -2,6 +2,7 @@ use std::sync::{Arc, Barrier};
 
 use refinery::Target;
 use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{
@@ -377,6 +378,114 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
             .pointer("/mentions/0/citationNumber")
             .and_then(serde_json::Value::as_u64),
         Some(1)
+    );
+}
+
+#[test]
+fn research_media_upgrade_backfills_durable_attachment_references() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    migrations::main_runner()
+        .set_target(Target::Version(14))
+        .run(&mut main)
+        .expect("main schema through research citation mentions");
+    let mut media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
+            .expect("fresh media writer");
+    migrations::run_media(&mut media).expect("media schema");
+    let hash = Sha256::digest(b"x").to_vec();
+    main.execute(
+        "INSERT INTO attachment(
+            id, created_at, updated_at, deleted_at, sha256, display_filename,
+            media_type, byte_length, kind, extraction_state
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000151',
+            1, 20, 20, ?1, 'legacy-research.txt', 'text/plain', 1,
+            'TEXT', 'READY'
+         )",
+        params![&hash],
+    )
+    .expect("legacy research attachment");
+    media
+        .execute(
+            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+             VALUES(?1, x'78', 1, 1)",
+            params![&hash],
+        )
+        .expect("legacy research media");
+    let final_answer = serde_json::json!({
+        "markdown": "Retained attachment evidence.【1】",
+        "citations": [{
+            "number": 1,
+            "label": "legacy-research.txt, lines 1–1",
+            "evidenceKind": "TEXT_LINES",
+            "evidence": {
+                "passageId": "019f547b-6200-7000-8000-000000000152",
+                "excerpt": "x",
+                "headingContext": [],
+                "constructionVersion": "legacy",
+                "state": "CURRENT",
+                "locator": {
+                    "kind": "TEXT_LINES",
+                    "startLine": 1,
+                    "endLine": 1
+                },
+                "tidbit": null,
+                "attachment": {
+                    "id": "019f547b-6200-7000-8000-000000000151",
+                    "extractionId": "019f547b-6200-7000-8000-000000000153",
+                    "displayFilename": "legacy-research.txt",
+                    "mediaType": "text/plain",
+                    "deleted": false
+                },
+                "sources": []
+            }
+        }],
+        "mentions": [],
+        "issues": []
+    })
+    .to_string();
+    main.execute(
+        "INSERT INTO research_run(
+            id, query, status, created_at, started_at, completed_at, updated_at,
+            final_answer_json
+         ) VALUES(
+            '019f547b-6200-7000-8000-000000000154',
+            'Legacy attachment question',
+            'COMPLETED',
+            10, 11, 12, 12, ?1
+         )",
+        params![final_answer],
+    )
+    .expect("legacy durable research answer");
+    drop(main);
+    drop(media);
+
+    let database = Database::initialize(pair.paths.clone()).expect("research media upgrade");
+    let main = database.open_main_read_only().expect("main reader");
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*)
+             FROM research_run_attachment
+             WHERE research_run_id =
+                       '019f547b-6200-7000-8000-000000000154'
+               AND attachment_id =
+                       '019f547b-6200-7000-8000-000000000151'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("backfilled research attachment"),
+        1
+    );
+    drop(main);
+    assert_eq!(
+        database
+            .client()
+            .load_media_payload("019f547b-6200-7000-8000-000000000151".into(), 30, None, 64,)
+            .expect("backfilled research media remains readable")
+            .bytes,
+        b"x"
     );
 }
 

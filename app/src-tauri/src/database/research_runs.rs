@@ -538,7 +538,7 @@ fn apply_event(
             let answer = write.payload.get("answer").ok_or_else(|| {
                 DatabaseError::InvalidInput("grounded event has no answer".into())
             })?;
-            validate_final_answer(answer)?;
+            let validated = validate_final_answer(answer)?;
             let json = serde_json::to_string(answer)
                 .map_err(|error| DatabaseError::InvalidInput(error.to_string()))?;
             let changed = transaction.execute(
@@ -551,6 +551,19 @@ fn apply_event(
                 return Err(DatabaseError::InvalidInput(
                     "research run already has a grounded answer".into(),
                 ));
+            }
+            for attachment_id in validated
+                .citations
+                .iter()
+                .filter_map(|citation| citation.evidence.attachment.as_ref())
+                .map(|attachment| attachment.id.as_str())
+            {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO research_run_attachment(
+                        research_run_id, attachment_id
+                     ) VALUES(?1, ?2)",
+                    params![write.run_id, attachment_id],
+                )?;
             }
         }
         "FINISHED" => {
@@ -665,7 +678,7 @@ fn validate_event_envelope(write: &AppendResearchEventWrite) -> Result<()> {
     Ok(())
 }
 
-fn validate_final_answer(answer: &Value) -> Result<()> {
+fn validate_final_answer(answer: &Value) -> Result<GroundedResearchAnswer> {
     let answer: GroundedResearchAnswer =
         serde_json::from_value(answer.clone()).map_err(|error| {
             DatabaseError::InvalidInput(format!("grounded answer is invalid: {error}"))
@@ -710,7 +723,7 @@ fn validate_final_answer(answer: &Value) -> Result<()> {
         }
         previous_end = mention.end_byte;
     }
-    Ok(())
+    Ok(answer)
 }
 
 fn citation_freshness(

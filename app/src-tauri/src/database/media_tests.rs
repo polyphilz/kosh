@@ -7,6 +7,7 @@ use std::{
 };
 
 use rusqlite::{params, Connection, MAIN_DB};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -21,6 +22,7 @@ use super::{
         MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
         PDF_RECOVERY_BATCH_SIZE,
     },
+    research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CitationLocator,
     ClearDraftInput, Database, DatabaseError, DatabasePaths, EditTidbitInput, LexicalSearchMode,
@@ -2379,6 +2381,139 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     assert_eq!(after_grace.cleanup.deleted_blob_count, 1);
     assert_eq!(after_grace.cleanup.reclaimed_bytes, 9);
     assert_eq!(blob_count(&library.database), 0);
+}
+
+#[test]
+fn durable_research_citation_retains_draft_only_attachment_media() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 10,
+        orphan_grace_period_ms: 5,
+        ..MediaLimits::default()
+    };
+    let attachment = library.ingest(
+        (0x740, 0x741, 0x742),
+        "research.txt",
+        "text/plain",
+        b"durable research evidence",
+        11,
+        limits,
+    );
+    let run_id = id(0x743);
+    let client = library.database.client();
+    client
+        .create_research_run(CreateResearchRunWrite {
+            id: run_id.clone(),
+            rerun_of_id: None,
+            query: "What does the attachment say?".into(),
+            requested_model: None,
+            requested_effort: None,
+            now_ms: 12,
+        })
+        .expect("create attachment research run");
+    let append = |sequence, kind: &str, fields: serde_json::Value| {
+        let mut payload = fields.as_object().cloned().expect("event object");
+        payload.insert("runId".into(), json!(run_id));
+        payload.insert("sequence".into(), json!(sequence));
+        payload.insert("kind".into(), json!(kind));
+        client
+            .append_research_event(AppendResearchEventWrite {
+                run_id: run_id.clone(),
+                sequence,
+                kind: kind.into(),
+                payload: payload.into(),
+                now_ms: 12 + i64::from(sequence),
+            })
+            .expect("append attachment research event");
+    };
+    append(1, "STARTED", json!({}));
+    let markdown = "The retained evidence is durable.【1】";
+    let marker_start = markdown.find('【').expect("citation marker");
+    append(
+        2,
+        "GROUNDED_FINAL_OUTPUT",
+        json!({
+            "answer": {
+                "markdown": markdown,
+                "citations": [{
+                    "number": 1,
+                    "label": "research.txt, lines 1–1",
+                    "evidenceKind": "TEXT_LINES",
+                    "evidence": {
+                        "passageId": id(0x744),
+                        "excerpt": "durable research evidence",
+                        "headingContext": [],
+                        "constructionVersion": "test",
+                        "state": "CURRENT",
+                        "locator": {
+                            "kind": "TEXT_LINES",
+                            "startLine": 1,
+                            "endLine": 1
+                        },
+                        "tidbit": null,
+                        "attachment": {
+                            "id": attachment.id,
+                            "extractionId": id(0x745),
+                            "displayFilename": "research.txt",
+                            "mediaType": "text/plain",
+                            "deleted": false
+                        },
+                        "sources": []
+                    }
+                }],
+                "mentions": [{
+                    "citationNumber": 1,
+                    "startByte": marker_start,
+                    "endByte": markdown.len()
+                }],
+                "issues": []
+            }
+        }),
+    );
+    append(
+        3,
+        "FINISHED",
+        json!({"outcome": "SUCCEEDED", "stderrTruncated": false}),
+    );
+
+    let main = library.database.open_main_read_only().expect("main reader");
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*)
+             FROM research_run_attachment
+             WHERE research_run_id = ?1 AND attachment_id = ?2",
+            params![run_id, attachment.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("durable research media reference"),
+        1
+    );
+    drop(main);
+    assert!(client
+        .clear_draft_at(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: 10,
+            },
+            16,
+        )
+        .expect("clear attachment draft"));
+
+    let after_expiry = client
+        .maintain_media(22, limits)
+        .expect("maintain research-cited media");
+    assert_eq!(after_expiry.cleanup.retired_attachment_count, 0);
+    let after_grace = client
+        .maintain_media(28, limits)
+        .expect("recheck research-cited media");
+    assert_eq!(after_grace.cleanup.deleted_blob_count, 0);
+    assert_eq!(
+        client
+            .load_media_payload(attachment.id, 28, None, 64)
+            .expect("research-cited media remains readable")
+            .bytes,
+        b"durable research evidence"
+    );
 }
 
 #[test]

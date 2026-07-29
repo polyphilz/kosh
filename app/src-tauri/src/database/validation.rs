@@ -39,6 +39,7 @@ const MAIN_TABLES: &[&str] = &[
     "pdf_page_extraction",
     "image_ocr_queue",
     "research_run",
+    "research_run_attachment",
     "research_run_event",
     "source",
     "tidbit",
@@ -404,6 +405,11 @@ fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<
                 SELECT 1
                 FROM tidbit_revision_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM research_run_attachment AS research_membership
+                WHERE research_membership.attachment_id = attachment.id
             )
          ORDER BY id",
     )?;
