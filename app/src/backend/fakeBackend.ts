@@ -325,6 +325,7 @@ export class FakeBackend implements Backend {
       operation,
       changedItems,
       reclaimedBytes: 0,
+      safetySnapshotId: operation === "RECLAIM_MEDIA" ? "media-reclaim-browser-fixture" : null,
       message,
       completedAtMs: this.probe.nowMs,
     };

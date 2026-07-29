@@ -26,6 +26,7 @@ use super::{
         AppendResearchEventWrite, CreateResearchRunWrite, ListResearchRunsInput, ResearchRunPage,
         ResearchRunRecord, SaveResearchAnswerWrite,
     },
+    safety_snapshot::SafetySnapshotReport,
     search::{
         PassageSearchResult, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
     },
@@ -197,6 +198,11 @@ pub(super) enum WriterMessage {
     MaintainMedia {
         scan: MediaMaintenanceScan,
         reply: SyncSender<Result<MediaMaintenanceReport>>,
+    },
+    MaintainMediaWithSafetySnapshot {
+        scan: MediaMaintenanceScan,
+        snapshot: Option<SafetySnapshotReport>,
+        reply: SyncSender<Result<(SafetySnapshotReport, MediaMaintenanceReport)>>,
     },
     RecoverMediaLifecycleBatch {
         now_ms: i64,
@@ -615,6 +621,24 @@ impl DatabaseClient {
         self.sender
             .send(WriterMessage::MaintainMedia {
                 scan: MediaMaintenanceScan::new(now_ms, limits)?,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn maintain_media_with_safety_snapshot(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> Result<(SafetySnapshotReport, MediaMaintenanceReport)> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MaintainMediaWithSafetySnapshot {
+                scan: MediaMaintenanceScan::new(now_ms, limits)?,
+                snapshot: None,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;

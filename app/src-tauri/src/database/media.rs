@@ -4553,13 +4553,15 @@ fn load_media_blob_hash_batch(
     Ok(hashes)
 }
 
-fn validate_filename(filename: &str) -> Result<()> {
+pub(super) fn validate_filename(filename: &str) -> Result<()> {
     if filename.trim() != filename
         || filename.is_empty()
         || filename.chars().count() > MAX_FILENAME_CHARS
-        || filename
-            .chars()
-            .any(|character| character.is_control() || matches!(character, '/' | '\\' | ':'))
+        || filename.chars().any(|character| {
+            character.is_control()
+                || is_bidi_control(character)
+                || matches!(character, '/' | '\\' | ':')
+        })
         || matches!(filename, "." | "..")
     {
         return Err(DatabaseError::InvalidInput(
@@ -4567,6 +4569,17 @@ fn validate_filename(filename: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn is_bidi_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
 }
 
 fn validate_media_type(media_type: &str) -> Result<()> {

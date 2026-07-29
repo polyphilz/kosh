@@ -52,7 +52,11 @@ pnpm relevance:empty
 pnpm relevance:lexical
 pnpm relevance:scale
 pnpm relevance:lexical-scale
+pnpm hardening:report
 ```
+
+`pnpm hardening:report` is commit-bound and therefore requires a clean
+worktree.
 
 The relevance commands validate the checked-in search corpus, emit the
 intentionally failing empty-retrieval baseline, record the current lexical
@@ -62,6 +66,19 @@ real migrated, WAL-backed Kosh library and the production write, FTS,
 authoritative hydration, ranking, and citation-resolution paths. It enforces a
 100 ms p95 interactive budget and writes machine/runtime metadata beside its
 ignored report.
+
+## Supported scale and limits
+
+Kosh's v1 target is a 10,000-tidbit local library. The release-mode lexical
+gate must keep interactive query latency at or below 100 ms p95 on its
+deterministic 200-query workload. Each draft supports up to 32 attachments;
+each direct attachment, source image, or PDF may be up to 32 MiB. PDFs may
+contain up to 2,000 pages, with OCR bounded to 128 image-only pages. Searchable
+text extraction reads at most 4 MiB and 5,000 passages per attachment.
+
+See [docs/hardening.md](docs/hardening.md) for the complete performance,
+recovery, security, accessibility, and supported-input matrix, plus the
+reproducible hardening report command.
 
 ## Lexical search
 

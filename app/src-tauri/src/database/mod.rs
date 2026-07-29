@@ -9,6 +9,7 @@ mod migrations;
 pub(crate) mod passages;
 mod paths;
 mod research_runs;
+mod safety_snapshot;
 pub(crate) mod search;
 pub(crate) mod settings;
 pub(crate) mod tidbits;
@@ -23,6 +24,8 @@ mod embedding_index_tests;
 mod maintenance_tests;
 #[cfg(test)]
 mod media_tests;
+#[cfg(test)]
+mod reliability_tests;
 #[cfg(test)]
 mod research_runs_tests;
 #[cfg(test)]
@@ -59,6 +62,7 @@ pub use passages::{
 pub use paths::DatabasePaths;
 pub(crate) use research_runs::{AppendResearchEventWrite, CreateResearchRunWrite};
 pub use research_runs::{ListResearchRunsInput, ResearchRunPage, ResearchRunRecord};
+pub(crate) use safety_snapshot::SafetySnapshotReason;
 pub use search::{
     LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
     SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
@@ -137,6 +141,21 @@ impl Database {
         let mut media = connection::open_writer(&paths.media, DatabaseKind::Media, media_state)?;
         let main_status = migrations::inspect_main(&mut main)?;
         let media_status = migrations::inspect_media(&mut media)?;
+        if (main_status.pending || media_status.pending)
+            && main_state == FileState::Existing
+            && media_state == FileState::Existing
+        {
+            let report = safety_snapshot::create(
+                &mut main,
+                &mut media,
+                &paths,
+                SafetySnapshotReason::Migration,
+            )?;
+            log::info!(
+                "created verified pre-migration safety snapshot {}",
+                report.id
+            );
+        }
         // Grouped migrations are transactional within each file. Cross-file work is
         // ordered media-first so a crash can leave only an orphaned media capability,
         // never authored metadata pointing at bytes that were not committed.
@@ -158,9 +177,10 @@ impl Database {
 
         let (sender, receiver) = mpsc::channel();
         let client = DatabaseClient::new(sender.clone());
+        let writer_paths = paths.clone();
         let writer_thread = thread::Builder::new()
             .name("kosh-database-writer".into())
-            .spawn(move || writer_loop(main, media, receiver, sender))?;
+            .spawn(move || writer_loop(main, media, writer_paths, receiver, sender))?;
 
         let database = Self {
             paths,
@@ -252,6 +272,7 @@ impl Drop for Database {
 fn writer_loop(
     mut main: Connection,
     mut media: Connection,
+    paths: DatabasePaths,
     receiver: Receiver<WriterMessage>,
     sender: mpsc::Sender<WriterMessage>,
 ) {
@@ -496,6 +517,53 @@ fn writer_loop(
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
+                }
+            }
+            WriterMessage::MaintainMediaWithSafetySnapshot {
+                scan,
+                snapshot,
+                reply,
+            } => {
+                let snapshot = snapshot.map_or_else(
+                    || {
+                        safety_snapshot::create(
+                            &mut main,
+                            &mut media,
+                            &paths,
+                            SafetySnapshotReason::MediaReclaim,
+                        )
+                    },
+                    Ok,
+                );
+                match snapshot {
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                    Ok(snapshot) => match scan.step(&mut main, &mut media) {
+                        Ok(media::MediaMaintenanceScanStep::Continue(scan)) => {
+                            if let Err(error) =
+                                sender.send(WriterMessage::MaintainMediaWithSafetySnapshot {
+                                    scan,
+                                    snapshot: Some(snapshot),
+                                    reply,
+                                })
+                            {
+                                let WriterMessage::MaintainMediaWithSafetySnapshot {
+                                    reply, ..
+                                } = error.0
+                                else {
+                                    unreachable!("failed message retained its variant");
+                                };
+                                let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                            }
+                        }
+                        Ok(media::MediaMaintenanceScanStep::Complete(report)) => {
+                            let _ = reply.send(Ok((snapshot, report)));
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                        }
+                    },
                 }
             }
             WriterMessage::RecoverMediaLifecycleBatch {

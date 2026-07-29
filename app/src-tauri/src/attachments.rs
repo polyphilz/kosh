@@ -543,7 +543,10 @@ fn safe_attachment_filename(value: &str) -> String {
         .trim()
         .chars()
         .map(|character| {
-            if character.is_control() || matches!(character, '/' | '\\' | ':') {
+            if character.is_control()
+                || is_bidi_control(character)
+                || matches!(character, '/' | '\\' | ':')
+            {
                 '_'
             } else {
                 character
@@ -557,6 +560,17 @@ fn safe_attachment_filename(value: &str) -> String {
         sanitized
     };
     truncate_filename_preserving_extension(sanitized, MAX_MATERIALIZED_FILENAME_BYTES)
+}
+
+fn is_bidi_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
 }
 
 fn truncate_filename_preserving_extension(value: &str, max_bytes: usize) -> String {
@@ -1047,6 +1061,10 @@ mod tests {
         assert_eq!(safe_text_filename.len(), 160);
         assert!(safe_text_filename.ends_with(".txt"));
         assert_eq!(attachment_media_type(&safe_text_filename), "text/plain");
+        assert_eq!(
+            safe_attachment_filename("invoice\u{202e}fdp.exe"),
+            "invoice_fdp.exe"
+        );
     }
 
     #[test]

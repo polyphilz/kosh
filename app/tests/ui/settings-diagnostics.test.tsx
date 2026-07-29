@@ -70,6 +70,7 @@ describe("settings diagnostics and maintenance", () => {
       operation: "REBUILD_EMBEDDINGS",
       changedItems: 0,
       reclaimedBytes: 0,
+      safetySnapshotId: null,
       message: "Embedding rebuild completed safely.",
       completedAtMs: 1,
     });

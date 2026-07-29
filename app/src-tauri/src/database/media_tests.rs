@@ -15,7 +15,7 @@ use super::{
     drafts::SaveDraftWrite,
     media::{
         recover_media_lifecycle_batch, referenced_attachments, split_pdf_page_passages,
-        AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
+        validate_filename, AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
         IngestAttachmentMetadata, IngestAttachmentWrite, IngestGenericAttachmentWrite,
         IngestImageWrite, IngestPdfWrite, MediaByteRange, MediaRangeRequest, PdfExtractionStatus,
         PdfPageExtraction, PdfPageSource, StagedAttachment, TextFileSegment,
@@ -30,6 +30,26 @@ use super::{
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
+
+#[test]
+fn display_filenames_reject_paths_controls_and_bidirectional_spoofing() {
+    for filename in [
+        "../notes.txt",
+        r"folder\notes.txt",
+        "volume:notes.txt",
+        "line\nbreak.txt",
+        "invoice\u{202e}fdp.exe",
+        "\u{2066}isolated\u{2069}.txt",
+        ".",
+        "..",
+    ] {
+        assert!(
+            validate_filename(filename).is_err(),
+            "unsafe filename was accepted: {filename:?}"
+        );
+    }
+    validate_filename("考え-notes (final).pdf").expect("ordinary Unicode filename");
+}
 
 struct TestLibrary {
     _root: TempDir,
