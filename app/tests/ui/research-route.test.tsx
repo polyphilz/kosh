@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type {
+  ResearchProcessEvent,
   ResearchRunCursor,
   ResearchRunRecord,
   ResearchRunSummary,
@@ -154,6 +155,80 @@ describe("research route", () => {
     });
     expect(screen.getByRole("heading", { name: latest.query })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("coalesces an event burst into one in-flight and one trailing history read", async () => {
+    const backend = new FakeBackend();
+    const runId = "run-streaming";
+    const initial = researchRecord(runId, "Streaming run", 1);
+    initial.finalAnswer!.markdown = "Initial persisted answer.";
+    const latest = researchRecord(runId, "Streaming run", 4);
+    latest.finalAnswer!.markdown = "Latest persisted answer.";
+    const events: ResearchProcessEvent[] = [
+      { runId, sequence: 1, kind: "STARTED" },
+      {
+        runId,
+        sequence: 2,
+        kind: "GROUNDED_FINAL_OUTPUT",
+        answer: latest.finalAnswer!,
+      },
+      {
+        runId,
+        sequence: 3,
+        kind: "FINISHED",
+        outcome: "SUCCEEDED",
+        stderrTruncated: false,
+      },
+    ];
+    latest.events = events;
+    const partial = { ...latest, events: [events[0]!] };
+    const firstRefresh = deferred<ResearchRunRecord>();
+    const trailingRefresh = deferred<ResearchRunRecord>();
+    let listener: ((event: ResearchProcessEvent) => void) | undefined;
+    let activeReads = 0;
+    let maximumActiveReads = 0;
+    vi.spyOn(backend, "listResearchRuns").mockResolvedValue({
+      items: [researchSummary(initial)],
+      nextCursor: null,
+    });
+    vi.spyOn(backend, "onResearchProcessEvent").mockImplementation(async (handler) => {
+      listener = handler;
+      return () => undefined;
+    });
+    const loadRun = vi.spyOn(backend, "loadResearchRun").mockImplementation(async () => {
+      if (loadRun.mock.calls.length === 1) return initial;
+      activeReads += 1;
+      maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+      try {
+        return await (loadRun.mock.calls.length === 2
+          ? firstRefresh.promise
+          : trailingRefresh.promise);
+      } finally {
+        activeReads -= 1;
+      }
+    });
+
+    renderRoute(backend);
+    expect(await screen.findByText("Initial persisted answer.")).toBeInTheDocument();
+    expect(listener).toBeDefined();
+    for (const event of events) listener!(event);
+    expect(loadRun).toHaveBeenCalledTimes(2);
+    expect(maximumActiveReads).toBe(1);
+
+    await act(async () => {
+      firstRefresh.resolve(partial);
+      await firstRefresh.promise;
+    });
+    await waitFor(() => expect(loadRun).toHaveBeenCalledTimes(3));
+    expect(maximumActiveReads).toBe(1);
+    await act(async () => {
+      trailingRefresh.resolve(latest);
+      await trailingRefresh.promise;
+    });
+
+    expect(await screen.findByText("Latest persisted answer.")).toBeInTheDocument();
+    expect(loadRun).toHaveBeenCalledTimes(3);
+    expect(maximumActiveReads).toBe(1);
   });
 });
 

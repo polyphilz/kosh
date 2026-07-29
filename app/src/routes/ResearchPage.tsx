@@ -39,26 +39,39 @@ export function ResearchPage() {
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
-    const loadRun = (event: ResearchProcessEvent) => {
+    const refreshes = new Map<string, { pending: boolean }>();
+    const refreshRun = async (runId: string, state: { pending: boolean }) => {
+      do {
+        state.pending = false;
+        try {
+          const record = await backend.loadResearchRun(runId);
+          if (!active) return;
+          const storedSequence = record.events.at(-1)?.sequence ?? 0;
+          if (storedSequence < (latestEventSequence.current.get(runId) ?? 0)) continue;
+          setHistory((items) => upsertSummary(items, record));
+          if (selectedId.current === runId) setRun(record);
+        } catch (reason) {
+          if (active && selectedId.current === runId) setError(errorMessage(reason));
+        }
+      } while (active && state.pending);
+      refreshes.delete(runId);
+    };
+    const scheduleRunRefresh = (event: ResearchProcessEvent) => {
       const expectedSequence = Math.max(
         latestEventSequence.current.get(event.runId) ?? 0,
         event.sequence,
       );
       latestEventSequence.current.set(event.runId, expectedSequence);
-      void backend
-        .loadResearchRun(event.runId)
-        .then((record) => {
-          if (!active) return;
-          const storedSequence = record.events.at(-1)?.sequence ?? 0;
-          if (storedSequence < (latestEventSequence.current.get(event.runId) ?? 0)) return;
-          setHistory((items) => upsertSummary(items, record));
-          if (selectedId.current === event.runId) setRun(record);
-        })
-        .catch((reason: unknown) => {
-          if (active) setError(errorMessage(reason));
-        });
+      const existing = refreshes.get(event.runId);
+      if (existing) {
+        existing.pending = true;
+        return;
+      }
+      const state = { pending: false };
+      refreshes.set(event.runId, state);
+      void refreshRun(event.runId, state);
     };
-    void backend.onResearchProcessEvent(loadRun).then((stop) => {
+    void backend.onResearchProcessEvent(scheduleRunRefresh).then((stop) => {
       if (active) unlisten = stop;
       else stop();
     });
