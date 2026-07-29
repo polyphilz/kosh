@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{io::Cursor, sync::Arc};
 
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -16,9 +16,9 @@ use crate::database::{
 
 use super::{
     mcp::ResearchMcpReply, EphemeralResearchMcpServer, ResearchErrorCode, ResearchEventKind,
-    ResearchLimits, ResearchMcpSession, ResearchRun, EXACT_SEARCH_TOOL, HYBRID_SEARCH_TOOL,
-    INSPECT_ATTACHMENT_SEGMENTS_TOOL, INSPECT_SOURCES_TOOL, MCP_PROTOCOL_VERSION,
-    READ_CURRENT_TIDBIT_TOOL, READ_PASSAGE_CONTEXT_TOOL, RESEARCH_TOOL_NAMES,
+    ResearchLimits, ResearchMcpSession, ResearchQueryEmbedder, ResearchRun, EXACT_SEARCH_TOOL,
+    HYBRID_SEARCH_TOOL, INSPECT_ATTACHMENT_SEGMENTS_TOOL, INSPECT_SOURCES_TOOL,
+    MCP_PROTOCOL_VERSION, READ_CURRENT_TIDBIT_TOOL, READ_PASSAGE_CONTEXT_TOOL, RESEARCH_TOOL_NAMES,
 };
 
 const CAPTURE_DRAFT_ID: u64 = 0x100;
@@ -27,6 +27,14 @@ struct TestLibrary {
     _root: TempDir,
     database: Database,
     staging: std::path::PathBuf,
+}
+
+struct StubQueryEmbedder(Vec<f32>);
+
+impl ResearchQueryEmbedder for StubQueryEmbedder {
+    fn embed_query(&self, _query: &str) -> Result<Vec<f32>, String> {
+        Ok(self.0.clone())
+    }
 }
 
 impl TestLibrary {
@@ -115,6 +123,17 @@ impl TestLibrary {
             limits,
         )
         .expect("bounded research run")
+    }
+
+    fn run_with_embedder(&self, embedding: Vec<f32>) -> ResearchRun {
+        ResearchRun::from_read_only_connection(
+            self.database
+                .open_main_read_only()
+                .expect("read-only research connection"),
+            Some(Arc::new(StubQueryEmbedder(embedding))),
+            ResearchLimits::default(),
+        )
+        .expect("embedded research run")
     }
 
     fn save_capture(&self, body: &str, now_ms: i64) {
@@ -258,6 +277,20 @@ fn exact_search_paginates_with_opaque_run_scoped_handles() {
     );
 
     let second = run
+        .call_tool(
+            READ_CURRENT_TIDBIT_TOOL,
+            json!({ "cursor": cursor.clone(), "limit": 1 }),
+        )
+        .expect_err("cursor rejected by the wrong tool");
+    assert_eq!(second.code, ResearchErrorCode::CursorWrongTool);
+    let second = run
+        .call_tool(
+            HYBRID_SEARCH_TOOL,
+            json!({ "cursor": cursor.clone(), "limit": 1 }),
+        )
+        .expect_err("cursor rejected by the wrong search mode");
+    assert_eq!(second.code, ResearchErrorCode::CursorWrongTool);
+    let second = run
         .call_tool(EXACT_SEARCH_TOOL, json!({ "cursor": cursor, "limit": 1 }))
         .expect("second exact page");
     assert_eq!(second["items"].as_array().map(Vec::len), Some(1));
@@ -271,6 +304,47 @@ fn exact_search_paginates_with_opaque_run_scoped_handles() {
             .code,
         ResearchErrorCode::HandleNotFound
     );
+}
+
+#[test]
+fn cursor_survives_a_page_that_exceeds_the_response_budget() {
+    let library = TestLibrary::new();
+    for index in 0..6 {
+        library.create_tidbit(
+            0x350 + index * 4,
+            &format!("retryable_cursor_budget_evidence item {index}."),
+            "Cursor budget source",
+        );
+    }
+    let limits = ResearchLimits {
+        max_response_bytes: 1_024,
+        max_run_response_bytes: 16 * 1_024,
+        ..ResearchLimits::default()
+    };
+    let mut run = library.run_with_limits(limits);
+    let first = run
+        .call_tool(
+            EXACT_SEARCH_TOOL,
+            json!({ "query": "retryable_cursor_budget_evidence", "limit": 1 }),
+        )
+        .expect("first bounded page");
+    let cursor = first["nextCursor"]
+        .as_str()
+        .expect("search continuation")
+        .to_owned();
+    assert_eq!(
+        run.call_tool(
+            EXACT_SEARCH_TOOL,
+            json!({ "cursor": cursor.clone(), "limit": 6 }),
+        )
+        .expect_err("oversized continuation")
+        .code,
+        ResearchErrorCode::LimitExceeded
+    );
+    let retried = run
+        .call_tool(EXACT_SEARCH_TOOL, json!({ "cursor": cursor, "limit": 1 }))
+        .expect("retry cursor with a smaller page");
+    assert_eq!(retried["items"].as_array().map(Vec::len), Some(1));
 }
 
 #[test]
@@ -291,6 +365,32 @@ fn hybrid_search_falls_back_to_lexical_without_a_model() {
     assert_eq!(output["executionMode"], "LEXICAL_ONLY");
     assert_eq!(output["semanticReadiness"], "WAITING_FOR_RUNTIME");
     assert_eq!(output["items"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn hybrid_search_falls_back_when_the_local_embedding_is_invalid() {
+    let library = TestLibrary::new();
+    library.create_tidbit(
+        0x410,
+        "invalid_embedding_fallback_evidence remains lexically searchable.",
+        "Fallback notes",
+    );
+    for embedding in [vec![0.0; 4], {
+        let mut embedding = vec![0.0; 768];
+        embedding[0] = f32::NAN;
+        embedding
+    }] {
+        let output = library
+            .run_with_embedder(embedding)
+            .call_tool(
+                HYBRID_SEARCH_TOOL,
+                json!({ "query": "invalid_embedding_fallback_evidence" }),
+            )
+            .expect("invalid embedding lexical fallback");
+        assert_eq!(output["executionMode"], "LEXICAL_ONLY");
+        assert_eq!(output["semanticReadiness"], "FAILED");
+        assert_eq!(output["items"].as_array().map(Vec::len), Some(1));
+    }
 }
 
 #[test]

@@ -305,6 +305,7 @@ pub struct ResearchRun {
     citation_handles: HashMap<String, String>,
     resource_handles: HashMap<String, String>,
     cursors: HashMap<String, ResearchCursor>,
+    pending_cursor_consumptions: Vec<String>,
     events: Vec<ResearchEvent>,
     tool_calls: u32,
     response_bytes: usize,
@@ -348,6 +349,7 @@ impl ResearchRun {
             citation_handles: HashMap::new(),
             resource_handles: HashMap::new(),
             cursors: HashMap::new(),
+            pending_cursor_consumptions: Vec::new(),
             events: Vec::new(),
             tool_calls: 0,
             response_bytes: 0,
@@ -437,15 +439,29 @@ impl ResearchRun {
         let result = self.dispatch(tool, arguments);
         match result {
             Ok((output, item_count)) => {
-                let response = envelope(&output)?;
-                let bytes = serde_json::to_vec(&response)
-                    .map_err(|error| ResearchError::malformed(error.to_string()))?
-                    .len();
+                let response = match envelope(&output) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        self.preserve_pending_cursors();
+                        self.record_error(tool, call_number, argument_bytes, &error);
+                        return Err(error);
+                    }
+                };
+                let bytes = match serde_json::to_vec(&response) {
+                    Ok(bytes) => bytes.len(),
+                    Err(error) => {
+                        let error = ResearchError::malformed(error.to_string());
+                        self.preserve_pending_cursors();
+                        self.record_error(tool, call_number, argument_bytes, &error);
+                        return Err(error);
+                    }
+                };
                 if bytes > self.limits.max_response_bytes {
                     let error = ResearchError::new(
                         ResearchErrorCode::LimitExceeded,
                         "the research tool response exceeded its byte limit",
                     );
+                    self.preserve_pending_cursors();
                     self.record_error(tool, call_number, argument_bytes, &error);
                     return Err(error);
                 }
@@ -454,9 +470,11 @@ impl ResearchRun {
                         ResearchErrorCode::LimitExceeded,
                         "the research run exhausted its response-byte budget",
                     );
+                    self.preserve_pending_cursors();
                     self.record_error(tool, call_number, argument_bytes, &error);
                     return Err(error);
                 }
+                self.finalize_pending_cursors();
                 self.response_bytes += bytes;
                 self.push_event(ResearchEvent {
                     ordinal: 0,
@@ -471,6 +489,7 @@ impl ResearchRun {
                 Ok(response)
             }
             Err(error) => {
+                self.preserve_pending_cursors();
                 self.record_error(tool, call_number, argument_bytes, &error);
                 Err(error)
             }
@@ -558,7 +577,16 @@ impl ResearchRun {
                     (None, SemanticSearchReadiness::NotRequested)
                 } else if let Some(embedder) = &self.embedder {
                     match embedder.embed_query(&query) {
-                        Ok(embedding) => (Some(embedding), SemanticSearchReadiness::Ready),
+                        Ok(embedding)
+                            if database::embedding_index::validate_embedding(
+                                &embedding,
+                                crate::embedding::jina_v1_manifest().dimension as usize,
+                            )
+                            .is_ok() =>
+                        {
+                            (Some(embedding), SemanticSearchReadiness::Ready)
+                        }
+                        Ok(_) => (None, SemanticSearchReadiness::Failed),
                         Err(_) => (None, SemanticSearchReadiness::Failed),
                     }
                 } else {
@@ -577,7 +605,7 @@ impl ResearchRun {
                     exact: cursor_exact,
                     response,
                     offset,
-                } = self.take_cursor(
+                } = self.peek_cursor(
                     &cursor,
                     if exact {
                         "exact search"
@@ -597,7 +625,9 @@ impl ResearchRun {
                         "the pagination cursor belongs to a different search mode",
                     ));
                 }
-                return self.search_page(response, offset, exact, limit);
+                let page = self.search_page(response, offset, exact, limit)?;
+                self.consume_cursor(&cursor);
+                return Ok(page);
             }
             _ => {
                 return Err(ResearchError::invalid(
@@ -693,7 +723,7 @@ impl ResearchRun {
                 let ResearchCursor::Tidbit {
                     owner_handle,
                     offset,
-                } = self.take_cursor(&cursor, "read current tidbit")?
+                } = self.peek_cursor(&cursor, "read current tidbit")?
                 else {
                     return Err(ResearchError::new(
                         ResearchErrorCode::CursorWrongTool,
@@ -704,7 +734,7 @@ impl ResearchRun {
                 let (tidbit, passages, has_more) = self
                     .library
                     .current_tidbit_passage_page(&snapshot, offset, limit)?;
-                self.tidbit_page(
+                let page = self.tidbit_page(
                     owner_handle,
                     tidbit.title,
                     tidbit.display_title,
@@ -712,7 +742,9 @@ impl ResearchRun {
                     passages,
                     offset,
                     has_more,
-                )
+                )?;
+                self.consume_cursor(&cursor);
+                Ok(page)
             }
             _ => Err(ResearchError::invalid(
                 "provide exactly one of ownerHandle or cursor",
@@ -757,7 +789,7 @@ impl ResearchRun {
     fn inspect_sources(&mut self, arguments: Value) -> Result<(Value, usize), ResearchError> {
         let input: InspectSourcesInput = parse_arguments(arguments)?;
         let limit = self.validate_page_limit(input.limit)?;
-        let (citation_handle, owner_handle, sources, offset) = match (
+        let (citation_handle, owner_handle, sources, offset, consumed_cursor) = match (
             input.citation_handle.as_deref(),
             input.owner_handle.as_deref(),
             input.cursor.as_deref(),
@@ -769,6 +801,7 @@ impl ResearchRun {
                     .sources
                     .clone(),
                 0,
+                None,
             ),
             (None, Some(owner_handle), None) => (
                 None,
@@ -777,6 +810,7 @@ impl ResearchRun {
                     .sources()
                     .to_vec(),
                 0,
+                None,
             ),
             (None, None, Some(cursor)) => {
                 let ResearchCursor::Sources {
@@ -784,14 +818,20 @@ impl ResearchRun {
                     owner_handle,
                     sources,
                     offset,
-                } = self.take_cursor(cursor, "inspect sources")?
+                } = self.peek_cursor(cursor, "inspect sources")?
                 else {
                     return Err(ResearchError::new(
                         ResearchErrorCode::CursorWrongTool,
                         "the pagination cursor belongs to a different research tool",
                     ));
                 };
-                (citation_handle, owner_handle, sources, offset)
+                (
+                    citation_handle,
+                    owner_handle,
+                    sources,
+                    offset,
+                    Some(cursor.to_owned()),
+                )
             }
             _ => {
                 return Err(ResearchError::invalid(
@@ -824,6 +864,9 @@ impl ResearchRun {
             "items": items,
             "nextCursor": next_cursor,
         });
+        if let Some(cursor) = consumed_cursor {
+            self.consume_cursor(&cursor);
+        }
         Ok((output, end - offset))
     }
 
@@ -865,7 +908,7 @@ impl ResearchRun {
                     display_filename,
                     media_type,
                     offset,
-                } = self.take_cursor(&cursor, "inspect attachment segments")?
+                } = self.peek_cursor(&cursor, "inspect attachment segments")?
                 else {
                     return Err(ResearchError::new(
                         ResearchErrorCode::CursorWrongTool,
@@ -876,14 +919,16 @@ impl ResearchRun {
                 let (passages, has_more) = self
                     .library
                     .current_attachment_passage_page(&snapshot, offset, limit)?;
-                self.attachment_page(
+                let page = self.attachment_page(
                     owner_handle,
                     display_filename,
                     media_type,
                     passages,
                     offset,
                     has_more,
-                )
+                )?;
+                self.consume_cursor(&cursor);
+                Ok(page)
             }
             _ => Err(ResearchError::invalid(
                 "provide exactly one of ownerHandle or cursor",
@@ -1028,13 +1073,33 @@ impl ResearchRun {
         handle
     }
 
-    fn take_cursor(&mut self, cursor: &str, _tool: &str) -> Result<ResearchCursor, ResearchError> {
-        self.cursors.remove(cursor).ok_or_else(|| {
+    fn peek_cursor(&self, cursor: &str, _tool: &str) -> Result<ResearchCursor, ResearchError> {
+        self.cursors.get(cursor).cloned().ok_or_else(|| {
             ResearchError::new(
                 ResearchErrorCode::CursorNotFound,
                 "the pagination cursor is invalid, expired, or belongs to another research run",
             )
         })
+    }
+
+    fn consume_cursor(&mut self, cursor: &str) {
+        if !self
+            .pending_cursor_consumptions
+            .iter()
+            .any(|pending| pending == cursor)
+        {
+            self.pending_cursor_consumptions.push(cursor.to_owned());
+        }
+    }
+
+    fn finalize_pending_cursors(&mut self) {
+        for cursor in self.pending_cursor_consumptions.drain(..) {
+            self.cursors.remove(&cursor);
+        }
+    }
+
+    fn preserve_pending_cursors(&mut self) {
+        self.pending_cursor_consumptions.clear();
     }
 
     fn validate_page_limit(&self, requested: Option<u32>) -> Result<usize, ResearchError> {
