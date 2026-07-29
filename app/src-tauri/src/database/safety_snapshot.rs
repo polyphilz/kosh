@@ -405,21 +405,36 @@ fn sync_directory(path: &Path) -> Result<()> {
 type OwnedSnapshot = (i64, String, PathBuf);
 
 fn owned_published_snapshots(snapshot_root: &Path) -> Result<Vec<OwnedSnapshot>> {
-    let mut owned = fs::read_dir(snapshot_root)?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
-            let name = entry.file_name().into_string().ok()?;
-            if !file_type.is_dir()
-                || name.starts_with('.')
-                || !(name.starts_with("migration-") || name.starts_with("media-reclaim-"))
-            {
-                return None;
-            }
-            let manifest = read_owned_manifest(&entry.path(), &name).ok()?;
-            Some((manifest.created_at_ms, name, entry.path()))
-        })
-        .collect::<Vec<_>>();
+    let mut owned = Vec::new();
+    let mut removed_invalid = false;
+    for entry in fs::read_dir(snapshot_root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !file_type.is_dir()
+            || name.starts_with('.')
+            || !(name.starts_with("migration-") || name.starts_with("media-reclaim-"))
+        {
+            continue;
+        }
+        let path = entry.path();
+        let manifest = match read_owned_manifest_identity(&path, &name) {
+            Ok(manifest) => manifest,
+            Err(_) => continue,
+        };
+        if let Err(error) = validate_owned_snapshot_files(&path, &name, &manifest) {
+            log::warn!("removing invalid owned safety snapshot {name}: {error}");
+            fs::remove_dir_all(&path)?;
+            removed_invalid = true;
+            continue;
+        }
+        owned.push((manifest.created_at_ms, name, path));
+    }
+    if removed_invalid {
+        sync_directory(snapshot_root)?;
+    }
     owned.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
     Ok(owned)
 }
@@ -599,7 +614,10 @@ fn is_owned_staging_name(name: &str) -> bool {
         && matches!(uuid.as_bytes()[16], b'8' | b'9' | b'a' | b'b')
 }
 
-fn read_owned_manifest(directory: &Path, expected_id: &str) -> Result<SafetySnapshotManifest> {
+fn read_owned_manifest_identity(
+    directory: &Path,
+    expected_id: &str,
+) -> Result<SafetySnapshotManifest> {
     let manifest_path = directory.join("manifest.json");
     let metadata = fs::symlink_metadata(&manifest_path)?;
     if !metadata.file_type().is_file() {
@@ -614,6 +632,14 @@ fn read_owned_manifest(directory: &Path, expected_id: &str) -> Result<SafetySnap
             "snapshot manifest ownership does not match its directory".into(),
         ));
     }
+    Ok(manifest)
+}
+
+fn validate_owned_snapshot_files(
+    directory: &Path,
+    expected_id: &str,
+    manifest: &SafetySnapshotManifest,
+) -> Result<()> {
     if manifest.main.filename != "kosh.sqlite3" || manifest.media.filename != "media.sqlite3" {
         return Err(DatabaseError::InvalidInput(
             "snapshot manifest contains an unexpected database filename".into(),
@@ -627,7 +653,7 @@ fn read_owned_manifest(directory: &Path, expected_id: &str) -> Result<SafetySnap
             reason: format!("published snapshot {expected_id} no longer matches its manifest"),
         });
     }
-    Ok(manifest)
+    Ok(())
 }
 
 fn remove_owned_staging(snapshot_root: &Path, staging: &Path) {
@@ -837,6 +863,10 @@ mod tests {
                 .expect("snapshot");
         }
         let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let unowned = snapshot_root.join("migration-user-owned-looking");
+        fs::create_dir(&unowned).expect("unowned snapshot-like directory");
+        fs::write(unowned.join("manifest.json"), b"{}").expect("unowned manifest");
+        fs::write(unowned.join("keep.txt"), b"user data").expect("unowned marker");
         let before = owned_published_snapshots(&snapshot_root).expect("owned snapshots");
         let newest_valid_id = before[before.len() - 2].1.clone();
         let corrupt_id = before.last().expect("newest snapshot").1.clone();
@@ -870,7 +900,11 @@ mod tests {
         let after = owned_published_snapshots(&snapshot_root).expect("preserved valid snapshot");
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].1, newest_valid_id);
-        assert!(snapshot_root.join(corrupt_id).is_dir());
+        assert!(!snapshot_root.join(corrupt_id).exists());
+        assert_eq!(
+            fs::read(unowned.join("keep.txt")).expect("unowned marker survives"),
+            b"user data"
+        );
     }
 
     #[test]

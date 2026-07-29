@@ -468,10 +468,10 @@ fn lexical_ranked_candidates(
     }
 
     let ranked = rank_candidate_documents(connection, query, ranks.clone(), limit)?;
-    if ranked.len() >= result_limit
-        || limit >= MAX_CANDIDATE_LIMIT
-        || !(word_saturated || trigram_saturated || short_saturated)
-    {
+    let saturated_pools_are_exhausted = (!word_saturated || limit >= MAX_CANDIDATE_LIMIT)
+        && (!trigram_saturated || trigram_limit >= MAX_CANDIDATE_LIMIT)
+        && (!short_saturated || limit >= MAX_CANDIDATE_LIMIT);
+    if ranked.len() >= result_limit || saturated_pools_are_exhausted {
         return Ok(ranked);
     }
 
@@ -2186,14 +2186,14 @@ mod tests {
     }
 
     #[test]
-    fn saturated_word_candidates_cannot_hide_a_qualifying_substring_result() {
+    fn independently_saturated_candidate_pools_cannot_hide_a_qualifying_substring_result() {
         let root = tempfile::tempdir().expect("temporary saturated search library");
         let paths = DatabasePaths::new(root.path());
         let database = Database::initialize(paths.clone()).expect("search database");
         let client = database.client();
 
-        for index in 0..64_u64 {
-            let atom = if index < 32 { "apple" } else { "orange" };
+        for index in 0..544_u64 {
+            let atom = if index < 272 { "apple" } else { "orange" };
             client
                 .create_tidbit(CreateTidbitWrite {
                     input: TidbitDraft {
@@ -2236,7 +2236,13 @@ mod tests {
             .execute(
                 "UPDATE passage_search_document
                  SET title = 'apple orange apple orange apple orange'
-                 WHERE tidbit_id <> ?1",
+                 WHERE rowid IN (
+                    SELECT rowid
+                    FROM passage_search_document
+                    WHERE tidbit_id <> ?1
+                    ORDER BY rowid
+                    LIMIT 256
+                 )",
                 params![target.id],
             )
             .expect("simulate stale high-rank derived candidates");
@@ -2246,7 +2252,7 @@ mod tests {
             SearchPassagesInput {
                 query: "apple orange".into(),
                 mode: LexicalSearchMode::Default,
-                limit: 10,
+                limit: 32,
             },
         )
         .expect("search saturated word and trigram candidates");
