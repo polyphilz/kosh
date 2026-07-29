@@ -16,7 +16,6 @@ const MAX_SEARCH_LIMIT: u32 = 100;
 const MAX_HIGHLIGHTS_PER_RESULT: usize = 32;
 const MIN_CANDIDATE_LIMIT: u32 = 64;
 const MAX_CANDIDATE_LIMIT: u32 = 512;
-const TRIGRAM_CANDIDATE_EXPANSION: u32 = 4;
 const RRF_RANK_CONSTANT: f64 = 60.0;
 const LEXICAL_RRF_WEIGHT: f64 = 1.0;
 const SEMANTIC_RRF_WEIGHT: f64 = 0.85;
@@ -38,9 +37,7 @@ pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
 }
 
 pub(crate) fn trigram_candidate_limit(result_limit: u32) -> u32 {
-    result_limit
-        .saturating_mul(TRIGRAM_CANDIDATE_EXPANSION)
-        .clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT)
+    candidate_limit(result_limit)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2110,16 +2107,19 @@ mod tests {
     #[test]
     fn saturated_word_candidates_cannot_hide_a_qualifying_substring_result() {
         let root = tempfile::tempdir().expect("temporary saturated search library");
-        let database =
-            Database::initialize(DatabasePaths::new(root.path())).expect("search database");
+        let paths = DatabasePaths::new(root.path());
+        let database = Database::initialize(paths.clone()).expect("search database");
         let client = database.client();
 
         for index in 0..64_u64 {
+            let atom = if index < 32 { "apple" } else { "orange" };
             client
                 .create_tidbit(CreateTidbitWrite {
                     input: TidbitDraft {
-                        title: None,
-                        body_markdown: format!("apple-only decoy {index}"),
+                        title: Some(format!("{atom} {atom} {atom} title decoy {index}")),
+                        body_markdown: format!(
+                            "# {atom}\n\n{atom} {atom} {atom} single-atom decoy."
+                        ),
                         sources: Vec::new(),
                     },
                     now_ms: i64::try_from(index).expect("bounded timestamp"),
@@ -2143,13 +2143,32 @@ mod tests {
             })
             .expect("create substring target");
 
-        let results = client
-            .search_passages(SearchPassagesInput {
+        drop(client);
+        database
+            .shutdown()
+            .expect("close saturated search database");
+        drop(database);
+        let connection =
+            connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
+                .expect("derived-index maintenance writer");
+        connection
+            .execute(
+                "UPDATE passage_search_document
+                 SET title = 'apple orange apple orange apple orange'
+                 WHERE tidbit_id <> ?1",
+                params![target.id],
+            )
+            .expect("simulate stale high-rank derived candidates");
+
+        let results = super::search_passages(
+            &connection,
+            SearchPassagesInput {
                 query: "apple orange".into(),
                 mode: LexicalSearchMode::Default,
-                limit: 1,
-            })
-            .expect("search saturated word and trigram candidates");
+                limit: 10,
+            },
+        )
+        .expect("search saturated word and trigram candidates");
 
         assert_eq!(results.len(), 1);
         assert_eq!(
