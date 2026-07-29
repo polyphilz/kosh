@@ -99,6 +99,18 @@ it("renders only canonical local image tokens with authored metadata", () => {
   expect(getByText("~~Evidence~~ (chapter 2)!")).toBeInTheDocument();
 });
 
+it("renders a canonical generic attachment with its authored caption", () => {
+  const attachmentId = "01980c8e-6c00-7000-8000-000000000243";
+  const { getByRole } = render(
+    <MarkdownRenderer source={`{{kosh:attachment:${attachmentId};caption=Useful%20appendix}}`} />,
+  );
+
+  expect(getByRole("link", { name: "Useful appendix" })).toHaveAttribute(
+    "href",
+    `kosh-media://localhost/attachment/${attachmentId}`,
+  );
+});
+
 it("leaves malformed and nonlocal Kosh-like image references inert", () => {
   const imageId = "01980c8e-6c00-7000-8000-000000000242";
   const { container } = render(

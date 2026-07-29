@@ -20,6 +20,7 @@ interface CitationDetailProps {
   error: string | null;
   focusRef: RefObject<HTMLElement | null>;
   loading: boolean;
+  onOpenAttachment?: (attachmentId: string) => Promise<void>;
   result: PassageSearchResult | undefined;
 }
 
@@ -28,6 +29,7 @@ export function CitationDetail({
   error,
   focusRef,
   loading,
+  onOpenAttachment,
   result,
 }: CitationDetailProps) {
   const [copyState, setCopyState] = useState<"IDLE" | "COPIED" | "FAILED">("IDLE");
@@ -154,6 +156,19 @@ export function CitationDetail({
           <span className="search-citation-detail__attachment">
             {citation.attachment.displayFilename} · {citationLocation(citation)}
           </span>
+        )}
+        {citation.attachment && citation.locator.kind === "TEXT_LINES" && onOpenAttachment && (
+          <Button
+            onClick={() => {
+              void onOpenAttachment(citation.attachment!.id).catch((reason: unknown) => {
+                console.error("Could not open cited attachment", reason);
+              });
+            }}
+            size="compact"
+            variant="ghost"
+          >
+            Open attachment
+          </Button>
         )}
       </footer>
       <p

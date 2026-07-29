@@ -296,6 +296,60 @@ const attachment: NodeSpec = {
   },
 };
 
+const fileAttachment: NodeSpec = {
+  atom: true,
+  attrs: {
+    attachmentId: { validate: "string" },
+    byteLength: { default: 0, validate: "number" },
+    caption: { default: "", validate: "string" },
+    displayFilename: { default: "Attachment", validate: "string" },
+    extractedLineCount: { default: 0, validate: "number" },
+    extractionError: { default: null, validate: "string|null" },
+    extractionStatus: { default: "NOT_APPLICABLE", validate: "string" },
+    kind: { default: "BINARY", validate: "string" },
+    mediaType: { default: "application/octet-stream", validate: "string" },
+  },
+  draggable: true,
+  group: "block",
+  parseDOM: [
+    {
+      tag: "section[data-kosh-file-attachment]",
+      getAttrs(dom) {
+        const element = dom as HTMLElement;
+        return {
+          attachmentId: element.dataset.attachmentId ?? "",
+          byteLength: Number(element.dataset.byteLength) || 0,
+          caption: element.dataset.caption ?? "",
+          displayFilename: element.dataset.displayFilename ?? "Attachment",
+          extractedLineCount: Number(element.dataset.extractedLineCount) || 0,
+          extractionError: element.dataset.extractionError ?? null,
+          extractionStatus: element.dataset.extractionStatus ?? "NOT_APPLICABLE",
+          kind: element.dataset.kind ?? "BINARY",
+          mediaType: element.dataset.mediaType ?? "application/octet-stream",
+        };
+      },
+    },
+  ],
+  selectable: true,
+  toDOM(node): DOMOutputSpec {
+    return [
+      "section",
+      {
+        "data-attachment-id": node.attrs.attachmentId,
+        "data-byte-length": node.attrs.byteLength,
+        "data-caption": node.attrs.caption,
+        "data-display-filename": node.attrs.displayFilename,
+        "data-extracted-line-count": node.attrs.extractedLineCount,
+        "data-extraction-error": node.attrs.extractionError,
+        "data-extraction-status": node.attrs.extractionStatus,
+        "data-kind": node.attrs.kind,
+        "data-kosh-file-attachment": "true",
+        "data-media-type": node.attrs.mediaType,
+      },
+    ];
+  },
+};
+
 const strike: MarkSpec = {
   parseDOM: [{ tag: "del" }, { tag: "s" }, { tag: "strike" }],
   toDOM: (): DOMOutputSpec => ["del", 0],
@@ -361,6 +415,7 @@ nodes = nodes.addBefore("text", "math_display", mathDisplay);
 nodes = nodes.addBefore("text", "kosh_image", image);
 nodes = nodes.addBefore("text", "kosh_image_pending", pendingImage);
 nodes = nodes.addBefore("text", "kosh_attachment", attachment);
+nodes = nodes.addBefore("text", "kosh_file_attachment", fileAttachment);
 nodes = nodes.addBefore("text", "markdown_definition", markdownDefinition);
 
 export const koshEditorSchema = new Schema({

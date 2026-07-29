@@ -17,7 +17,7 @@ describe("reserved Kosh media tokens", () => {
       altText: "Architecture diagram",
       caption: "Chapter 2 / overview",
     });
-    const attachment = serializeKoshAttachmentToken(attachmentId);
+    const attachment = serializeKoshAttachmentToken(attachmentId, "Useful *appendix*");
     const pdf = serializeKoshPdfToken(attachmentId);
 
     expect(image).toBe(
@@ -32,8 +32,10 @@ describe("reserved Kosh media tokens", () => {
     });
     expect(parseKoshMediaToken(attachment)).toEqual({
       attachmentId,
+      caption: "Useful *appendix*",
       kind: "attachment",
     });
+    expect(attachment).toBe(`{{kosh:attachment:${attachmentId};caption=Useful%20%2Aappendix%2A}}`);
     expect(pdf).toBe(`{{kosh:pdf:${attachmentId}}}`);
     expect(parseKoshMediaToken(pdf)).toEqual({
       attachmentId,
@@ -52,6 +54,7 @@ describe("reserved Kosh media tokens", () => {
       parseKoshMediaToken(`{{kosh:image:${imageId};width=70%;caption=Caption;alt=Alt}}`),
     ).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:attachment:${attachmentId}}} extra`)).toBeNull();
+    expect(parseKoshMediaToken(`{{kosh:attachment:${attachmentId};caption=raw space}}`)).toBeNull();
     expect(parseKoshMediaToken(`{{kosh:pdf:${attachmentId}}} extra`)).toBeNull();
     expect(() =>
       serializeKoshImageToken({

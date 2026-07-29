@@ -255,6 +255,36 @@ export interface PdfStatusRecord {
   nextAttemptAtMs: number | null;
 }
 
+export type AttachmentExtractionStatus = "READY" | "FAILED" | "NOT_APPLICABLE";
+
+export interface GenericAttachmentRecord {
+  id: string;
+  ingestLeaseId: string;
+  displayFilename: string;
+  mediaType: string;
+  byteLength: number;
+  kind: "TEXT" | "BINARY";
+  extractionStatus: AttachmentExtractionStatus;
+  extractionError: string | null;
+  extractedLineCount: number;
+}
+
+export interface GenericAttachmentStatusRecord {
+  attachmentId: string;
+  displayFilename: string;
+  mediaType: string;
+  byteLength: number;
+  kind: "TEXT" | "BINARY";
+  extractionStatus: AttachmentExtractionStatus;
+  extractionError: string | null;
+  extractedLineCount: number;
+}
+
+export type SelectedAttachmentRecord =
+  | { recordKind: "IMAGE"; record: ImageRecord }
+  | { recordKind: "PDF"; record: PdfRecord }
+  | { recordKind: "GENERIC"; record: GenericAttachmentRecord };
+
 export interface TidbitSource {
   id: string;
   label: string | null;
@@ -328,8 +358,13 @@ export interface Backend {
   imageOcrDiagnostics(): Promise<ImageOcrDiagnostics>;
   selectPdf(): Promise<string | null>;
   ingestSelectedPdf(selectionId: string, draftId: string): Promise<PdfRecord>;
-  setPdfDropConsumerActive(active: boolean): Promise<void>;
-  discardPdfDropSelections(selectionIds: string[]): Promise<void>;
+  selectAttachment(): Promise<string | null>;
+  ingestSelectedAttachment(selectionId: string, draftId: string): Promise<SelectedAttachmentRecord>;
+  attachmentStatus(attachmentId: string): Promise<GenericAttachmentStatusRecord>;
+  openAttachmentExternal(attachmentId: string): Promise<void>;
+  revealAttachmentInFinder(attachmentId: string): Promise<void>;
+  setFileDropConsumerActive(active: boolean): Promise<void>;
+  discardFileDropSelections(selectionIds: string[]): Promise<void>;
   pdfStatus(attachmentId: string): Promise<PdfStatusRecord>;
   retryPdfExtraction(attachmentId: string): Promise<PdfStatusRecord>;
   openPdfExternal(attachmentId: string): Promise<void>;

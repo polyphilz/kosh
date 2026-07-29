@@ -2,7 +2,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v1";
+pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v2";
 
 const TARGET_PASSAGE_CHARS: usize = 700;
 const MAX_PROSE_SEGMENT_CHARS: usize = 1_000;
@@ -261,17 +261,25 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
         finish_capture(active, markdown.len(), &mut headings, &mut blocks);
     }
     if blocks.is_empty() {
-        let content = markdown.trim();
-        if !content.is_empty() {
+        let source = markdown.trim();
+        if !source.is_empty() {
+            let normalized = authored_text(source);
+            let content = if normalized.trim().is_empty() {
+                // A media node is authored structure, but its opaque storage ID is
+                // not authored evidence. Keep a non-tokenizing object marker so
+                // media-only revisions still have a stable citation substrate.
+                "\u{fffc}"
+            } else {
+                normalized.trim()
+            };
+            let source_start_byte = markdown.find(source).unwrap_or(0);
             blocks.push(SourceBlock {
                 ordinal: 0,
                 kind: BlockKind::Prose,
                 content: content.into(),
                 heading_context: Vec::new(),
-                source_start_byte: markdown.find(content).unwrap_or(0),
-                source_end_byte: markdown
-                    .find(content)
-                    .map_or(markdown.len(), |start| start + content.len()),
+                source_start_byte,
+                source_end_byte: source_start_byte + source.len(),
             });
         }
     }
@@ -292,7 +300,11 @@ fn captured_block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
 
 fn append_event_content(capture: &mut Capture, event: Event<'_>) {
     match event {
-        Event::Text(value) | Event::Code(value) => capture.content.push_str(&value),
+        Event::Text(value) if capture.kind == BlockKind::Prose => {
+            capture.content.push_str(&authored_text(&value));
+        }
+        Event::Text(value) => capture.content.push_str(&value),
+        Event::Code(value) => capture.content.push_str(&value),
         Event::InlineMath(value) => {
             capture.content.push('$');
             capture.content.push_str(&value);
@@ -322,6 +334,88 @@ fn append_event_content(capture: &mut Capture, event: Event<'_>) {
         }
         Event::Start(_) | Event::End(_) => {}
     }
+}
+
+fn authored_text(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while let Some(offset) = value[cursor..].find("{{kosh:") {
+        let start = cursor + offset;
+        normalized.push_str(&value[cursor..start]);
+        let Some(end_offset) = value[start..].find("}}") else {
+            normalized.push_str(&value[start..]);
+            return normalized;
+        };
+        let end = start + end_offset + 2;
+        let token = &value[start..end];
+        if let Some(replacement) = authored_media_token_text(token) {
+            normalized.push_str(&replacement);
+        } else {
+            normalized.push_str(token);
+        }
+        cursor = end;
+    }
+    normalized.push_str(&value[cursor..]);
+    normalized
+}
+
+fn authored_media_token_text(token: &str) -> Option<String> {
+    let payload = token.strip_prefix("{{kosh:")?.strip_suffix("}}")?;
+    if let Some(payload) = payload.strip_prefix("attachment:") {
+        let mut fields = payload.split(';');
+        canonical_uuid_v7(fields.next()?)?;
+        let caption = match fields.next() {
+            Some(field) => crate::database::media::decode_canonical_token_field(
+                field.strip_prefix("caption=")?,
+                2_000,
+            )?,
+            None => String::new(),
+        };
+        return fields.next().is_none().then_some(caption);
+    }
+    if let Some(id) = payload.strip_prefix("pdf:") {
+        canonical_uuid_v7(id)?;
+        return Some(String::new());
+    }
+    let payload = payload.strip_prefix("image:")?;
+    let mut fields = payload.split(';');
+    canonical_uuid_v7(fields.next()?)?;
+    let raw_width = fields.next()?.strip_prefix("width=")?.strip_suffix('%')?;
+    let width = raw_width.parse::<u32>().ok()?;
+    if !(10..=100).contains(&width) || width.to_string() != raw_width {
+        return None;
+    }
+    let mut metadata = Vec::new();
+    let mut saw_alt = false;
+    let mut saw_caption = false;
+    for field in fields {
+        if let Some(value) = field.strip_prefix("alt=") {
+            if saw_alt || saw_caption {
+                return None;
+            }
+            metadata.push(crate::database::media::decode_canonical_token_field(
+                value, 500,
+            )?);
+            saw_alt = true;
+        } else {
+            let value = field.strip_prefix("caption=")?;
+            if saw_caption {
+                return None;
+            }
+            metadata.push(crate::database::media::decode_canonical_token_field(
+                value, 2_000,
+            )?);
+            saw_caption = true;
+        }
+    }
+    Some(metadata.join(" "))
+}
+
+fn canonical_uuid_v7(value: &str) -> Option<()> {
+    uuid::Uuid::parse_str(value)
+        .ok()
+        .filter(|id| id.get_version_num() == 7 && id.hyphenated().to_string().as_str() == value)
+        .map(|_| ())
 }
 
 fn append_inline_html(capture: &mut Capture, value: &str) {
@@ -722,7 +816,7 @@ mod tests {
         let second = build_markdown_passages(&markdown);
 
         assert_eq!(first, second);
-        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v1");
+        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v2");
         assert_eq!(first.len(), 5);
         assert_eq!(first[0].content, "Thermodynamics");
         assert_eq!(
@@ -980,6 +1074,58 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
             "alpha\nbeta gamma\ndelta\nepsilon"
+        );
+    }
+
+    #[test]
+    fn canonical_media_tokens_index_authored_metadata_without_opaque_ids() {
+        let attachment_id = "019f547b-6200-7000-8000-000000000771";
+        let image_id = "019f547b-6200-7000-8000-000000000772";
+        let markdown = format!(
+            "Nearby context {{{{kosh:attachment:{attachment_id};caption=Useful%20appendix}}}} \
+             and {{{{kosh:image:{image_id};width=70%;alt=Diagram;caption=Chapter%202}}}}."
+        );
+        let content = build_markdown_passages(&markdown)
+            .into_iter()
+            .map(|passage| passage.content)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(content.contains("Nearby context Useful appendix and Diagram Chapter 2."));
+        assert!(!content.contains(attachment_id));
+        assert!(!content.contains(image_id));
+    }
+
+    #[test]
+    fn media_only_blocks_keep_structure_without_indexing_opaque_ids() {
+        let attachment_id = "019f547b-6200-7000-8000-000000000773";
+        let markdown = format!("{{{{kosh:attachment:{attachment_id}}}}}");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].content, "\u{fffc}");
+        assert!(!passages[0].content.contains(attachment_id));
+        assert_eq!(
+            passages[0].locator.source_start_byte,
+            Some(0),
+            "the object marker still cites the original media node"
+        );
+        assert_eq!(
+            passages[0].locator.source_end_byte,
+            Some(markdown.len() as u64)
+        );
+    }
+
+    #[test]
+    fn fenced_code_preserves_literal_media_tokens() {
+        let attachment_id = "019f547b-6200-7000-8000-000000000774";
+        let markdown = format!("```text\n{{{{kosh:attachment:{attachment_id}}}}}\n```");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(
+            passages[0].content,
+            format!("{{{{kosh:attachment:{attachment_id}}}}}")
         );
     }
 

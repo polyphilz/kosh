@@ -5,6 +5,7 @@ import type {
   DeleteTidbitInput,
   DraftRecord,
   EditTidbitInput,
+  GenericAttachmentStatusRecord,
   ImageDropIngestResult,
   ImageOcrDiagnostics,
   ImageRecord,
@@ -14,6 +15,7 @@ import type {
   PdfRecord,
   PdfStatusRecord,
   RuntimeProbe,
+  SelectedAttachmentRecord,
   RestoreTidbitInput,
   SaveDraftInput,
   SearchField,
@@ -180,9 +182,32 @@ export class FakeBackend implements Backend {
     throw new Error("Selected PDFs are unavailable in the browser fixture");
   }
 
-  async setPdfDropConsumerActive(_active: boolean): Promise<void> {}
+  async selectAttachment(): Promise<string | null> {
+    return null;
+  }
 
-  async discardPdfDropSelections(_selectionIds: string[]): Promise<void> {}
+  async ingestSelectedAttachment(
+    _selectionId: string,
+    _draftId: string,
+  ): Promise<SelectedAttachmentRecord> {
+    throw new Error("Selected attachments are unavailable in the browser fixture");
+  }
+
+  async attachmentStatus(attachmentId: string): Promise<GenericAttachmentStatusRecord> {
+    throw new Error(`attachment ${attachmentId} was not found`);
+  }
+
+  async openAttachmentExternal(_attachmentId: string): Promise<void> {
+    throw new Error("Opening attachments is unavailable in the browser fixture");
+  }
+
+  async revealAttachmentInFinder(_attachmentId: string): Promise<void> {
+    throw new Error("Revealing attachments is unavailable in the browser fixture");
+  }
+
+  async setFileDropConsumerActive(_active: boolean): Promise<void> {}
+
+  async discardFileDropSelections(_selectionIds: string[]): Promise<void> {}
 
   async pdfStatus(attachmentId: string): Promise<PdfStatusRecord> {
     throw new Error(`PDF ${attachmentId} was not found`);

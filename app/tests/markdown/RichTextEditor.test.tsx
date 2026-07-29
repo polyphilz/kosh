@@ -4,7 +4,13 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode, createRef } from "react";
 import { NodeSelection, TextSelection } from "prosemirror-state";
 import { expect, it, vi } from "vitest";
-import type { ImageRecord, PdfRecord } from "../../src/backend/contracts";
+import type {
+  GenericAttachmentRecord,
+  GenericAttachmentStatusRecord,
+  ImageRecord,
+  PdfRecord,
+  SelectedAttachmentRecord,
+} from "../../src/backend/contracts";
 import { koshEditorSchema } from "../../src/markdown/editorSchema";
 import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { statusPollDelay } from "../../src/markdown/ImageNodeView";
@@ -631,6 +637,93 @@ it("inserts a PDF token and exposes extraction status and system-open controls",
   await waitFor(() => expect(openPdfExternal).toHaveBeenCalledWith(pdf.id));
 });
 
+it("inserts, captions, opens, reveals, and replaces a generic attachment", async () => {
+  const first = genericAttachmentRecord("01980c8e-6c00-7000-8000-000000000238", "notes.md");
+  const second = genericAttachmentRecord(
+    "01980c8e-6c00-7000-8000-000000000239",
+    "archive.zip",
+    "BINARY",
+  );
+  let resolveReplacement!: (record: SelectedAttachmentRecord | null) => void;
+  let resolveFirstStatus!: (record: GenericAttachmentStatusRecord) => void;
+  const replacement = new Promise<SelectedAttachmentRecord | null>((resolve) => {
+    resolveReplacement = resolve;
+  });
+  const firstStatus = new Promise<GenericAttachmentStatusRecord>((resolve) => {
+    resolveFirstStatus = resolve;
+  });
+  const pickAttachment = vi
+    .fn()
+    .mockResolvedValueOnce({ record: first, recordKind: "GENERIC" })
+    .mockReturnValueOnce(replacement);
+  const openAttachmentExternal = vi.fn(async () => undefined);
+  const revealAttachmentInFinder = vi.fn(async () => undefined);
+  const onChange = vi.fn();
+  const onPendingImagesChange = vi.fn();
+  const result = render(
+    <RichTextEditor
+      ariaLabel="Body"
+      attachmentStatus={async (attachmentId) => {
+        const record = attachmentId === first.id ? first : second;
+        if (attachmentId === first.id) return firstStatus;
+        return {
+          attachmentId,
+          byteLength: record.byteLength,
+          displayFilename: record.displayFilename,
+          extractedLineCount: record.extractedLineCount,
+          extractionError: record.extractionError,
+          extractionStatus: record.extractionStatus,
+          kind: record.kind,
+          mediaType: record.mediaType,
+        };
+      }}
+      onChange={onChange}
+      onPendingImagesChange={onPendingImagesChange}
+      openAttachmentExternal={openAttachmentExternal}
+      pickAttachment={pickAttachment}
+      revealAttachmentInFinder={revealAttachmentInFinder}
+      value=""
+    />,
+  );
+
+  fireEvent.click(result.getByRole("button", { name: "Add attachment" }));
+  await result.findByText("notes.md");
+  expect(result.getByText(/17 lines searchable/u)).toBeVisible();
+
+  await userEvent.type(result.getByRole("textbox", { name: "Attachment caption" }), "Key notes");
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${first.id};caption=Key%20notes}}`);
+  fireEvent.click(result.getByRole("button", { name: "Open" }));
+  fireEvent.click(result.getByRole("button", { name: "Reveal" }));
+  await waitFor(() => {
+    expect(openAttachmentExternal).toHaveBeenCalledWith(first.id);
+    expect(revealAttachmentInFinder).toHaveBeenCalledWith(first.id);
+  });
+
+  fireEvent.click(result.getByRole("button", { name: "Replace" }));
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(true);
+  expect(result.getByText("notes.md")).toBeVisible();
+  await act(async () => {
+    resolveReplacement({ record: second, recordKind: "GENERIC" });
+  });
+  await result.findByText("archive.zip");
+  expect(onPendingImagesChange).toHaveBeenLastCalledWith(false);
+  expect(onChange).toHaveBeenLastCalledWith(`{{kosh:attachment:${second.id}}}`);
+  await act(async () => {
+    resolveFirstStatus({
+      attachmentId: first.id,
+      byteLength: first.byteLength,
+      displayFilename: "stale-notes.md",
+      extractedLineCount: first.extractedLineCount,
+      extractionError: first.extractionError,
+      extractionStatus: first.extractionStatus,
+      kind: first.kind,
+      mediaType: first.mediaType,
+    });
+  });
+  expect(result.queryByText("stale-notes.md")).not.toBeInTheDocument();
+  expect(result.getByText("archive.zip")).toBeVisible();
+});
+
 it("disables PDF extraction retries while the editor is disabled", async () => {
   const pdf = pdfRecord("01980c8e-6c00-7000-8000-000000000237");
   const retryPdfExtraction = vi.fn(async () => ({
@@ -828,6 +921,24 @@ function pdfRecord(id: string): PdfRecord {
     kind: "PDF",
     mediaType: "application/pdf",
     pageCount: 3,
+  };
+}
+
+function genericAttachmentRecord(
+  id: string,
+  displayFilename: string,
+  kind: "TEXT" | "BINARY" = "TEXT",
+): GenericAttachmentRecord {
+  return {
+    byteLength: kind === "TEXT" ? 4_096 : 10_240,
+    displayFilename,
+    extractedLineCount: kind === "TEXT" ? 17 : 0,
+    extractionError: null,
+    extractionStatus: kind === "TEXT" ? "READY" : "NOT_APPLICABLE",
+    id,
+    ingestLeaseId: "01980c8e-6c00-7000-8000-000000000240",
+    kind,
+    mediaType: kind === "TEXT" ? "text/markdown" : "application/zip",
   };
 }
 

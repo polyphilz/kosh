@@ -32,6 +32,8 @@ const TOKEN_SUFFIX: &str = "}}";
 const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
 const IMAGE_OCR_EXTRACTOR: &str = "ocr";
 const PDF_TEXT_EXTRACTOR: &str = "pdf-text";
+const TEXT_FILE_EXTRACTOR: &str = "text";
+pub(crate) const MAX_TEXT_FILE_PASSAGES: usize = 5_000;
 const MAX_IMAGE_OCR_ATTEMPTS: u32 = 4;
 const MAX_PDF_EXTRACTION_ATTEMPTS: u32 = 3;
 const PDF_PASSAGE_TARGET_CHARS: usize = 700;
@@ -121,7 +123,16 @@ impl AttachmentKind {
             Self::Image
         } else if media_type == "application/pdf" {
             Self::Pdf
-        } else if media_type.starts_with("text/") {
+        } else if media_type.starts_with("text/")
+            || matches!(
+                media_type,
+                "application/json"
+                    | "application/javascript"
+                    | "application/toml"
+                    | "application/xml"
+                    | "application/yaml"
+            )
+        {
             Self::Text
         } else {
             Self::Binary
@@ -154,6 +165,51 @@ pub struct AttachmentRecord {
     pub media_type: String,
     pub byte_length: u64,
     pub kind: AttachmentKind,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AttachmentExtractionStatus {
+    Ready,
+    Failed,
+    NotApplicable,
+}
+
+impl AttachmentExtractionStatus {
+    fn from_db(value: &str) -> Result<Self> {
+        match value {
+            "READY" => Ok(Self::Ready),
+            "FAILED" => Ok(Self::Failed),
+            "NOT_APPLICABLE" => Ok(Self::NotApplicable),
+            _ => Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("unknown attachment extraction state {value}"),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenericAttachmentRecord {
+    #[serde(flatten)]
+    pub attachment: AttachmentRecord,
+    pub extraction_status: AttachmentExtractionStatus,
+    pub extraction_error: Option<String>,
+    pub extracted_line_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenericAttachmentStatusRecord {
+    pub attachment_id: String,
+    pub display_filename: String,
+    pub media_type: String,
+    pub byte_length: u64,
+    pub kind: AttachmentKind,
+    pub extraction_status: AttachmentExtractionStatus,
+    pub extraction_error: Option<String>,
+    pub extracted_line_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -272,6 +328,20 @@ pub(crate) struct IngestPdfWrite {
     pub attachment: IngestAttachmentWrite,
     pub extraction_id: String,
     pub page_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TextFileSegment {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub content: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IngestGenericAttachmentWrite {
+    pub attachment: IngestAttachmentWrite,
+    pub extraction_id: String,
+    pub extraction: Option<std::result::Result<Vec<TextFileSegment>, String>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -589,6 +659,313 @@ pub(crate) fn ingest_attachment(
         "attachment",
     );
     Ok(attachment_record(write, kind))
+}
+
+pub(crate) fn ingest_generic_attachment(
+    main: &mut Connection,
+    media: &mut Connection,
+    mut write: IngestGenericAttachmentWrite,
+) -> Result<GenericAttachmentRecord> {
+    validate_uuid_v7(&write.extraction_id, "extractionId")?;
+    let (limits, kind, expires_at) = validate_attachment_ingest(main, &mut write.attachment)?;
+    if !matches!(kind, AttachmentKind::Text | AttachmentKind::Binary) {
+        return Err(DatabaseError::InvalidInput(
+            "generic attachment ingestion accepts only text or opaque files".into(),
+        ));
+    }
+    if (kind == AttachmentKind::Text) != write.extraction.is_some() {
+        return Err(DatabaseError::InvalidInput(
+            "text attachments require a bounded extraction outcome".into(),
+        ));
+    }
+
+    let attachment_id = write.attachment.attachment_id.clone();
+    let ingest_lease_id = write.attachment.ingest_lease_id.clone();
+    let now_ms = write.attachment.now_ms;
+    let media_transaction = media.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    stage_attachment_media(&media_transaction, &write.attachment, expires_at)?;
+    media_transaction.commit()?;
+
+    let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    insert_attachment_records(&transaction, &write.attachment, limits, kind, expires_at)?;
+    let (extraction_status, extraction_error, extracted_line_count) = match write.extraction {
+        None => (AttachmentExtractionStatus::NotApplicable, None, 0),
+        Some(result) => {
+            let extractor_version: String = transaction.query_row(
+                "SELECT version
+                 FROM attachment_extractor_config
+                 WHERE extractor = ?1",
+                params![TEXT_FILE_EXTRACTOR],
+                |row| row.get(0),
+            )?;
+            let construction_version: String = transaction.query_row(
+                "SELECT passage_construction_version
+                 FROM attachment_extractor_config
+                 WHERE extractor = ?1",
+                params![TEXT_FILE_EXTRACTOR],
+                |row| row.get(0),
+            )?;
+            match result.and_then(validate_text_file_segments) {
+                Ok(segments) => {
+                    transaction.execute(
+                        "INSERT INTO attachment_extraction(
+                            id, attachment_id, extractor, extractor_version, content_hash,
+                            status, error, created_at, started_at, completed_at
+                         ) VALUES(?1, ?2, ?3, ?4, ?5, 'READY', NULL, ?6, ?6, ?6)",
+                        params![
+                            &write.extraction_id,
+                            &attachment_id,
+                            TEXT_FILE_EXTRACTOR,
+                            &extractor_version,
+                            &write.attachment.sha256,
+                            now_ms
+                        ],
+                    )?;
+                    let mut extracted_line_count = 0;
+                    for (ordinal, segment) in segments.into_iter().enumerate() {
+                        let segment_id = Uuid::now_v7().to_string();
+                        let passage_id = Uuid::now_v7().to_string();
+                        let content_hash = Sha256::digest(segment.content.as_bytes()).to_vec();
+                        let locator_json = serde_json::to_string(&serde_json::json!({
+                            "start": segment.start_line,
+                            "end": segment.end_line,
+                        }))
+                        .expect("text line locator is serializable");
+                        transaction.execute(
+                            "INSERT INTO attachment_segment(
+                                id, extraction_id, ordinal, locator_kind, page_number,
+                                line_start, line_end, region_json, content, content_hash
+                             ) VALUES(
+                                ?1, ?2, ?3, 'TEXT_LINES', NULL, ?4, ?5, NULL, ?6, ?7
+                             )",
+                            params![
+                                &segment_id,
+                                &write.extraction_id,
+                                i64::try_from(ordinal).map_err(|_| {
+                                    DatabaseError::InvalidInput(
+                                        "text attachment has too many passages".into(),
+                                    )
+                                })?,
+                                segment.start_line,
+                                segment.end_line,
+                                &segment.content,
+                                &content_hash
+                            ],
+                        )?;
+                        transaction.execute(
+                            "INSERT INTO passage(
+                                id, tidbit_revision_id, attachment_segment_id, owner_kind,
+                                ordinal, content, content_hash, locator_kind, locator_json,
+                                created_at, construction_version, heading_context_json
+                             ) VALUES(
+                                ?1, NULL, ?2, 'ATTACHMENT', ?3, ?4, ?5, 'TEXT_LINES',
+                                ?6, ?7, ?8, '[]'
+                             )",
+                            params![
+                                &passage_id,
+                                &segment_id,
+                                i64::try_from(ordinal).expect("validated text ordinal fits i64"),
+                                &segment.content,
+                                &content_hash,
+                                &locator_json,
+                                now_ms,
+                                &construction_version
+                            ],
+                        )?;
+                        extracted_line_count = extracted_line_count.max(segment.end_line);
+                    }
+                    transaction.execute(
+                        "UPDATE attachment
+                         SET extraction_state = 'READY', updated_at = max(updated_at, ?1)
+                         WHERE id = ?2",
+                        params![now_ms, &attachment_id],
+                    )?;
+                    search::replace_attachment_documents_in_transaction(
+                        &transaction,
+                        &attachment_id,
+                    )?;
+                    (
+                        AttachmentExtractionStatus::Ready,
+                        None,
+                        extracted_line_count,
+                    )
+                }
+                Err(error) => {
+                    let error = truncate_ocr_error(&error);
+                    transaction.execute(
+                        "INSERT INTO attachment_extraction(
+                            id, attachment_id, extractor, extractor_version, content_hash,
+                            status, error, created_at, started_at, completed_at
+                         ) VALUES(?1, ?2, ?3, ?4, ?5, 'FAILED', ?6, ?7, ?7, ?7)",
+                        params![
+                            &write.extraction_id,
+                            &attachment_id,
+                            TEXT_FILE_EXTRACTOR,
+                            &extractor_version,
+                            &write.attachment.sha256,
+                            &error,
+                            now_ms
+                        ],
+                    )?;
+                    transaction.execute(
+                        "UPDATE attachment
+                         SET extraction_state = 'FAILED', updated_at = max(updated_at, ?1)
+                         WHERE id = ?2",
+                        params![now_ms, &attachment_id],
+                    )?;
+                    (AttachmentExtractionStatus::Failed, Some(error), 0)
+                }
+            }
+        }
+    };
+    transaction.commit()?;
+
+    clear_committed_media_lease(
+        media,
+        &ingest_lease_id,
+        &write.attachment.sha256,
+        &attachment_id,
+        "generic attachment",
+    );
+    Ok(GenericAttachmentRecord {
+        attachment: attachment_record(write.attachment, kind),
+        extraction_status,
+        extraction_error,
+        extracted_line_count,
+    })
+}
+
+fn validate_text_file_segments(
+    segments: Vec<TextFileSegment>,
+) -> std::result::Result<Vec<TextFileSegment>, String> {
+    if segments.len() > MAX_TEXT_FILE_PASSAGES {
+        return Err(format!(
+            "text attachment has more than {MAX_TEXT_FILE_PASSAGES} passages"
+        ));
+    }
+    let mut previous_range = None;
+    for segment in &segments {
+        let follows_previous = previous_range.is_none_or(|(start, end)| {
+            segment.start_line > end
+                || (start == end && segment.start_line == start && segment.end_line == end)
+        });
+        if segment.start_line == 0 || segment.end_line < segment.start_line || !follows_previous {
+            return Err("text attachment line ranges are invalid or overlap".into());
+        }
+        if segment.content.is_empty() || segment.content.chars().count() > 1_200 {
+            return Err("text attachment passage exceeds its content limit".into());
+        }
+        previous_range = Some((segment.start_line, segment.end_line));
+    }
+    Ok(segments)
+}
+
+pub(crate) fn load_generic_attachment_status(
+    main: &Connection,
+    attachment_id: &str,
+) -> Result<GenericAttachmentStatusRecord> {
+    validate_uuid_v7(attachment_id, "attachmentId")?;
+    main.query_row(
+        "SELECT
+            attachment.display_filename,
+            attachment.media_type,
+            attachment.byte_length,
+            attachment.kind,
+            attachment.extraction_state,
+            (
+                SELECT extraction.error
+                FROM attachment_extraction AS extraction
+                JOIN attachment_extractor_config AS config
+                  ON config.extractor = extraction.extractor
+                 AND config.version = extraction.extractor_version
+                WHERE extraction.attachment_id = attachment.id
+                  AND extraction.extractor = ?2
+                  AND extraction.content_hash = attachment.sha256
+                LIMIT 1
+            ),
+            coalesce(
+                (
+                    SELECT max(segment.line_end)
+                    FROM attachment_extraction AS extraction
+                    JOIN attachment_segment AS segment
+                      ON segment.extraction_id = extraction.id
+                    JOIN attachment_extractor_config AS config
+                      ON config.extractor = extraction.extractor
+                     AND config.version = extraction.extractor_version
+                    WHERE extraction.attachment_id = attachment.id
+                      AND extraction.extractor = ?2
+                      AND extraction.content_hash = attachment.sha256
+                      AND extraction.status = 'READY'
+                ),
+                0
+            )
+         FROM attachment
+         WHERE attachment.id = ?1
+           AND attachment.kind IN ('TEXT', 'BINARY')
+           AND attachment.deleted_at IS NULL",
+        params![attachment_id, TEXT_FILE_EXTRACTOR],
+        |row| {
+            let byte_length = row.get::<_, i64>(2)?;
+            let kind = match row.get::<_, String>(3)?.as_str() {
+                "TEXT" => AttachmentKind::Text,
+                "BINARY" => AttachmentKind::Binary,
+                value => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Text,
+                        format!("invalid generic attachment kind {value}").into(),
+                    ))
+                }
+            };
+            let extraction_state = row.get::<_, String>(4)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                byte_length,
+                kind,
+                extraction_state,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        },
+    )
+    .optional()?
+    .map(
+        |(
+            display_filename,
+            media_type,
+            byte_length,
+            kind,
+            extraction_state,
+            extraction_error,
+            extracted_line_count,
+        )|
+         -> Result<GenericAttachmentStatusRecord> {
+            Ok(GenericAttachmentStatusRecord {
+                attachment_id: attachment_id.into(),
+                display_filename,
+                media_type,
+                byte_length: u64::try_from(byte_length).map_err(|_| DatabaseError::Validation {
+                    kind: "main",
+                    reason: format!("attachment {attachment_id} has an invalid byte length"),
+                })?,
+                kind,
+                extraction_status: AttachmentExtractionStatus::from_db(&extraction_state)?,
+                extraction_error,
+                extracted_line_count: u32::try_from(extracted_line_count).map_err(|_| {
+                    DatabaseError::Validation {
+                        kind: "main",
+                        reason: format!("attachment {attachment_id} has too many lines"),
+                    }
+                })?,
+            })
+        },
+    )
+    .transpose()?
+    .ok_or_else(|| DatabaseError::NotFound {
+        entity: "generic attachment",
+        id: attachment_id.into(),
+    })
 }
 
 fn validate_attachment_ingest(
@@ -3185,7 +3562,9 @@ pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference>
             cursor = payload_start;
             continue;
         };
-        if let Some(id) = parse_token_payload(&payload[..end], next.2) {
+        if let Some(id) =
+            parse_token_payload(&payload[..end], next.2, next.1 == ATTACHMENT_TOKEN_PREFIX)
+        {
             if let Some(position) = positions.get(id).copied() {
                 if next.2 == AttachmentDisplayRole::Inline {
                     references[position].display_role = AttachmentDisplayRole::Inline;
@@ -3209,9 +3588,25 @@ pub(crate) fn markdown_references_attachment(markdown: &str, attachment_id: &str
         .any(|reference| reference.id == attachment_id)
 }
 
-fn parse_token_payload(payload: &str, role: AttachmentDisplayRole) -> Option<&str> {
+fn parse_token_payload(
+    payload: &str,
+    role: AttachmentDisplayRole,
+    allow_attachment_caption: bool,
+) -> Option<&str> {
     let id = match role {
-        AttachmentDisplayRole::Attachment => payload,
+        AttachmentDisplayRole::Attachment => {
+            let mut fields = payload.split(';');
+            let id = fields.next()?;
+            match fields.next() {
+                Some(field)
+                    if allow_attachment_caption
+                        && valid_encoded_token_field(field.strip_prefix("caption=")?, 2_000)
+                        && fields.next().is_none() => {}
+                Some(_) => return None,
+                None => {}
+            }
+            id
+        }
         AttachmentDisplayRole::Inline => {
             let mut fields = payload.split(';');
             let id = fields.next()?;
@@ -3244,11 +3639,13 @@ fn parse_token_payload(payload: &str, role: AttachmentDisplayRole) -> Option<&st
 }
 
 fn valid_encoded_token_field(value: &str, max_characters: usize) -> bool {
-    let Some(max_encoded_bytes) = max_characters.checked_mul(12) else {
-        return false;
-    };
+    decode_canonical_token_field(value, max_characters).is_some()
+}
+
+pub(crate) fn decode_canonical_token_field(value: &str, max_characters: usize) -> Option<String> {
+    let max_encoded_bytes = max_characters.checked_mul(12)?;
     if value.is_empty() || value.len() > max_encoded_bytes {
-        return false;
+        return None;
     }
     let encoded = value.as_bytes();
     let mut decoded = Vec::with_capacity(encoded.len());
@@ -3261,25 +3658,22 @@ fn valid_encoded_token_field(value: &str, max_characters: usize) -> bool {
             continue;
         }
         if byte != b'%' || index + 2 >= encoded.len() {
-            return false;
+            return None;
         }
-        let Some(high) = canonical_hex_value(encoded[index + 1]) else {
-            return false;
-        };
-        let Some(low) = canonical_hex_value(encoded[index + 2]) else {
-            return false;
-        };
+        let high = canonical_hex_value(encoded[index + 1])?;
+        let low = canonical_hex_value(encoded[index + 2])?;
         let decoded_byte = (high << 4) | low;
         if canonical_token_field_leaves_unescaped(decoded_byte) {
-            return false;
+            return None;
         }
         decoded.push(decoded_byte);
         index += 3;
     }
     let Ok(decoded) = std::str::from_utf8(&decoded) else {
-        return false;
+        return None;
     };
-    !decoded.is_empty() && decoded.trim() == decoded && decoded.chars().count() <= max_characters
+    (!decoded.is_empty() && decoded.trim() == decoded && decoded.chars().count() <= max_characters)
+        .then(|| decoded.to_owned())
 }
 
 fn canonical_token_field_leaves_unescaped(byte: u8) -> bool {

@@ -19,7 +19,12 @@ import remarkParse from "remark-parse";
 import remarkStringify from "remark-stringify";
 import { unified } from "unified";
 import { normalizeCodeLanguageLabel } from "./languages";
-import { parseKoshMediaToken, serializeKoshImageToken, serializeKoshPdfToken } from "./mediaTokens";
+import {
+  parseKoshMediaToken,
+  serializeKoshAttachmentToken,
+  serializeKoshImageToken,
+  serializeKoshPdfToken,
+} from "./mediaTokens";
 import { externalHttpUrl } from "./urlPolicy";
 
 const markdownParser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkBreaks);
@@ -131,6 +136,21 @@ function blockFromMarkdown(
               nextAttemptAtMs: null,
               pageCount: 0,
               unavailablePageCount: 0,
+            }),
+          ];
+        }
+        if (media?.kind === "attachment") {
+          return [
+            schema.nodes.kosh_file_attachment!.create({
+              attachmentId: media.attachmentId,
+              byteLength: 0,
+              caption: media.caption ?? "",
+              displayFilename: "Attachment",
+              extractedLineCount: 0,
+              extractionError: null,
+              extractionStatus: "NOT_APPLICABLE",
+              kind: "BINARY",
+              mediaType: "application/octet-stream",
             }),
           ];
         }
@@ -451,6 +471,21 @@ function blockToMarkdown(node: ProseMirrorNode): Array<BlockContent | Definition
             {
               type: "text",
               value: serializeKoshPdfToken(node.attrs.attachmentId),
+            },
+          ],
+        },
+      ];
+    case "kosh_file_attachment":
+      return [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "text",
+              value: serializeKoshAttachmentToken(
+                node.attrs.attachmentId,
+                node.attrs.caption || undefined,
+              ),
             },
           ],
         },

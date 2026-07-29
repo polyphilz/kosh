@@ -1,3 +1,4 @@
+mod attachments;
 mod database;
 mod embedding;
 mod embedding_runtime;
@@ -51,10 +52,15 @@ fn with_commands<R: Runtime>(builder: Builder<R>) -> Builder<R> {
         media::image_status,
         media::retry_image_ocr,
         media::image_ocr_diagnostics,
+        attachments::select_attachment,
+        attachments::ingest_selected_attachment,
+        attachments::attachment_status,
+        attachments::open_attachment_external,
+        attachments::reveal_attachment_in_finder,
+        attachments::set_file_drop_consumer_active,
+        attachments::discard_file_drop_selections,
         pdf::select_pdf,
         pdf::ingest_selected_pdf,
-        pdf::set_pdf_drop_consumer_active,
-        pdf::discard_pdf_drop_selections,
         pdf::pdf_status,
         pdf::retry_pdf_extraction,
         pdf::open_pdf_external,
@@ -80,8 +86,7 @@ pub fn run() {
                 media::protocol_response(context.app_handle(), request)
             })
             .on_window_event(|window, event| {
-                media::handle_image_drop(window, event);
-                pdf::handle_pdf_drop(window, event);
+                attachments::handle_file_drop(window, event);
             }),
     )
     .setup(|app| {
@@ -104,15 +109,17 @@ pub fn run_pdf_worker_if_requested() -> Option<i32> {
 }
 
 pub use database::{
-    AttachmentIngestInput, AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator,
-    CitationResolution, CitationState, CitationTidbit, ClearDraftInput, Database,
-    DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput, Draft, EditTidbitInput,
-    ImageOcrDiagnostics, ImageOcrRecovery, ImageOcrStatus, ImageRecord, ImageStatusRecord,
-    LexicalSearchMode, ListTidbitsInput, MediaCleanupResult, MediaIntegrityReport, MediaLimits,
-    MediaMaintenanceReport, PassageSearchResult, PdfExtractionStatus, PdfRecord, PdfStatusRecord,
-    RestoreTidbitInput, SaveDraftInput, SearchExecutionMode, SearchField, SearchHighlight,
-    SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness, SourceDraft, Tidbit,
-    TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitSource,
+    AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, AttachmentRecord,
+    CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
+    ClearDraftInput, Database, DatabaseDiagnostics, DatabaseError, DatabasePaths,
+    DeleteTidbitInput, Draft, EditTidbitInput, GenericAttachmentRecord,
+    GenericAttachmentStatusRecord, ImageOcrDiagnostics, ImageOcrRecovery, ImageOcrStatus,
+    ImageRecord, ImageStatusRecord, LexicalSearchMode, ListTidbitsInput, MediaCleanupResult,
+    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport, PassageSearchResult,
+    PdfExtractionStatus, PdfRecord, PdfStatusRecord, RestoreTidbitInput, SaveDraftInput,
+    SearchExecutionMode, SearchField, SearchHighlight, SearchPassagesInput, SearchPassagesResponse,
+    SemanticSearchReadiness, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem,
+    TidbitListPage, TidbitSource,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
 pub use embedding_runtime::{

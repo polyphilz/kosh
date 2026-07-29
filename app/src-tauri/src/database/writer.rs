@@ -10,11 +10,12 @@ use super::{
     },
     error::{DatabaseError, Result},
     media::{
-        AttachmentRecord, ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion,
-        ImageRecord, ImageStatusRecord, IngestAttachmentWrite, IngestImageWrite, IngestPdfWrite,
-        MediaIntegrityReport, MediaIntegrityScan, MediaLimits, MediaMaintenanceReport,
-        MediaMaintenanceScan, MediaPayload, MediaRangeRequest, PdfExtractionJob, PdfPageExtraction,
-        PdfRecord, PdfStatusRecord,
+        AttachmentRecord, GenericAttachmentRecord, GenericAttachmentStatusRecord,
+        ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion, ImageRecord,
+        ImageStatusRecord, IngestAttachmentWrite, IngestGenericAttachmentWrite, IngestImageWrite,
+        IngestPdfWrite, MediaIntegrityReport, MediaIntegrityScan, MediaLimits,
+        MediaMaintenanceReport, MediaMaintenanceScan, MediaPayload, MediaRangeRequest,
+        PdfExtractionJob, PdfPageExtraction, PdfRecord, PdfStatusRecord,
     },
     migrations::MigrationHeads,
     passages::CitationResolution,
@@ -91,6 +92,14 @@ pub(super) enum WriterMessage {
     IngestAttachment {
         write: IngestAttachmentWrite,
         reply: SyncSender<Result<AttachmentRecord>>,
+    },
+    IngestGenericAttachment {
+        write: IngestGenericAttachmentWrite,
+        reply: SyncSender<Result<GenericAttachmentRecord>>,
+    },
+    LoadGenericAttachmentStatus {
+        attachment_id: String,
+        reply: SyncSender<Result<GenericAttachmentStatusRecord>>,
     },
     IngestImage {
         write: IngestImageWrite,
@@ -258,6 +267,35 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::IngestAttachment { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn ingest_generic_attachment(
+        &self,
+        write: IngestGenericAttachmentWrite,
+    ) -> Result<GenericAttachmentRecord> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::IngestGenericAttachment { write, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_generic_attachment_status(
+        &self,
+        attachment_id: String,
+    ) -> Result<GenericAttachmentStatusRecord> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadGenericAttachmentStatus {
+                attachment_id,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

@@ -170,9 +170,9 @@ pub(super) fn reconcile_author_passage_batch(
     }
     let state_updated = connection.execute(
         "UPDATE index_state
-         SET status = 'RUNNING', cursor = NULL, error = NULL
+         SET version = ?1, status = 'RUNNING', cursor = NULL, error = NULL
          WHERE name = 'PASSAGE_BUILD'",
-        [],
+        params![CONSTRUCTION_VERSION],
     )?;
     if state_updated != 1 {
         return Err(DatabaseError::Validation {
