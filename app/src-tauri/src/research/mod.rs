@@ -1,3 +1,4 @@
+mod grounded;
 mod http;
 mod library;
 mod mcp;
@@ -19,7 +20,12 @@ use crate::database::{
 
 use library::ResearchLibrary;
 
-pub use http::EphemeralResearchMcpServer;
+pub(crate) use grounded::grounded_research_prompt;
+pub use grounded::{
+    GroundedCitationMention, GroundedEvidenceKind, GroundedOutputIssue, GroundedOutputIssueCode,
+    GroundedResearchAnswer, GroundedResearchCitation,
+};
+pub use http::{EphemeralResearchMcpServer, ResearchCitationRegistry};
 pub use mcp::{
     research_tool_definitions, ClaudeMcpBridge, ResearchMcpReply, ResearchMcpSession,
     MCP_PROTOCOL_VERSION,
@@ -551,6 +557,12 @@ impl ResearchRun {
                 "the citation handle is not valid for this research run",
             )),
         }
+    }
+
+    pub fn ground_output(&self, output: &str) -> GroundedResearchAnswer {
+        grounded::ground_research_output(output, |handle| {
+            self.resolve_citation_handle(handle).ok().cloned()
+        })
     }
 
     fn dispatch(&mut self, tool: &str, arguments: Value) -> Result<(Value, usize), ResearchError> {
