@@ -4,6 +4,7 @@ import type {
   ClaudeSetupStatus,
   GroundedResearchCitation,
   ResearchProcessEvent,
+  ResearchRunCursor,
   ResearchRunRecord,
   ResearchRunStatus,
   ResearchRunSummary,
@@ -24,12 +25,14 @@ export function ResearchPage() {
   const latestEventSequence = useRef(new Map<string, number>());
   const [setup, setSetup] = useState<ClaudeSetupStatus | null>(null);
   const [history, setHistory] = useState<ResearchRunSummary[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<ResearchRunCursor | null>(null);
   const [run, setRun] = useState<ResearchRunRecord | null>(null);
   const [query, setQuery] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [selectedCitation, setSelectedCitation] = useState<GroundedResearchCitation | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +73,7 @@ export function ResearchPage() {
         setModel(defaults.model ?? status.defaults.model ?? "");
         setEffort(defaults.effort ?? status.defaults.effort ?? "");
         setHistory(page.items);
+        setHistoryCursor(page.nextCursor);
         const first = page.items[0];
         if (first) {
           selectedId.current = first.id;
@@ -98,12 +102,29 @@ export function ResearchPage() {
     setError(null);
     try {
       const record = await backend.loadResearchRun(id);
+      if (selectedId.current !== id) return;
       const storedSequence = record.events.at(-1)?.sequence ?? 0;
       if (storedSequence >= (latestEventSequence.current.get(id) ?? 0)) {
         setRun(record);
       }
     } catch (reason) {
+      if (selectedId.current === id) setError(errorMessage(reason));
+    }
+  };
+
+  const loadOlderRuns = async () => {
+    if (!historyCursor || loadingHistory) return;
+    const cursor = historyCursor;
+    setLoadingHistory(true);
+    setError(null);
+    try {
+      const page = await backend.listResearchRuns({ limit: HISTORY_LIMIT, cursor });
+      setHistory((items) => mergeSummaries(items, page.items));
+      setHistoryCursor(page.nextCursor);
+    } catch (reason) {
       setError(errorMessage(reason));
+    } finally {
+      setLoadingHistory(false);
     }
   };
 
@@ -122,8 +143,9 @@ export function ResearchPage() {
       selectedId.current = output.runId;
       const record = await backend.loadResearchRun(output.runId);
       if (
+        selectedId.current === output.runId &&
         (record.events.at(-1)?.sequence ?? 0) >=
-        (latestEventSequence.current.get(output.runId) ?? 0)
+          (latestEventSequence.current.get(output.runId) ?? 0)
       ) {
         setRun(record);
         setHistory((items) => upsertSummary(items, record));
@@ -159,8 +181,9 @@ export function ResearchPage() {
       selectedId.current = output.runId;
       const record = await backend.loadResearchRun(output.runId);
       if (
+        selectedId.current === output.runId &&
         (record.events.at(-1)?.sequence ?? 0) >=
-        (latestEventSequence.current.get(output.runId) ?? 0)
+          (latestEventSequence.current.get(output.runId) ?? 0)
       ) {
         setRun(record);
         setHistory((items) => upsertSummary(items, record));
@@ -297,6 +320,16 @@ export function ResearchPage() {
                 </li>
               ))}
             </ol>
+          )}
+          {historyCursor && (
+            <Button
+              className="research-history__more"
+              disabled={loadingHistory}
+              onClick={() => void loadOlderRuns()}
+              variant="ghost"
+            >
+              {loadingHistory ? "Loading…" : "Load older runs"}
+            </Button>
           )}
         </aside>
 
@@ -481,7 +514,15 @@ function upsertSummary(
     citationFreshness: _freshness,
     ...summary
   } = record;
-  return [summary, ...items.filter((item) => item.id !== record.id)].sort(
+  return mergeSummaries(items, [summary]);
+}
+
+function mergeSummaries(
+  items: ResearchRunSummary[],
+  additions: ResearchRunSummary[],
+): ResearchRunSummary[] {
+  const additionIds = new Set(additions.map((item) => item.id));
+  return [...additions, ...items.filter((item) => !additionIds.has(item.id))].sort(
     (left, right) => right.updatedAtMs - left.updatedAtMs || right.id.localeCompare(left.id),
   );
 }

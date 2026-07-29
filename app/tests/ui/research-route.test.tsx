@@ -1,7 +1,12 @@
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type {
+  ResearchRunCursor,
+  ResearchRunRecord,
+  ResearchRunSummary,
+} from "../../src/backend/contracts";
 import { BackendProvider } from "../../src/backend/context";
 import { FakeBackend } from "../../src/backend/fakeBackend";
 import { createAppRouter } from "../../src/router";
@@ -72,6 +77,84 @@ describe("research route", () => {
       expect((await backend.listResearchRuns({ limit: 10, cursor: null })).items).toHaveLength(2);
     });
   });
+
+  it("loads every durable history page", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      researchRecord(
+        `run-${index.toString().padStart(3, "0")}`,
+        `Recent run ${index}`,
+        200 - index,
+      ),
+    );
+    const oldest = researchRecord("run-oldest", "Oldest run", 1);
+    const cursor: ResearchRunCursor = {
+      updatedAtMs: firstPage.at(-1)!.updatedAtMs,
+      id: firstPage.at(-1)!.id,
+    };
+    const listRuns = vi.spyOn(backend, "listResearchRuns").mockImplementation(async (input) => {
+      if (input.cursor === null) {
+        return { items: firstPage.map(researchSummary), nextCursor: cursor };
+      }
+      return { items: [researchSummary(oldest)], nextCursor: null };
+    });
+    vi.spyOn(backend, "loadResearchRun").mockImplementation(async (id) => {
+      const record = [...firstPage, oldest].find((item) => item.id === id);
+      if (!record) throw new Error(`unknown fixture run ${id}`);
+      return record;
+    });
+
+    renderRoute(backend);
+    await screen.findByRole("heading", { name: firstPage[0]!.query });
+    await user.click(screen.getByRole("button", { name: "Load older runs" }));
+
+    expect(await screen.findByRole("button", { name: /Oldest run/u })).toBeInTheDocument();
+    expect(listRuns).toHaveBeenLastCalledWith({ limit: 100, cursor });
+    expect(screen.queryByRole("button", { name: "Load older runs" })).toBeNull();
+  });
+
+  it("ignores stale history success and error responses", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const initial = researchRecord("run-initial", "Initial run", 3);
+    const slow = researchRecord("run-slow", "Slow run", 2);
+    const latest = researchRecord("run-latest", "Latest run", 1);
+    const staleSuccess = deferred<ResearchRunRecord>();
+    const staleFailure = deferred<ResearchRunRecord>();
+    let slowLoads = 0;
+    vi.spyOn(backend, "listResearchRuns").mockResolvedValue({
+      items: [initial, slow, latest].map(researchSummary),
+      nextCursor: null,
+    });
+    vi.spyOn(backend, "loadResearchRun").mockImplementation(async (id) => {
+      if (id === slow.id) {
+        slowLoads += 1;
+        return slowLoads === 1 ? staleSuccess.promise : staleFailure.promise;
+      }
+      return id === initial.id ? initial : latest;
+    });
+
+    renderRoute(backend);
+    await screen.findByRole("heading", { name: initial.query });
+    await user.click(screen.getByRole("button", { name: /Slow run/u }));
+    await user.click(screen.getByRole("button", { name: /Latest run/u }));
+    expect(await screen.findByRole("heading", { name: latest.query })).toBeInTheDocument();
+    await act(async () => {
+      staleSuccess.resolve(slow);
+      await staleSuccess.promise;
+    });
+    expect(screen.getByRole("heading", { name: latest.query })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Slow run/u }));
+    await user.click(screen.getByRole("button", { name: /Latest run/u }));
+    await act(async () => {
+      staleFailure.reject(new Error("stale load failed"));
+      await staleFailure.promise.catch(() => undefined);
+    });
+    expect(screen.getByRole("heading", { name: latest.query })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });
 
 function renderRoute(backend: FakeBackend) {
@@ -85,4 +168,51 @@ function renderRoute(backend: FakeBackend) {
       <RouterProvider router={router} />
     </BackendProvider>,
   );
+}
+
+function researchRecord(id: string, query: string, updatedAtMs: number): ResearchRunRecord {
+  return {
+    id,
+    rerunOfId: null,
+    query,
+    status: "COMPLETED",
+    requestedModel: null,
+    requestedEffort: null,
+    actualModel: "fixture",
+    createdAtMs: updatedAtMs,
+    startedAtMs: updatedAtMs,
+    completedAtMs: updatedAtMs,
+    updatedAtMs,
+    error: null,
+    stderrTruncated: false,
+    savedTidbitId: null,
+    events: [],
+    finalAnswer: {
+      markdown: `${query} answer.`,
+      citations: [],
+      mentions: [],
+      issues: [],
+    },
+    citationFreshness: [],
+  };
+}
+
+function researchSummary(record: ResearchRunRecord): ResearchRunSummary {
+  const {
+    events: _events,
+    finalAnswer: _finalAnswer,
+    citationFreshness: _citationFreshness,
+    ...summary
+  } = record;
+  return summary;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }

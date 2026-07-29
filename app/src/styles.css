@@ -1271,6 +1271,13 @@ button {
   font-size: 8px;
 }
 
+.research-history .research-history__more {
+  margin-top: 8px;
+  justify-items: center;
+  border-color: var(--line);
+  color: var(--muted);
+}
+
 .research-result {
   min-width: 0;
   padding: 24px clamp(18px, 3vw, 36px);
