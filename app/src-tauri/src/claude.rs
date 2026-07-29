@@ -523,6 +523,7 @@ impl ClaudeProcessManager {
         let weak_manager = Arc::downgrade(&self.inner);
         let run_id = request.run_id.clone();
         let monitor_generation = generation.clone();
+        let monitor_emitter = Arc::clone(&emitter);
         let child_slot = Arc::new(Mutex::new(Some(child)));
         let monitor_child_slot = Arc::clone(&child_slot);
         thread::Builder::new()
@@ -539,7 +540,7 @@ impl ClaudeProcessManager {
                     request,
                     generation: monitor_generation,
                     termination,
-                    emitter,
+                    emitter: monitor_emitter,
                     manager: weak_manager,
                     _keepalive: invocation.keepalive,
                     _work_directory: work_directory,
@@ -558,10 +559,16 @@ impl ClaudeProcessManager {
                     force_kill_process_group(child.id());
                     let _ = child.wait();
                 }
-                ClaudeProcessError::new(
+                let error = ClaudeProcessError::new(
                     ClaudeProcessErrorCode::LaunchFailed,
                     format!("Kosh could not monitor Claude Code: {error}"),
-                )
+                );
+                emitter.finish(
+                    ResearchProcessOutcome::Failed,
+                    Some(error.message.clone()),
+                    false,
+                );
+                error
             })?;
 
         Ok(StartResearchProcessOutput {
