@@ -290,15 +290,16 @@ impl ClaudeMcpBridge {
     }
 
     pub fn claude_cli_arguments(&self) -> Vec<String> {
+        let tools = self.allowed_tools().join(",");
         vec![
             "--mcp-config".into(),
             serde_json::to_string(&self.mcp_config())
                 .expect("serializing an MCP configuration value cannot fail"),
             "--strict-mcp-config".into(),
             "--tools".into(),
-            String::new(),
+            tools.clone(),
             "--allowed-tools".into(),
-            self.allowed_tools().join(","),
+            tools,
         ]
     }
 }

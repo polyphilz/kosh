@@ -811,9 +811,15 @@ fn claude_bridge_uses_ephemeral_loopback_http_and_exact_tool_names() {
     assert!(arguments
         .iter()
         .any(|argument| argument == "--strict-mcp-config"));
+    let exact_tools = bridge.allowed_tools().join(",");
     assert!(arguments
         .windows(2)
-        .any(|arguments| arguments == ["--tools", ""]));
+        .any(|arguments| arguments == ["--tools", exact_tools.as_str()]));
+    assert!(arguments
+        .windows(2)
+        .any(|arguments| arguments == ["--allowed-tools", exact_tools.as_str()]));
+    assert!(!exact_tools.contains("WebSearch"));
+    assert!(!exact_tools.contains("WebFetch"));
     assert!(!arguments.join(" ").contains(bridge.environment().1));
 
     let error = session
