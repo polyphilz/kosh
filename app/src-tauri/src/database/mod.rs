@@ -506,25 +506,47 @@ fn writer_loop(
                 reply,
             } => {
                 let snapshot = match snapshot {
-                    MediaMaintenanceSnapshotState::Pending => media::media_reclamation_is_eligible(
-                        &main,
-                        &media,
-                        scan.now_ms(),
-                        scan.limits(),
-                    )
-                    .and_then(|eligible| {
-                        if eligible {
-                            safety_snapshot::create(
-                                &mut main,
-                                &mut media,
-                                &paths,
-                                SafetySnapshotReason::MediaReclaim,
-                            )
-                            .map(MediaMaintenanceSnapshotState::Verified)
-                        } else {
-                            Ok(MediaMaintenanceSnapshotState::NotNeeded)
+                    MediaMaintenanceSnapshotState::Pending => {
+                        match media::media_reclamation_preflight(
+                            &mut main,
+                            &media,
+                            scan.now_ms(),
+                            scan.limits(),
+                        ) {
+                            Ok(media::MediaReclamationPreflight::Continue) => {
+                                if let Err(error) =
+                                    sender.send(WriterMessage::MaintainMediaWithSafetySnapshot {
+                                        scan,
+                                        snapshot: MediaMaintenanceSnapshotState::Pending,
+                                        reply,
+                                    })
+                                {
+                                    let WriterMessage::MaintainMediaWithSafetySnapshot {
+                                        reply,
+                                        ..
+                                    } = error.0
+                                    else {
+                                        unreachable!("failed message retained its variant");
+                                    };
+                                    let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                                }
+                                continue;
+                            }
+                            Ok(media::MediaReclamationPreflight::Eligible) => {
+                                safety_snapshot::create(
+                                    &mut main,
+                                    &mut media,
+                                    &paths,
+                                    SafetySnapshotReason::MediaReclaim,
+                                )
+                                .map(MediaMaintenanceSnapshotState::Verified)
+                            }
+                            Ok(media::MediaReclamationPreflight::NotNeeded) => {
+                                Ok(MediaMaintenanceSnapshotState::NotNeeded)
+                            }
+                            Err(error) => Err(error),
                         }
-                    }),
+                    }
                     snapshot => Ok(snapshot),
                 };
                 match snapshot {

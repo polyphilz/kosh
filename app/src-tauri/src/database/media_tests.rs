@@ -14,13 +14,13 @@ use tempfile::TempDir;
 use super::{
     drafts::SaveDraftWrite,
     media::{
-        media_reclamation_is_eligible, recover_media_lifecycle_batch, referenced_attachments,
+        media_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
         split_pdf_page_passages, validate_filename, AttachmentDisplayRole, CanonicalImage,
         ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata, IngestAttachmentWrite,
         IngestGenericAttachmentWrite, IngestImageWrite, IngestPdfWrite, MediaByteRange,
-        MediaRangeRequest, PdfExtractionStatus, PdfPageExtraction, PdfPageSource, StagedAttachment,
-        TextFileSegment, MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS,
-        PDF_PASSAGE_OVERLAP_CHARS, PDF_RECOVERY_BATCH_SIZE,
+        MediaRangeRequest, MediaReclamationPreflight, PdfExtractionStatus, PdfPageExtraction,
+        PdfPageSource, StagedAttachment, TextFileSegment, MEDIA_RECONCILE_BATCH_SIZE,
+        PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS, PDF_RECOVERY_BATCH_SIZE,
     },
     research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
@@ -2424,13 +2424,13 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
 }
 
 #[test]
-fn reclamation_preflight_scans_past_stale_candidate_window() {
+fn reclamation_preflight_cleans_stale_candidate_windows_incrementally() {
     let library = TestLibrary::new();
     library
         .database
         .shutdown()
         .expect("stop writer before direct preflight");
-    let main = super::connection::open_writer(
+    let mut main = super::connection::open_writer(
         &library.paths.main,
         super::connection::DatabaseKind::Main,
         super::connection::FileState::Existing,
@@ -2476,8 +2476,24 @@ fn reclamation_preflight_scans_past_stale_candidate_window() {
         )
         .expect("insert eligible orphan blob");
 
-    assert!(media_reclamation_is_eligible(&main, &media, 10, limits)
-        .expect("scan past stale candidate window"));
+    assert_eq!(
+        media_reclamation_preflight(&mut main, &media, 10, limits)
+            .expect("clean bounded stale candidate window"),
+        MediaReclamationPreflight::Continue
+    );
+    assert_eq!(
+        main.query_row(
+            "SELECT count(*) FROM media_blob_reap_candidate",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("remaining candidate count"),
+        1
+    );
+    assert_eq!(
+        media_reclamation_preflight(&mut main, &media, 10, limits).expect("resume after yielding"),
+        MediaReclamationPreflight::Eligible
+    );
 }
 
 #[test]

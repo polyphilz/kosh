@@ -619,6 +619,13 @@ pub(crate) enum MediaMaintenanceScanStep {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MediaReclamationPreflight {
+    Continue,
+    Eligible,
+    NotNeeded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AttachmentDisplayRole {
     Inline,
     Attachment,
@@ -4087,12 +4094,12 @@ fn validate_draft_capacity(
     Ok(())
 }
 
-pub(crate) fn media_reclamation_is_eligible(
-    main: &Connection,
+pub(crate) fn media_reclamation_preflight(
+    main: &mut Connection,
     media: &Connection,
     now_ms: i64,
     limits: MediaLimits,
-) -> Result<bool> {
+) -> Result<MediaReclamationPreflight> {
     validate_timestamp(now_ms, "nowMs")?;
     let limits = limits.validate()?;
     let attachment_is_eligible: bool = main.query_row(
@@ -4135,22 +4142,27 @@ pub(crate) fn media_reclamation_is_eligible(
         |row| row.get(0),
     )?;
     if attachment_is_eligible {
-        return Ok(true);
+        return Ok(MediaReclamationPreflight::Eligible);
     }
 
     let cutoff = now_ms.saturating_sub(limits.orphan_grace_period_ms);
-    // Stream the ordered queue instead of collecting it: stale or already
-    // missing rows cannot consume the deletion budget and hide later work,
-    // while memory remains bounded to the current SQLite row.
-    let mut candidate_statement = main.prepare(
-        "SELECT sha256
-         FROM media_blob_reap_candidate
-         WHERE orphaned_at <= ?1
-         ORDER BY orphaned_at, sha256",
-    )?;
-    let mut candidates = candidate_statement.query(params![cutoff])?;
-    while let Some(candidate) = candidates.next()? {
-        let hash = candidate.get::<_, Vec<u8>>(0)?;
+    let candidates = main
+        .prepare(
+            "SELECT sha256
+             FROM media_blob_reap_candidate
+             WHERE orphaned_at <= ?1
+             ORDER BY orphaned_at, sha256
+             LIMIT ?2",
+        )?
+        .query_map(
+            params![cutoff, i64::from(limits.max_reaps_per_maintenance)],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let batch_is_full = candidates.len()
+        == usize::try_from(limits.max_reaps_per_maintenance)
+            .expect("validated media reap limit fits usize");
+    for hash in candidates {
         let referenced: bool = main.query_row(
             "SELECT EXISTS(
                 SELECT 1
@@ -4192,6 +4204,10 @@ pub(crate) fn media_reclamation_is_eligible(
             |row| row.get(0),
         )?;
         if referenced {
+            main.execute(
+                "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
+                params![&hash],
+            )?;
             continue;
         }
         let active_lease: bool = media.query_row(
@@ -4204,6 +4220,10 @@ pub(crate) fn media_reclamation_is_eligible(
             |row| row.get(0),
         )?;
         if active_lease {
+            main.execute(
+                "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
+                params![&hash],
+            )?;
             continue;
         }
         let blob_exists: bool = media.query_row(
@@ -4212,10 +4232,18 @@ pub(crate) fn media_reclamation_is_eligible(
             |row| row.get(0),
         )?;
         if blob_exists {
-            return Ok(true);
+            return Ok(MediaReclamationPreflight::Eligible);
         }
+        main.execute(
+            "DELETE FROM media_blob_reap_candidate WHERE sha256 = ?1",
+            params![&hash],
+        )?;
     }
-    Ok(false)
+    Ok(if batch_is_full {
+        MediaReclamationPreflight::Continue
+    } else {
+        MediaReclamationPreflight::NotNeeded
+    })
 }
 
 pub(crate) fn recover_media_lifecycle_batch(

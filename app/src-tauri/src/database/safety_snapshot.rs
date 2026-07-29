@@ -35,6 +35,12 @@ impl OrderedDigestTracker {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SnapshotId {
+    reason: SafetySnapshotReason,
+    created_at_ms: i64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum SafetySnapshotReason {
@@ -632,19 +638,36 @@ fn is_owned_staging_name(name: &str) -> bool {
 }
 
 fn is_owned_snapshot_name(id: &str) -> bool {
-    let tail = id
-        .strip_prefix("migration-")
-        .or_else(|| id.strip_prefix("media-reclaim-"));
-    let Some((created_at_ms, uuid)) = tail.and_then(|tail| tail.split_once('-')) else {
-        return false;
+    parse_owned_snapshot_id(id).is_some()
+}
+
+fn parse_owned_snapshot_id(id: &str) -> Option<SnapshotId> {
+    let (reason, tail) = if let Some(tail) = id.strip_prefix("migration-") {
+        (SafetySnapshotReason::Migration, tail)
+    } else {
+        (
+            SafetySnapshotReason::MediaReclaim,
+            id.strip_prefix("media-reclaim-")?,
+        )
     };
-    created_at_ms.parse::<i64>().is_ok_and(|value| value >= 0)
-        && uuid.len() == 32
-        && uuid
+    let (created_at_ms, uuid) = tail.split_once('-')?;
+    let created_at_ms = created_at_ms
+        .parse::<i64>()
+        .ok()
+        .filter(|value| *value >= 0)?;
+    if uuid.len() != 32
+        || !uuid
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        && uuid.as_bytes()[12] == b'7'
-        && matches!(uuid.as_bytes()[16], b'8' | b'9' | b'a' | b'b')
+        || uuid.as_bytes()[12] != b'7'
+        || !matches!(uuid.as_bytes()[16], b'8' | b'9' | b'a' | b'b')
+    {
+        return None;
+    }
+    Some(SnapshotId {
+        reason,
+        created_at_ms,
+    })
 }
 
 fn read_owned_manifest_identity(
@@ -660,7 +683,14 @@ fn read_owned_manifest_identity(
     }
     let manifest: SafetySnapshotManifest =
         serde_json::from_reader(BufReader::new(File::open(manifest_path)?))?;
-    if manifest.schema_version != SNAPSHOT_SCHEMA_VERSION || manifest.id != expected_id {
+    let expected = parse_owned_snapshot_id(expected_id).ok_or_else(|| {
+        DatabaseError::InvalidInput("snapshot directory does not contain a valid ID".into())
+    })?;
+    if manifest.schema_version != SNAPSHOT_SCHEMA_VERSION
+        || manifest.id != expected_id
+        || manifest.reason != expected.reason
+        || manifest.created_at_ms != expected.created_at_ms
+    {
         return Err(DatabaseError::InvalidInput(
             "snapshot manifest ownership does not match its directory".into(),
         ));
@@ -980,6 +1010,41 @@ mod tests {
             fs::read(unowned.join("keep.txt")).expect("unowned marker survives"),
             b"user data"
         );
+    }
+
+    #[test]
+    fn manifest_reason_and_timestamp_must_match_the_snapshot_id() {
+        let root = tempfile::tempdir().expect("mismatched manifest cleanup");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        for _ in 0..2 {
+            database
+                .client()
+                .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
+                .expect("snapshot");
+        }
+        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let snapshots = owned_published_snapshots(&snapshot_root).expect("published snapshots");
+        assert_eq!(snapshots.len(), 2);
+
+        for (index, (_, _, path)) in snapshots.iter().enumerate() {
+            let manifest_path = path.join("manifest.json");
+            let mut manifest: SafetySnapshotManifest = serde_json::from_reader(BufReader::new(
+                File::open(&manifest_path).expect("open manifest"),
+            ))
+            .expect("parse manifest");
+            if index == 0 {
+                manifest.created_at_ms = manifest.created_at_ms.saturating_add(1);
+            } else {
+                manifest.reason = SafetySnapshotReason::Migration;
+            }
+            write_manifest(path, &manifest).expect("publish mismatched manifest");
+        }
+
+        assert!(owned_published_snapshots(&snapshot_root)
+            .expect("reject mismatched manifests")
+            .is_empty());
+        assert!(snapshots.iter().all(|(_, _, path)| !path.exists()));
     }
 
     #[test]
