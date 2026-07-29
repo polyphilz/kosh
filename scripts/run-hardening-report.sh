@@ -18,6 +18,7 @@ lexical_report="$app_root/.data/relevance/reports/lexical-scale-v1.performance.j
 bundle_report="$app_root/test-results/bundle/report.json"
 [[ "$output" == /* ]] || fail "report path must be absolute"
 [[ ! -L "$output" ]] || fail "report path must not be a symlink"
+[[ ! -L "$bundle_report" ]] || fail "bundle report path must not be a symlink"
 mkdir -p "$(dirname "$output")"
 
 head_sha="$(git -C "$repo_root" rev-parse HEAD)"
@@ -47,7 +48,10 @@ cargo test \
 (
   cd "$app_root"
   pnpm relevance:lexical-scale
-  pnpm check:bundle
+  [[ ! -e "$bundle_report" ]] || rm -- "$bundle_report"
+  KOSH_BUNDLE_ROOT="$app_root/dist" \
+    KOSH_BUNDLE_REPORT="$bundle_report" \
+    pnpm check:bundle
 )
 
 [[ -f "$lexical_report" && ! -L "$lexical_report" ]] ||

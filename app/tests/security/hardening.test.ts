@@ -81,8 +81,18 @@ describe("desktop security boundary", () => {
 
   it("routes every externally callable media reclamation through a safety snapshot", () => {
     const media = readFileSync("src-tauri/src/media.rs", "utf8");
+    const writer = readFileSync("src-tauri/src/database/writer.rs", "utf8");
     expect(media).toContain("maintain_media_with_safety_snapshot(now_ms, limits)");
     expect(media).not.toContain("client.maintain_media(now_ms, limits)");
+    expect(writer).not.toContain("WriterMessage::MaintainMedia {");
+    expect(writer).not.toContain("pub fn maintain_media(");
+  });
+
+  it("pins hardening bundle evidence against inherited environment overrides", () => {
+    const report = readFileSync("../scripts/run-hardening-report.sh", "utf8");
+    expect(report).toContain('KOSH_BUNDLE_ROOT="$app_root/dist"');
+    expect(report).toContain('KOSH_BUNDLE_REPORT="$bundle_report"');
+    expect(report).toContain('rm -- "$bundle_report"');
   });
 
   it("pins Claude to an ephemeral read-only tool boundary with no browser", () => {

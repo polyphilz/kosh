@@ -166,17 +166,8 @@ fn diagnostics_and_empty_maintenance_are_available_through_typed_ipc() {
     let reclaim = invoke_json(&window, "reclaim_eligible_media");
     assert_eq!(reclaim["operation"], "RECLAIM_MEDIA");
     assert_eq!(reclaim["changedItems"], 0);
-    assert!(reclaim["safetySnapshotId"]
-        .as_str()
-        .is_some_and(|id| id.starts_with("media-reclaim-")));
-    assert_eq!(
-        std::fs::read_dir(data_root.path().join("safety-snapshots"))
-            .expect("safety snapshot directory")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().join("manifest.json").is_file())
-            .count(),
-        1
-    );
+    assert!(reclaim["safetySnapshotId"].is_null());
+    assert!(!data_root.path().join("safety-snapshots").exists());
 }
 
 fn invoke_json(

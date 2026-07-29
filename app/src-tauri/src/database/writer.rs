@@ -38,6 +38,9 @@ use super::{
     },
 };
 
+#[cfg(test)]
+use super::safety_snapshot::SafetySnapshotReason;
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseDiagnostics {
@@ -195,14 +198,15 @@ pub(super) enum WriterMessage {
         scan: MediaIntegrityScan,
         reply: SyncSender<Result<MediaIntegrityReport>>,
     },
-    MaintainMedia {
-        scan: MediaMaintenanceScan,
-        reply: SyncSender<Result<MediaMaintenanceReport>>,
-    },
     MaintainMediaWithSafetySnapshot {
         scan: MediaMaintenanceScan,
-        snapshot: Option<SafetySnapshotReport>,
-        reply: SyncSender<Result<(SafetySnapshotReport, MediaMaintenanceReport)>>,
+        snapshot: MediaMaintenanceSnapshotState,
+        reply: SyncSender<Result<(Option<SafetySnapshotReport>, MediaMaintenanceReport)>>,
+    },
+    #[cfg(test)]
+    CreateSafetySnapshotForTest {
+        reason: SafetySnapshotReason,
+        reply: SyncSender<Result<SafetySnapshotReport>>,
     },
     RecoverMediaLifecycleBatch {
         now_ms: i64,
@@ -322,6 +326,12 @@ pub(super) enum WriterMessage {
         reply: SyncSender<Result<ShortcutSettings>>,
     },
     Shutdown,
+}
+
+pub(super) enum MediaMaintenanceSnapshotState {
+    Pending,
+    NotNeeded,
+    Verified(SafetySnapshotReport),
 }
 
 #[derive(Clone, Debug)]
@@ -612,15 +622,16 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub fn maintain_media(
+    pub(crate) fn maintain_media_with_safety_snapshot(
         &self,
         now_ms: i64,
         limits: MediaLimits,
-    ) -> Result<MediaMaintenanceReport> {
+    ) -> Result<(Option<SafetySnapshotReport>, MediaMaintenanceReport)> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::MaintainMedia {
+            .send(WriterMessage::MaintainMediaWithSafetySnapshot {
                 scan: MediaMaintenanceScan::new(now_ms, limits)?,
+                snapshot: MediaMaintenanceSnapshotState::Pending,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
@@ -629,18 +640,14 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn maintain_media_with_safety_snapshot(
+    #[cfg(test)]
+    pub(crate) fn create_safety_snapshot_for_test(
         &self,
-        now_ms: i64,
-        limits: MediaLimits,
-    ) -> Result<(SafetySnapshotReport, MediaMaintenanceReport)> {
+        reason: SafetySnapshotReason,
+    ) -> Result<SafetySnapshotReport> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::MaintainMediaWithSafetySnapshot {
-                scan: MediaMaintenanceScan::new(now_ms, limits)?,
-                snapshot: None,
-                reply,
-            })
+            .send(WriterMessage::CreateSafetySnapshotForTest { reason, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

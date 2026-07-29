@@ -78,6 +78,7 @@ pub use tidbits::{
     TidbitRevisionPage, TidbitRevisionSummary, TidbitSource, TIDBIT_PURGE_DELAY_MS,
 };
 pub(crate) use writer::LexicalBenchmarkAttachmentWrite;
+use writer::MediaMaintenanceSnapshotState;
 use writer::WriterMessage;
 pub use writer::{DatabaseClient, DatabaseDiagnostics};
 
@@ -499,52 +500,47 @@ fn writer_loop(
                     let _ = reply.send(Err(error));
                 }
             },
-            WriterMessage::MaintainMedia { scan, reply } => {
-                match scan.step(&mut main, &mut media) {
-                    Ok(media::MediaMaintenanceScanStep::Continue(scan)) => {
-                        if let Err(error) =
-                            sender.send(WriterMessage::MaintainMedia { scan, reply })
-                        {
-                            let WriterMessage::MaintainMedia { reply, .. } = error.0 else {
-                                unreachable!("failed message retained its variant");
-                            };
-                            let _ = reply.send(Err(DatabaseError::WriterUnavailable));
-                        }
-                    }
-                    Ok(media::MediaMaintenanceScanStep::Complete(report)) => {
-                        let _ = reply.send(Ok(report));
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                    }
-                }
-            }
             WriterMessage::MaintainMediaWithSafetySnapshot {
                 scan,
                 snapshot,
                 reply,
             } => {
-                let snapshot = snapshot.map_or_else(
-                    || {
-                        safety_snapshot::create(
-                            &mut main,
-                            &mut media,
-                            &paths,
-                            SafetySnapshotReason::MediaReclaim,
-                        )
-                    },
-                    Ok,
-                );
+                let snapshot = match snapshot {
+                    MediaMaintenanceSnapshotState::Pending => media::media_reclamation_is_eligible(
+                        &main,
+                        &media,
+                        scan.now_ms(),
+                        scan.limits(),
+                    )
+                    .and_then(|eligible| {
+                        if eligible {
+                            safety_snapshot::create(
+                                &mut main,
+                                &mut media,
+                                &paths,
+                                SafetySnapshotReason::MediaReclaim,
+                            )
+                            .map(MediaMaintenanceSnapshotState::Verified)
+                        } else {
+                            Ok(MediaMaintenanceSnapshotState::NotNeeded)
+                        }
+                    }),
+                    snapshot => Ok(snapshot),
+                };
                 match snapshot {
                     Err(error) => {
                         let _ = reply.send(Err(error));
                     }
-                    Ok(snapshot) => match scan.step(&mut main, &mut media) {
+                    Ok(snapshot) => match scan.step(
+                        &mut main,
+                        &mut media,
+                        matches!(&snapshot, MediaMaintenanceSnapshotState::Verified(_)),
+                    ) {
                         Ok(media::MediaMaintenanceScanStep::Continue(scan)) => {
                             if let Err(error) =
                                 sender.send(WriterMessage::MaintainMediaWithSafetySnapshot {
                                     scan,
-                                    snapshot: Some(snapshot),
+                                    snapshot,
                                     reply,
                                 })
                             {
@@ -558,6 +554,13 @@ fn writer_loop(
                             }
                         }
                         Ok(media::MediaMaintenanceScanStep::Complete(report)) => {
+                            let snapshot = match snapshot {
+                                MediaMaintenanceSnapshotState::Verified(snapshot) => Some(snapshot),
+                                MediaMaintenanceSnapshotState::NotNeeded => None,
+                                MediaMaintenanceSnapshotState::Pending => {
+                                    unreachable!("maintenance preflight was not resolved")
+                                }
+                            };
                             let _ = reply.send(Ok((snapshot, report)));
                         }
                         Err(error) => {
@@ -565,6 +568,12 @@ fn writer_loop(
                         }
                     },
                 }
+            }
+            #[cfg(test)]
+            WriterMessage::CreateSafetySnapshotForTest { reason, reply } => {
+                let _ = reply.send(safety_snapshot::create(
+                    &mut main, &mut media, &paths, reason,
+                ));
             }
             WriterMessage::RecoverMediaLifecycleBatch {
                 now_ms,

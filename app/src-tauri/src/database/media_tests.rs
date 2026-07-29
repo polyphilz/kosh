@@ -25,11 +25,31 @@ use super::{
     research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CitationLocator,
-    ClearDraftInput, Database, DatabaseError, DatabasePaths, EditTidbitInput, LexicalSearchMode,
-    MediaLimits, SaveDraftInput, SearchPassagesInput, SourceDraft, TidbitDraft,
+    ClearDraftInput, Database, DatabaseClient, DatabaseError, DatabasePaths, EditTidbitInput,
+    LexicalSearchMode, MediaLimits, MediaMaintenanceReport, SaveDraftInput, SearchPassagesInput,
+    SourceDraft, TidbitDraft,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
+
+trait MaintainMediaForTest {
+    fn maintain_media(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> super::Result<MediaMaintenanceReport>;
+}
+
+impl MaintainMediaForTest for DatabaseClient {
+    fn maintain_media(
+        &self,
+        now_ms: i64,
+        limits: MediaLimits,
+    ) -> super::Result<MediaMaintenanceReport> {
+        self.maintain_media_with_safety_snapshot(now_ms, limits)
+            .map(|(_, report)| report)
+    }
+}
 
 #[test]
 fn display_filenames_reject_paths_controls_and_bidirectional_spoofing() {
@@ -2483,6 +2503,7 @@ fn startup_lifecycle_recovery_never_reaps_without_a_verified_snapshot() {
         .client()
         .maintain_media_with_safety_snapshot(62, limits)
         .expect("explicit snapshot-backed reclamation");
+    let snapshot = snapshot.expect("reclamation requires a verified snapshot");
     assert!(snapshot.directory.join("manifest.json").is_file());
     assert_eq!(maintenance.cleanup.deleted_blob_count, 1);
     assert_eq!(blob_count(&restarted), 0);

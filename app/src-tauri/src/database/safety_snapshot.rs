@@ -687,8 +687,8 @@ mod tests {
             .expect("search evidence")[0]
             .passage_id
             .clone();
-        let (report, _) = client
-            .maintain_media_with_safety_snapshot(20, crate::database::MediaLimits::default())
+        let report = client
+            .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
             .expect("create snapshot");
         assert!(report.main_bytes > 0);
         assert!(report.media_bytes > 0);
@@ -738,7 +738,7 @@ mod tests {
 
         for _ in 0..4 {
             client
-                .maintain_media_with_safety_snapshot(10, crate::database::MediaLimits::default())
+                .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
                 .expect("snapshot");
         }
 
@@ -755,6 +755,42 @@ mod tests {
     }
 
     #[test]
+    fn no_op_media_maintenance_preserves_existing_recovery_points() {
+        let root = tempfile::tempdir().expect("no-op snapshot retention");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        for _ in 0..MAX_SNAPSHOTS {
+            database
+                .client()
+                .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
+                .expect("seed recovery point");
+        }
+        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let before = owned_published_snapshots(&snapshot_root)
+            .expect("recovery points before maintenance")
+            .into_iter()
+            .map(|(_, id, _)| id)
+            .collect::<Vec<_>>();
+
+        let (snapshot, report) = database
+            .client()
+            .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+            .expect("no-op media maintenance");
+
+        assert!(snapshot.is_none());
+        assert_eq!(
+            report.cleanup,
+            crate::database::MediaCleanupResult::default()
+        );
+        let after = owned_published_snapshots(&snapshot_root)
+            .expect("recovery points after maintenance")
+            .into_iter()
+            .map(|(_, id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(after, before);
+    }
+
+    #[test]
     fn capacity_preflight_rotates_owned_pairs_but_preserves_the_newest_recovery_point() {
         let root = tempfile::tempdir().expect("snapshot capacity");
         let paths = DatabasePaths::new(root.path());
@@ -762,7 +798,7 @@ mod tests {
         for _ in 0..MAX_SNAPSHOTS {
             database
                 .client()
-                .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+                .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
                 .expect("snapshot");
         }
         let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
@@ -797,7 +833,7 @@ mod tests {
         for _ in 0..MAX_SNAPSHOTS {
             database
                 .client()
-                .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+                .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
                 .expect("snapshot");
         }
         let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
@@ -856,7 +892,7 @@ mod tests {
 
         database
             .client()
-            .maintain_media_with_safety_snapshot(10, crate::database::MediaLimits::default())
+            .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
             .expect("replacement snapshot");
 
         assert!(!interrupted.exists());
@@ -879,7 +915,7 @@ mod tests {
 
         let error = database
             .client()
-            .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+            .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
             .expect_err("symlinked snapshot root must fail");
 
         assert!(matches!(error, DatabaseError::InvalidInput(_)));
@@ -945,7 +981,7 @@ mod tests {
 
         let error = database
             .client()
-            .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+            .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
             .expect_err("corrupt media must fail snapshot verification");
 
         assert!(matches!(error, DatabaseError::Validation { .. }));
@@ -1028,7 +1064,7 @@ mod tests {
 
         let error = database
             .client()
-            .maintain_media_with_safety_snapshot(10, limits)
+            .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
             .expect_err("corrupt preview must fail snapshot verification");
 
         assert!(matches!(error, DatabaseError::Validation { .. }));

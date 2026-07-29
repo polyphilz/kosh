@@ -231,6 +231,12 @@ pub(crate) async fn reclaim_eligible_media(
             .cleanup
             .retired_attachment_count
             .saturating_add(report.cleanup.deleted_blob_count);
+        if changed > 0 && snapshot.is_none() {
+            return Err(DatabaseError::Validation {
+                kind: "media",
+                reason: "media reclamation completed without a verified safety snapshot".into(),
+            });
+        }
         log::info!(
             "maintenance reclaimed {} bytes across {changed} media records",
             report.cleanup.reclaimed_bytes
@@ -239,7 +245,7 @@ pub(crate) async fn reclaim_eligible_media(
             operation: "RECLAIM_MEDIA",
             changed_items: changed,
             reclaimed_bytes: report.cleanup.reclaimed_bytes,
-            safety_snapshot_id: Some(snapshot.id),
+            safety_snapshot_id: snapshot.map(|snapshot| snapshot.id),
             message: if changed == 0 {
                 "No expired or unreferenced media was eligible for reclamation.".into()
             } else {

@@ -3344,10 +3344,19 @@ impl MediaMaintenanceScan {
         })
     }
 
+    pub(crate) fn now_ms(&self) -> i64 {
+        self.now_ms
+    }
+
+    pub(crate) fn limits(&self) -> MediaLimits {
+        self.limits
+    }
+
     pub(crate) fn step(
         mut self,
         main: &mut Connection,
         media: &mut Connection,
+        reaping_authorized: bool,
     ) -> Result<MediaMaintenanceScanStep> {
         match &self.phase {
             MediaMaintenancePhase::Lifecycle {
@@ -3362,7 +3371,11 @@ impl MediaMaintenanceScan {
                     cursor.clone(),
                     false,
                     if *first_batch {
-                        MediaLifecycleMode::SnapshotBackedMaintenance
+                        if reaping_authorized {
+                            MediaLifecycleMode::SnapshotBackedMaintenance
+                        } else {
+                            MediaLifecycleMode::StartupRecovery
+                        }
                     } else {
                         MediaLifecycleMode::ReconcileOnly
                     },
@@ -4072,6 +4085,139 @@ fn validate_draft_capacity(
         )));
     }
     Ok(())
+}
+
+pub(crate) fn media_reclamation_is_eligible(
+    main: &Connection,
+    media: &Connection,
+    now_ms: i64,
+    limits: MediaLimits,
+) -> Result<bool> {
+    validate_timestamp(now_ms, "nowMs")?;
+    let limits = limits.validate()?;
+    let attachment_is_eligible: bool = main.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM attachment
+            WHERE attachment.deleted_at IS NULL
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM tidbit_revision_attachment AS membership
+                   WHERE membership.attachment_id = attachment.id
+              )
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM research_run_attachment AS research_membership
+                   WHERE research_membership.attachment_id = attachment.id
+              )
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM media_ingest_lease AS lease
+                   WHERE lease.attachment_id = attachment.id
+                     AND lease.state = 'COMMITTED'
+                     AND lease.expires_at > ?1
+              )
+              AND NOT EXISTS (
+                   SELECT 1
+                   FROM media_ingest_lease AS lease
+                   JOIN draft_media_lease AS draft_lease
+                     ON draft_lease.media_ingest_lease_id = lease.id
+                   JOIN draft ON draft.id = draft_lease.draft_id
+                   WHERE lease.attachment_id = attachment.id
+                     AND lease.state = 'COMMITTED'
+                     AND kosh_markdown_references_attachment(
+                         draft.body_markdown,
+                         attachment.id
+                     )
+              )
+        )",
+        params![now_ms],
+        |row| row.get(0),
+    )?;
+    if attachment_is_eligible {
+        return Ok(true);
+    }
+
+    let cutoff = now_ms.saturating_sub(limits.orphan_grace_period_ms);
+    let candidates = main
+        .prepare(
+            "SELECT sha256
+             FROM media_blob_reap_candidate
+             WHERE orphaned_at <= ?1
+             ORDER BY orphaned_at, sha256
+             LIMIT ?2",
+        )?
+        .query_map(
+            params![cutoff, i64::from(limits.max_reaps_per_maintenance)],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for hash in candidates {
+        let referenced: bool = main.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM attachment
+                WHERE attachment.sha256 = ?1
+                  AND (
+                       attachment.deleted_at IS NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM tidbit_revision_attachment AS membership
+                           WHERE membership.attachment_id = attachment.id
+                       )
+                       OR EXISTS (
+                           SELECT 1
+                           FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
+                       )
+                  )
+                UNION ALL
+                SELECT 1
+                FROM attachment_image AS image
+                JOIN attachment ON attachment.id = image.attachment_id
+                WHERE image.preview_sha256 = ?1
+                  AND (
+                       attachment.deleted_at IS NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM tidbit_revision_attachment AS membership
+                           WHERE membership.attachment_id = attachment.id
+                       )
+                       OR EXISTS (
+                           SELECT 1
+                           FROM research_run_attachment AS research_membership
+                           WHERE research_membership.attachment_id = attachment.id
+                       )
+                  )
+            )",
+            params![&hash],
+            |row| row.get(0),
+        )?;
+        if referenced {
+            continue;
+        }
+        let active_lease: bool = media.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM media_blob_lease
+                WHERE sha256 = ?1 AND expires_at > ?2
+            )",
+            params![&hash, now_ms],
+            |row| row.get(0),
+        )?;
+        if active_lease {
+            continue;
+        }
+        let blob_exists: bool = media.query_row(
+            "SELECT EXISTS(SELECT 1 FROM media_blob WHERE sha256 = ?1)",
+            params![&hash],
+            |row| row.get(0),
+        )?;
+        if blob_exists {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn recover_media_lifecycle_batch(
