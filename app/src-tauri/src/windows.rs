@@ -326,7 +326,7 @@ fn install_tray(app: &App, bindings: &[KeyboardBinding]) -> tauri::Result<()> {
     Ok(())
 }
 
-fn request_quit(app: &AppHandle) {
+pub(crate) fn request_quit(app: &AppHandle) {
     let labels = [MAIN_LABEL, QUICK_ADD_LABEL]
         .into_iter()
         .filter(|label| app.get_webview_window(label).is_some())
@@ -381,6 +381,22 @@ fn request_quit(app: &AppHandle) {
             );
         }
     });
+}
+
+pub(crate) fn handle_exit_requested(
+    app: &AppHandle,
+    code: Option<i32>,
+    api: &tauri::ExitRequestApi,
+) {
+    if !should_prepare_for_exit(code) {
+        return;
+    }
+    api.prevent_exit();
+    request_quit(app);
+}
+
+const fn should_prepare_for_exit(code: Option<i32>) -> bool {
+    code.is_none()
 }
 
 #[tauri::command]
@@ -1037,6 +1053,13 @@ mod tests {
             .expect("a canceled request can be retried");
         assert!(context.cancel(next_request_id));
         assert!(!context.cancel(next_request_id));
+    }
+
+    #[test]
+    fn native_quit_requires_draft_preparation_but_approved_exit_does_not() {
+        assert!(should_prepare_for_exit(None));
+        assert!(!should_prepare_for_exit(Some(0)));
+        assert!(!should_prepare_for_exit(Some(tauri::RESTART_EXIT_CODE)));
     }
 
     #[test]

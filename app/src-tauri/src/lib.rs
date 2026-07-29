@@ -174,12 +174,16 @@ pub fn run() {
     .build(tauri::generate_context!())
     .expect("error while building Kosh");
 
-    app.run(|app, event| {
-        if matches!(event, tauri::RunEvent::Reopen { .. }) {
+    app.run(|app, event| match event {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
+            windows::handle_exit_requested(app, code, &api);
+        }
+        tauri::RunEvent::Reopen { .. } => {
             if let Err(error) = windows::show_main(app.clone()) {
                 log::error!("failed to show Kosh after activation: {error}");
             }
         }
+        _ => {}
     });
 }
 
