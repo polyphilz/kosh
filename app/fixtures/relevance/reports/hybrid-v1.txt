@@ -1,12 +1,12 @@
 Kosh relevance report v1
-fixture: kosh-relevance-v1 (29392576875c47f4e47cbc86c0f55bc047167cdb49546d380b682a848c085cee)
+fixture: kosh-relevance-v1 (8f3dc39b80d74ac2ce333cf7bb4ce8d4b846bca0a02a2cdc29e8822d9b1798e6)
 retriever: kosh-hybrid-jina-v1
 status: PASS
-queries: 17/17 passed
-recall@5: 1.0000
+queries: 20/20 passed
+recall@5: 0.9833
 recall@10: 1.0000
 MRR: 1.0000
-nDCG@10: 0.9990
+nDCG@10: 0.9948
 citation locator accuracy: 1.0000
 exact/phrase success: 1.0000
 forbidden hits@10: 0
@@ -29,3 +29,6 @@ query results:
 - [PASS] query-fourier-formula (Formula): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-formula-fourier
 - [PASS] query-rust-domain (SourceDomain): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-source-rust
 - [PASS] query-heat-models (Prose): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-modern
+- [PASS] query-text-attachment-lines (TextAttachment): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-text-release-log
+- [PASS] query-authored-over-pdf-volume (MediaVolume): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-vector-clock
+- [PASS] query-pdf-fencing-page (Pdf): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-pdf-distributed-113

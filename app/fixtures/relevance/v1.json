@@ -1,11 +1,13 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "fixtureId": "kosh-relevance-v1",
   "description": "Synthetic citation-sized passages spanning lexical, semantic, attachment, and near-duplicate retrieval behavior.",
   "corpus": [
     {
       "id": "passage-heat-modern",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-heat-modern",
+      "evidenceAttachmentId": null,
       "title": "Heat and temperature",
       "headingContext": ["Thermodynamics", "Kinetic model"],
       "content": "Heat is impatient motion transferred between systems. Temperature describes a distribution of particle energies rather than one particle.",
@@ -30,7 +32,9 @@
     },
     {
       "id": "passage-heat-caloric",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-heat-caloric",
+      "evidenceAttachmentId": null,
       "title": "Obsolete caloric theory",
       "headingContext": ["History of thermodynamics"],
       "content": "The obsolete caloric theory treated heat as a weightless fluid that flowed from hot bodies into cold bodies.",
@@ -50,7 +54,9 @@
     },
     {
       "id": "passage-code-cache-key",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-code-cache-key",
+      "evidenceAttachmentId": null,
       "title": "Passage cache",
       "headingContext": ["Rust", "Stable identifiers"],
       "content": "fn passage_cache_key(revision: &str, ordinal: u32) -> String {\n    format!(\"{revision}:{ordinal}\")\n}",
@@ -70,7 +76,9 @@
     },
     {
       "id": "passage-formula-bayes",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-formula-bayes",
+      "evidenceAttachmentId": null,
       "title": "Bayes rule",
       "headingContext": ["Probability"],
       "content": "$$P(A|B) = \\frac{P(B|A)P(A)}{P(B)}$$",
@@ -90,7 +98,9 @@
     },
     {
       "id": "passage-source-sqlite",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-source-sqlite",
+      "evidenceAttachmentId": null,
       "title": "FTS tokenizer reminder",
       "headingContext": ["SQLite"],
       "content": "FTS5 tokenizers decide how query terms and document text become searchable tokens.",
@@ -115,8 +125,10 @@
     },
     {
       "id": "passage-ocr-receipt",
-      "tidbitId": "tidbit-ocr-receipt",
-      "title": "Workshop receipt",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-workshop-receipt",
+      "title": null,
       "headingContext": [],
       "content": "Invoice QZ-4817 — replacement bearings and ceramic lubricant — total 86.40.",
       "sources": [],
@@ -139,9 +151,11 @@
     },
     {
       "id": "passage-pdf-transformer",
-      "tidbitId": "tidbit-pdf-transformer",
-      "title": "Transformer chapter notes",
-      "headingContext": ["Multi-head attention"],
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-transformer-notes",
+      "title": null,
+      "headingContext": [],
       "content": "Different attention heads can focus on distinct representation subspaces at different positions.",
       "sources": [],
       "attachments": [
@@ -157,7 +171,9 @@
     },
     {
       "id": "passage-synonym-automobile",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-synonym-automobile",
+      "evidenceAttachmentId": null,
       "title": "Automobile maintenance",
       "headingContext": ["Seasonal checklist"],
       "content": "An automobile upkeep schedule should include tire pressure, brake fluid, coolant, and battery inspection.",
@@ -177,7 +193,9 @@
     },
     {
       "id": "passage-misspelling-concurrency",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-misspelling-concurrency",
+      "evidenceAttachmentId": null,
       "title": "Concurrency limit",
       "headingContext": ["Workers"],
       "content": "A semaphore bounds concurrency by requiring each worker to hold a permit while expensive work is active.",
@@ -197,7 +215,9 @@
     },
     {
       "id": "passage-filename-model",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-filename-model",
+      "evidenceAttachmentId": null,
       "title": "Embedding artifact",
       "headingContext": ["Local models"],
       "content": "The checked model manifest records its SHA-256 digest, dimensions, and tokenizer revision.",
@@ -222,7 +242,9 @@
     },
     {
       "id": "passage-unicode-cafe",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-unicode-cafe",
+      "evidenceAttachmentId": null,
       "title": "Résumé review",
       "headingContext": ["Writing"],
       "content": "A naïve résumé draft mentioned the café project but omitted measurable outcomes.",
@@ -242,7 +264,9 @@
     },
     {
       "id": "passage-code-resolve-citation",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-code-resolve-citation",
+      "evidenceAttachmentId": null,
       "title": "Trusted citation boundary",
       "headingContext": ["TypeScript"],
       "content": "const resolveCitationTarget = (passageId: string) => backend.resolveCitation(passageId);",
@@ -262,7 +286,9 @@
     },
     {
       "id": "passage-formula-fourier",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-formula-fourier",
+      "evidenceAttachmentId": null,
       "title": "Fourier transform",
       "headingContext": ["Signals"],
       "content": "$$F(\\omega)=\\int_{-\\infty}^{\\infty} f(t)e^{-i\\omega t}\\,dt$$",
@@ -282,7 +308,9 @@
     },
     {
       "id": "passage-prose-gardening",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-prose-gardening",
+      "evidenceAttachmentId": null,
       "title": "Basil watering",
       "headingContext": ["Herb garden"],
       "content": "Check the top centimeter of soil before watering basil; drooping at noon can be temporary heat stress.",
@@ -302,7 +330,9 @@
     },
     {
       "id": "passage-phrase-dough",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-phrase-dough",
+      "evidenceAttachmentId": null,
       "title": "Bread experiment",
       "headingContext": ["Autolyse"],
       "content": "Resting dough before kneading lets flour hydrate and makes the dough easier to stretch.",
@@ -322,7 +352,9 @@
     },
     {
       "id": "passage-source-rust",
+      "ownerKind": "AUTHOR",
       "tidbitId": "tidbit-source-rust",
+      "evidenceAttachmentId": null,
       "title": "Rust iterator note",
       "headingContext": ["Ownership"],
       "content": "Iterator adaptors are lazy and do nothing until a consuming adaptor requests values.",
@@ -343,6 +375,189 @@
         "endChar": null,
         "startLine": null,
         "endLine": null
+      }
+    },
+    {
+      "id": "passage-text-release-log",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-release-log",
+      "title": null,
+      "headingContext": [],
+      "content": "The cobalt_index rebuild completed successfully after the schema promotion.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "release-notes.log",
+          "mediaType": "text/plain"
+        }
+      ],
+      "locator": {
+        "kind": "TEXT_LINES",
+        "startLine": 18,
+        "endLine": 20
+      }
+    },
+    {
+      "id": "passage-authored-vector-clock",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-authored-vector-clock",
+      "evidenceAttachmentId": null,
+      "title": "Vector clock takeaway",
+      "headingContext": ["Distributed systems", "Practical rule"],
+      "content": "My takeaway: vector clock reconciliation preserves causal order. Start with this authored checklist before consulting archival appendices.",
+      "sources": [],
+      "attachments": [],
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 2,
+        "endBlock": 2,
+        "sourceStartByte": 31,
+        "sourceEndByte": 164,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      }
+    },
+    {
+      "id": "passage-pdf-distributed-110",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-distributed-reader",
+      "title": null,
+      "headingContext": [],
+      "content": "Vector clock reconciliation preserves causal order across replicas while concurrent writes remain distinguishable.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "distributed-systems-reader.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 110
+      }
+    },
+    {
+      "id": "passage-pdf-distributed-111",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-distributed-reader",
+      "title": null,
+      "headingContext": [],
+      "content": "Vector clock reconciliation can expose causal order before replicas exchange every archived write.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "distributed-systems-reader.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 111
+      }
+    },
+    {
+      "id": "passage-pdf-distributed-112",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-distributed-reader",
+      "title": null,
+      "headingContext": [],
+      "content": "A vector clock records causal order by incrementing replica counters during reconciliation.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "distributed-systems-reader.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 112
+      }
+    },
+    {
+      "id": "passage-pdf-distributed-113",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-distributed-reader",
+      "title": null,
+      "headingContext": [],
+      "content": "Lease fencing uses token epoch 47 so a superseded writer cannot commit after reconciliation.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "distributed-systems-reader.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 113
+      }
+    },
+    {
+      "id": "passage-pdf-distributed-114",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-distributed-reader",
+      "title": null,
+      "headingContext": [],
+      "content": "Archived examples compare vector clock reconciliation with wall-clock ordering and causal broadcast.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "distributed-systems-reader.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 114
+      }
+    },
+    {
+      "id": "passage-pdf-distributed-115",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-distributed-reader",
+      "title": null,
+      "headingContext": [],
+      "content": "Exercises ask whether vector clock reconciliation preserves causal order under delayed delivery.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "distributed-systems-reader.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 115
+      }
+    },
+    {
+      "id": "passage-pdf-conference-clock",
+      "ownerKind": "ATTACHMENT",
+      "tidbitId": null,
+      "evidenceAttachmentId": "attachment-conference-notes",
+      "title": null,
+      "headingContext": [],
+      "content": "Conference notes summarize how vector clock reconciliation identifies causal order without synchronized clocks.",
+      "sources": [],
+      "attachments": [
+        {
+          "filename": "conference-notes.pdf",
+          "mediaType": "application/pdf"
+        }
+      ],
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 9
       }
     }
   ],
@@ -816,6 +1031,85 @@
           "endChar": null,
           "startLine": null,
           "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-text-attachment-lines",
+      "text": "cobalt_index release-notes.log",
+      "searchMode": "DEFAULT",
+      "category": "TEXT_ATTACHMENT",
+      "retrievalNeed": "LEXICAL",
+      "relevance": [
+        {
+          "passageId": "passage-text-release-log",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-text-release-log",
+        "locator": {
+          "kind": "TEXT_LINES",
+          "startLine": 18,
+          "endLine": 20
+        }
+      }
+    },
+    {
+      "id": "query-authored-over-pdf-volume",
+      "text": "vector clock reconciliation causal order",
+      "searchMode": "DEFAULT",
+      "category": "MEDIA_VOLUME",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-authored-vector-clock",
+          "grade": 3
+        },
+        {
+          "passageId": "passage-pdf-distributed-110",
+          "grade": 2
+        },
+        {
+          "passageId": "passage-pdf-conference-clock",
+          "grade": 1
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-authored-vector-clock",
+        "locator": {
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 2,
+          "endBlock": 2,
+          "sourceStartByte": 31,
+          "sourceEndByte": 164,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
+        }
+      }
+    },
+    {
+      "id": "query-pdf-fencing-page",
+      "text": "lease fencing token epoch 47",
+      "searchMode": "DEFAULT",
+      "category": "PDF",
+      "retrievalNeed": "BOTH",
+      "relevance": [
+        {
+          "passageId": "passage-pdf-distributed-113",
+          "grade": 3
+        }
+      ],
+      "mustNotRank": [],
+      "expectedCitation": {
+        "passageId": "passage-pdf-distributed-113",
+        "locator": {
+          "kind": "PDF_PAGE",
+          "page": 113
         }
       }
     }

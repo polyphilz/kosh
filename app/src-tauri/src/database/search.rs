@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
 };
 
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, types::Type, Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
@@ -23,7 +23,12 @@ const AGREEMENT_RRF_WEIGHT: f64 = 0.20;
 const PHRASE_RRF_WEIGHT: f64 = 0.15;
 const TITLE_HEADING_RRF_WEIGHT: f64 = 0.10;
 const SEMANTIC_EXPANSION_RANK_LIMIT: usize = 1;
-pub(super) const FTS_VERSION: &str = "lexical-v2";
+const SEMANTIC_RERANK_EXPANSION: u32 = 2;
+const MAX_SEMANTIC_RERANK_CANDIDATES: u32 = 1_024;
+const SEMANTIC_EVIDENCE_PENALTY: f64 = 0.1;
+const INITIAL_RESULTS_PER_ATTACHMENT: usize = 2;
+pub(crate) const FTS_BM25_WEIGHTS: &str = "8.0, 6.0, 3.5, 4.5, 5.0, 5.0, 2.25";
+pub(super) const FTS_VERSION: &str = "lexical-v3";
 
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
     result_limit
@@ -59,15 +64,15 @@ pub enum SearchField {
 }
 
 impl SearchField {
-    const fn weight(self) -> f64 {
+    const fn weight(self, evidence_kind: SearchEvidenceKind) -> f64 {
         match self {
             Self::Title => 8.0,
             Self::HeadingContext => 6.0,
-            Self::Body => 3.0,
+            Self::Body => 3.5,
             Self::SourceLabel => 4.5,
             Self::SourceDomain => 5.0,
             Self::AttachmentName => 5.0,
-            Self::ExtractedText => 2.5,
+            Self::ExtractedText => evidence_kind.extracted_text_weight(),
         }
     }
 
@@ -81,6 +86,51 @@ impl SearchField {
             Self::AttachmentName => "attachmentName",
             Self::ExtractedText => "extractedText",
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SearchEvidenceKind {
+    Author,
+    Ocr,
+    Pdf,
+    Text,
+}
+
+impl SearchEvidenceKind {
+    fn from_locator_kind(locator_kind: &str) -> Result<Self> {
+        match locator_kind {
+            "MARKDOWN_BLOCKS" => Ok(Self::Author),
+            "OCR_REGION" => Ok(Self::Ocr),
+            "PDF_PAGE" => Ok(Self::Pdf),
+            "TEXT_LINES" => Ok(Self::Text),
+            kind => Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("search passage has unknown locator kind {kind}"),
+            }),
+        }
+    }
+
+    const fn extracted_text_weight(self) -> f64 {
+        match self {
+            Self::Author => 0.0,
+            Self::Ocr => 1.75,
+            Self::Pdf => 2.25,
+            Self::Text => 2.5,
+        }
+    }
+
+    pub(crate) const fn semantic_weight(self) -> f64 {
+        match self {
+            Self::Author => 1.0,
+            Self::Text => 0.95,
+            Self::Pdf => 0.9,
+            Self::Ocr => 0.8,
+        }
+    }
+
+    pub(crate) fn adjusted_semantic_similarity(self, similarity: f64) -> f64 {
+        similarity - (1.0 - self.semantic_weight()) * SEMANTIC_EVIDENCE_PENALTY
     }
 }
 
@@ -132,6 +182,7 @@ pub struct SearchPassagesResponse {
 pub(crate) struct LexicalDocument {
     pub passage_id: String,
     pub updated_at_ms: i64,
+    pub evidence_kind: SearchEvidenceKind,
     pub fields: BTreeMap<SearchField, String>,
     pub word_rank: Option<usize>,
     pub trigram_rank: Option<usize>,
@@ -142,8 +193,21 @@ pub(crate) struct LexicalDocument {
 pub(crate) struct RankedLexicalDocument {
     pub passage_id: String,
     pub score: f64,
+    pub evidence_kind: SearchEvidenceKind,
     pub matched_fields: Vec<SearchField>,
     pub highlights: Vec<SearchHighlight>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RankedSemanticPassage {
+    pub passage_id: String,
+    pub evidence_kind: SearchEvidenceKind,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SearchDiversityKey {
+    pub attachment_id: Option<String>,
+    pub page: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -421,11 +485,18 @@ fn semantic_ranked_passages(
     connection: &Connection,
     embedding: &[f32],
     limit: u32,
-) -> Result<Vec<String>> {
+) -> Result<Vec<RankedSemanticPassage>> {
     let manifest = embedding_index::manifest();
     let vector_json = serde_json::to_string(embedding)?;
+    let rerank_limit = limit
+        .saturating_mul(SEMANTIC_RERANK_EXPANSION)
+        .min(MAX_SEMANTIC_RERANK_CANDIDATES);
     let mut statement = connection.prepare(
-        "SELECT document.passage_id
+        "SELECT
+            document.passage_id,
+            passage.locator_kind,
+            nearest.distance,
+            document.updated_at
          FROM (
              SELECT rowid, distance
              FROM passage_embedding_vec_jina_v1
@@ -455,17 +526,61 @@ fn semantic_ranked_passages(
     )?;
     let rows = statement
         .query_map(
-            params![vector_json, limit, manifest.id, manifest.index_key],
-            |row| row.get(0),
+            params![vector_json, rerank_limit, manifest.id, manifest.index_key],
+            |row| {
+                let locator_kind = row.get::<_, String>(1)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    locator_kind,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    let mut ranked = rows
+        .into_iter()
+        .map(
+            |(passage_id, locator_kind, distance, updated_at)| -> Result<_> {
+                if !distance.is_finite() {
+                    return Err(DatabaseError::Validation {
+                        kind: "main",
+                        reason: format!("semantic distance for passage {passage_id} is not finite"),
+                    });
+                }
+                let evidence_kind = SearchEvidenceKind::from_locator_kind(&locator_kind)?;
+                let adjusted_similarity =
+                    evidence_kind.adjusted_semantic_similarity(1.0 - distance);
+                Ok((
+                    RankedSemanticPassage {
+                        passage_id,
+                        evidence_kind,
+                    },
+                    adjusted_similarity,
+                    updated_at,
+                ))
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
+    ranked.sort_by(
+        |(left, left_score, left_updated_at), (right, right_score, right_updated_at)| {
+            right_score
+                .total_cmp(left_score)
+                .then_with(|| right_updated_at.cmp(left_updated_at))
+                .then_with(|| left.passage_id.cmp(&right.passage_id))
+        },
+    );
+    Ok(ranked
+        .into_iter()
+        .take(limit as usize)
+        .map(|(candidate, _, _)| candidate)
+        .collect())
 }
 
 pub(crate) fn fuse_ranked_passages(
     query: &ParsedLexicalQuery,
     lexical: Vec<RankedLexicalDocument>,
-    semantic: Vec<String>,
+    semantic: Vec<RankedSemanticPassage>,
 ) -> Vec<RankedLexicalDocument> {
     struct FusedCandidate {
         passage_id: String,
@@ -473,6 +588,7 @@ pub(crate) fn fuse_ranked_passages(
         best_rank: usize,
         lexical_rank: Option<usize>,
         semantic_rank: Option<usize>,
+        evidence_kind: SearchEvidenceKind,
         matched_fields: Vec<SearchField>,
         highlights: Vec<SearchHighlight>,
     }
@@ -499,28 +615,31 @@ pub(crate) fn fuse_ranked_passages(
                 best_rank: rank,
                 lexical_rank: Some(rank),
                 semantic_rank: None,
+                evidence_kind: candidate.evidence_kind,
                 matched_fields: candidate.matched_fields,
                 highlights: candidate.highlights,
             },
         );
     }
-    for (index, passage_id) in semantic.into_iter().enumerate() {
+    for (index, semantic) in semantic.into_iter().enumerate() {
         let rank = index + 1;
-        if !candidates.contains_key(&passage_id) && rank > SEMANTIC_EXPANSION_RANK_LIMIT {
+        if !candidates.contains_key(&semantic.passage_id) && rank > SEMANTIC_EXPANSION_RANK_LIMIT {
             continue;
         }
         let candidate = candidates
-            .entry(passage_id.clone())
+            .entry(semantic.passage_id.clone())
             .or_insert_with(|| FusedCandidate {
-                passage_id,
+                passage_id: semantic.passage_id,
                 score: 0.0,
                 best_rank: rank,
                 lexical_rank: None,
                 semantic_rank: None,
+                evidence_kind: semantic.evidence_kind,
                 matched_fields: Vec::new(),
                 highlights: Vec::new(),
             });
-        candidate.score += SEMANTIC_RRF_WEIGHT / (RRF_RANK_CONSTANT + rank as f64);
+        candidate.score += SEMANTIC_RRF_WEIGHT * candidate.evidence_kind.semantic_weight()
+            / (RRF_RANK_CONSTANT + rank as f64);
         candidate.best_rank = candidate.best_rank.min(rank);
         candidate.semantic_rank = Some(rank);
         if let Some(lexical_rank) = candidate.lexical_rank {
@@ -548,6 +667,7 @@ pub(crate) fn fuse_ranked_passages(
         .map(|candidate| RankedLexicalDocument {
             passage_id: candidate.passage_id,
             score: candidate.score,
+            evidence_kind: candidate.evidence_kind,
             matched_fields: candidate.matched_fields,
             highlights: candidate.highlights,
         })
@@ -560,7 +680,12 @@ fn hydrate_ranked_passages(
     limit: usize,
     collapse_tidbits: bool,
 ) -> Result<Vec<PassageSearchResult>> {
-    let mut results = Vec::with_capacity(limit);
+    struct HydratedCandidate {
+        ranked: RankedLexicalDocument,
+        citation: CitationResolution,
+    }
+
+    let mut diversified = DiversitySelector::new(limit);
     let mut seen_tidbit_locators = BTreeMap::<String, Vec<CitationLocator>>::new();
     for ranked in ranked {
         let citation = passages::resolve_citation(connection, &ranked.passage_id)?;
@@ -582,18 +707,114 @@ fn hydrate_ranked_passages(
                 }
             }
         }
-        results.push(PassageSearchResult {
-            passage_id: ranked.passage_id,
-            score: ranked.score,
-            matched_fields: ranked.matched_fields,
-            highlights: ranked.highlights,
-            citation,
-        });
-        if results.len() == limit {
+        let diversity_key = citation_diversity_key(&citation);
+        if diversified.push(HydratedCandidate { ranked, citation }, diversity_key) {
             break;
         }
     }
-    Ok(results)
+    Ok(diversified
+        .finish()
+        .into_iter()
+        .map(|candidate| PassageSearchResult {
+            passage_id: candidate.ranked.passage_id,
+            score: candidate.ranked.score,
+            matched_fields: candidate.ranked.matched_fields,
+            highlights: candidate.ranked.highlights,
+            citation: candidate.citation,
+        })
+        .collect())
+}
+
+fn citation_diversity_key(citation: &CitationResolution) -> SearchDiversityKey {
+    SearchDiversityKey {
+        attachment_id: citation
+            .attachment
+            .as_ref()
+            .map(|attachment| attachment.id.clone()),
+        page: match &citation.locator {
+            CitationLocator::PdfPage { page } => Some(*page),
+            CitationLocator::OcrRegion { page, .. } => *page,
+            CitationLocator::MarkdownBlocks { .. } | CitationLocator::TextLines { .. } => None,
+        },
+    }
+}
+
+pub(crate) fn diversify_ranked<T>(
+    ranked: Vec<T>,
+    limit: usize,
+    diversity_key: impl Fn(&T) -> SearchDiversityKey,
+) -> Vec<T> {
+    let mut diversified = DiversitySelector::new(limit);
+    for candidate in ranked {
+        let key = diversity_key(&candidate);
+        if diversified.push(candidate, key) {
+            break;
+        }
+    }
+    diversified.finish()
+}
+
+struct DiversitySelector<T> {
+    limit: usize,
+    selected: Vec<T>,
+    deferred: Vec<T>,
+    attachment_counts: HashMap<String, usize>,
+    attachment_pages: BTreeSet<(String, u32)>,
+}
+
+impl<T> DiversitySelector<T> {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            selected: Vec::with_capacity(limit),
+            deferred: Vec::new(),
+            attachment_counts: HashMap::new(),
+            attachment_pages: BTreeSet::new(),
+        }
+    }
+
+    fn push(&mut self, candidate: T, key: SearchDiversityKey) -> bool {
+        if self.limit == 0 || self.selected.len() == self.limit {
+            return true;
+        }
+        let defer = key.attachment_id.as_ref().is_some_and(|attachment_id| {
+            let attachment_full = self
+                .attachment_counts
+                .get(attachment_id)
+                .copied()
+                .unwrap_or_default()
+                >= INITIAL_RESULTS_PER_ATTACHMENT;
+            let page_seen = key.page.is_some_and(|page| {
+                self.attachment_pages
+                    .contains(&(attachment_id.clone(), page))
+            });
+            attachment_full || page_seen
+        });
+        if defer {
+            self.deferred.push(candidate);
+            return false;
+        }
+        if let Some(attachment_id) = key.attachment_id {
+            *self
+                .attachment_counts
+                .entry(attachment_id.clone())
+                .or_default() += 1;
+            if let Some(page) = key.page {
+                self.attachment_pages.insert((attachment_id, page));
+            }
+        }
+        self.selected.push(candidate);
+        self.selected.len() == self.limit
+    }
+
+    fn finish(mut self) -> Vec<T> {
+        self.selected.extend(
+            self.deferred
+                .into_iter()
+                .take(self.limit.saturating_sub(self.selected.len())),
+        );
+        self.selected
+    }
 }
 
 fn citation_locators_overlap(left: &CitationLocator, right: &CitationLocator) -> bool {
@@ -1011,7 +1232,7 @@ fn query_fts_index(
          JOIN passage_search_document AS document
            ON document.rowid = {index}.rowid
          WHERE {index} MATCH ?1
-         ORDER BY bm25({index}, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5),
+         ORDER BY bm25({index}, {FTS_BM25_WEIGHTS}),
                   document.updated_at DESC,
                   document.passage_id
          LIMIT ?2"
@@ -1097,6 +1318,7 @@ fn load_search_documents(
                 ''
             ),
             '',
+            passage.locator_kind,
             candidate.word_rank,
             candidate.trigram_rank,
             candidate.short_rank
@@ -1134,6 +1356,7 @@ fn load_search_documents(
             '',
             attachment.display_filename || char(10) || attachment.media_type,
             passage.content,
+            passage.locator_kind,
             candidate.word_rank,
             candidate.trigram_rank,
             candidate.short_rank
@@ -1151,17 +1374,30 @@ fn load_search_documents(
     )?;
     let rows = statement.query_map(params![candidates_json], |row| {
         let word_rank = row
-            .get::<_, Option<i64>>(9)?
-            .and_then(|rank| usize::try_from(rank).ok());
-        let trigram_rank = row
             .get::<_, Option<i64>>(10)?
             .and_then(|rank| usize::try_from(rank).ok());
-        let short_rank = row
+        let trigram_rank = row
             .get::<_, Option<i64>>(11)?
             .and_then(|rank| usize::try_from(rank).ok());
+        let short_rank = row
+            .get::<_, Option<i64>>(12)?
+            .and_then(|rank| usize::try_from(rank).ok());
+        let locator_kind = row.get::<_, String>(9)?;
+        let evidence_kind =
+            SearchEvidenceKind::from_locator_kind(&locator_kind).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        error.to_string(),
+                    )),
+                )
+            })?;
         Ok(LexicalDocument {
             passage_id: row.get(0)?,
             updated_at_ms: row.get(1)?,
+            evidence_kind,
             fields: [
                 (SearchField::Title, row.get::<_, String>(2)?),
                 (SearchField::HeadingContext, row.get::<_, String>(3)?),
@@ -1211,6 +1447,7 @@ pub(crate) fn rank_lexical_documents(
         .map(|scored| RankedLexicalDocument {
             passage_id: scored.passage_id,
             score: scored.score,
+            evidence_kind: scored.evidence_kind,
             matched_fields: scored.matched_fields,
             highlights: scored.highlights,
         })
@@ -1221,6 +1458,7 @@ struct ScoredDocument {
     passage_id: String,
     updated_at_ms: i64,
     score: f64,
+    evidence_kind: SearchEvidenceKind,
     matched_fields: Vec<SearchField>,
     highlights: Vec<SearchHighlight>,
 }
@@ -1243,7 +1481,7 @@ fn score_document(query: &ParsedLexicalQuery, document: LexicalDocument) -> Opti
             matched_atoms[atom_index] = true;
             matched_fields.insert(*field);
             let phrase_multiplier = if atom.quoted { 2.0 } else { 1.0 };
-            field_score += field.weight() * phrase_multiplier;
+            field_score += field.weight(document.evidence_kind) * phrase_multiplier;
             for (start_char, end_char) in spans {
                 highlight_spans.insert((*field, start_char, end_char));
             }
@@ -1290,6 +1528,7 @@ fn score_document(query: &ParsedLexicalQuery, document: LexicalDocument) -> Opti
         passage_id: document.passage_id,
         updated_at_ms: document.updated_at_ms,
         score,
+        evidence_kind: document.evidence_kind,
         matched_fields: matched_fields.into_iter().collect(),
         highlights,
     })
@@ -1422,14 +1661,15 @@ mod tests {
     use rusqlite::params;
 
     use super::{
-        parse_lexical_query, rank_lexical_documents, LexicalDocument, LexicalSearchMode,
-        SearchField, SearchPassagesInput,
+        diversify_ranked, parse_lexical_query, rank_lexical_documents, LexicalDocument,
+        LexicalSearchMode, SearchDiversityKey, SearchEvidenceKind, SearchField,
+        SearchPassagesInput,
     };
     use crate::database::{
         connection::{self, DatabaseKind, FileState},
         tidbits::{CreateTidbitWrite, EditTidbitWrite},
-        Database, DatabasePaths, DeleteTidbitInput, EditTidbitInput, RestoreTidbitInput,
-        SourceDraft, TidbitDraft,
+        CitationLocator, Database, DatabasePaths, DeleteTidbitInput, EditTidbitInput,
+        RestoreTidbitInput, SourceDraft, TidbitDraft,
     };
 
     fn document(
@@ -1439,6 +1679,7 @@ mod tests {
         LexicalDocument {
             passage_id: id.into(),
             updated_at_ms: 0,
+            evidence_kind: SearchEvidenceKind::Author,
             fields: fields
                 .into_iter()
                 .map(|(field, value)| (field, value.into()))
@@ -1527,6 +1768,96 @@ mod tests {
                 .map(|result| result.passage_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["complete"]
+        );
+    }
+
+    #[test]
+    fn authored_and_extracted_fields_have_deliberate_evidence_weights() {
+        let parsed = parse_lexical_query("calibration", LexicalSearchMode::Default)
+            .expect("valid query")
+            .expect("nonempty query");
+        let author = document("author", [(SearchField::Body, "calibration")]);
+        let mut text = document("text", [(SearchField::ExtractedText, "calibration")]);
+        text.evidence_kind = SearchEvidenceKind::Text;
+        let mut pdf = document("pdf", [(SearchField::ExtractedText, "calibration")]);
+        pdf.evidence_kind = SearchEvidenceKind::Pdf;
+        let mut ocr = document("ocr", [(SearchField::ExtractedText, "calibration")]);
+        ocr.evidence_kind = SearchEvidenceKind::Ocr;
+
+        assert_eq!(
+            rank_lexical_documents(&parsed, vec![ocr, pdf, text, author], 10)
+                .into_iter()
+                .map(|ranked| ranked.passage_id)
+                .collect::<Vec<_>>(),
+            ["author", "text", "pdf", "ocr"]
+        );
+    }
+
+    #[test]
+    fn attachment_diversity_defers_repeated_pages_but_backfills_when_needed() {
+        #[derive(Debug, Eq, PartialEq)]
+        struct Candidate {
+            id: &'static str,
+            attachment: Option<&'static str>,
+            page: Option<u32>,
+        }
+        let candidates = || {
+            vec![
+                Candidate {
+                    id: "pdf-a-page-1",
+                    attachment: Some("pdf-a"),
+                    page: Some(1),
+                },
+                Candidate {
+                    id: "pdf-a-page-1-region-2",
+                    attachment: Some("pdf-a"),
+                    page: Some(1),
+                },
+                Candidate {
+                    id: "pdf-a-page-2",
+                    attachment: Some("pdf-a"),
+                    page: Some(2),
+                },
+                Candidate {
+                    id: "pdf-a-page-3",
+                    attachment: Some("pdf-a"),
+                    page: Some(3),
+                },
+                Candidate {
+                    id: "pdf-b-page-1",
+                    attachment: Some("pdf-b"),
+                    page: Some(1),
+                },
+                Candidate {
+                    id: "authored",
+                    attachment: None,
+                    page: None,
+                },
+            ]
+        };
+        let key = |candidate: &Candidate| SearchDiversityKey {
+            attachment_id: candidate.attachment.map(str::to_owned),
+            page: candidate.page,
+        };
+
+        assert_eq!(
+            diversify_ranked(candidates(), 4, key)
+                .into_iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
+            ["pdf-a-page-1", "pdf-a-page-2", "pdf-b-page-1", "authored"]
+        );
+        assert_eq!(
+            diversify_ranked(candidates().into_iter().take(4).collect(), 4, key)
+                .into_iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>(),
+            [
+                "pdf-a-page-1",
+                "pdf-a-page-2",
+                "pdf-a-page-1-region-2",
+                "pdf-a-page-3"
+            ]
         );
     }
 
@@ -1911,6 +2242,10 @@ mod tests {
             .matched_fields
             .contains(&SearchField::ExtractedText));
         assert!(results[0].citation.tidbit.is_none());
+        assert_eq!(
+            results[0].citation.locator,
+            CitationLocator::PdfPage { page: 7 }
+        );
         assert_eq!(
             results[0]
                 .citation

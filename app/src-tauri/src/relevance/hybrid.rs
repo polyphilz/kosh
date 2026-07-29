@@ -7,16 +7,18 @@ use crate::{
         embedding_index,
         search::{
             candidate_limit, fuse_ranked_passages, parse_lexical_query, rank_lexical_documents,
-            LexicalSearchMode, RankedLexicalDocument,
+            LexicalSearchMode, RankedSemanticPassage,
         },
     },
     EmbeddingRuntime,
 };
 
 use super::{
-    lexical::{fixture_candidate_ranks, fixture_fields},
-    EvaluationLocator, EvaluationPassage, RelevanceError, RelevanceFixture, RetrievalHit,
-    RetrievalRequest, Retriever, SearchMode,
+    lexical::{
+        fixture_candidate_ranks, fixture_evidence_kind, fixture_fields, hydrate_fixture_hits,
+    },
+    EvaluationPassage, RelevanceError, RelevanceFixture, RetrievalHit, RetrievalRequest, Retriever,
+    SearchMode,
 };
 
 pub const HYBRID_VECTOR_SCHEMA_VERSION: u32 = 1;
@@ -177,6 +179,7 @@ impl Retriever for HybridFixtureRetriever {
                 crate::database::search::LexicalDocument {
                     passage_id: passage.id.clone(),
                     updated_at_ms: 0,
+                    evidence_kind: fixture_evidence_kind(passage),
                     fields: fixture_fields(passage),
                     word_rank,
                     trigram_rank,
@@ -202,7 +205,12 @@ impl Retriever for HybridFixtureRetriever {
                         .get(&passage.id)
                         .ok_or_else(|| format!("missing passage embedding for {}", passage.id))?;
                     let similarity = cosine_similarity(query_embedding, passage_embedding)?;
-                    Ok((passage.id.clone(), similarity))
+                    let evidence_kind = fixture_evidence_kind(passage);
+                    Ok((
+                        passage.id.clone(),
+                        evidence_kind.adjusted_semantic_similarity(similarity),
+                        evidence_kind,
+                    ))
                 })
                 .collect::<std::result::Result<Vec<_>, String>>()?;
             semantic.sort_by(|left, right| {
@@ -214,128 +222,15 @@ impl Retriever for HybridFixtureRetriever {
             let semantic = semantic
                 .into_iter()
                 .take(lexical_candidate_limit)
-                .map(|(passage_id, _)| passage_id)
+                .map(|(passage_id, _, evidence_kind)| RankedSemanticPassage {
+                    passage_id,
+                    evidence_kind,
+                })
                 .collect();
             fuse_ranked_passages(&query, lexical, semantic)
         };
         hydrate_fixture_hits(ranked, corpus, limit, mode == LexicalSearchMode::Default)
     }
-}
-
-fn hydrate_fixture_hits(
-    ranked: Vec<RankedLexicalDocument>,
-    corpus: &[EvaluationPassage],
-    limit: usize,
-    collapse_tidbits: bool,
-) -> std::result::Result<Vec<RetrievalHit>, String> {
-    let passages = corpus
-        .iter()
-        .map(|passage| (passage.id.as_str(), passage))
-        .collect::<BTreeMap<_, _>>();
-    let mut seen_tidbit_locators = BTreeMap::<&str, Vec<&EvaluationLocator>>::new();
-    let mut hits = Vec::with_capacity(limit);
-    for ranked in ranked {
-        let passage = passages
-            .get(ranked.passage_id.as_str())
-            .ok_or_else(|| format!("ranked unknown passage {}", ranked.passage_id))?;
-        if collapse_tidbits {
-            let locators = seen_tidbit_locators
-                .entry(passage.tidbit_id.as_str())
-                .or_default();
-            let overlaps = locators
-                .iter()
-                .any(|locator| evaluation_locators_overlap(locator, &passage.locator));
-            locators.push(&passage.locator);
-            if overlaps {
-                continue;
-            }
-        }
-        hits.push(RetrievalHit {
-            passage_id: ranked.passage_id,
-            score: ranked.score,
-            locator: passage.locator.clone(),
-            matched_fields: ranked
-                .matched_fields
-                .into_iter()
-                .map(|field| field.label().into())
-                .collect(),
-        });
-        if hits.len() == limit {
-            break;
-        }
-    }
-    Ok(hits)
-}
-
-fn evaluation_locators_overlap(left: &EvaluationLocator, right: &EvaluationLocator) -> bool {
-    let (
-        EvaluationLocator::MarkdownBlocks {
-            start_block: left_start_block,
-            end_block: left_end_block,
-            source_start_byte: left_start_byte,
-            source_end_byte: left_end_byte,
-            start_char: left_start_char,
-            end_char: left_end_char,
-            start_line: left_start_line,
-            end_line: left_end_line,
-        },
-        EvaluationLocator::MarkdownBlocks {
-            start_block: right_start_block,
-            end_block: right_end_block,
-            source_start_byte: right_start_byte,
-            source_end_byte: right_end_byte,
-            start_char: right_start_char,
-            end_char: right_end_char,
-            start_line: right_start_line,
-            end_line: right_end_line,
-        },
-    ) = (left, right)
-    else {
-        return false;
-    };
-    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
-        left_start_byte,
-        left_end_byte,
-        right_start_byte,
-        right_end_byte,
-    ) {
-        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
-    }
-    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
-        left_start_char,
-        left_end_char,
-        right_start_char,
-        right_end_char,
-    ) {
-        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
-    }
-    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
-        left_start_line,
-        left_end_line,
-        right_start_line,
-        right_end_line,
-    ) {
-        return ranges_overlap(*left_start, *left_end, *right_start, *right_end);
-    }
-    ranges_overlap(
-        *left_start_block,
-        *left_end_block,
-        *right_start_block,
-        *right_end_block,
-    )
-}
-
-fn ranges_overlap<T: Ord>(left_start: T, left_end: T, right_start: T, right_end: T) -> bool {
-    left_start <= right_end && right_start <= left_end
-}
-
-fn half_open_ranges_overlap<T: Ord>(
-    left_start: T,
-    left_end: T,
-    right_start: T,
-    right_end: T,
-) -> bool {
-    left_start < right_end && right_start < left_end
 }
 
 fn cosine_similarity(left: &[f32], right: &[f32]) -> std::result::Result<f64, String> {

@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
 use crate::database::search::{
-    candidate_limit, normalize_for_search, parse_lexical_query, rank_lexical_documents,
-    short_grams_for_search, LexicalDocument, LexicalSearchMode, SearchField,
+    candidate_limit, diversify_ranked, normalize_for_search, parse_lexical_query,
+    rank_lexical_documents, short_grams_for_search, LexicalDocument, LexicalSearchMode,
+    RankedLexicalDocument, SearchDiversityKey, SearchEvidenceKind, SearchField, FTS_BM25_WEIGHTS,
 };
 use crate::database::{
     Database, DatabaseClient, DatabasePaths, LexicalBenchmarkAttachmentWrite, SearchPassagesInput,
@@ -13,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    EvaluationLocator, EvaluationPassage, RelevanceError, RetrievalHit, RetrievalRequest,
-    Retriever, RuntimeMetadata, ScaleCorpus, SearchMode,
+    EvaluationLocator, EvaluationOwnerKind, EvaluationPassage, RelevanceError, RetrievalHit,
+    RetrievalRequest, Retriever, RuntimeMetadata, ScaleCorpus, SearchMode,
 };
 
 pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 3;
@@ -66,6 +67,8 @@ impl Retriever for LexicalFixtureRetriever {
         else {
             return Ok(Vec::new());
         };
+        let lexical_candidate_limit =
+            candidate_limit(u32::try_from(limit).unwrap_or(u32::MAX)) as usize;
         let candidates = fixture_candidate_ranks(corpus, &query, limit)?;
         let documents = candidates
             .into_iter()
@@ -74,6 +77,7 @@ impl Retriever for LexicalFixtureRetriever {
                 LexicalDocument {
                     passage_id: passage.id.clone(),
                     updated_at_ms: 0,
+                    evidence_kind: fixture_evidence_kind(passage),
                     fields: fixture_fields(passage),
                     word_rank,
                     trigram_rank,
@@ -81,29 +85,12 @@ impl Retriever for LexicalFixtureRetriever {
                 }
             })
             .collect();
-        let passages = corpus
-            .iter()
-            .map(|passage| (passage.id.as_str(), passage))
-            .collect::<BTreeMap<_, _>>();
-
-        rank_lexical_documents(&query, documents, limit)
-            .into_iter()
-            .map(|ranked| {
-                let passage = passages
-                    .get(ranked.passage_id.as_str())
-                    .ok_or_else(|| format!("ranked unknown passage {}", ranked.passage_id))?;
-                Ok(RetrievalHit {
-                    passage_id: ranked.passage_id,
-                    score: ranked.score,
-                    locator: passage.locator.clone(),
-                    matched_fields: ranked
-                        .matched_fields
-                        .into_iter()
-                        .map(|field| field.label().into())
-                        .collect(),
-                })
-            })
-            .collect()
+        hydrate_fixture_hits(
+            rank_lexical_documents(&query, documents, lexical_candidate_limit),
+            corpus,
+            limit,
+            false,
+        )
     }
 }
 
@@ -231,7 +218,7 @@ fn install_fixture_ranks(
         "SELECT rowid
          FROM {index}
          WHERE {index} MATCH ?1
-         ORDER BY bm25({index}, 8.0, 6.0, 3.0, 4.5, 5.0, 5.0, 2.5)
+         ORDER BY bm25({index}, {FTS_BM25_WEIGHTS})
          LIMIT ?2"
     );
     let mut statement = connection
@@ -255,7 +242,7 @@ fn install_fixture_ranks(
 }
 
 pub(crate) fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchField, String> {
-    let authored = matches!(passage.locator, EvaluationLocator::MarkdownBlocks { .. });
+    let authored = passage.owner_kind == EvaluationOwnerKind::Author;
     [
         (
             SearchField::Title,
@@ -311,6 +298,150 @@ pub(crate) fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchFiel
     ]
     .into_iter()
     .collect()
+}
+
+pub(crate) fn fixture_evidence_kind(passage: &EvaluationPassage) -> SearchEvidenceKind {
+    match passage.locator {
+        EvaluationLocator::MarkdownBlocks { .. } => SearchEvidenceKind::Author,
+        EvaluationLocator::OcrRegion { .. } => SearchEvidenceKind::Ocr,
+        EvaluationLocator::PdfPage { .. } => SearchEvidenceKind::Pdf,
+        EvaluationLocator::TextLines { .. } => SearchEvidenceKind::Text,
+    }
+}
+
+pub(crate) fn hydrate_fixture_hits(
+    ranked: Vec<RankedLexicalDocument>,
+    corpus: &[EvaluationPassage],
+    limit: usize,
+    collapse_tidbits: bool,
+) -> std::result::Result<Vec<RetrievalHit>, String> {
+    struct FixtureCandidate<'a> {
+        ranked: RankedLexicalDocument,
+        passage: &'a EvaluationPassage,
+    }
+
+    let passages = corpus
+        .iter()
+        .map(|passage| (passage.id.as_str(), passage))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen_tidbit_locators = BTreeMap::<&str, Vec<&EvaluationLocator>>::new();
+    let mut candidates = Vec::with_capacity(ranked.len().min(limit.saturating_mul(4)));
+    for ranked in ranked {
+        let passage = passages
+            .get(ranked.passage_id.as_str())
+            .copied()
+            .ok_or_else(|| format!("ranked unknown passage {}", ranked.passage_id))?;
+        if collapse_tidbits {
+            if let Some(tidbit_id) = passage.tidbit_id.as_deref() {
+                let locators = seen_tidbit_locators.entry(tidbit_id).or_default();
+                let overlaps = locators
+                    .iter()
+                    .any(|locator| evaluation_locators_overlap(locator, &passage.locator));
+                locators.push(&passage.locator);
+                if overlaps {
+                    continue;
+                }
+            }
+        }
+        candidates.push(FixtureCandidate { ranked, passage });
+    }
+
+    Ok(
+        diversify_ranked(candidates, limit, |candidate| SearchDiversityKey {
+            attachment_id: candidate.passage.evidence_attachment_id.clone(),
+            page: match &candidate.passage.locator {
+                EvaluationLocator::PdfPage { page } => Some(*page),
+                EvaluationLocator::OcrRegion { page, .. } => *page,
+                EvaluationLocator::MarkdownBlocks { .. } | EvaluationLocator::TextLines { .. } => {
+                    None
+                }
+            },
+        })
+        .into_iter()
+        .map(|candidate| RetrievalHit {
+            passage_id: candidate.ranked.passage_id,
+            score: candidate.ranked.score,
+            locator: candidate.passage.locator.clone(),
+            matched_fields: candidate
+                .ranked
+                .matched_fields
+                .into_iter()
+                .map(|field| field.label().into())
+                .collect(),
+        })
+        .collect(),
+    )
+}
+
+fn evaluation_locators_overlap(left: &EvaluationLocator, right: &EvaluationLocator) -> bool {
+    let (
+        EvaluationLocator::MarkdownBlocks {
+            start_block: left_start_block,
+            end_block: left_end_block,
+            source_start_byte: left_start_byte,
+            source_end_byte: left_end_byte,
+            start_char: left_start_char,
+            end_char: left_end_char,
+            start_line: left_start_line,
+            end_line: left_end_line,
+        },
+        EvaluationLocator::MarkdownBlocks {
+            start_block: right_start_block,
+            end_block: right_end_block,
+            source_start_byte: right_start_byte,
+            source_end_byte: right_end_byte,
+            start_char: right_start_char,
+            end_char: right_end_char,
+            start_line: right_start_line,
+            end_line: right_end_line,
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
+        left_start_byte,
+        left_end_byte,
+        right_start_byte,
+        right_end_byte,
+    ) {
+        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
+    }
+    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
+        left_start_char,
+        left_end_char,
+        right_start_char,
+        right_end_char,
+    ) {
+        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
+    }
+    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
+        left_start_line,
+        left_end_line,
+        right_start_line,
+        right_end_line,
+    ) {
+        return ranges_overlap(*left_start, *left_end, *right_start, *right_end);
+    }
+    ranges_overlap(
+        *left_start_block,
+        *left_end_block,
+        *right_start_block,
+        *right_end_block,
+    )
+}
+
+fn ranges_overlap<T: Ord>(left_start: T, left_end: T, right_start: T, right_end: T) -> bool {
+    left_start <= right_end && right_start <= left_end
+}
+
+fn half_open_ranges_overlap<T: Ord>(
+    left_start: T,
+    left_end: T,
+    right_start: T,
+    right_end: T,
+) -> bool {
+    left_start < right_end && right_start < left_end
 }
 
 pub fn benchmark_scale_lexical(
@@ -508,7 +639,8 @@ impl Drop for TemporaryBenchmarkLibrary {
 mod tests {
     use super::{benchmark_scale_lexical, LexicalFixtureRetriever};
     use crate::relevance::{
-        generate_scale_corpus, run_relevance_suite, RelevanceFixture, ScaleGenerationOptions,
+        generate_scale_corpus, run_relevance_suite, RelevanceFixture, RetrievalRequest, Retriever,
+        ScaleGenerationOptions, SearchMode,
     };
 
     #[test]
@@ -536,6 +668,34 @@ mod tests {
         assert_eq!(
             report.to_text(),
             include_str!("../../../fixtures/relevance/reports/lexical-v1.txt")
+        );
+    }
+
+    #[test]
+    fn lexical_fixture_diversifies_beyond_the_display_limit() {
+        let fixture: RelevanceFixture =
+            serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
+                .expect("checked-in fixture");
+        let hits = LexicalFixtureRetriever
+            .retrieve(
+                &RetrievalRequest {
+                    text: "vector clock reconciliation causal order".into(),
+                    search_mode: SearchMode::Default,
+                },
+                &fixture.corpus,
+                4,
+            )
+            .expect("diverse lexical hits");
+
+        assert_eq!(hits[0].passage_id, "passage-authored-vector-clock");
+        assert!(hits
+            .iter()
+            .any(|hit| hit.passage_id == "passage-pdf-conference-clock"));
+        assert!(
+            hits.iter()
+                .filter(|hit| hit.passage_id.starts_with("passage-pdf-distributed-"))
+                .count()
+                <= 2
         );
     }
 

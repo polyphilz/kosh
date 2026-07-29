@@ -1,11 +1,14 @@
 # Relevance fixtures
 
-`v1.json` is the checked-in, versioned search-quality corpus. Each query names
-graded relevant passage IDs, passages that must not rank, the retrieval mode it
-is meant to exercise, and the exact citation locator expected from a result.
-Only `text` and `searchMode` cross into a retriever. Categories, expected
-passages, exclusions, and citation locators remain private to the scorer so the
-system under test cannot read its answer key.
+`v1.json` is the checked-in search-quality corpus using fixture schema v2.
+Every passage declares whether it is authored or attachment-owned, and
+attachment evidence carries a stable attachment identity plus its PDF page,
+OCR region, or text-line locator. Each query names graded relevant passage IDs,
+passages that must not rank, the retrieval mode it is meant to exercise, and
+the exact citation locator expected from a result. Only `text` and `searchMode`
+cross into a retriever. Categories, expected passages, exclusions, and
+citation locators remain private to the scorer so the system under test cannot
+read its answer key.
 
 Run the fixture validator and intentionally empty baseline from `app/`:
 
@@ -22,21 +25,21 @@ itself has `passed: false`, which lets future retrieval implementations reuse
 the same report contract.
 
 `relevance:lexical` writes a local copy of the report and should match the
-checked-in `reports/lexical-v1.{json,txt}` baseline. The first baseline passes
-16 of 17 queries, has Recall@10 0.9412, MRR 0.8971, nDCG@10 0.9067, exact and
-phrase success 1.0, and zero forbidden hits. The remaining miss is the
-misspelled concurrency query marked for combined lexical and semantic
-retrieval; later ranking work can improve it without disguising the initial
-baseline.
+checked-in `reports/lexical-v1.{json,txt}` baseline. The media-aware baseline
+passes 19 of 20 queries, has Recall@10 0.95, MRR 0.9125, nDCG@10 0.9163,
+citation-locator accuracy 0.95, exact and phrase success 1.0, and zero forbidden
+hits. OCR, PDF-page, and text-line queries pass, while the authored passage
+ranks first in a PDF-volume stress query. The remaining miss is the misspelled
+concurrency query marked for combined lexical and semantic retrieval.
 
 `relevance:hybrid` validates `jina-v1-vectors.json` against both the relevance
 fixture digest and the shipped Jina v1 model hash, then writes a local report
 that should match `reports/hybrid-v1.{json,txt}`. The vectors were generated
 from the pinned model through Kosh's verified llama.cpp runtime; tests only read
-the checked-in vectors and never download or start a model. The first hybrid
-report passes all 17 queries with Recall@10, MRR, and citation locator accuracy
-of 1.0, exact/phrase success of 1.0, and zero forbidden hits. Exact and code
-identifier category metrics match the lexical baseline.
+the checked-in vectors and never download or start a model. The media-aware
+hybrid report passes all 20 queries with Recall@10, MRR, and citation-locator
+accuracy of 1.0, nDCG@10 0.9948, exact/phrase success of 1.0, and zero forbidden
+hits. Exact and code-identifier category metrics match the lexical baseline.
 
 Maintainers with the pinned model and sidecar can regenerate the vector fixture
 before intentionally updating the reports:

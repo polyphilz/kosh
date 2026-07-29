@@ -7,9 +7,9 @@ mod scale;
 use std::path::Path;
 
 pub use fixture::{
-    EvaluationAttachment, EvaluationLocator, EvaluationPassage, EvaluationQuery, EvaluationRegion,
-    EvaluationSource, ExpectedCitation, QueryCategory, RelevanceFixture, RelevanceJudgment,
-    RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
+    EvaluationAttachment, EvaluationLocator, EvaluationOwnerKind, EvaluationPassage,
+    EvaluationQuery, EvaluationRegion, EvaluationSource, ExpectedCitation, QueryCategory,
+    RelevanceFixture, RelevanceJudgment, RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
 };
 pub use hybrid::{
     generate_hybrid_vector_fixture, validate_hybrid_vector_fixture, HybridFixtureRetriever,
