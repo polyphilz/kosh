@@ -2,6 +2,36 @@ import { describe, expect, it } from "vitest";
 import { FakeBackend } from "../../src/backend/fakeBackend";
 
 describe("FakeBackend tidbits", () => {
+  it("reports live library diagnostics and deterministic idempotent maintenance", async () => {
+    const backend = new FakeBackend();
+    await backend.createTidbit({
+      title: "Diagnostics fixture",
+      bodyMarkdown: "A locally searchable fixture.",
+      sources: [],
+    });
+
+    const diagnostics = await backend.loadMaintenanceDiagnostics();
+    expect(diagnostics.library).toMatchObject({
+      activeTidbits: 1,
+      revisions: 1,
+      searchDocuments: 1,
+    });
+    expect(diagnostics.storage.dataRoot).toBe("/tmp/kosh-browser-fixture");
+    expect(diagnostics.backupPhase).toBe("COMING_LATER");
+    await expect(backend.runIntegrityCheck()).resolves.toMatchObject({
+      databaseOk: true,
+      media: { missingBlobAttachmentIds: [] },
+    });
+    await expect(backend.rebuildSearchIndexes()).resolves.toMatchObject({
+      operation: "REBUILD_SEARCH",
+      changedItems: 1,
+    });
+    await expect(backend.rebuildSearchIndexes()).resolves.toMatchObject({
+      operation: "REBUILD_SEARCH",
+      changedItems: 1,
+    });
+  });
+
   it("mirrors create, optimistic edit, listing, and soft deletion", async () => {
     const backend = new FakeBackend({
       dataDir: "/tmp/kosh-fake",

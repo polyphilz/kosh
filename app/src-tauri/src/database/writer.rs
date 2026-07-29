@@ -11,6 +11,7 @@ use super::{
         InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
     },
     error::{DatabaseError, Result},
+    maintenance::{ExtractionRetryReport, MaintenanceDatabaseSnapshot},
     media::{
         AttachmentRecord, GenericAttachmentRecord, GenericAttachmentStatusRecord,
         ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion, ImageRecord,
@@ -67,6 +68,20 @@ pub(super) enum WriterMessage {
     },
     ReconcileAuthorPassages {
         reply: SyncSender<Result<()>>,
+    },
+    MaintenanceSnapshot {
+        reply: SyncSender<Result<MaintenanceDatabaseSnapshot>>,
+    },
+    RebuildSearch {
+        reply: SyncSender<Result<u64>>,
+    },
+    RebuildEmbeddings {
+        now_ms: i64,
+        reply: SyncSender<Result<u64>>,
+    },
+    RetryFailedExtractions {
+        now_ms: i64,
+        reply: SyncSender<Result<ExtractionRetryReport>>,
     },
     ReconcileAuthorPassageBatch,
     LoadEmbeddingReconciliationBatch {
@@ -646,6 +661,46 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::ReconcileAuthorPassages { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn maintenance_snapshot(&self) -> Result<MaintenanceDatabaseSnapshot> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MaintenanceSnapshot { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn rebuild_search(&self) -> Result<u64> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RebuildSearch { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn rebuild_embeddings(&self, now_ms: i64) -> Result<u64> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RebuildEmbeddings { now_ms, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub fn retry_failed_extractions(&self, now_ms: i64) -> Result<ExtractionRetryReport> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RetryFailedExtractions { now_ms, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

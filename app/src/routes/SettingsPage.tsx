@@ -11,8 +11,8 @@ import { Button } from "../components/Button";
 import { Select } from "../components/Select";
 import { ShortcutRecorder } from "../components/ShortcutRecorder";
 import { Status } from "../components/Status";
-import { Toggle } from "../components/Toggle";
 import { bindingFor, useShortcutSettings } from "../shortcuts/context";
+import { SettingsDiagnostics } from "./SettingsDiagnostics";
 
 const appearanceOptions = [
   { label: "System", value: "SYSTEM" },
@@ -22,7 +22,6 @@ const appearanceOptions = [
 
 export function SettingsPage() {
   const { appearance, setAppearance } = useAppearance();
-  const [citationPreview, setCitationPreview] = useState(true);
   const [shortcutResetToken, setShortcutResetToken] = useState(0);
   const { error, loading, settings, update } = useShortcutSettings();
   const bindings = settings?.keyboardBindings ?? DEFAULT_KEYBOARD_BINDINGS;
@@ -74,17 +73,6 @@ export function SettingsPage() {
         </label>
         <label>
           <span>
-            <strong>Citation previews</strong>
-            <small>Show the cited passage beside result metadata.</small>
-          </span>
-          <Toggle
-            checked={citationPreview}
-            label="Citation previews"
-            onChange={setCitationPreview}
-          />
-        </label>
-        <label>
-          <span>
             <strong>Quick Add shortcut</strong>
             <small>Open the compact capture window from any application.</small>
           </span>
@@ -115,7 +103,7 @@ export function SettingsPage() {
             resetToken={shortcutResetToken}
           />
         </label>
-        {(error || settings?.shortcutErrors.length) && (
+        {Boolean(error || settings?.shortcutErrors.length) && (
           <div className="settings-list__error" role="alert">
             {error ?? settings?.shortcutErrors.join(" ")}
           </div>
@@ -130,6 +118,7 @@ export function SettingsPage() {
           Reset shortcuts
         </Button>
       </section>
+      <SettingsDiagnostics />
     </main>
   );
 }

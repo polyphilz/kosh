@@ -130,3 +130,62 @@ fn semantic_status_is_available_without_starting_or_downloading_the_model() {
     assert!(!response.verified);
     assert!(!data_root.path().join("models").exists());
 }
+
+#[test]
+fn diagnostics_and_empty_maintenance_are_available_through_typed_ipc() {
+    let data_root = TestDataRoot::new();
+    let app = mock_app(&data_root, 1_785_201_600_000, std::iter::empty::<String>());
+    let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .expect("mock main window");
+
+    let diagnostics = invoke_json(&window, "load_maintenance_diagnostics");
+    assert_eq!(diagnostics["applicationVersion"], "0.1.0");
+    assert_eq!(diagnostics["library"]["activeTidbits"], 0);
+    assert_eq!(diagnostics["backupPhase"], "COMING_LATER");
+    assert_eq!(
+        diagnostics["storage"]["dataRoot"],
+        data_root.path().to_string_lossy().as_ref()
+    );
+    assert_eq!(diagnostics["mediaLimits"]["maxAttachmentsPerDraft"], 32);
+
+    let integrity = invoke_json(&window, "run_integrity_check");
+    assert_eq!(integrity["databaseOk"], true);
+    assert_eq!(
+        integrity["media"]["missingBlobAttachmentIds"],
+        serde_json::json!([])
+    );
+
+    let first = invoke_json(&window, "rebuild_search_indexes");
+    let second = invoke_json(&window, "rebuild_search_indexes");
+    assert_eq!(first["operation"], "REBUILD_SEARCH");
+    assert_eq!(first["changedItems"], 0);
+    assert_eq!(second["changedItems"], 0);
+}
+
+fn invoke_json(
+    window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+    command: &str,
+) -> serde_json::Value {
+    tauri::test::get_ipc_response(
+        window,
+        tauri::webview::InvokeRequest {
+            cmd: command.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .expect("test IPC URL"),
+            body: tauri::ipc::InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_owned(),
+        },
+    )
+    .expect("maintenance IPC response")
+    .deserialize()
+    .expect("maintenance JSON payload")
+}

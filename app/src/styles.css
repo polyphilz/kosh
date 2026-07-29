@@ -1375,6 +1375,231 @@ button {
   margin: 12px 18px 16px;
 }
 
+.settings-panel {
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.settings-panel--muted {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 68%, transparent);
+}
+
+.settings-panel--muted > p {
+  margin: 0;
+  padding: 0 18px 18px;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.settings-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 17px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-panel__header h2,
+.settings-panel__header p {
+  margin: 0;
+}
+
+.settings-panel__header h2 {
+  color: var(--ink);
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+.settings-panel__header p {
+  max-width: 570px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.settings-diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.settings-diagnostics-grid--services > :last-child {
+  grid-column: 1 / -1;
+  border-right: 0;
+}
+
+.settings-diagnostic {
+  min-width: 0;
+  padding: 15px 18px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-diagnostic:nth-child(even) {
+  border-right: 0;
+}
+
+.settings-diagnostic dt {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-diagnostic dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.settings-diagnostic strong,
+.settings-diagnostic span {
+  display: block;
+}
+
+.settings-diagnostic strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-diagnostic span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.settings-diagnostic--warning {
+  background: color-mix(in srgb, var(--warning) 7%, transparent);
+}
+
+.settings-diagnostic--warning dt,
+.settings-diagnostic--warning strong {
+  color: var(--warning);
+}
+
+.settings-panel__inline-action,
+.settings-maintenance-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 13px 18px;
+}
+
+.settings-panel__inline-action {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.settings-maintenance-list > div {
+  min-height: 69px;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-maintenance-list > div:last-child {
+  border-bottom: 0;
+}
+
+.settings-maintenance-list strong,
+.settings-maintenance-list small {
+  display: block;
+}
+
+.settings-maintenance-list strong {
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.settings-maintenance-list small {
+  max-width: 520px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.settings-maintenance-result,
+.settings-diagnostics__message {
+  margin: 0;
+  padding: 13px 18px;
+  border-top: 1px solid var(--line);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 7%, transparent);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.settings-maintenance-result--error,
+.settings-diagnostics__message--error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+
+.settings-paths {
+  padding: 12px 18px 15px;
+  border-top: 1px solid var(--line);
+  font-size: 9px;
+}
+
+.settings-paths summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.settings-paths > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 9px;
+}
+
+.settings-paths span {
+  color: var(--muted);
+}
+
+.settings-paths code {
+  overflow: hidden;
+  color: var(--ink);
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+@media (max-width: 760px) {
+  .settings-diagnostics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-diagnostic,
+  .settings-diagnostic:nth-child(even) {
+    border-right: 0;
+  }
+
+  .settings-panel__header,
+  .settings-panel__inline-action,
+  .settings-maintenance-list > div {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-maintenance-list .kosh-button {
+    align-self: stretch;
+  }
+}
+
 .catalog-page {
   padding-bottom: 96px;
 }

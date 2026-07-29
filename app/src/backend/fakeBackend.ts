@@ -13,9 +13,12 @@ import type {
   ImageOcrDiagnostics,
   ImageRecord,
   ImageStatusRecord,
+  IntegrityCheckOutcome,
   ListTidbitsInput,
   ListTidbitRevisionsInput,
   ListResearchRunsInput,
+  MaintenanceDiagnostics,
+  MaintenanceOutcome,
   PassageEmbeddingIndexStatus,
   PdfRecord,
   PdfStatusRecord,
@@ -162,8 +165,168 @@ export class FakeBackend implements Backend {
     };
   }
 
+  async loadMaintenanceDiagnostics(): Promise<MaintenanceDiagnostics> {
+    const activeTidbits = [...this.tidbits.values()].filter(
+      (tidbit) => tidbit.deletedAtMs === null,
+    ).length;
+    const trashedTidbits = this.tidbits.size - activeTidbits;
+    const research = [...this.researchRuns.values()].reduce(
+      (counts, run) => {
+        const key = run.status.toLowerCase() as keyof typeof counts;
+        counts[key] += 1;
+        return counts;
+      },
+      {
+        queued: 0,
+        running: 0,
+        completed: 0,
+        canceled: 0,
+        failed: 0,
+        interrupted: 0,
+      },
+    );
+    const dataRoot = this.probe.dataDir;
+    return {
+      applicationVersion: "0.1.0-fixture",
+      database: {
+        migrationHeads: { main: 17, media: 3 },
+        mainJournalMode: "wal",
+        mediaJournalMode: "wal",
+        mainForeignKeys: true,
+        mediaForeignKeys: true,
+      },
+      library: {
+        activeTidbits,
+        trashedTidbits,
+        revisions: this.revisions.size,
+        authoredPassages: this.revisions.size,
+        attachmentPassages: 0,
+        searchDocuments: activeTidbits,
+        attachments: 0,
+        attachmentBytes: 0,
+        imageOcr: {
+          pending: 0,
+          running: 0,
+          retryWait: 0,
+          ready: 0,
+          failed: 0,
+        },
+        pdfExtraction: {
+          pending: 0,
+          running: 0,
+          retryWait: 0,
+          ready: 0,
+          failed: 0,
+        },
+        research,
+        indexes: [
+          { name: "PASSAGE_BUILD", version: "markdown-v1", status: "IDLE", error: null },
+          { name: "PASSAGE_FTS", version: "fts-v1", status: "IDLE", error: null },
+          {
+            name: "PASSAGE_EMBEDDING",
+            version: "jina_v1",
+            status: this.semanticStatus.phase === "READY" ? "IDLE" : "DIRTY",
+            error: null,
+          },
+        ],
+      },
+      storage: {
+        dataRoot,
+        mainDatabasePath: `${dataRoot}/kosh.sqlite3`,
+        mediaDatabasePath: `${dataRoot}/media.sqlite3`,
+        mainDatabaseBytes: 98_304,
+        mediaDatabaseBytes: 32_768,
+        modelBytes: this.semanticStatus.modelDiskUsageBytes,
+        logsBytes: 4_096,
+        temporaryBytes: 0,
+        totalBytes: 135_168 + this.semanticStatus.modelDiskUsageBytes,
+      },
+      mediaLimits: {
+        maxAttachmentBytes: 33_554_432,
+        maxAttachmentsPerDraft: 32,
+        maxProtocolResponseBytes: 33_554_432,
+        draftLeaseDurationMs: 86_400_000,
+        orphanGracePeriodMs: 604_800_000,
+        maxReapsPerMaintenance: 32,
+      },
+      nativeLogs: {
+        paths: [
+          `${dataRoot}/logs/kosh.log`,
+          `${dataRoot}/logs/kosh.log.1`,
+          `${dataRoot}/logs/kosh.log.2`,
+        ],
+        maxFileBytes: 524_288,
+        maxFiles: 3,
+        diskUsageBytes: 2_048,
+      },
+      semanticLogPaths: [`${dataRoot}/logs/llama-server.log`],
+      backupPhase: "COMING_LATER",
+    };
+  }
+
+  async runIntegrityCheck(): Promise<IntegrityCheckOutcome> {
+    return {
+      databaseOk: true,
+      media: {
+        missingBlobAttachmentIds: [],
+        corruptBlobSha256: [],
+        extraBlobSha256: [],
+        orphanedAttachmentIds: [],
+        diagnosticsTruncated: false,
+      },
+      message: "Both databases and all referenced media passed integrity checks.",
+      completedAtMs: this.probe.nowMs,
+    };
+  }
+
+  async rebuildSearchIndexes(): Promise<MaintenanceOutcome> {
+    return this.maintenanceOutcome(
+      "REBUILD_SEARCH",
+      [...this.tidbits.values()].filter((tidbit) => tidbit.deletedAtMs === null).length,
+      "Rebuilt passages and full-text indexes.",
+    );
+  }
+
+  async rebuildEmbeddingIndex(): Promise<MaintenanceOutcome> {
+    return this.maintenanceOutcome(
+      "REBUILD_EMBEDDINGS",
+      0,
+      "Embedding rebuild is already queued; indexing will continue when the local model is ready.",
+    );
+  }
+
+  async retryFailedExtractions(): Promise<MaintenanceOutcome> {
+    return this.maintenanceOutcome(
+      "RETRY_EXTRACTIONS",
+      0,
+      "No current failed OCR or PDF extractions needed a retry.",
+    );
+  }
+
+  async reclaimEligibleMedia(): Promise<MaintenanceOutcome> {
+    return this.maintenanceOutcome(
+      "RECLAIM_MEDIA",
+      0,
+      "No expired or unreferenced media was eligible for reclamation.",
+    );
+  }
+
   async selectImage(): Promise<string | null> {
     return null;
+  }
+
+  private maintenanceOutcome(
+    operation: MaintenanceOutcome["operation"],
+    changedItems: number,
+    message: string,
+  ): MaintenanceOutcome {
+    return {
+      operation,
+      changedItems,
+      reclaimedBytes: 0,
+      message,
+      completedAtMs: this.probe.nowMs,
+    };
   }
 
   async ingestSelectedImage(_selectionId: string, _draftId: string): Promise<ImageRecord> {

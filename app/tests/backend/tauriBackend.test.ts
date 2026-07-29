@@ -177,6 +177,26 @@ describe("tauriBackend tidbit gateway", () => {
     ]);
   });
 
+  it("uses explicit diagnostics and maintenance commands", async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+
+    await tauriBackend.loadMaintenanceDiagnostics();
+    await tauriBackend.runIntegrityCheck();
+    await tauriBackend.rebuildSearchIndexes();
+    await tauriBackend.rebuildEmbeddingIndex();
+    await tauriBackend.retryFailedExtractions();
+    await tauriBackend.reclaimEligibleMedia();
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["load_maintenance_diagnostics"],
+      ["run_integrity_check"],
+      ["rebuild_search_indexes"],
+      ["rebuild_embedding_index"],
+      ["retry_failed_extractions"],
+      ["reclaim_eligible_media"],
+    ]);
+  });
+
   it("uses durable research commands and the process event channel", async () => {
     vi.mocked(invoke).mockResolvedValue({});
     const unlisten = vi.fn();

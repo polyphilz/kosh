@@ -59,6 +59,7 @@ pub(crate) struct RuntimeState {
     pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
     pending_file_selections: Mutex<HashMap<String, PendingFileSelection>>,
     file_drop_consumers: Mutex<HashSet<String>>,
+    maintenance_gate: Arc<Mutex<()>>,
 }
 
 struct PendingClipboardImage {
@@ -132,6 +133,7 @@ impl RuntimeState {
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
             file_drop_consumers: Mutex::new(HashSet::new()),
+            maintenance_gate: Arc::new(Mutex::new(())),
         };
         if let Err(error) = state
             .database
@@ -186,6 +188,7 @@ impl RuntimeState {
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
             file_drop_consumers: Mutex::new(HashSet::new()),
+            maintenance_gate: Arc::new(Mutex::new(())),
         };
         let _ = state
             .database
@@ -200,6 +203,10 @@ impl RuntimeState {
 
     pub(crate) fn database_paths(&self) -> &DatabasePaths {
         self.database.paths()
+    }
+
+    pub(crate) fn maintenance_gate(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.maintenance_gate)
     }
 
     pub(crate) fn claude_processes(&self) -> &ClaudeProcessManager {

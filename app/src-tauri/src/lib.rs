@@ -3,7 +3,9 @@ mod claude;
 mod database;
 mod embedding;
 mod embedding_runtime;
+mod maintenance;
 mod media;
+mod native_log;
 mod passage_embedding_indexer;
 mod pdf;
 pub mod relevance;
@@ -52,6 +54,12 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         runtime::retry_semantic_runtime,
         runtime::repair_semantic_runtime,
         runtime::semantic_runtime_logs,
+        maintenance::load_maintenance_diagnostics,
+        maintenance::run_integrity_check,
+        maintenance::rebuild_search_indexes,
+        maintenance::rebuild_embedding_index,
+        maintenance::retry_failed_extractions,
+        maintenance::reclaim_eligible_media,
         media::media_limits,
         media::media_integrity_scan,
         media::maintain_media,
@@ -121,6 +129,12 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         runtime::retry_semantic_runtime,
         runtime::repair_semantic_runtime,
         runtime::semantic_runtime_logs,
+        maintenance::load_maintenance_diagnostics,
+        maintenance::run_integrity_check,
+        maintenance::rebuild_search_indexes,
+        maintenance::rebuild_embedding_index,
+        maintenance::retry_failed_extractions,
+        maintenance::reclaim_eligible_media,
         media::media_limits,
         media::media_integrity_scan,
         media::maintain_media,
@@ -193,6 +207,7 @@ pub fn run() {
         );
         let resource_dir = app.path().resource_dir().ok();
         std::fs::create_dir_all(&data_dir)?;
+        native_log::install(&data_dir)?;
         let runtime = RuntimeState::production(data_dir, resource_dir)?;
         let shortcut_settings = runtime.database_client().load_shortcut_settings()?;
         app.manage(runtime);
