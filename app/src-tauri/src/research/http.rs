@@ -13,8 +13,8 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::database::CitationResolution;
 
 use super::{
-    ClaudeMcpBridge, ResearchError, ResearchErrorCode, ResearchMcpReply, ResearchMcpSession,
-    ResearchRun, MCP_PROTOCOL_VERSION,
+    ClaudeMcpBridge, GroundedResearchAnswer, ResearchError, ResearchErrorCode, ResearchMcpReply,
+    ResearchMcpSession, ResearchRun, MCP_PROTOCOL_VERSION,
 };
 
 const MCP_PATH: &str = "/mcp";
@@ -25,6 +25,22 @@ pub struct EphemeralResearchMcpServer {
     session: Arc<Mutex<ResearchMcpSession>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub struct ResearchCitationRegistry {
+    session: Arc<Mutex<ResearchMcpSession>>,
+}
+
+impl ResearchCitationRegistry {
+    pub fn ground_output(&self, output: &str) -> Result<GroundedResearchAnswer, ResearchError> {
+        Ok(self
+            .session
+            .lock()
+            .map_err(|_| poisoned_session())?
+            .run()
+            .ground_output(output))
+    }
 }
 
 impl std::fmt::Debug for EphemeralResearchMcpServer {
@@ -102,6 +118,12 @@ impl EphemeralResearchMcpServer {
             .lock()
             .map_err(|_| poisoned_session())?
             .bridge(&self.endpoint)
+    }
+
+    pub fn citation_registry(&self) -> ResearchCitationRegistry {
+        ResearchCitationRegistry {
+            session: Arc::clone(&self.session),
+        }
     }
 
     pub fn resolve_citation_handle(

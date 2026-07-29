@@ -22,8 +22,8 @@ use tauri::{AppHandle, Emitter, State};
 use crate::{
     embedding_runtime::EmbeddingRuntime,
     research::{
-        ClaudeMcpBridge, EphemeralResearchMcpServer, ResearchLimits, ResearchQueryEmbedder,
-        ResearchRun,
+        ClaudeMcpBridge, EphemeralResearchMcpServer, GroundedResearchAnswer,
+        ResearchCitationRegistry, ResearchLimits, ResearchQueryEmbedder, ResearchRun,
     },
     runtime::RuntimeState,
 };
@@ -150,6 +150,11 @@ pub enum ResearchProcessEventDetail {
     /// consumes this value; clients must not treat its strings as citations.
     UntrustedFinalOutput {
         text: String,
+    },
+    /// Complete output whose citation markers and evidence were resolved only
+    /// through the per-run Kosh registry after Claude finished.
+    GroundedFinalOutput {
+        answer: GroundedResearchAnswer,
     },
     Finished {
         outcome: ResearchProcessOutcome,
@@ -279,6 +284,7 @@ struct CliInvocation {
     arguments: Vec<String>,
     environment: Vec<(String, String)>,
     sensitive_values: Vec<String>,
+    citation_registry: Option<ResearchCitationRegistry>,
     keepalive: Box<dyn Send>,
 }
 
@@ -299,6 +305,7 @@ struct MonitoredProcess {
     termination: Arc<AtomicU8>,
     emitter: Arc<RunEmitter>,
     manager: Weak<ManagerInner>,
+    citation_registry: Option<ResearchCitationRegistry>,
     _keepalive: Box<dyn Send>,
     _work_directory: OwnedWorkDirectory,
 }
@@ -457,10 +464,12 @@ impl ClaudeProcessManager {
         sink: Arc<dyn ProcessEventSink>,
     ) -> Result<StartResearchProcessOutput, ClaudeProcessError> {
         let (environment_name, environment_value) = bridge.environment();
+        let citation_registry = server.citation_registry();
         let invocation = CliInvocation {
             arguments: claude_arguments(&bridge, input.model.as_deref(), input.effort.as_deref())?,
             environment: vec![(environment_name.into(), environment_value.into())],
             sensitive_values: vec![environment_value.into()],
+            citation_registry: Some(citation_registry),
             keepalive: Box::new(server),
         };
         self.start_with_invocation(input, invocation, sink)
@@ -478,7 +487,10 @@ impl ClaudeProcessManager {
                 "Kosh is shutting down and cannot start another research process",
             ));
         }
-        let request = validate_start(input, self.inner.default_timeout)?;
+        let mut request = validate_start(input, self.inner.default_timeout)?;
+        if invocation.citation_registry.is_some() {
+            request.prompt = crate::research::grounded_research_prompt(&request.prompt);
+        }
         let binary = self.resolved_binary().ok_or_else(|| {
             ClaudeProcessError::new(
                 ClaudeProcessErrorCode::CliMissing,
@@ -593,6 +605,7 @@ impl ClaudeProcessManager {
                     termination,
                     emitter: monitor_emitter,
                     manager: weak_manager,
+                    citation_registry: invocation.citation_registry,
                     _keepalive: invocation.keepalive,
                     _work_directory: work_directory,
                 });
@@ -871,6 +884,7 @@ fn monitor_process(process: MonitoredProcess) {
         termination,
         emitter,
         manager,
+        citation_registry,
         _keepalive,
         _work_directory,
     } = process;
@@ -896,7 +910,7 @@ fn monitor_process(process: MonitoredProcess) {
         .spawn(move || drain_stderr(stderr, stderr_for_thread));
 
     let start = Instant::now();
-    let mut parser = StreamParser::new(Arc::clone(&emitter));
+    let mut parser = StreamParser::new(Arc::clone(&emitter), citation_registry);
     let mut process_status = None;
     let mut process_error = None;
     let mut termination_started = None;
@@ -1166,6 +1180,7 @@ impl BoundedTail {
 
 struct StreamParser {
     emitter: Arc<RunEmitter>,
+    citation_registry: Option<ResearchCitationRegistry>,
     active_tools: HashMap<String, String>,
     saw_success_result: bool,
     failure_message: Option<String>,
@@ -1174,9 +1189,10 @@ struct StreamParser {
 }
 
 impl StreamParser {
-    fn new(emitter: Arc<RunEmitter>) -> Self {
+    fn new(emitter: Arc<RunEmitter>, citation_registry: Option<ResearchCitationRegistry>) -> Self {
         Self {
             emitter,
+            citation_registry,
             active_tools: HashMap::new(),
             saw_success_result: false,
             failure_message: None,
@@ -1228,10 +1244,19 @@ impl StreamParser {
                         ));
                     }
                     self.emitter.discard_pending_text();
-                    self.emitter
-                        .emit(ResearchProcessEventDetail::UntrustedFinalOutput {
-                            text: text.to_owned(),
+                    if let Some(registry) = &self.citation_registry {
+                        let redacted = self.emitter.redact(text);
+                        let answer = registry.ground_output(&redacted).map_err(|_| {
+                            stream_error("Kosh could not ground Claude Code's final answer.")
                         })?;
+                        self.emitter
+                            .emit(ResearchProcessEventDetail::GroundedFinalOutput { answer })?;
+                    } else {
+                        self.emitter
+                            .emit(ResearchProcessEventDetail::UntrustedFinalOutput {
+                                text: text.to_owned(),
+                            })?;
+                    }
                     self.saw_success_result = true;
                 } else {
                     self.failure_message = value
@@ -1464,6 +1489,7 @@ impl RunEmitter {
             ResearchProcessEventDetail::UntrustedFinalOutput { text } => {
                 *text = self.redact(text);
             }
+            ResearchProcessEventDetail::GroundedFinalOutput { .. } => {}
             ResearchProcessEventDetail::UntrustedTextDelta { .. }
             | ResearchProcessEventDetail::Started
             | ResearchProcessEventDetail::Finished { .. } => {}
@@ -1533,6 +1559,7 @@ fn visible_text_bytes(detail: &ResearchProcessEventDetail) -> usize {
     match detail {
         ResearchProcessEventDetail::UntrustedTextDelta { text }
         | ResearchProcessEventDetail::UntrustedFinalOutput { text } => text.len(),
+        ResearchProcessEventDetail::GroundedFinalOutput { answer } => answer.markdown.len(),
         _ => 0,
     }
 }
@@ -1933,6 +1960,10 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::database::{
+        tidbits::CreateTidbitWrite, Database, DatabasePaths, SourceDraft, TidbitDraft,
+    };
+
     use super::*;
 
     #[derive(Clone)]
@@ -1973,8 +2004,61 @@ mod tests {
             arguments: Vec::new(),
             environment: Vec::new(),
             sensitive_values: Vec::new(),
+            citation_registry: None,
             keepalive: Box::new(()),
         }
+    }
+
+    fn grounded_invocation(root: &TempDir) -> (CliInvocation, String) {
+        let database = Database::initialize(DatabasePaths::new(root.path().join("library")))
+            .expect("grounded research database");
+        database
+            .client()
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: Some("Grounded process".into()),
+                    body_markdown: "grounded_process_evidence is exact and retained.".into(),
+                    sources: vec![SourceDraft {
+                        label: Some("Process fixture".into()),
+                        url: Some("https://example.com/process-fixture".into()),
+                    }],
+                },
+                now_ms: 1,
+                tidbit_id: uuid::Uuid::now_v7().to_string(),
+                revision_id: uuid::Uuid::now_v7().to_string(),
+                source_ids: vec![uuid::Uuid::now_v7().to_string()],
+            })
+            .expect("grounded research tidbit");
+        let mut run = ResearchRun::from_read_only_connection(
+            database
+                .open_main_read_only()
+                .expect("grounded read-only connection"),
+            None,
+            ResearchLimits::default(),
+        )
+        .expect("grounded research run");
+        let result = run
+            .call_tool(
+                crate::research::EXACT_SEARCH_TOOL,
+                serde_json::json!({"query": "grounded_process_evidence"}),
+            )
+            .expect("issue a citation handle");
+        let handle = result["items"][0]["citationHandle"]
+            .as_str()
+            .expect("citation handle")
+            .to_owned();
+        let server = EphemeralResearchMcpServer::start(run).expect("grounded MCP server");
+        let registry = server.citation_registry();
+        (
+            CliInvocation {
+                arguments: Vec::new(),
+                environment: Vec::new(),
+                sensitive_values: Vec::new(),
+                citation_registry: Some(registry),
+                keepalive: Box::new((server, database)),
+            },
+            handle,
+        )
     }
 
     fn start_fake(
@@ -2247,6 +2331,64 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"H
     }
 
     #[test]
+    fn production_boundary_wraps_prompt_and_emits_only_grounded_final_output() {
+        let root = tempfile::tempdir().expect("fake grounded CLI root");
+        let (invocation, handle) = grounded_invocation(&root);
+        let result = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": format!(
+                "The retained fact is supported by exact Kosh evidence [[cite:{handle}]]."
+            ),
+        });
+        let binary = write_fake_cli(
+            root.path(),
+            &format!(
+                r#"
+prompt=$(cat)
+case "$prompt" in
+  *"You are Kosh Research."*"The user's request is the following JSON string:"*) ;;
+  *) exit 9 ;;
+esac
+printf '%s\n' '{}'
+"#,
+                result
+            ),
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let (sender, receiver) = mpsc::channel();
+        let input = request("Explain the retained fact.");
+        let run_id = input.run_id.clone();
+        manager
+            .start_with_invocation(input, invocation, Arc::new(ChannelSink { sender }))
+            .expect("start grounded fake Claude");
+        let (events, terminals) = receive_terminals(&receiver, 1);
+
+        assert_eq!(
+            terminals.get(&run_id),
+            Some(&ResearchProcessOutcome::Succeeded)
+        );
+        let answer = events
+            .iter()
+            .find_map(|event| match &event.detail {
+                ResearchProcessEventDetail::GroundedFinalOutput { answer } => Some(answer),
+                _ => None,
+            })
+            .expect("grounded final output");
+        assert_eq!(answer.markdown.matches("【1】").count(), 1);
+        assert_eq!(answer.citations.len(), 1);
+        assert_eq!(
+            answer.citations[0].evidence.excerpt,
+            "grounded_process_evidence is exact and retained."
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event.detail,
+            ResearchProcessEventDetail::UntrustedFinalOutput { .. }
+        )));
+    }
+
+    #[test]
     fn drains_a_stdout_burst_larger_than_the_channel_before_joining() {
         let root = tempfile::tempdir().expect("fake CLI root");
         let binary = write_fake_cli(
@@ -2345,6 +2487,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"t
                     arguments: Vec::new(),
                     environment: Vec::new(),
                     sensitive_values: vec!["token-secret".into()],
+                    citation_registry: None,
                     keepalive: Box::new(()),
                 },
                 Arc::new(ChannelSink { sender }),
