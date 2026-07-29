@@ -3361,7 +3361,11 @@ impl MediaMaintenanceScan {
                     self.limits,
                     cursor.clone(),
                     false,
-                    *first_batch,
+                    if *first_batch {
+                        MediaLifecycleMode::SnapshotBackedMaintenance
+                    } else {
+                        MediaLifecycleMode::ReconcileOnly
+                    },
                 )?;
                 accumulate_cleanup(&mut self.cleanup, cleanup)?;
                 if let Some(cursor) = next_cursor {
@@ -4080,9 +4084,37 @@ pub(crate) fn recover_media_lifecycle_batch(
     validate_timestamp(now_ms, "nowMs")?;
     let limits = limits.validate()?;
     let first_batch = cursor.is_none();
-    let (_, next_cursor) =
-        reconcile_and_reap_from(main, media, now_ms, limits, cursor, false, first_batch)?;
+    let (_, next_cursor) = reconcile_and_reap_from(
+        main,
+        media,
+        now_ms,
+        limits,
+        cursor,
+        false,
+        if first_batch {
+            MediaLifecycleMode::StartupRecovery
+        } else {
+            MediaLifecycleMode::ReconcileOnly
+        },
+    )?;
     Ok(next_cursor)
+}
+
+#[derive(Clone, Copy)]
+enum MediaLifecycleMode {
+    ReconcileOnly,
+    StartupRecovery,
+    SnapshotBackedMaintenance,
+}
+
+impl MediaLifecycleMode {
+    fn runs_lifecycle_work(self) -> bool {
+        !matches!(self, Self::ReconcileOnly)
+    }
+
+    fn allows_reaping(self) -> bool {
+        matches!(self, Self::SnapshotBackedMaintenance)
+    }
 }
 
 fn reconcile_and_reap_from(
@@ -4092,9 +4124,9 @@ fn reconcile_and_reap_from(
     limits: MediaLimits,
     cursor: Option<Vec<u8>>,
     scan_all_blobs: bool,
-    run_lifecycle_work: bool,
+    mode: MediaLifecycleMode,
 ) -> Result<(MediaCleanupResult, Option<Vec<u8>>)> {
-    let retired_attachment_count = if run_lifecycle_work {
+    let retired_attachment_count = if mode.runs_lifecycle_work() {
         let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let renewed_expiry = checked_timestamp_add(
             now_ms,
@@ -4313,7 +4345,7 @@ fn reconcile_and_reap_from(
     } else {
         reconcile_blob_candidate_batch(main, media, now_ms, cursor.as_deref())?
     };
-    if !run_lifecycle_work {
+    if !mode.allows_reaping() {
         return Ok((MediaCleanupResult::default(), next_cursor));
     }
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;

@@ -2404,6 +2404,91 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
 }
 
 #[test]
+fn startup_lifecycle_recovery_never_reaps_without_a_verified_snapshot() {
+    let library = TestLibrary::new();
+    let limits = MediaLimits {
+        draft_lease_duration_ms: 10,
+        orphan_grace_period_ms: 50,
+        ..MediaLimits::default()
+    };
+    library.ingest(
+        (0x733, 0x734, 0x735),
+        "restart-orphan.txt",
+        "text/plain",
+        b"restart orphan",
+        11,
+        limits,
+    );
+    assert!(library
+        .database
+        .client()
+        .clear_draft_at(
+            ClearDraftInput {
+                context_key: "capture".into(),
+                expected_updated_at_ms: 10,
+            },
+            12,
+        )
+        .expect("cancel draft"));
+    library
+        .database
+        .shutdown()
+        .expect("stop writer before startup recovery probes");
+
+    let mut main = super::connection::open_writer(
+        &library.paths.main,
+        super::connection::DatabaseKind::Main,
+        super::connection::FileState::Existing,
+    )
+    .expect("main writer");
+    let mut media = super::connection::open_writer(
+        &library.paths.media,
+        super::connection::DatabaseKind::Media,
+        super::connection::FileState::Existing,
+    )
+    .expect("media writer");
+    assert_eq!(
+        recover_media_lifecycle_batch(&mut main, &mut media, 12, limits, None)
+            .expect("initial startup recovery"),
+        None
+    );
+    assert_eq!(
+        recover_media_lifecycle_batch(&mut main, &mut media, 62, limits, None)
+            .expect("eligible startup recovery"),
+        None
+    );
+    assert_eq!(
+        media
+            .query_row("SELECT count(*) FROM media_blob", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("preserved startup blob"),
+        1
+    );
+    assert_eq!(
+        media
+            .query_row(
+                "SELECT count(*) FROM media_blob_reap_authorization",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("startup authorization count"),
+        0
+    );
+    drop(main);
+    drop(media);
+
+    let restarted = Database::initialize(library.paths.clone()).expect("restart database");
+    let (snapshot, maintenance) = restarted
+        .client()
+        .maintain_media_with_safety_snapshot(62, limits)
+        .expect("explicit snapshot-backed reclamation");
+    assert!(snapshot.directory.join("manifest.json").is_file());
+    assert_eq!(maintenance.cleanup.deleted_blob_count, 1);
+    assert_eq!(blob_count(&restarted), 0);
+}
+
+#[test]
 fn durable_research_citation_retains_draft_only_attachment_media() {
     let library = TestLibrary::new();
     let limits = MediaLimits {

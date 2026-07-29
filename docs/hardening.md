@@ -35,6 +35,10 @@ local aggregation, not a substitute for any required CI job.
 | Research run/process | queued, running, cancel, timeout, malformed/oversized stream, killed process | process group and workspace cleaned; durable run becomes interrupted and can be rerun |
 | migration and media reclamation | pending migration or irreversible eligible-media cleanup | verified main/media snapshot pair exists before mutation and reopens with integrity and citation provenance |
 
+Startup media recovery may renew or retire lifecycle metadata and rebuild reap
+candidates, but it never authorizes or deletes blob bytes. Reclamation occurs
+only through explicit maintenance after its verified snapshot is published.
+
 The exact tests are deliberately distributed beside the state machines:
 `database/reliability_tests.rs`, `database/safety_snapshot.rs`,
 `database/media_tests.rs`, `database/embedding_index_tests.rs`,
