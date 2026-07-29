@@ -58,6 +58,11 @@ The exact tests are deliberately distributed beside the state machines:
   events, visible answer text at 1 MiB, and a run at two hours.
 - Kosh retains at most three verified local safety-snapshot pairs. They are
   recovery points for migration/maintenance, not backup or multi-device sync.
+  Before copying, Kosh rotates the oldest owned pair, computes a conservative
+  main-plus-media copy budget with 64 MiB filesystem headroom, and checks free
+  space. It may rotate additional old pairs when necessary but never deletes
+  the newest recovery point merely to make room; insufficient storage then
+  fails before either new database copy is allocated.
 
 Machine timings other than the 10k lexical budget are recorded rather than
 asserted across unlike developer hardware. A regression is investigated from

@@ -18,6 +18,7 @@ use super::{
 const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 const SNAPSHOT_DIRECTORY: &str = "safety-snapshots";
 const MAX_SNAPSHOTS: usize = 3;
+const SNAPSHOT_COPY_HEADROOM_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -90,6 +91,12 @@ pub(super) fn create(
     let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
     create_private_directory(&snapshot_root)?;
     cleanup_interrupted_staging(&snapshot_root)?;
+    let required_available_bytes = snapshot_copy_budget(main, media, paths)?;
+    prepare_snapshot_capacity_with(
+        &snapshot_root,
+        required_available_bytes,
+        available_space_bytes,
+    )?;
     let staging = snapshot_root.join(format!(".{id}.incomplete"));
     let published = snapshot_root.join(&id);
     create_private_directory(&staging)?;
@@ -395,7 +402,9 @@ fn sync_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn prune_published_snapshots(snapshot_root: &Path, current_id: &str) -> Result<()> {
+type OwnedSnapshot = (i64, String, PathBuf);
+
+fn owned_published_snapshots(snapshot_root: &Path) -> Result<Vec<OwnedSnapshot>> {
     let mut owned = fs::read_dir(snapshot_root)?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
@@ -412,6 +421,11 @@ fn prune_published_snapshots(snapshot_root: &Path, current_id: &str) -> Result<(
         })
         .collect::<Vec<_>>();
     owned.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    Ok(owned)
+}
+
+fn prune_published_snapshots(snapshot_root: &Path, current_id: &str) -> Result<()> {
+    let owned = owned_published_snapshots(snapshot_root)?;
     let remove_count = owned.len().saturating_sub(MAX_SNAPSHOTS);
     for (_, _, path) in owned
         .into_iter()
@@ -421,6 +435,106 @@ fn prune_published_snapshots(snapshot_root: &Path, current_id: &str) -> Result<(
         fs::remove_dir_all(path)?;
     }
     sync_directory(snapshot_root)
+}
+
+fn snapshot_copy_budget(
+    main: &Connection,
+    media: &Connection,
+    paths: &DatabasePaths,
+) -> Result<u64> {
+    database_copy_upper_bound(main, &paths.main)?
+        .checked_add(database_copy_upper_bound(media, &paths.media)?)
+        .and_then(|bytes| bytes.checked_add(SNAPSHOT_COPY_HEADROOM_BYTES))
+        .ok_or_else(|| {
+            DatabaseError::InvalidInput("safety snapshot storage budget overflowed".into())
+        })
+}
+
+fn database_copy_upper_bound(connection: &Connection, path: &Path) -> Result<u64> {
+    let page_count = connection.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))?;
+    let page_size = connection.query_row("PRAGMA page_size", [], |row| row.get::<_, i64>(0))?;
+    let page_count = u64::try_from(page_count)
+        .map_err(|_| DatabaseError::InvalidInput("SQLite returned a negative page count".into()))?;
+    let page_size = u64::try_from(page_size)
+        .map_err(|_| DatabaseError::InvalidInput("SQLite returned a negative page size".into()))?;
+    let logical_bytes = page_count.checked_mul(page_size).ok_or_else(|| {
+        DatabaseError::InvalidInput("SQLite safety snapshot size overflowed".into())
+    })?;
+    let mut wal_path = path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    let on_disk_bytes = fs::metadata(path)?
+        .len()
+        .checked_add(
+            fs::metadata(PathBuf::from(wal_path))
+                .map(|metadata| metadata.len())
+                .or_else(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Ok(0)
+                    } else {
+                        Err(error)
+                    }
+                })?,
+        )
+        .ok_or_else(|| DatabaseError::InvalidInput("SQLite on-disk size overflowed".into()))?;
+    Ok(logical_bytes.max(on_disk_bytes))
+}
+
+fn prepare_snapshot_capacity_with(
+    snapshot_root: &Path,
+    required_available_bytes: u64,
+    mut available_space: impl FnMut(&Path) -> Result<u64>,
+) -> Result<()> {
+    let mut owned = owned_published_snapshots(snapshot_root)?;
+    let retained_before_copy = MAX_SNAPSHOTS.saturating_sub(1).max(1);
+    let mut removed = false;
+    while owned.len() > retained_before_copy {
+        let (_, name, path) = owned.remove(0);
+        log::info!("rotating oldest safety snapshot {name} before allocating its replacement");
+        fs::remove_dir_all(path)?;
+        removed = true;
+    }
+
+    let mut available_bytes = available_space(snapshot_root)?;
+    while available_bytes < required_available_bytes && owned.len() > 1 {
+        let (_, name, path) = owned.remove(0);
+        log::warn!("rotating safety snapshot {name} to reserve bounded space for its replacement");
+        fs::remove_dir_all(path)?;
+        removed = true;
+        available_bytes = available_space(snapshot_root)?;
+    }
+    if removed {
+        sync_directory(snapshot_root)?;
+    }
+    if available_bytes < required_available_bytes {
+        return Err(DatabaseError::InvalidInput(format!(
+            "not enough free storage for a safety snapshot: need {required_available_bytes} bytes, \
+             have {available_bytes} bytes after retaining the newest recovery point"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn available_space_bytes(path: &Path) -> Result<u64> {
+    use std::{ffi::CString, mem::MaybeUninit, os::unix::ffi::OsStrExt};
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        DatabaseError::InvalidInput("safety snapshot path contains a null byte".into())
+    })?;
+    let mut statistics = MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(path.as_ptr(), statistics.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let statistics = unsafe { statistics.assume_init() };
+    let bytes = u128::from(statistics.f_bavail).saturating_mul(u128::from(statistics.f_frsize));
+    Ok(u64::try_from(bytes).unwrap_or(u64::MAX))
+}
+
+#[cfg(not(unix))]
+fn available_space_bytes(_path: &Path) -> Result<u64> {
+    Err(DatabaseError::InvalidInput(
+        "safety snapshot capacity checks require a Unix filesystem".into(),
+    ))
 }
 
 fn cleanup_interrupted_staging(snapshot_root: &Path) -> Result<()> {
@@ -625,6 +739,41 @@ mod tests {
             fs::read_to_string(unowned.join("keep.txt")).expect("unowned marker survives"),
             "do not delete"
         );
+    }
+
+    #[test]
+    fn capacity_preflight_rotates_owned_pairs_but_preserves_the_newest_recovery_point() {
+        let root = tempfile::tempdir().expect("snapshot capacity");
+        let paths = DatabasePaths::new(root.path());
+        let database = crate::database::Database::initialize(paths.clone()).expect("database");
+        for _ in 0..MAX_SNAPSHOTS {
+            database
+                .client()
+                .maintain_media_with_safety_snapshot(10, MediaLimits::default())
+                .expect("snapshot");
+        }
+        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
+        let before = owned_published_snapshots(&snapshot_root).expect("owned snapshots");
+        let newest_id = before.last().expect("newest snapshot").1.clone();
+
+        prepare_snapshot_capacity_with(&snapshot_root, 128, |_| {
+            let count = owned_published_snapshots(&snapshot_root)
+                .expect("remaining owned snapshots")
+                .len();
+            Ok(if count == 1 { 128 } else { 0 })
+        })
+        .expect("capacity recovered by safe rotation");
+
+        let after = owned_published_snapshots(&snapshot_root).expect("rotated snapshots");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].1, newest_id);
+
+        let error = prepare_snapshot_capacity_with(&snapshot_root, 128, |_| Ok(127))
+            .expect_err("the latest recovery point must not be deleted for capacity");
+        assert!(matches!(error, DatabaseError::InvalidInput(_)));
+        let unchanged = owned_published_snapshots(&snapshot_root).expect("latest snapshot");
+        assert_eq!(unchanged.len(), 1);
+        assert_eq!(unchanged[0].1, newest_id);
     }
 
     #[test]
