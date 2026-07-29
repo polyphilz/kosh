@@ -63,7 +63,60 @@ describe("StartupSmokeReady", () => {
         frontendOrigin: window.location.origin,
         probeDataDir: "/tmp/kosh-startup",
         probeRequestId: "probe-1",
+        canary: null,
       });
+    });
+  });
+
+  it("proves exact search and citation resolution when startup smoke requests it", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    const backend = new FakeBackend({
+      dataDir: "/tmp/kosh-startup",
+      nowMs: 42,
+      requestId: "probe-2",
+      startupSmokeCanary: "koshstartupcanaryv1",
+    });
+    const tidbit = await backend.createTidbit({
+      title: "Kosh progressive startup canary",
+      bodyMarkdown: "koshstartupcanaryv1",
+      sources: [
+        {
+          label: "Kosh startup smoke",
+          url: "https://example.invalid/kosh-progressive-operability",
+        },
+      ],
+    });
+    const root = document.createElement("div");
+    root.id = "root";
+    document.body.append(root);
+
+    render(
+      <BackendProvider backend={backend}>
+        <div>Rendered app</div>
+        <StartupSmokeReady surface="main" />
+      </BackendProvider>,
+      { container: root },
+    );
+
+    await waitFor(() => {
+      expect(emit).toHaveBeenCalledWith(
+        "kosh://startup-smoke-ready",
+        expect.objectContaining({
+          surface: "main",
+          canary: {
+            citationState: "CURRENT",
+            executionMode: "EXACT",
+            passageId: `fake-passage:${tidbit.currentRevisionId}`,
+            resolvedPassageId: `fake-passage:${tidbit.currentRevisionId}`,
+            revisionId: tidbit.currentRevisionId,
+            resultCount: 1,
+            sourceUrl: "https://example.invalid/kosh-progressive-operability",
+          },
+        }),
+      );
     });
   });
 });

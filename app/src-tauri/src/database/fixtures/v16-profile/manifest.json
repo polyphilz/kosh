@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "profile": "v16-authored-tidbit",
+  "mainMigrationHead": 16,
+  "mediaMigrationHead": 2,
+  "mainSha256": "797ee64e680873fa5fd4d0ede1d04f9dc04cd44da563eebd754d825451dad4c0",
+  "mediaSha256": "23a405c3fe82216928939d3b1951c63945adf11a222da7e739c4771783f35d3c",
+  "tidbitId": "019f547b-6200-7000-8000-000000000901",
+  "revisionId": "019f547b-6200-7000-8000-000000000902",
+  "passageId": "019f547b-6200-7000-8000-000000000904",
+  "sourceUrl": "https://example.com/migration-v16"
+}

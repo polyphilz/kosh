@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 test("library, history, trash, and restore form one operable lifecycle", async ({ page }) => {
   await createTidbit(page, "First library note", "Original local evidence.");
@@ -29,28 +29,7 @@ test("library, history, trash, and restore form one operable lifecycle", async (
   await expect(page.getByRole("heading", { name: "Trash is empty" })).toBeVisible();
 });
 
-test("library surface stays visually stable", async ({ page }) => {
-  await createTidbit(page, "Alpha note", "A compact thought.");
-  await page.getByRole("link", { name: "Add" }).click();
-  await page.getByRole("textbox", { name: /^Title/u }).fill("Beta chapter notes");
-  await page
-    .getByRole("textbox", { name: "Tidbit" })
-    .fill("# Chapter 2\n\nA longer observation with `code` and $x^2$.");
-  await page.getByRole("button", { name: "Save tidbit" }).click();
-  await page.getByRole("link", { name: "Library", exact: true }).click();
-
-  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
-  await expect(page).toHaveScreenshot("library-recent.png", {
-    animations: "disabled",
-    fullPage: true,
-    mask: [page.locator(".library-list time")],
-    maskColor: "#d8d2ca",
-    maxDiffPixelRatio: 0.04,
-    threshold: 0.35,
-  });
-});
-
-async function createTidbit(page: import("@playwright/test").Page, title: string, body: string) {
+async function createTidbit(page: Page, title: string, body: string) {
   await page.goto("/#/add");
   await page.getByRole("textbox", { name: /^Title/u }).fill(title);
   await page.getByRole("textbox", { name: "Tidbit" }).fill(body);

@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
 import type { TidbitDraft, TidbitRecord } from "../../src/backend/contracts";
+import { expect, test, type Page } from "./fixtures";
 
 test("search-as-you-type renders cited passages, exact mode, and keyboard history", async ({
   context,
@@ -79,10 +79,16 @@ test("superseded and failed searches cannot replace a newer result", async ({ pa
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
     const search = backend.searchPassages.bind(backend);
+    let releaseSlow!: () => void;
+    const slowRelease = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
     let failedOnce = false;
     backend.searchPassages = async (input) => {
       if (input.query === "slow") {
-        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        Reflect.set(window, "__KOSH_SLOW_SEARCH_STARTED__", true);
+        await slowRelease;
+        Reflect.set(window, "__KOSH_SLOW_SEARCH_COMPLETED__", true);
       }
       if (input.query === "explode" && !failedOnce) {
         failedOnce = true;
@@ -90,14 +96,20 @@ test("superseded and failed searches cannot replace a newer result", async ({ pa
       }
       return search(input);
     };
+    Reflect.set(window, "__KOSH_RELEASE_SLOW_SEARCH__", releaseSlow);
   });
 
   const input = page.getByRole("searchbox", { name: "Search tidbits" });
   await input.fill("slow");
-  await page.waitForTimeout(240);
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SLOW_SEARCH_STARTED__")))
+    .toBe(true);
   await input.fill("fast");
   await expect(page.getByRole("option", { name: /Fast response/u })).toBeVisible();
-  await page.waitForTimeout(550);
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_SLOW_SEARCH__")());
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SLOW_SEARCH_COMPLETED__")))
+    .toBe(true);
   await expect(page.getByRole("option", { name: /Fast response/u })).toBeVisible();
   await expect(page.getByRole("option", { name: /Slow response/u })).toHaveCount(0);
 
@@ -153,7 +165,42 @@ test("a citation edited after search opens as historical and focuses its exact p
 });
 
 test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
+  await page.addInitScript(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    const nativeClearTimeout = window.clearTimeout.bind(window);
+    const semanticTimers = new Map<number, TimerHandler>();
+    let nextTimerId = 900_000;
+
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...arguments_: unknown[]) => {
+      if (timeout === 1_500) {
+        const timerId = nextTimerId++;
+        semanticTimers.set(timerId, () => {
+          if (typeof handler === "function") handler(...arguments_);
+          else Function(handler)();
+        });
+        return timerId;
+      }
+      return nativeSetTimeout(handler, timeout, ...arguments_);
+    }) as typeof window.setTimeout;
+    window.clearTimeout = ((timerId: number | undefined) => {
+      if (timerId !== undefined && semanticTimers.delete(timerId)) return;
+      nativeClearTimeout(timerId);
+    }) as typeof window.clearTimeout;
+    Reflect.set(window, "__KOSH_RUN_SEMANTIC_TIMER__", () => {
+      const first = semanticTimers.entries().next().value as [number, TimerHandler] | undefined;
+      if (!first) throw new Error("semantic timer was not scheduled");
+      semanticTimers.delete(first[0]);
+      if (typeof first[1] === "function") first[1]();
+    });
+    Object.defineProperty(window, "__KOSH_SEMANTIC_TIMER_COUNT__", {
+      configurable: true,
+      get: () => semanticTimers.size,
+    });
+  });
   await page.goto("/#/");
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_TIMER_COUNT__")))
+    .toBe(1);
   await page.evaluate(() => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
@@ -169,8 +216,13 @@ test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
     });
   });
 
-  await page.waitForTimeout(1_700);
-  expect(await page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_POLL_COUNT__"))).toBe(1);
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RUN_SEMANTIC_TIMER__")());
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_POLL_COUNT__")))
+    .toBe(1);
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_TIMER_COUNT__")))
+    .toBe(1);
 });
 
 async function seedTidbit(page: Page, input: TidbitDraft): Promise<TidbitRecord> {

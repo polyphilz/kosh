@@ -553,6 +553,7 @@ pub struct RuntimeProbe {
     pub data_dir: String,
     pub now_ms: i64,
     pub request_id: String,
+    pub startup_smoke_canary: Option<String>,
 }
 
 #[tauri::command]
@@ -561,6 +562,10 @@ pub(crate) fn runtime_probe(state: State<'_, RuntimeState>) -> RuntimeProbe {
         data_dir: state.data_dir.to_string_lossy().into_owned(),
         now_ms: state.clock.now_ms(),
         request_id: state.ids.next_id(),
+        #[cfg(debug_assertions)]
+        startup_smoke_canary: crate::startup_smoke::canary_query_if_requested(),
+        #[cfg(not(debug_assertions))]
+        startup_smoke_canary: None,
     }
 }
 

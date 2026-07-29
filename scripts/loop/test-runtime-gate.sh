@@ -34,7 +34,7 @@ launch_receipt() {
     --argjson preexisting "$preexisting" \
     --argjson created "$created" \
     '{
-      schemaVersion: 1,
+      schemaVersion: 2,
       headSha: $head,
       expectation: $expectation,
       dataDir: $data,
@@ -49,7 +49,16 @@ launch_receipt() {
           rootChildCount: 1,
           frontendOrigin: "http://127.0.0.1:1420",
           probeDataDir: $data,
-          probeRequestId: "00000000-0000-7000-8000-000000000004"
+          probeRequestId: "00000000-0000-7000-8000-000000000004",
+          canary: {
+            executionMode: "EXACT",
+            citationState: "CURRENT",
+            resultCount: 1,
+            passageId: $passage,
+            resolvedPassageId: $passage,
+            revisionId: $revision,
+            sourceUrl: "https://example.invalid/kosh-progressive-operability"
+          }
         },
         {
           surface: "quick-add",
@@ -58,7 +67,16 @@ launch_receipt() {
           rootChildCount: 1,
           frontendOrigin: "http://127.0.0.1:1420",
           probeDataDir: $data,
-          probeRequestId: "00000000-0000-7000-8000-000000000005"
+          probeRequestId: "00000000-0000-7000-8000-000000000005",
+          canary: {
+            executionMode: "EXACT",
+            citationState: "CURRENT",
+            resultCount: 1,
+            passageId: $passage,
+            resolvedPassageId: $passage,
+            revisionId: $revision,
+            sourceUrl: "https://example.invalid/kosh-progressive-operability"
+          }
         }
       ],
       diagnostics: {
@@ -179,6 +197,15 @@ bad_ipc="$(jq '.webviews[0].probeRequestId = ""' <<<"$persistent")"
 persistent="$bad_ipc"
 write_aggregate local "$head_sha" true present "$persistent"
 expect_blocked "a webview has no backend IPC evidence"
+persistent="$original_persistent"
+
+bad_citation="$(
+  jq '.webviews[0].canary.resolvedPassageId = "00000000-0000-7000-8000-000000000099"' \
+    <<<"$persistent"
+)"
+persistent="$bad_citation"
+write_aggregate local "$head_sha" true present "$persistent"
+expect_blocked "a webview citation resolves to a different passage"
 persistent="$original_persistent"
 
 bad_origin="$(jq '.webviews[0].frontendOrigin = "http://localhost:1420"' <<<"$persistent")"

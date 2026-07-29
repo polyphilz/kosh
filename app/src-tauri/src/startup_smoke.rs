@@ -39,12 +39,24 @@ enum CanaryExpectation {
     Ensure,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CanaryEvidence {
     tidbit_id: String,
     revision_id: String,
     passage_id: String,
+    source_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebviewCanaryEvidence {
+    citation_state: String,
+    execution_mode: String,
+    passage_id: String,
+    resolved_passage_id: String,
+    revision_id: String,
+    result_count: usize,
     source_url: String,
 }
 
@@ -58,6 +70,7 @@ struct WebviewReady {
     frontend_origin: String,
     probe_data_dir: String,
     probe_request_id: String,
+    canary: Option<WebviewCanaryEvidence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,6 +95,19 @@ struct StartupSmokeRequest {
     receipt_path: PathBuf,
     head_sha: String,
     expectation: CanaryExpectation,
+}
+
+#[derive(Debug)]
+struct PreparedCanary {
+    preexisting: bool,
+    created: bool,
+    evidence: CanaryEvidence,
+}
+
+pub(crate) fn canary_query_if_requested() -> Option<String> {
+    std::env::var_os(RECEIPT_ENV)
+        .filter(|value| !value.is_empty())
+        .map(|_| CANARY.to_owned())
 }
 
 pub(crate) fn run_if_requested(app: &App) -> io::Result<bool> {
@@ -113,6 +139,7 @@ pub(crate) fn run_if_requested(app: &App) -> io::Result<bool> {
         head_sha,
         expectation,
     };
+    let prepared = prepare_canary(app.handle(), expectation)?;
 
     let (ready_sender, ready_receiver) = mpsc::channel();
     app.listen(READY_EVENT, move |event| {
@@ -122,8 +149,9 @@ pub(crate) fn run_if_requested(app: &App) -> io::Result<bool> {
     thread::Builder::new()
         .name("kosh-startup-smoke".into())
         .spawn(move || {
-            let result = wait_for_webviews(&ready_receiver)
-                .and_then(|webviews| complete_startup_smoke(&app_handle, request, webviews));
+            let result = wait_for_webviews(&ready_receiver).and_then(|webviews| {
+                complete_startup_smoke(&app_handle, request, prepared, webviews)
+            });
             match result {
                 Ok(()) => app_handle.exit(0),
                 Err(error) => {
@@ -139,66 +167,17 @@ pub(crate) fn run_if_requested(app: &App) -> io::Result<bool> {
 fn complete_startup_smoke(
     app: &AppHandle,
     request: StartupSmokeRequest,
+    prepared: PreparedCanary,
     mut webviews: Vec<WebviewReady>,
 ) -> io::Result<()> {
     let state = app.state::<RuntimeState>();
     let client = state.database_client();
-    let existing = find_canary(&client)?;
-    match (request.expectation, existing.is_some()) {
-        (CanaryExpectation::Absent, true) => {
-            return Err(invalid(
-                "the startup smoke canary unexpectedly existed before the fresh launch",
-            ));
-        }
-        (CanaryExpectation::Present, false) => {
-            return Err(invalid(
-                "the startup smoke canary did not survive the previous launch",
-            ));
-        }
-        (CanaryExpectation::Ensure, _) => {}
-        _ => {}
-    }
-
-    let created = if existing.is_none()
-        && matches!(
-            request.expectation,
-            CanaryExpectation::Absent | CanaryExpectation::Ensure
-        ) {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| invalid(format!("the system clock is invalid: {error}")))?
-            .as_millis()
-            .try_into()
-            .map_err(|_| invalid("the startup smoke timestamp exceeds SQLite's range"))?;
-        let tidbit = client
-            .create_tidbit(CreateTidbitWrite {
-                input: TidbitDraft {
-                    title: Some(CANARY_TITLE.into()),
-                    body_markdown: CANARY.into(),
-                    sources: vec![SourceDraft {
-                        label: Some("Kosh startup smoke".into()),
-                        url: Some(CANARY_SOURCE_URL.into()),
-                    }],
-                },
-                now_ms,
-                tidbit_id: uuid::Uuid::now_v7().to_string(),
-                revision_id: uuid::Uuid::now_v7().to_string(),
-                source_ids: vec![uuid::Uuid::now_v7().to_string()],
-            })
-            .map_err(database_error)?;
-        Some((tidbit.id, tidbit.current_revision_id))
-    } else {
-        None
-    };
-
-    let evidence = find_canary(&client)?
-        .ok_or_else(|| invalid("the startup smoke canary was not searchable after setup"))?;
-    if let Some((tidbit_id, revision_id)) = &created {
-        if evidence.tidbit_id != *tidbit_id || evidence.revision_id != *revision_id {
-            return Err(invalid(
-                "the startup smoke citation did not resolve to the created revision",
-            ));
-        }
+    let live_evidence = find_canary(&client)?
+        .ok_or_else(|| invalid("the startup smoke canary disappeared during frontend startup"))?;
+    if live_evidence != prepared.evidence {
+        return Err(invalid(
+            "the startup smoke canary changed during frontend startup",
+        ));
     }
 
     let diagnostics = client.diagnostics().map_err(database_error)?;
@@ -242,6 +221,25 @@ fn complete_startup_smoke(
                 ready.surface
             )));
         }
+        let canary = ready.canary.as_ref().ok_or_else(|| {
+            invalid(format!(
+                "the {} webview emitted readiness without search and citation IPC evidence",
+                ready.surface
+            ))
+        })?;
+        if canary.execution_mode != "EXACT"
+            || canary.citation_state != "CURRENT"
+            || canary.result_count != 1
+            || canary.passage_id != prepared.evidence.passage_id
+            || canary.resolved_passage_id != prepared.evidence.passage_id
+            || canary.revision_id != prepared.evidence.revision_id
+            || canary.source_url != prepared.evidence.source_url
+        {
+            return Err(invalid(format!(
+                "the {} webview search or citation IPC evidence did not resolve the startup canary",
+                ready.surface
+            )));
+        }
     }
     webviews.sort_by(|left, right| left.surface.cmp(&right.surface));
     let completed_at_ms = SystemTime::now()
@@ -251,7 +249,7 @@ fn complete_startup_smoke(
     write_receipt(
         &request.receipt_path,
         &StartupSmokeReceipt {
-            schema_version: 1,
+            schema_version: 2,
             head_sha: request.head_sha,
             expectation: request.expectation,
             data_dir: data_dir_text,
@@ -260,11 +258,76 @@ fn complete_startup_smoke(
             windows,
             webviews,
             diagnostics,
-            canary_preexisting: existing.is_some(),
-            canary_created: created.is_some(),
-            canary: evidence,
+            canary_preexisting: prepared.preexisting,
+            canary_created: prepared.created,
+            canary: prepared.evidence,
         },
     )
+}
+
+fn prepare_canary(app: &AppHandle, expectation: CanaryExpectation) -> io::Result<PreparedCanary> {
+    let client = app.state::<RuntimeState>().database_client();
+    let existing = find_canary(&client)?;
+    match (expectation, existing.is_some()) {
+        (CanaryExpectation::Absent, true) => {
+            return Err(invalid(
+                "the startup smoke canary unexpectedly existed before the fresh launch",
+            ));
+        }
+        (CanaryExpectation::Present, false) => {
+            return Err(invalid(
+                "the startup smoke canary did not survive the previous launch",
+            ));
+        }
+        (CanaryExpectation::Ensure, _) | (_, false) | (_, true) => {}
+    }
+
+    let created = if existing.is_none()
+        && matches!(
+            expectation,
+            CanaryExpectation::Absent | CanaryExpectation::Ensure
+        ) {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| invalid(format!("the system clock is invalid: {error}")))?
+            .as_millis()
+            .try_into()
+            .map_err(|_| invalid("the startup smoke timestamp exceeds SQLite's range"))?;
+        let tidbit = client
+            .create_tidbit(CreateTidbitWrite {
+                input: TidbitDraft {
+                    title: Some(CANARY_TITLE.into()),
+                    body_markdown: CANARY.into(),
+                    sources: vec![SourceDraft {
+                        label: Some("Kosh startup smoke".into()),
+                        url: Some(CANARY_SOURCE_URL.into()),
+                    }],
+                },
+                now_ms,
+                tidbit_id: uuid::Uuid::now_v7().to_string(),
+                revision_id: uuid::Uuid::now_v7().to_string(),
+                source_ids: vec![uuid::Uuid::now_v7().to_string()],
+            })
+            .map_err(database_error)?;
+        Some((tidbit.id, tidbit.current_revision_id))
+    } else {
+        None
+    };
+
+    let evidence = find_canary(&client)?
+        .ok_or_else(|| invalid("the startup smoke canary was not searchable after setup"))?;
+    if let Some((tidbit_id, revision_id)) = &created {
+        if evidence.tidbit_id != *tidbit_id || evidence.revision_id != *revision_id {
+            return Err(invalid(
+                "the startup smoke citation did not resolve to the created revision",
+            ));
+        }
+    }
+    Ok(PreparedCanary {
+        preexisting: existing.is_some(),
+        created: created.is_some(),
+        evidence,
+    })
 }
 
 fn wait_for_webviews(receiver: &mpsc::Receiver<String>) -> io::Result<Vec<WebviewReady>> {

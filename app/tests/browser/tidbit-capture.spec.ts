@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 test("capture, edit, and delete share the complete tidbit workflow", async ({ page }) => {
   await page.goto("/#/add");

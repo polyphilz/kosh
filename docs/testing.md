@@ -1,0 +1,87 @@
+# Testing authorities
+
+Kosh's detailed progressive test plan lives in the ignored implementation
+workspace at `.plans/002-testing.md`. This tracked inventory identifies the
+executable authorities that must remain green as product slices evolve. A test
+may claim only the boundary it actually crosses.
+
+## Required pull-request lanes
+
+| CI lane | Command or runner | Authority |
+| --- | --- | --- |
+| repository policy | `scripts/check-repository.sh` | shell syntax, secret and ignored-data hygiene, negative tests for merge/runtime/bundle guards |
+| frontend unit and type contracts | TypeScript, Oxlint, Oxfmt, Vitest | types, reducers, parsers, React state, typed Tauri protocol registry and Rust drift detection |
+| browser functional and accessibility | Chromium Playwright plus axe | stateful capture, library, search, citation, research, settings, focus and accessibility journeys |
+| WebKit editor and keyboard contracts | WebKit Playwright | ProseMirror input, save, search selection and citation-focus behavior in Tauri's browser engine family |
+| pinned visual contracts | single-worker Chromium Playwright | light/dark catalog, dialog, library and settings pixels at fixed viewports |
+| production bundle isolation | `pnpm check:bundle` | no fake backend, fixtures, local data, model, database, test or environment material; explicit byte budgets |
+| search and citation quality | `pnpm relevance:gate` and the 10k benchmark | pinned lexical/hybrid metrics, manual provenance sample, forbidden hits and interactive lexical latency |
+| native unit and integration contracts | Rust tests and strict Clippy | migrations, writer serialization, files, workers, processes, search, citation and Tauri mock IPC |
+| native startup, restart, search and citation | `scripts/loop/runtime-gate.sh --ci` | real macOS Tauri process, both WKWebViews, fresh/restart persistence and actual runtime/search/citation IPC |
+
+The branch loop additionally runs the native gate against the preserved local
+profile. Its receipt must name the exact committed HEAD before a PR can be
+merged.
+
+## Determinism and isolation
+
+- Browser tests use a new context and stateful fake backend per test. They fail
+  on page errors, console errors, failed requests, or any external network
+  request.
+- Timed races use controlled promises and intercepted timers. Arbitrary sleeps,
+  retries-to-green, test ordering, shared profiles and live network calls are
+  forbidden.
+- Visual baselines run separately with one worker, fixed locale, UTC timezone,
+  viewport, fonts and appearance. Functional lanes do not own screenshots.
+- Command, event and window names live in `src/tauriProtocol.ts`. A Vitest
+  contract extracts Rust's production handler, emitted events and native
+  window labels and requires exact equality.
+- Native tests create explicit temporary roots. The runtime gate owns only
+  `.kosh-loop`; it refuses unknown or symlinked profile paths and never resets a
+  user's database.
+
+## Upgrade and citation evidence
+
+`src-tauri/src/database/fixtures/v16-profile/` is a reviewed, hashed SQLite
+pair containing authored text, immutable revision, exact-search passage and
+URL-bearing source. The normal suite validates its manifest, upgrades a copy,
+proves exact search and citation provenance, closes the database, then repeats
+the proof after restart. Changing an already-shipped migration invalidates the
+fixture checksum and blocks startup rather than silently rewriting history.
+
+The relevance suite has at least 25 realistic queries and checked model vectors.
+The release gate requires:
+
+- lexical Recall@10 and citation-locator accuracy at least 0.95;
+- lexical exact/phrase success 1.0 and zero forbidden hits;
+- hybrid Recall@10 and citation-locator accuracy 1.0;
+- hybrid MRR and nDCG@10 at least 0.95;
+- no hybrid regression against the lexical baseline;
+- ten manually inspected citations spanning authored and attachment evidence,
+  Markdown blocks, PDF pages, OCR regions and text lines;
+- 10,000-tidbit lexical query p95 at or below 100 ms.
+
+`scripts/check-bundle.sh` separately caps the uncompressed web bundle at
+4,000,000 bytes, all JavaScript at 2,700,000 bytes, and any JavaScript chunk at
+1,100,000 bytes. CI retains bounded JSON reports and failure traces for 7–14
+days; it does not retain user data or credentials.
+
+## Local full gate
+
+From `app/`:
+
+```sh
+pnpm check
+pnpm relevance:gate
+pnpm relevance:lexical-scale
+pnpm check:bundle
+```
+
+After committing, from the repository root:
+
+```sh
+scripts/loop/runtime-gate.sh
+```
+
+Any changed commit invalidates that native receipt. Review and merge guards
+then require green CI plus a clean Codex review of the same PR HEAD.

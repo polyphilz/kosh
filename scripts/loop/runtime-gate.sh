@@ -160,7 +160,8 @@ run_launch() {
     --arg expectation "$expectation" \
     --arg data "$canonical_data" \
     '
-      .schemaVersion == 1
+      . as $launch
+      | .schemaVersion == 2
       and .headSha == $head
       and .expectation == $expectation
       and .dataDir == $data
@@ -176,6 +177,13 @@ run_launch() {
         and .probeDataDir == $data
         and (.probeRequestId | type) == "string"
         and (.probeRequestId | length) > 0
+        and .canary.executionMode == "EXACT"
+        and .canary.citationState == "CURRENT"
+        and .canary.resultCount == 1
+        and .canary.passageId == $launch.canary.passageId
+        and .canary.resolvedPassageId == $launch.canary.passageId
+        and .canary.revisionId == $launch.canary.revisionId
+        and .canary.sourceUrl == $launch.canary.sourceUrl
       )
       and ([.webviews[].probeRequestId] | unique | length) == 2
       and .diagnostics.mainJournalMode == "wal"

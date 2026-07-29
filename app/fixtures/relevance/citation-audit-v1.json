@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "fixtureDigest": "b07562f04a0a9999cb98ea754f6cef9cf80354b81a7c8d60f3941310c6c5ffae",
+  "reviewedAt": "2026-07-29",
+  "reviewer": "Codex implementation audit",
+  "entries": [
+    {
+      "queryId": "query-heat-phrase",
+      "passageId": "passage-heat-modern",
+      "evidenceExcerpt": "Heat is impatient motion",
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 2,
+        "endBlock": 2,
+        "sourceStartByte": 36,
+        "sourceEndByte": 174,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      },
+      "sourceDomain": "notes.example.test",
+      "attachmentFilename": null,
+      "verified": true
+    },
+    {
+      "queryId": "query-cache-identifier",
+      "passageId": "passage-code-cache-key",
+      "evidenceExcerpt": "passage_cache_key",
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 3,
+        "endBlock": 3,
+        "sourceStartByte": 54,
+        "sourceEndByte": 168,
+        "startChar": null,
+        "endChar": null,
+        "startLine": 1,
+        "endLine": 3
+      },
+      "sourceDomain": null,
+      "attachmentFilename": null,
+      "verified": true
+    },
+    {
+      "queryId": "query-sqlite-domain",
+      "passageId": "passage-source-sqlite",
+      "evidenceExcerpt": "FTS5 tokenizers decide",
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 10,
+        "sourceEndByte": 91,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      },
+      "sourceDomain": "sqlite.org",
+      "attachmentFilename": null,
+      "verified": true
+    },
+    {
+      "queryId": "query-ocr-invoice",
+      "passageId": "passage-ocr-receipt",
+      "evidenceExcerpt": "replacement bearings and ceramic lubricant",
+      "locator": {
+        "kind": "OCR_REGION",
+        "page": null,
+        "region": {
+          "x": 84,
+          "y": 122,
+          "width": 1032,
+          "height": 214
+        }
+      },
+      "sourceDomain": null,
+      "attachmentFilename": "workshop-receipt.png",
+      "verified": true
+    },
+    {
+      "queryId": "query-pdf-attention",
+      "passageId": "passage-pdf-transformer",
+      "evidenceExcerpt": "distinct representation subspaces",
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 42
+      },
+      "sourceDomain": null,
+      "attachmentFilename": "transformer-notes.pdf",
+      "verified": true
+    },
+    {
+      "queryId": "query-unicode-diacritics",
+      "passageId": "passage-unicode-cafe",
+      "evidenceExcerpt": "naïve résumé draft",
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 1,
+        "endBlock": 1,
+        "sourceStartByte": 11,
+        "sourceEndByte": 91,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      },
+      "sourceDomain": null,
+      "attachmentFilename": null,
+      "verified": true
+    },
+    {
+      "queryId": "query-text-attachment-lines",
+      "passageId": "passage-text-release-log",
+      "evidenceExcerpt": "cobalt_index rebuild completed",
+      "locator": {
+        "kind": "TEXT_LINES",
+        "startLine": 18,
+        "endLine": 20
+      },
+      "sourceDomain": null,
+      "attachmentFilename": "release-notes.log",
+      "verified": true
+    },
+    {
+      "queryId": "query-authored-over-pdf-volume",
+      "passageId": "passage-authored-vector-clock",
+      "evidenceExcerpt": "Start with this authored checklist",
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 2,
+        "endBlock": 2,
+        "sourceStartByte": 31,
+        "sourceEndByte": 164,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
+      },
+      "sourceDomain": null,
+      "attachmentFilename": null,
+      "verified": true
+    },
+    {
+      "queryId": "query-stale-writer",
+      "passageId": "passage-pdf-distributed-113",
+      "evidenceExcerpt": "superseded writer cannot commit",
+      "locator": {
+        "kind": "PDF_PAGE",
+        "page": 113
+      },
+      "sourceDomain": null,
+      "attachmentFilename": "distributed-systems-reader.pdf",
+      "verified": true
+    },
+    {
+      "queryId": "query-citation-function",
+      "passageId": "passage-code-resolve-citation",
+      "evidenceExcerpt": "backend.resolveCitation",
+      "locator": {
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 2,
+        "endBlock": 2,
+        "sourceStartByte": 32,
+        "sourceEndByte": 121,
+        "startChar": null,
+        "endChar": null,
+        "startLine": 1,
+        "endLine": 1
+      },
+      "sourceDomain": null,
+      "attachmentFilename": null,
+      "verified": true
+    }
+  ]
+}

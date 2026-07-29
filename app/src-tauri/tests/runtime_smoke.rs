@@ -48,6 +48,7 @@ fn main_window_invokes_runtime_probe_with_temporary_state() {
             data_dir: data_root.path().to_string_lossy().into_owned(),
             now_ms: 1_785_201_600_000,
             request_id: "fixture-request-1".to_owned(),
+            startup_smoke_canary: None,
         }
     );
     assert!(!response.data_dir.contains("Application Support"));

@@ -1,9 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
-
-const PREPARE_QUIT_EVENT = "kosh://prepare-quit";
-const QUIT_CANCELED_EVENT = "kosh://quit-canceled";
+import { TauriCommand, TauriEvent } from "../tauriProtocol";
 
 export interface PrepareQuitNotice {
   requestId: number;
@@ -28,14 +26,14 @@ const participants = new Set<QuitParticipant>();
 
 export const quitNative: QuitNative = {
   acknowledge: (requestId, error) =>
-    invoke<void>("acknowledge_quit", {
+    invoke<void>(TauriCommand.AcknowledgeQuit, {
       error,
       requestId,
     }),
   onCanceled: (listener) =>
-    listen<QuitCanceledNotice>(QUIT_CANCELED_EVENT, (event) => listener(event.payload)),
+    listen<QuitCanceledNotice>(TauriEvent.QuitCanceled, (event) => listener(event.payload)),
   onPrepare: (listener) =>
-    listen<PrepareQuitNotice>(PREPARE_QUIT_EVENT, (event) => listener(event.payload)),
+    listen<PrepareQuitNotice>(TauriEvent.PrepareQuit, (event) => listener(event.payload)),
 };
 
 export function registerQuitParticipant(participant: QuitParticipant): () => void {

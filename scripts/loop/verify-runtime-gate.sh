@@ -31,12 +31,12 @@ jq -e \
     and .scope == "local"
     and .result == "pass"
     and .headSha == $head
-    and .fresh.seed.schemaVersion == 1
+    and .fresh.seed.schemaVersion == 2
     and .fresh.seed.headSha == $head
     and .fresh.seed.expectation == "absent"
     and .fresh.seed.canaryPreexisting == false
     and .fresh.seed.canaryCreated == true
-    and .fresh.restart.schemaVersion == 1
+    and .fresh.restart.schemaVersion == 2
     and .fresh.restart.headSha == $head
     and .fresh.restart.expectation == "present"
     and .fresh.restart.canaryPreexisting == true
@@ -45,7 +45,7 @@ jq -e \
     and .fresh.seed.canary.tidbitId == .fresh.restart.canary.tidbitId
     and .fresh.seed.canary.revisionId == .fresh.restart.canary.revisionId
     and .fresh.seed.canary.passageId == .fresh.restart.canary.passageId
-    and .persistent.receipt.schemaVersion == 1
+    and .persistent.receipt.schemaVersion == 2
     and .persistent.receipt.headSha == $head
     and .persistent.expectation == "present"
     and .persistent.receipt.expectation == "present"
@@ -69,6 +69,13 @@ jq -e \
         and .probeDataDir == $launch.dataDir
         and (.probeRequestId | type) == "string"
         and (.probeRequestId | length) > 0
+        and .canary.executionMode == "EXACT"
+        and .canary.citationState == "CURRENT"
+        and .canary.resultCount == 1
+        and .canary.passageId == $launch.canary.passageId
+        and .canary.resolvedPassageId == $launch.canary.passageId
+        and .canary.revisionId == $launch.canary.revisionId
+        and .canary.sourceUrl == $launch.canary.sourceUrl
       )
       and ([$launch.webviews[].probeRequestId] | unique | length) == 2
       and

@@ -13,7 +13,18 @@ export default defineConfig({
   },
   projects: [
     {
-      name: "chromium",
+      name: "chromium-functional",
+      testIgnore: [/visual\.spec\.ts/, /webkit-contract\.spec\.ts/],
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "webkit-contract",
+      testMatch: /webkit-contract\.spec\.ts/,
+      use: { ...devices["Desktop Safari"] },
+    },
+    {
+      name: "chromium-visual",
+      testMatch: /visual\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
   ],

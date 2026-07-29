@@ -211,11 +211,11 @@ pub fn run() {
         let runtime = RuntimeState::production(data_dir, resource_dir)?;
         let shortcut_settings = runtime.database_client().load_shortcut_settings()?;
         app.manage(runtime);
-        windows::setup(app, shortcut_settings)?;
         #[cfg(debug_assertions)]
         let startup_smoke = startup_smoke::run_if_requested(app)?;
         #[cfg(not(debug_assertions))]
         let startup_smoke = false;
+        windows::setup(app, shortcut_settings)?;
         if !startup_smoke {
             app.state::<RuntimeState>()
                 .claude_processes()

@@ -14,8 +14,7 @@ import type {
   SetShortcutSettingsInput,
   ShortcutSettingsSnapshot,
 } from "../backend/contracts";
-
-const SHORTCUT_SETTINGS_CHANGED_EVENT = "kosh://shortcut-settings-changed";
+import { TauriEvent } from "../tauriProtocol";
 
 interface ShortcutSettingsContextValue {
   error: string | null;
@@ -52,7 +51,7 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
     if (!("__TAURI_INTERNALS__" in window)) return;
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<ShortcutSettingsSnapshot>(SHORTCUT_SETTINGS_CHANGED_EVENT, (event) => {
+    void listen<ShortcutSettingsSnapshot>(TauriEvent.ShortcutSettingsChanged, (event) => {
       if (active) {
         setSettings(cloneSettings(event.payload));
         setError(null);

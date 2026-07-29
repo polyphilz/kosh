@@ -1,12 +1,12 @@
 Kosh relevance report v1
-fixture: kosh-relevance-v1 (8f3dc39b80d74ac2ce333cf7bb4ce8d4b846bca0a02a2cdc29e8822d9b1798e6)
+fixture: kosh-relevance-v1 (b07562f04a0a9999cb98ea754f6cef9cf80354b81a7c8d60f3941310c6c5ffae)
 retriever: kosh-hybrid-jina-v1
 status: PASS
-queries: 20/20 passed
-recall@5: 0.9833
+queries: 25/25 passed
+recall@5: 0.9467
 recall@10: 1.0000
-MRR: 1.0000
-nDCG@10: 0.9948
+MRR: 0.9657
+nDCG@10: 0.9691
 citation locator accuracy: 1.0000
 exact/phrase success: 1.0000
 forbidden hits@10: 0
@@ -32,3 +32,8 @@ query results:
 - [PASS] query-text-attachment-lines (TextAttachment): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-text-release-log
 - [PASS] query-authored-over-pdf-volume (MediaVolume): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-vector-clock
 - [PASS] query-pdf-fencing-page (Pdf): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-pdf-distributed-113
+- [PASS] query-particle-distribution (Prose): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-modern
+- [PASS] query-receipt-total (Ocr): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-ocr-receipt
+- [PASS] query-stale-writer (Pdf): recall@10=1.0000, rr=0.1429, citation=valid, top=passage-synonym-automobile
+- [PASS] query-citation-function (CodeIdentifier): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-code-resolve-citation
+- [PASS] query-expensive-worker-limit (Synonym): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-misspelling-concurrency
