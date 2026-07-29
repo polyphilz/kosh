@@ -75,8 +75,8 @@ pub(super) fn ground_research_output<F>(output: &str, mut resolve: F) -> Grounde
 where
     F: FnMut(&str) -> Option<CitationResolution>,
 {
-    let code_ranges = markdown_code_ranges(output);
-    let mut code_index = 0;
+    let citation_text_ranges = markdown_structure(output).citation_text_ranges;
+    let mut text_index = 0;
     let mut cursor = 0;
     let mut markdown = String::with_capacity(output.len());
     let mut citation_numbers = HashMap::<String, u32>::new();
@@ -85,41 +85,33 @@ where
     let mut issues = Vec::new();
 
     while cursor < output.len() {
-        while code_index < code_ranges.len() && code_ranges[code_index].end <= cursor {
-            code_index += 1;
-        }
-        if let Some(range) = code_ranges
-            .get(code_index)
-            .filter(|range| range.start == cursor)
+        while text_index < citation_text_ranges.len()
+            && citation_text_ranges[text_index].end <= cursor
         {
-            let grounded_start = markdown.len();
-            let code = &output[range.clone()];
-            markdown.push_str(code);
-            for (relative, _) in code.match_indices(CITATION_TOKEN_PREFIX) {
-                push_issue(
-                    &mut issues,
-                    GroundedOutputIssueCode::CitationInCode,
-                    grounded_start + relative,
-                    grounded_start + relative + CITATION_TOKEN_PREFIX.len(),
-                    "Citation syntax inside code is inert.",
-                );
-            }
-            cursor = range.end;
+            text_index += 1;
+        }
+        let Some(text_range) = citation_text_ranges.get(text_index) else {
+            markdown.push_str(&output[cursor..]);
+            break;
+        };
+        if cursor < text_range.start {
+            markdown.push_str(&output[cursor..text_range.start]);
+            cursor = text_range.start;
             continue;
         }
 
-        let next_code = code_ranges
-            .get(code_index)
-            .map_or(output.len(), |range| range.start);
-        let Some(relative_token) = output[cursor..next_code].find(CITATION_TOKEN_PREFIX) else {
-            markdown.push_str(&output[cursor..next_code]);
-            cursor = next_code;
+        let Some(relative_token) = output[cursor..text_range.end].find(CITATION_TOKEN_PREFIX)
+        else {
+            markdown.push_str(&output[cursor..text_range.end]);
+            cursor = text_range.end;
             continue;
         };
         let token_start = cursor + relative_token;
         markdown.push_str(&output[cursor..token_start]);
         let body_start = token_start + CITATION_TOKEN_PREFIX.len();
-        let mut search_end = body_start.saturating_add(MAX_TOKEN_BYTES).min(next_code);
+        let mut search_end = body_start
+            .saturating_add(MAX_TOKEN_BYTES)
+            .min(text_range.end);
         while !output.is_char_boundary(search_end) {
             search_end -= 1;
         }
@@ -221,7 +213,15 @@ where
         cursor = token_end;
     }
 
-    append_uncited_paragraph_issues(&markdown, &mentions, &mut issues);
+    let grounded_structure = markdown_structure(&markdown);
+    append_code_citation_issues(&markdown, &grounded_structure.code_ranges, &mut issues);
+    append_uncited_paragraph_issues(
+        &markdown,
+        &grounded_structure.claim_ranges,
+        &grounded_structure.visible_text_ranges,
+        &mentions,
+        &mut issues,
+    );
     GroundedResearchAnswer {
         markdown,
         citations,
@@ -318,18 +318,19 @@ fn push_issue(
 
 fn append_uncited_paragraph_issues(
     markdown: &str,
+    claim_ranges: &[Range<usize>],
+    visible_text_ranges: &[Range<usize>],
     mentions: &[GroundedCitationMention],
     issues: &mut Vec<GroundedOutputIssue>,
 ) {
-    let code_ranges = markdown_code_ranges(markdown);
-    for range in paragraph_ranges(markdown) {
+    for range in claim_ranges {
         if mentions
             .iter()
             .any(|mention| mention.start_byte >= range.start && mention.start_byte < range.end)
         {
             continue;
         }
-        let prose = text_outside_ranges(markdown, &range, &code_ranges);
+        let prose = text_within_ranges(markdown, range, visible_text_ranges);
         let trimmed = prose.trim();
         let word_count = trimmed
             .split(|character: char| !character.is_alphanumeric())
@@ -351,81 +352,125 @@ fn append_uncited_paragraph_issues(
     }
 }
 
-fn paragraph_ranges(markdown: &str) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut paragraph_start = None;
-    let mut offset = 0;
-    for line in markdown.split_inclusive('\n') {
-        let line_end = offset + line.len();
-        if line.trim().is_empty() {
-            if let Some(start) = paragraph_start.take() {
-                ranges.push(start..offset);
-            }
-        } else {
-            paragraph_start.get_or_insert(offset);
-        }
-        offset = line_end;
-    }
-    if let Some(start) = paragraph_start {
-        ranges.push(start..markdown.len());
-    }
-    ranges
-}
-
-fn text_outside_ranges(
-    markdown: &str,
-    paragraph: &Range<usize>,
-    ranges: &[Range<usize>],
-) -> String {
+fn text_within_ranges(markdown: &str, claim: &Range<usize>, ranges: &[Range<usize>]) -> String {
     let mut output = String::new();
-    let mut cursor = paragraph.start;
     for range in ranges
         .iter()
-        .filter(|range| range.end > paragraph.start && range.start < paragraph.end)
+        .filter(|range| range.end > claim.start && range.start < claim.end)
     {
-        let start = range.start.max(paragraph.start);
-        let end = range.end.min(paragraph.end);
-        if cursor < start {
-            output.push_str(&markdown[cursor..start]);
-        }
-        cursor = cursor.max(end);
-    }
-    if cursor < paragraph.end {
-        output.push_str(&markdown[cursor..paragraph.end]);
+        let start = range.start.max(claim.start);
+        let end = range.end.min(claim.end);
+        output.push_str(&markdown[start..end]);
+        output.push(' ');
     }
     output
 }
 
-fn markdown_code_ranges(markdown: &str) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
+#[derive(Default)]
+struct MarkdownStructure {
+    citation_text_ranges: Vec<Range<usize>>,
+    claim_ranges: Vec<Range<usize>>,
+    code_ranges: Vec<Range<usize>>,
+    visible_text_ranges: Vec<Range<usize>>,
+}
+
+struct OpenClaim {
+    end_tag: TagEnd,
+    has_child_claim: bool,
+    start: usize,
+}
+
+fn markdown_structure(markdown: &str) -> MarkdownStructure {
+    let mut structure = MarkdownStructure::default();
     let mut code_block_start = None;
+    let mut claim_stack = Vec::<OpenClaim>::new();
+    let mut image_depth = 0_u32;
+    let mut link_depth = 0_u32;
     let mut options = Options::empty();
     options.insert(Options::ENABLE_GFM);
     options.insert(Options::ENABLE_MATH);
     let parser = Parser::new_ext(markdown, options).into_offset_iter();
     for (event, range) in parser {
         match event {
-            Event::Start(Tag::CodeBlock(_)) => {
-                code_block_start = Some(range.start);
-            }
-            Event::End(TagEnd::CodeBlock) => {
-                if let Some(start) = code_block_start.take() {
-                    ranges.push(start..range.end.max(start));
+            Event::Start(tag) => match &tag {
+                Tag::CodeBlock(_) => code_block_start = Some(range.start),
+                Tag::Image { .. } => image_depth = image_depth.saturating_add(1),
+                Tag::Link { .. } => link_depth = link_depth.saturating_add(1),
+                Tag::Paragraph | Tag::Item | Tag::TableCell => {
+                    if let Some(parent) = claim_stack.last_mut() {
+                        parent.has_child_claim = true;
+                    }
+                    claim_stack.push(OpenClaim {
+                        end_tag: tag.to_end(),
+                        has_child_claim: false,
+                        start: range.start,
+                    });
                 }
-            }
+                _ => {}
+            },
+            Event::End(end_tag) => match end_tag {
+                TagEnd::CodeBlock => {
+                    if let Some(start) = code_block_start.take() {
+                        structure.code_ranges.push(start..range.end.max(start));
+                    }
+                }
+                TagEnd::Image => image_depth = image_depth.saturating_sub(1),
+                TagEnd::Link => link_depth = link_depth.saturating_sub(1),
+                TagEnd::Paragraph | TagEnd::Item | TagEnd::TableCell => {
+                    match claim_stack.pop_if(|claim| claim.end_tag == end_tag) {
+                        Some(claim) if !claim.has_child_claim => {
+                            structure.claim_ranges.push(claim.start..range.end);
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            },
             Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_)
                 if code_block_start.is_none() =>
             {
-                ranges.push(range);
+                structure.code_ranges.push(range);
+            }
+            Event::Text(_) if code_block_start.is_none() && image_depth == 0 => {
+                structure.visible_text_ranges.push(range.clone());
+                if link_depth == 0 {
+                    structure.citation_text_ranges.push(range);
+                }
             }
             _ => {}
         }
     }
     if let Some(start) = code_block_start {
-        ranges.push(start..markdown.len());
+        structure.code_ranges.push(start..markdown.len());
     }
-    ranges.sort_by_key(|range| range.start);
-    merge_ranges(ranges)
+    structure.claim_ranges.sort_by_key(|range| range.start);
+    for ranges in [
+        &mut structure.citation_text_ranges,
+        &mut structure.code_ranges,
+        &mut structure.visible_text_ranges,
+    ] {
+        ranges.sort_by_key(|range| range.start);
+        *ranges = merge_ranges(std::mem::take(ranges));
+    }
+    structure
+}
+
+fn append_code_citation_issues(
+    markdown: &str,
+    code_ranges: &[Range<usize>],
+    issues: &mut Vec<GroundedOutputIssue>,
+) {
+    for range in code_ranges {
+        for (relative, _) in markdown[range.clone()].match_indices(CITATION_TOKEN_PREFIX) {
+            push_issue(
+                issues,
+                GroundedOutputIssueCode::CitationInCode,
+                range.start + relative,
+                range.start + relative + CITATION_TOKEN_PREFIX.len(),
+                "Citation syntax inside code or math is inert.",
+            );
+        }
+    }
 }
 
 fn merge_ranges(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
@@ -637,6 +682,25 @@ mod tests {
     }
 
     #[test]
+    fn handles_in_link_destinations_and_raw_html_never_become_citations() {
+        let known = handle('f');
+        let token = format!("{CITATION_TOKEN_PREFIX}{known}{CITATION_TOKEN_SUFFIX}");
+        let output = format!(
+            "This material claim has enough visible words but hides its handle in [an attacker link](https://attacker.example/{token}).\n\n\
+             <span data-citation=\"{token}\">Raw HTML is inert source text.</span>"
+        );
+        let grounded = ground_research_output(&output, |_| Some(authored("passage")));
+
+        assert_eq!(grounded.markdown, output);
+        assert!(grounded.citations.is_empty());
+        assert!(grounded.mentions.is_empty());
+        assert!(grounded
+            .issues
+            .iter()
+            .any(|issue| issue.code == GroundedOutputIssueCode::UncitedParagraph));
+    }
+
+    #[test]
     fn classifies_and_labels_every_evidence_kind_from_kosh_data() {
         let fixtures = [
             (
@@ -680,6 +744,27 @@ mod tests {
             |_| None,
         );
 
+        assert_eq!(
+            grounded
+                .issues
+                .iter()
+                .filter(|issue| issue.code == GroundedOutputIssueCode::UncitedParagraph)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn adjacent_list_items_are_checked_as_independent_claims() {
+        let known = handle('f');
+        let token = format!("{CITATION_TOKEN_PREFIX}{known}{CITATION_TOKEN_SUFFIX}");
+        let output = format!(
+            "- The first detailed factual list item has enough words and carries exact Kosh support {token}.\n\
+             - The second detailed factual list item has enough words but carries no supporting citation at all."
+        );
+        let grounded = ground_research_output(&output, |_| Some(authored("passage")));
+
+        assert_eq!(grounded.citations.len(), 1);
         assert_eq!(
             grounded
                 .issues

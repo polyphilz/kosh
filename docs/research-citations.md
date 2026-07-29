@@ -33,9 +33,14 @@ token against that run's registry and emits a `GROUNDED_FINAL_OUTPUT` event with
   substantive paragraphs without a trusted citation.
 
 An arbitrary marker that merely looks like `【1】` is not interactive because it
-has no trusted mention range. Tokens in inline, indented, or fenced code remain
-literal. Invented handles and malformed tokens become visibly unverified text
+has no trusted mention range. Kosh resolves tokens only from parser-confirmed
+plain Markdown text, outside links, images, raw HTML, code, and math. Invented
+handles and malformed tokens in eligible prose become visibly unverified text
 and never acquire a target.
+
+Uncited-claim checks use rendered Markdown block boundaries. Adjacent list
+items, table cells, and paragraphs are evaluated independently even when the
+source has no blank line between them.
 
 ## Rendering contract
 
