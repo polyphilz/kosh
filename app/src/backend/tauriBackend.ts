@@ -16,6 +16,7 @@ import type {
   ImageRecord,
   ImageStatusRecord,
   ListTidbitsInput,
+  ListTidbitRevisionsInput,
   ListResearchRunsInput,
   PassageEmbeddingIndexStatus,
   PdfRecord,
@@ -27,6 +28,7 @@ import type {
   SelectedAttachmentRecord,
   SetShortcutSettingsInput,
   RestoreTidbitInput,
+  PurgeTidbitInput,
   SaveDraftInput,
   SearchPassagesInput,
   SearchPassagesResponse,
@@ -36,6 +38,8 @@ import type {
   TidbitDraft,
   TidbitListPage,
   TidbitRecord,
+  TidbitRevisionPage,
+  TidbitRevisionRecord,
   StartResearchProcessOutput,
 } from "./contracts";
 
@@ -51,9 +55,15 @@ export const tauriBackend: Backend = {
   createTidbit: (input: TidbitDraft) => invoke<TidbitRecord>("create_tidbit", { input }),
   loadTidbit: (id: string) => invoke<TidbitRecord>("load_tidbit", { id }),
   listTidbits: (input: ListTidbitsInput) => invoke<TidbitListPage>("list_tidbits", { input }),
+  listTidbitRevisions: (input: ListTidbitRevisionsInput) =>
+    invoke<TidbitRevisionPage>("list_tidbit_revisions", { input }),
+  loadTidbitRevision: (tidbitId: string, revisionId: string) =>
+    invoke<TidbitRevisionRecord>("load_tidbit_revision", { tidbitId, revisionId }),
   editTidbit: (input: EditTidbitInput) => invoke<TidbitRecord>("edit_tidbit", { input }),
   deleteTidbit: (input: DeleteTidbitInput) => invoke<TidbitRecord>("delete_tidbit", { input }),
   restoreTidbit: (input: RestoreTidbitInput) => invoke<TidbitRecord>("restore_tidbit", { input }),
+  purgeTidbit: (input: PurgeTidbitInput) => invoke<boolean>("purge_tidbit", { input }),
+  openSourceUrl: (sourceId: string) => invoke<void>("open_source_url", { sourceId }),
   resolveCitation: (passageId: string) =>
     invoke<CitationResolution>("resolve_citation", { passageId }),
   searchPassages: (input: SearchPassagesInput) =>

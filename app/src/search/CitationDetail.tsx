@@ -22,6 +22,8 @@ interface CitationDetailProps {
   loading: boolean;
   onOpenAttachment?: (attachmentId: string) => Promise<void>;
   result: PassageSearchResult | undefined;
+  tidbitOrigin?: "research" | "search";
+  tidbitReturnSearch?: { exact?: true; q?: string };
 }
 
 export function CitationDetail({
@@ -31,6 +33,8 @@ export function CitationDetail({
   loading,
   onOpenAttachment,
   result,
+  tidbitOrigin,
+  tidbitReturnSearch,
 }: CitationDetailProps) {
   const [copyState, setCopyState] = useState<"IDLE" | "COPIED" | "FAILED">("IDLE");
 
@@ -146,7 +150,14 @@ export function CitationDetail({
           <Link
             className="search-citation-detail__link"
             params={{ tidbitId: citation.tidbit.id }}
-            search={{ passage: citation.passageId }}
+            search={{
+              exact: tidbitReturnSearch?.exact,
+              from: tidbitOrigin,
+              passage: citation.passageId,
+              q: tidbitReturnSearch?.q,
+              revision: undefined,
+              view: undefined,
+            }}
             to="/tidbits/$tidbitId"
           >
             Open tidbit at passage

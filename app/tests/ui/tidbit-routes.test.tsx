@@ -108,12 +108,14 @@ describe("tidbit capture and editing routes", () => {
     expect(await screen.findByRole("heading", { name: "Revised memory" })).toBeInTheDocument();
     expect(screen.getByText(/More exact/u)).toBeInTheDocument();
 
-    const active = await backend.listTidbits({ limit: 10, cursor: null });
+    const active = await backend.listTidbits({ limit: 10, cursor: null, scope: "ACTIVE" });
     expect(active.items).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Delete" }));
-    await user.click(screen.getByRole("button", { name: "Delete tidbit" }));
-    expect(await screen.findByRole("heading", { name: "Search" })).toBeInTheDocument();
-    expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Move to Trash" }));
+    expect(await screen.findByRole("heading", { name: "Library" })).toBeInTheDocument();
+    expect((await backend.listTidbits({ limit: 10, cursor: null, scope: "ACTIVE" })).items).toEqual(
+      [],
+    );
     expect((await backend.loadTidbit(active.items[0]!.id)).deletedAtMs).not.toBeNull();
   });
 

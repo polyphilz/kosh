@@ -2,9 +2,9 @@ use rusqlite::params;
 use tempfile::TempDir;
 
 use super::{
-    tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    Database, DatabaseError, DatabasePaths, DeleteTidbitInput, EditTidbitInput, ListTidbitsInput,
-    SourceDraft, Tidbit, TidbitDraft,
+    tidbits::{CreateTidbitWrite, EditTidbitWrite, TidbitListScope, TIDBIT_PURGE_DELAY_MS},
+    Database, DatabaseError, DatabasePaths, DeleteTidbitInput, EditTidbitInput,
+    ListTidbitRevisionsInput, ListTidbitsInput, PurgeTidbitInput, SourceDraft, Tidbit, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -285,6 +285,7 @@ fn active_listing_is_bounded_cursor_paginated_and_excludes_deleted_tidbits() {
         .list_tidbits(ListTidbitsInput {
             limit: 2,
             cursor: None,
+            scope: super::tidbits::TidbitListScope::Active,
         })
         .expect("first page");
     assert_eq!(
@@ -301,6 +302,7 @@ fn active_listing_is_bounded_cursor_paginated_and_excludes_deleted_tidbits() {
         .list_tidbits(ListTidbitsInput {
             limit: 2,
             cursor: first.next_cursor,
+            scope: super::tidbits::TidbitListScope::Active,
         })
         .expect("second page");
     assert_eq!(second.items.len(), 1);
@@ -334,6 +336,7 @@ fn active_listing_is_bounded_cursor_paginated_and_excludes_deleted_tidbits() {
         .list_tidbits(ListTidbitsInput {
             limit: 100,
             cursor: None,
+            scope: super::tidbits::TidbitListScope::Active,
         })
         .expect("active list");
     assert_eq!(active.items.len(), 2);
@@ -400,4 +403,256 @@ fn unsafe_source_urls_are_rejected_without_partial_authored_data() {
         .query_row("SELECT count(*) FROM tidbit", [], |row| row.get(0))
         .expect("tidbit count");
     assert_eq!(tidbit_count, 0);
+}
+
+#[test]
+fn library_history_and_trash_are_paginated_with_exact_revision_detail() {
+    let library = TestLibrary::new();
+    let created = library.create(
+        "019f547b-6200-7000-8000-000000001401",
+        "019f547b-6200-7000-8000-000000001402",
+        100,
+        TidbitDraft {
+            title: Some("Library lifecycle".into()),
+            body_markdown: "First immutable body".into(),
+            sources: vec![SourceDraft {
+                label: Some("Primary source".into()),
+                url: Some("https://example.com/library#ignored".into()),
+            }],
+        },
+        &["019f547b-6200-7000-8000-000000001403"],
+    );
+    let edited = library
+        .database
+        .client()
+        .edit_tidbit(EditTidbitWrite {
+            input: EditTidbitInput {
+                id: created.id.clone(),
+                expected_revision_id: created.current_revision_id.clone(),
+                title: Some("Library lifecycle revised".into()),
+                body_markdown: "Second immutable body".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 101,
+            revision_id: "019f547b-6200-7000-8000-000000001404".into(),
+            source_ids: Vec::new(),
+        })
+        .expect("edit tidbit");
+
+    let first = library
+        .database
+        .client()
+        .list_tidbit_revisions(ListTidbitRevisionsInput {
+            tidbit_id: created.id.clone(),
+            limit: 1,
+            before_revision_number: None,
+        })
+        .expect("first history page");
+    assert_eq!(first.items.len(), 1);
+    assert_eq!(first.items[0].revision_number, 2);
+    assert!(first.items[0].is_current);
+    let second = library
+        .database
+        .client()
+        .list_tidbit_revisions(ListTidbitRevisionsInput {
+            tidbit_id: created.id.clone(),
+            limit: 1,
+            before_revision_number: first.next_before_revision_number,
+        })
+        .expect("second history page");
+    assert_eq!(second.items[0].revision_number, 1);
+    assert_eq!(second.next_before_revision_number, None);
+    let original = library
+        .database
+        .client()
+        .load_tidbit_revision(created.id.clone(), created.current_revision_id.clone())
+        .expect("load exact historical revision");
+    assert_eq!(original.body_markdown, "First immutable body");
+    assert!(!original.is_current);
+    assert_eq!(
+        original.sources[0].url.as_deref(),
+        Some("https://example.com/library")
+    );
+    assert_eq!(
+        library
+            .database
+            .client()
+            .load_source_url(original.sources[0].id.clone())
+            .expect("load trusted source URL"),
+        "https://example.com/library"
+    );
+
+    let deleted = library
+        .database
+        .client()
+        .delete_tidbit(
+            DeleteTidbitInput {
+                id: created.id,
+                expected_revision_id: edited.current_revision_id,
+            },
+            200,
+        )
+        .expect("soft delete");
+    let trash = library
+        .database
+        .client()
+        .list_tidbits(ListTidbitsInput {
+            limit: 10,
+            cursor: None,
+            scope: TidbitListScope::Deleted,
+        })
+        .expect("trash page");
+    assert_eq!(trash.items.len(), 1);
+    assert_eq!(trash.items[0].deleted_at_ms, deleted.deleted_at_ms);
+    assert_eq!(
+        trash.items[0].purge_eligible_at_ms,
+        Some(deleted.deleted_at_ms.expect("deleted timestamp") + TIDBIT_PURGE_DELAY_MS)
+    );
+}
+
+#[test]
+fn permanent_purge_is_delayed_transactional_and_removes_authored_history() {
+    let library = TestLibrary::new();
+    let created = library.create(
+        "019f547b-6200-7000-8000-000000001501",
+        "019f547b-6200-7000-8000-000000001502",
+        100,
+        TidbitDraft {
+            title: Some("Purge me".into()),
+            body_markdown: "Private authored content".into(),
+            sources: vec![SourceDraft {
+                label: Some("Private source".into()),
+                url: Some("https://example.com/private".into()),
+            }],
+        },
+        &["019f547b-6200-7000-8000-000000001503"],
+    );
+    let source_id = created.sources[0].id.clone();
+    let deleted = library
+        .database
+        .client()
+        .delete_tidbit(
+            DeleteTidbitInput {
+                id: created.id.clone(),
+                expected_revision_id: created.current_revision_id.clone(),
+            },
+            200,
+        )
+        .expect("soft delete");
+    let too_early = library
+        .database
+        .client()
+        .purge_tidbit(
+            PurgeTidbitInput {
+                id: created.id.clone(),
+                expected_revision_id: created.current_revision_id.clone(),
+            },
+            deleted.deleted_at_ms.expect("deleted timestamp") + TIDBIT_PURGE_DELAY_MS - 1,
+        )
+        .expect_err("purge must honor grace period");
+    assert!(too_early
+        .to_string()
+        .contains("cannot be permanently deleted"));
+    assert!(library
+        .database
+        .client()
+        .load_tidbit(created.id.clone())
+        .is_ok());
+    let direct =
+        rusqlite::Connection::open(&library.database.paths().main).expect("direct invariant probe");
+    direct
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys");
+    assert!(direct
+        .execute(
+            "INSERT INTO tidbit_purge_authorization(
+                tidbit_id, expected_revision_id, authorized_at
+             ) VALUES(?1, ?2, ?3)",
+            params![
+                created.id,
+                created.current_revision_id,
+                deleted.deleted_at_ms.expect("deleted timestamp") + TIDBIT_PURGE_DELAY_MS - 1
+            ],
+        )
+        .is_err());
+    assert!(direct
+        .execute(
+            "DELETE FROM tidbit_revision_source WHERE tidbit_revision_id = ?1",
+            params![created.current_revision_id],
+        )
+        .is_err());
+    direct
+        .execute(
+            "INSERT INTO tidbit_purge_authorization(
+                tidbit_id, expected_revision_id, authorized_at
+             ) VALUES(?1, ?2, ?3)",
+            params![
+                created.id,
+                created.current_revision_id,
+                deleted.deleted_at_ms.expect("deleted timestamp") + TIDBIT_PURGE_DELAY_MS
+            ],
+        )
+        .expect("eligible direct authorization");
+    assert!(direct
+        .execute(
+            "UPDATE tidbit_purge_authorization
+             SET expected_revision_id = ?2
+             WHERE tidbit_id = ?1",
+            params![created.id, "019f547b-6200-7000-8000-000000001599"],
+        )
+        .is_err());
+    direct
+        .execute(
+            "UPDATE tidbit SET deleted_at = NULL WHERE id = ?1",
+            params![created.id],
+        )
+        .expect("simulate a restored tidbit with retained authorization");
+    assert_eq!(
+        direct
+            .query_row(
+                "SELECT count(*) FROM tidbit_purge_authorization WHERE tidbit_id = ?1",
+                params![created.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count retained authorizations"),
+        0
+    );
+    assert!(direct
+        .execute(
+            "DELETE FROM tidbit_revision_source WHERE tidbit_revision_id = ?1",
+            params![created.current_revision_id],
+        )
+        .is_err());
+    direct
+        .execute(
+            "UPDATE tidbit SET deleted_at = ?2 WHERE id = ?1",
+            params![created.id, deleted.deleted_at_ms],
+        )
+        .expect("restore deleted state for writer purge");
+    drop(direct);
+
+    assert!(library
+        .database
+        .client()
+        .purge_tidbit(
+            PurgeTidbitInput {
+                id: created.id.clone(),
+                expected_revision_id: created.current_revision_id,
+            },
+            deleted.deleted_at_ms.expect("deleted timestamp") + TIDBIT_PURGE_DELAY_MS,
+        )
+        .expect("eligible permanent purge"));
+    assert!(matches!(
+        library.database.client().load_tidbit(created.id),
+        Err(DatabaseError::NotFound { .. })
+    ));
+    assert!(matches!(
+        library.database.client().load_source_url(source_id),
+        Err(DatabaseError::NotFound { .. })
+    ));
+    library
+        .database
+        .client()
+        .full_integrity_check()
+        .expect("purged database remains valid");
 }

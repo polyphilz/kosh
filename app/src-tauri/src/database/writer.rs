@@ -30,8 +30,9 @@ use super::{
     },
     settings::{SetShortcutSettingsInput, ShortcutSettings},
     tidbits::{
-        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitsInput,
-        RestoreTidbitInput, Tidbit, TidbitListPage,
+        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitRevisionsInput,
+        ListTidbitsInput, PurgeTidbitInput, RestoreTidbitInput, Tidbit, TidbitListPage,
+        TidbitRevision, TidbitRevisionPage,
     },
 };
 
@@ -199,6 +200,19 @@ pub(super) enum WriterMessage {
         input: ListTidbitsInput,
         reply: SyncSender<Result<TidbitListPage>>,
     },
+    ListTidbitRevisions {
+        input: ListTidbitRevisionsInput,
+        reply: SyncSender<Result<TidbitRevisionPage>>,
+    },
+    LoadTidbitRevision {
+        tidbit_id: String,
+        revision_id: String,
+        reply: SyncSender<Result<TidbitRevision>>,
+    },
+    LoadSourceUrl {
+        source_id: String,
+        reply: SyncSender<Result<String>>,
+    },
     EditTidbit {
         write: EditTidbitWrite,
         reply: SyncSender<Result<Tidbit>>,
@@ -212,6 +226,11 @@ pub(super) enum WriterMessage {
         input: RestoreTidbitInput,
         now_ms: i64,
         reply: SyncSender<Result<Tidbit>>,
+    },
+    PurgeTidbit {
+        input: PurgeTidbitInput,
+        now_ms: i64,
+        reply: SyncSender<Result<bool>>,
     },
     CreateResearchRun {
         write: CreateResearchRunWrite,
@@ -796,6 +815,47 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
+    pub(crate) fn list_tidbit_revisions(
+        &self,
+        input: ListTidbitRevisionsInput,
+    ) -> Result<TidbitRevisionPage> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ListTidbitRevisions { input, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_tidbit_revision(
+        &self,
+        tidbit_id: String,
+        revision_id: String,
+    ) -> Result<TidbitRevision> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadTidbitRevision {
+                tidbit_id,
+                revision_id,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_source_url(&self, source_id: String) -> Result<String> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadSourceUrl { source_id, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
     pub(crate) fn edit_tidbit(&self, write: EditTidbitWrite) -> Result<Tidbit> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
@@ -824,6 +884,20 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::RestoreTidbit {
+                input,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn purge_tidbit(&self, input: PurgeTidbitInput, now_ms: i64) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::PurgeTidbit {
                 input,
                 now_ms,
                 reply,

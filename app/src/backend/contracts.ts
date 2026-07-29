@@ -67,6 +67,11 @@ export interface RestoreTidbitInput {
   expectedRevisionId: string;
 }
 
+export interface PurgeTidbitInput {
+  id: string;
+  expectedRevisionId: string;
+}
+
 export type CitationState = "CURRENT" | "HISTORICAL";
 
 export type CitationLocator =
@@ -348,6 +353,7 @@ export interface TidbitListCursor {
 export interface ListTidbitsInput {
   limit: number;
   cursor: TidbitListCursor | null;
+  scope: "ACTIVE" | "DELETED";
 }
 
 export interface TidbitListItem {
@@ -355,6 +361,8 @@ export interface TidbitListItem {
   currentRevisionId: string;
   createdAtMs: number;
   updatedAtMs: number;
+  deletedAtMs: number | null;
+  purgeEligibleAtMs: number | null;
   title: string | null;
   displayTitle: string;
   bodyPreview: string;
@@ -364,6 +372,57 @@ export interface TidbitListPage {
   items: TidbitListItem[];
   nextCursor: TidbitListCursor | null;
 }
+
+export interface ListTidbitRevisionsInput {
+  tidbitId: string;
+  limit: number;
+  beforeRevisionNumber: number | null;
+}
+
+export interface TidbitRevisionSummary {
+  id: string;
+  revisionNumber: number;
+  createdAtMs: number;
+  title: string | null;
+  displayTitle: string;
+  bodyPreview: string;
+  sourceCount: number;
+  attachmentCount: number;
+  isCurrent: boolean;
+}
+
+export interface TidbitRevisionPage {
+  items: TidbitRevisionSummary[];
+  nextBeforeRevisionNumber: number | null;
+}
+
+export interface TidbitRevisionAttachment {
+  id: string;
+  displayFilename: string;
+  mediaType: string;
+  byteLength: number;
+  kind: "IMAGE" | "PDF" | "TEXT" | "BINARY";
+  extractionState: "PENDING" | "READY" | "FAILED" | "NOT_APPLICABLE";
+  displayRole: "INLINE" | "ATTACHMENT";
+  sortOrder: number;
+  deletedAtMs: number | null;
+}
+
+export interface TidbitRevisionRecord {
+  id: string;
+  tidbitId: string;
+  revisionNumber: number;
+  createdAtMs: number;
+  title: string | null;
+  displayTitle: string;
+  bodyMarkdown: string;
+  sources: TidbitSource[];
+  attachments: TidbitRevisionAttachment[];
+  isCurrent: boolean;
+  tidbitDeleted: boolean;
+}
+
+export const TIDBIT_PURGE_DELAY_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export type ClaudeSetupPhase = "READY" | "MISSING" | "UNAUTHENTICATED" | "UNAVAILABLE";
 
@@ -526,9 +585,13 @@ export interface Backend {
   createTidbit(input: TidbitDraft): Promise<TidbitRecord>;
   loadTidbit(id: string): Promise<TidbitRecord>;
   listTidbits(input: ListTidbitsInput): Promise<TidbitListPage>;
+  listTidbitRevisions(input: ListTidbitRevisionsInput): Promise<TidbitRevisionPage>;
+  loadTidbitRevision(tidbitId: string, revisionId: string): Promise<TidbitRevisionRecord>;
   editTidbit(input: EditTidbitInput): Promise<TidbitRecord>;
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
   restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord>;
+  purgeTidbit(input: PurgeTidbitInput): Promise<boolean>;
+  openSourceUrl(sourceId: string): Promise<void>;
   resolveCitation(passageId: string): Promise<CitationResolution>;
   searchPassages(input: SearchPassagesInput): Promise<SearchPassagesResponse>;
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;

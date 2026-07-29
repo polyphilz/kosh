@@ -38,7 +38,9 @@ describe("research route", () => {
 
     await user.click(screen.getByRole("button", { name: "Save answer as tidbit" }));
     expect(await screen.findByRole("link", { name: "Open saved tidbit" })).toBeInTheDocument();
-    expect((await backend.listTidbits({ limit: 10, cursor: null })).items).toHaveLength(2);
+    expect(
+      (await backend.listTidbits({ limit: 10, cursor: null, scope: "ACTIVE" })).items,
+    ).toHaveLength(2);
     const revisedEvidence = await backend.editTidbit({
       id: evidence.id,
       expectedRevisionId: evidence.currentRevisionId,

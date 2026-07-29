@@ -14,6 +14,7 @@ import type {
   ImageRecord,
   ImageStatusRecord,
   ListTidbitsInput,
+  ListTidbitRevisionsInput,
   ListResearchRunsInput,
   PassageEmbeddingIndexStatus,
   PdfRecord,
@@ -25,6 +26,7 @@ import type {
   ResearchRunRecord,
   SelectedAttachmentRecord,
   RestoreTidbitInput,
+  PurgeTidbitInput,
   SaveDraftInput,
   SearchField,
   SearchPassagesInput,
@@ -37,10 +39,13 @@ import type {
   TidbitDraft,
   TidbitListPage,
   TidbitRecord,
+  TidbitRevisionPage,
+  TidbitRevisionRecord,
   TidbitSource,
   StartResearchProcessOutput,
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
+import { TIDBIT_PURGE_DELAY_MS } from "./contracts";
 import { neutralizeUntrustedMediaReferences } from "../markdown/mediaTokens";
 
 interface FakeCitationSnapshot {
@@ -69,6 +74,7 @@ export class FakeBackend implements Backend {
   private readonly citations = new Map<string, FakeCitationSnapshot>();
   private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
+  private readonly revisions = new Map<string, TidbitRevisionRecord>();
   private readonly researchRuns = new Map<string, ResearchRunRecord>();
   private readonly researchListeners = new Set<(event: ResearchProcessEvent) => void>();
   private readonly researchTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -83,6 +89,7 @@ export class FakeBackend implements Backend {
     this.probe = probe;
     for (const tidbit of tidbits) {
       this.tidbits.set(tidbit.id, cloneTidbit(tidbit));
+      this.revisions.set(tidbit.currentRevisionId, revisionFromTidbit(tidbit));
       this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
       this.registerCitation(tidbit);
       this.sequence = Math.max(
@@ -260,6 +267,7 @@ export class FakeBackend implements Backend {
       sources,
     };
     this.tidbits.set(tidbit.id, tidbit);
+    this.revisions.set(tidbit.currentRevisionId, revisionFromTidbit(tidbit));
     this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
     this.registerCitation(tidbit);
     return cloneTidbit(tidbit);
@@ -274,7 +282,9 @@ export class FakeBackend implements Backend {
       throw new Error("limit must be between 1 and 100");
     }
     const sorted = [...this.tidbits.values()]
-      .filter((tidbit) => tidbit.deletedAtMs === null)
+      .filter((tidbit) =>
+        input.scope === "DELETED" ? tidbit.deletedAtMs !== null : tidbit.deletedAtMs === null,
+      )
       .sort(
         (left, right) => right.updatedAtMs - left.updatedAtMs || right.id.localeCompare(left.id),
       );
@@ -294,6 +304,9 @@ export class FakeBackend implements Backend {
         currentRevisionId: tidbit.currentRevisionId,
         createdAtMs: tidbit.createdAtMs,
         updatedAtMs: tidbit.updatedAtMs,
+        deletedAtMs: tidbit.deletedAtMs,
+        purgeEligibleAtMs:
+          tidbit.deletedAtMs === null ? null : tidbit.deletedAtMs + TIDBIT_PURGE_DELAY_MS,
         title: tidbit.title,
         displayTitle: tidbit.displayTitle,
         bodyPreview: collapseAndTruncate(tidbit.bodyMarkdown, 240),
@@ -306,6 +319,52 @@ export class FakeBackend implements Backend {
             }
           : null,
     };
+  }
+
+  async listTidbitRevisions(input: ListTidbitRevisionsInput): Promise<TidbitRevisionPage> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+      throw new Error("limit must be between 1 and 100");
+    }
+    const current = this.requireTidbit(input.tidbitId);
+    const revisions = [...this.revisions.values()]
+      .filter(
+        (revision) =>
+          revision.tidbitId === input.tidbitId &&
+          (input.beforeRevisionNumber === null ||
+            revision.revisionNumber < input.beforeRevisionNumber),
+      )
+      .sort((left, right) => right.revisionNumber - left.revisionNumber);
+    const hasMore = revisions.length > input.limit;
+    const page = revisions.slice(0, input.limit);
+    return {
+      items: page.map((revision) => ({
+        id: revision.id,
+        revisionNumber: revision.revisionNumber,
+        createdAtMs: revision.createdAtMs,
+        title: revision.title,
+        displayTitle: revision.displayTitle,
+        bodyPreview: collapseAndTruncate(revision.bodyMarkdown, 240),
+        sourceCount: revision.sources.length,
+        attachmentCount: revision.attachments.length,
+        isCurrent: revision.id === current.currentRevisionId,
+      })),
+      nextBeforeRevisionNumber:
+        hasMore && page.length ? page[page.length - 1]!.revisionNumber : null,
+    };
+  }
+
+  async loadTidbitRevision(tidbitId: string, revisionId: string): Promise<TidbitRevisionRecord> {
+    this.requireTidbit(tidbitId);
+    const revision = this.revisions.get(revisionId);
+    if (!revision || revision.tidbitId !== tidbitId) {
+      throw new Error(`tidbit revision ${revisionId} was not found`);
+    }
+    const current = this.requireTidbit(tidbitId);
+    return cloneValue({
+      ...revision,
+      isCurrent: revision.id === current.currentRevisionId,
+      tidbitDeleted: current.deletedAtMs !== null,
+    });
   }
 
   async editTidbit(input: EditTidbitInput): Promise<TidbitRecord> {
@@ -330,6 +389,7 @@ export class FakeBackend implements Backend {
       sources: this.prepareSources(input.sources),
     };
     this.tidbits.set(updated.id, updated);
+    this.revisions.set(updated.currentRevisionId, revisionFromTidbit(updated));
     this.revisionOwners.set(updated.currentRevisionId, updated.id);
     this.registerCitation(updated);
     return cloneTidbit(updated);
@@ -368,6 +428,41 @@ export class FakeBackend implements Backend {
     };
     this.tidbits.set(restored.id, restored);
     return cloneTidbit(restored);
+  }
+
+  async purgeTidbit(input: PurgeTidbitInput): Promise<boolean> {
+    const current = this.requireTidbit(input.id);
+    if (current.currentRevisionId !== input.expectedRevisionId) {
+      throw new Error(`tidbit ${input.id} is stale`);
+    }
+    if (current.deletedAtMs === null) {
+      throw new Error(`tidbit ${input.id} is not deleted`);
+    }
+    if (this.probe.nowMs < current.deletedAtMs + TIDBIT_PURGE_DELAY_MS) {
+      throw new Error(
+        `tidbit ${input.id} cannot be permanently deleted until ${
+          current.deletedAtMs + TIDBIT_PURGE_DELAY_MS
+        }`,
+      );
+    }
+    this.tidbits.delete(input.id);
+    for (const [revisionId, revision] of this.revisions) {
+      if (revision.tidbitId === input.id) {
+        this.revisions.delete(revisionId);
+        this.revisionOwners.delete(revisionId);
+        this.citations.delete(`fake-passage:${revisionId}`);
+      }
+    }
+    return true;
+  }
+
+  async openSourceUrl(sourceId: string): Promise<void> {
+    const source = [...this.revisions.values()]
+      .flatMap((revision) => revision.sources)
+      .find((candidate) => candidate.id === sourceId && candidate.url !== null);
+    if (!source) {
+      throw new Error(`source URL ${sourceId} was not found`);
+    }
   }
 
   async resolveCitation(passageId: string): Promise<CitationResolution> {
@@ -933,6 +1028,22 @@ function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
   return {
     ...tidbit,
     sources: tidbit.sources.map((source) => ({ ...source })),
+  };
+}
+
+function revisionFromTidbit(tidbit: TidbitRecord): TidbitRevisionRecord {
+  return {
+    id: tidbit.currentRevisionId,
+    tidbitId: tidbit.id,
+    revisionNumber: tidbit.revisionNumber,
+    createdAtMs: tidbit.revisionNumber === 1 ? tidbit.createdAtMs : tidbit.updatedAtMs,
+    title: tidbit.title,
+    displayTitle: tidbit.displayTitle,
+    bodyMarkdown: tidbit.bodyMarkdown,
+    sources: tidbit.sources.map((source) => ({ ...source })),
+    attachments: [],
+    isCurrent: true,
+    tidbitDeleted: tidbit.deletedAtMs !== null,
   };
 }
 

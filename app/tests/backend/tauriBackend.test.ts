@@ -5,7 +5,9 @@ import type {
   ClearDraftInput,
   DeleteTidbitInput,
   EditTidbitInput,
+  ListTidbitRevisionsInput,
   ListTidbitsInput,
+  PurgeTidbitInput,
   RestoreTidbitInput,
   SaveDraftInput,
   SearchPassagesInput,
@@ -44,9 +46,16 @@ describe("tauriBackend tidbit gateway", () => {
       expectedRevisionId: "revision-2",
     };
     const restoration: RestoreTidbitInput = { ...deletion };
+    const purge: PurgeTidbitInput = { ...deletion };
     const list: ListTidbitsInput = {
       limit: 50,
       cursor: { updatedAtMs: 42, id: "tidbit-1" },
+      scope: "ACTIVE",
+    };
+    const revisions: ListTidbitRevisionsInput = {
+      tidbitId: "tidbit-1",
+      limit: 20,
+      beforeRevisionNumber: 3,
     };
     const savedDraft: SaveDraftInput = {
       contextKey: "capture",
@@ -74,9 +83,13 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.createTidbit(draft);
     await tauriBackend.loadTidbit("tidbit-1");
     await tauriBackend.listTidbits(list);
+    await tauriBackend.listTidbitRevisions(revisions);
+    await tauriBackend.loadTidbitRevision("tidbit-1", "revision-1");
     await tauriBackend.editTidbit(edit);
     await tauriBackend.deleteTidbit(deletion);
     await tauriBackend.restoreTidbit(restoration);
+    await tauriBackend.purgeTidbit(purge);
+    await tauriBackend.openSourceUrl("source-1");
     await tauriBackend.resolveCitation("passage-1");
     await tauriBackend.searchPassages(search);
     await tauriBackend.saveDraft(savedDraft);
@@ -109,9 +122,13 @@ describe("tauriBackend tidbit gateway", () => {
       ["create_tidbit", { input: draft }],
       ["load_tidbit", { id: "tidbit-1" }],
       ["list_tidbits", { input: list }],
+      ["list_tidbit_revisions", { input: revisions }],
+      ["load_tidbit_revision", { tidbitId: "tidbit-1", revisionId: "revision-1" }],
       ["edit_tidbit", { input: edit }],
       ["delete_tidbit", { input: deletion }],
       ["restore_tidbit", { input: restoration }],
+      ["purge_tidbit", { input: purge }],
+      ["open_source_url", { sourceId: "source-1" }],
       ["resolve_citation", { passageId: "passage-1" }],
       ["search_passages", { input: search }],
       ["save_draft", { input: savedDraft }],

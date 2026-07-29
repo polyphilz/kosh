@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::{
     passages, research_runs::*, tidbits, Database, DatabasePaths, DeleteTidbitInput,
-    EditTidbitInput, TidbitDraft,
+    EditTidbitInput, PurgeTidbitInput, TidbitDraft, TIDBIT_PURGE_DELAY_MS,
 };
 
 fn id() -> String {
@@ -212,6 +212,64 @@ fn deleted_citation_is_historical_without_a_newer_revision() {
     assert!(!freshness.has_newer_revision);
     assert!(freshness.tidbit_deleted);
     assert!(freshness.is_historical);
+}
+
+#[test]
+fn permanently_purged_tidbit_keeps_exact_research_snapshot() {
+    let (_root, database) = open();
+    let (tidbit, evidence) = create_evidence(&database);
+    let expected_answer = grounded_answer(&evidence);
+    let run_id = id();
+    create_run(&database, &run_id, None);
+    append(&database, &run_id, 1, "STARTED", json!({}));
+    append(
+        &database,
+        &run_id,
+        2,
+        "GROUNDED_FINAL_OUTPUT",
+        json!({"answer": expected_answer}),
+    );
+    append(
+        &database,
+        &run_id,
+        3,
+        "FINISHED",
+        json!({"outcome": "SUCCEEDED", "stderrTruncated": false}),
+    );
+    let deleted = database
+        .client()
+        .delete_tidbit(
+            DeleteTidbitInput {
+                id: tidbit.id.clone(),
+                expected_revision_id: tidbit.current_revision_id.clone(),
+            },
+            200,
+        )
+        .expect("soft delete cited tidbit");
+    database
+        .client()
+        .purge_tidbit(
+            PurgeTidbitInput {
+                id: tidbit.id,
+                expected_revision_id: tidbit.current_revision_id,
+            },
+            deleted.deleted_at_ms.expect("deleted timestamp") + TIDBIT_PURGE_DELAY_MS,
+        )
+        .expect("purge cited tidbit");
+
+    let retained = database
+        .client()
+        .load_research_run(run_id)
+        .expect("load retained research run");
+    assert_eq!(retained.final_answer, Some(grounded_answer(&evidence)));
+    assert_eq!(retained.citation_freshness.len(), 1);
+    assert!(retained.citation_freshness[0].is_historical);
+    assert!(retained.citation_freshness[0].tidbit_deleted);
+    assert_eq!(retained.citation_freshness[0].current_revision_id, None);
+    database
+        .client()
+        .full_integrity_check()
+        .expect("retained research snapshot keeps database valid");
 }
 
 #[test]

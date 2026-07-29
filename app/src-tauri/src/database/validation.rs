@@ -43,6 +43,7 @@ const MAIN_TABLES: &[&str] = &[
     "research_run_event",
     "source",
     "tidbit",
+    "tidbit_purge_authorization",
     "tidbit_revision",
     "tidbit_revision_attachment",
     "tidbit_revision_source",

@@ -142,6 +142,37 @@ fn pending_migrations_apply_to_an_identified_empty_pair() {
 }
 
 #[test]
+fn pushed_v16_profile_upgrades_without_checksum_divergence() {
+    let pair = TestPair::new();
+    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("fresh main writer");
+    main.pragma_update(None, "foreign_keys", "OFF")
+        .expect("disable foreign keys for grouped migration");
+    migrations::main_runner()
+        .set_target(Target::Version(16))
+        .run(&mut main)
+        .expect("main schema through pushed V16");
+    main.pragma_update(None, "foreign_keys", "ON")
+        .expect("restore foreign keys");
+    let mut media =
+        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
+            .expect("fresh media writer");
+    migrations::run_media(&mut media).expect("media schema");
+    drop(main);
+    drop(media);
+
+    let database = Database::initialize(pair.paths.clone()).expect("upgrade V16 profile");
+    assert_eq!(
+        database
+            .client()
+            .diagnostics()
+            .expect("upgraded diagnostics")
+            .migration_heads,
+        migrations::expected_heads()
+    );
+}
+
+#[test]
 fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_tables() {
     let pair = TestPair::new();
     let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)

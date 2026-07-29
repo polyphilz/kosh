@@ -27,7 +27,8 @@ test("capture, edit, and delete share the complete tidbit workflow", async ({ pa
   await expect(page.getByText(/More context/u)).toBeVisible();
 
   await page.getByRole("button", { name: "Delete" }).click();
-  await expect(page.getByRole("dialog", { name: "Delete this tidbit?" })).toBeVisible();
-  await page.getByRole("button", { name: "Delete tidbit" }).click();
-  await expect(page.getByRole("heading", { name: "Search" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Move this tidbit to Trash?" })).toBeVisible();
+  await page.getByRole("button", { name: "Move to Trash" }).click();
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Edited browser tidbit/u })).toBeVisible();
 });
