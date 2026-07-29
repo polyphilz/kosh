@@ -581,6 +581,54 @@ fn permanent_purge_is_delayed_transactional_and_removes_authored_history() {
             params![created.current_revision_id],
         )
         .is_err());
+    direct
+        .execute(
+            "INSERT INTO tidbit_purge_authorization(
+                tidbit_id, expected_revision_id, authorized_at
+             ) VALUES(?1, ?2, ?3)",
+            params![
+                created.id,
+                created.current_revision_id,
+                deleted.deleted_at_ms.expect("deleted timestamp") + TIDBIT_PURGE_DELAY_MS
+            ],
+        )
+        .expect("eligible direct authorization");
+    assert!(direct
+        .execute(
+            "UPDATE tidbit_purge_authorization
+             SET expected_revision_id = ?2
+             WHERE tidbit_id = ?1",
+            params![created.id, "019f547b-6200-7000-8000-000000001599"],
+        )
+        .is_err());
+    direct
+        .execute(
+            "UPDATE tidbit SET deleted_at = NULL WHERE id = ?1",
+            params![created.id],
+        )
+        .expect("simulate a restored tidbit with retained authorization");
+    assert_eq!(
+        direct
+            .query_row(
+                "SELECT count(*) FROM tidbit_purge_authorization WHERE tidbit_id = ?1",
+                params![created.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count retained authorizations"),
+        0
+    );
+    assert!(direct
+        .execute(
+            "DELETE FROM tidbit_revision_source WHERE tidbit_revision_id = ?1",
+            params![created.current_revision_id],
+        )
+        .is_err());
+    direct
+        .execute(
+            "UPDATE tidbit SET deleted_at = ?2 WHERE id = ?1",
+            params![created.id, deleted.deleted_at_ms],
+        )
+        .expect("restore deleted state for writer purge");
     drop(direct);
 
     assert!(library

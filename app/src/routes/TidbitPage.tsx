@@ -14,6 +14,7 @@ import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { ErrorState, LoadingState } from "../components/States";
 import { Status } from "../components/Status";
+import { useDeadlineReached } from "../hooks/useDeadlineReached";
 import { attachmentMediaUrl } from "../media/gateway";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import { markdownToPlainText } from "../markdown/plainText";
@@ -45,6 +46,9 @@ export function TidbitPage() {
   const [working, setWorking] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [purgeOpen, setPurgeOpen] = useState(false);
+  const purgeEligibleAt =
+    tidbit?.deletedAtMs == null ? null : tidbit.deletedAtMs + TIDBIT_PURGE_DELAY_MS;
+  const purgeEligible = useDeadlineReached(purgeEligibleAt);
 
   useEffect(() => {
     let active = true;
@@ -192,9 +196,6 @@ export function TidbitPage() {
   }
 
   const isCurrentRevision = revision.id === tidbit.currentRevisionId;
-  const purgeEligibleAt =
-    tidbit.deletedAtMs === null ? null : tidbit.deletedAtMs + TIDBIT_PURGE_DELAY_MS;
-  const purgeEligible = purgeEligibleAt !== null && purgeEligibleAt <= Date.now();
 
   const setSelectedRevision = (revisionId: string | undefined) => {
     void navigate({

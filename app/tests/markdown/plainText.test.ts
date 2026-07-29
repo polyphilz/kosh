@@ -17,4 +17,12 @@ describe("markdownToPlainText", () => {
       ),
     ).toBe("Diagram\n\nAttachment");
   });
+
+  it("replaces valid media tokens embedded inside authored text", () => {
+    expect(
+      markdownToPlainText(
+        "Before {{kosh:image:019f547b-6200-7000-8000-000000000001;width=70%;alt=Diagram}} after, plus `{{kosh:pdf:019f547b-6200-7000-8000-000000000002}}`.",
+      ),
+    ).toBe("Before Diagram after, plus Attachment.");
+  });
 });

@@ -2,6 +2,8 @@ import type { Content, Root } from "mdast";
 import { parseKoshMediaToken } from "./mediaTokens";
 import { parseKoshMarkdownAst } from "./markdownConversion";
 
+const mediaTokenCandidate = /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu;
+
 export function markdownToPlainText(source: string): string {
   return renderNode(parseKoshMarkdownAst(source))
     .replace(/[ \t]+\n/gu, "\n")
@@ -13,17 +15,13 @@ function renderNode(node: Root | Content): string {
   switch (node.type) {
     case "root":
       return node.children.map(renderNode).join("\n\n");
-    case "text": {
-      const media = parseKoshMediaToken(node.value);
-      if (!media) return node.value;
-      return media.kind === "image" ? (media.altText ?? "Image attachment") : "Attachment";
-    }
+    case "text":
     case "code":
     case "inlineCode":
     case "math":
     case "inlineMath":
     case "html":
-      return node.value;
+      return replaceMediaTokens(node.value);
     case "break":
       return "\n";
     case "thematicBreak":
@@ -49,4 +47,12 @@ function renderNode(node: Root | Content): string {
     default:
       return "children" in node ? node.children.map(renderNode).join("") : "";
   }
+}
+
+function replaceMediaTokens(value: string): string {
+  return value.replace(mediaTokenCandidate, (candidate) => {
+    const media = parseKoshMediaToken(candidate);
+    if (!media) return candidate;
+    return media.kind === "image" ? (media.altText ?? "Image attachment") : "Attachment";
+  });
 }
