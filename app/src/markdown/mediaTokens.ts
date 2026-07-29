@@ -31,6 +31,16 @@ export interface KoshPdfToken {
 
 export type KoshMediaToken = KoshImageToken | KoshAttachmentToken | KoshPdfToken;
 
+export function neutralizeUntrustedMediaReferences(markdown: string): string {
+  const replacements: ReadonlyArray<readonly [string, string]> = [
+    ["{{kosh:image:", "{{kosh-reference:image:"],
+    ["{{kosh:attachment:", "{{kosh-reference:attachment:"],
+    ["{{kosh:pdf:", "{{kosh-reference:pdf:"],
+    ["kosh-media://localhost/attachment/", "kosh-reference://localhost/attachment/"],
+  ];
+  return replacements.reduce((value, [from, to]) => value.replaceAll(from, to), markdown);
+}
+
 export function parseKoshMediaToken(value: string): KoshMediaToken | null {
   const image = imagePattern.exec(value);
   if (image) {

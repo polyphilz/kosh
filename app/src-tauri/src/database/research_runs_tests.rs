@@ -298,3 +298,58 @@ fn completed_answer_can_be_saved_once_as_a_normal_tidbit() {
         Some(saved.id.as_str())
     );
 }
+
+#[test]
+fn saved_research_answer_neutralizes_every_local_media_capability() {
+    let (_root, database) = open();
+    let (_source, evidence) = create_evidence(&database);
+    let run_id = id();
+    let attachment_id = id();
+    let mut answer = grounded_answer(&evidence);
+    answer["markdown"] = json!(format!(
+        "The durable fact is forty-two.【1】\n\n\
+         {{{{kosh:image:{attachment_id};width=70%}}}}\n\n\
+         {{{{kosh:pdf:{attachment_id}}}}}\n\n\
+         {{{{kosh:attachment:{attachment_id}}}}}\n\n\
+         ![direct](kosh-media://localhost/attachment/{attachment_id} \"kosh-image:70:\")"
+    ));
+    create_run(&database, &run_id, None);
+    append(&database, &run_id, 1, "STARTED", json!({}));
+    append(
+        &database,
+        &run_id,
+        2,
+        "GROUNDED_FINAL_OUTPUT",
+        json!({"answer": answer}),
+    );
+    append(
+        &database,
+        &run_id,
+        3,
+        "FINISHED",
+        json!({"outcome": "SUCCEEDED", "stderrTruncated": false}),
+    );
+
+    let saved = database
+        .client()
+        .save_research_answer_as_tidbit(SaveResearchAnswerWrite {
+            run_id,
+            tidbit_id: id(),
+            revision_id: id(),
+            now_ms: 200,
+        })
+        .expect("save sanitized research answer");
+    assert!(!saved.body_markdown.contains("{{kosh:image:"));
+    assert!(!saved.body_markdown.contains("{{kosh:pdf:"));
+    assert!(!saved.body_markdown.contains("{{kosh:attachment:"));
+    assert!(!saved
+        .body_markdown
+        .contains("kosh-media://localhost/attachment/"));
+    assert!(saved.body_markdown.contains("{{kosh-reference:image:"));
+    assert!(saved.body_markdown.contains("{{kosh-reference:pdf:"));
+    assert!(saved.body_markdown.contains("{{kosh-reference:attachment:"));
+    assert!(saved
+        .body_markdown
+        .contains("kosh-reference://localhost/attachment/"));
+    assert!(super::media::referenced_attachments(&saved.body_markdown).is_empty());
+}

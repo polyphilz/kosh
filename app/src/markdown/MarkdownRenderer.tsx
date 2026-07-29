@@ -1,10 +1,11 @@
 import { Children, Component, useMemo, useRef, type ErrorInfo, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import type { GroundedCitationMention } from "../backend/contracts";
-import { rehypePlugins, remarkPlugins } from "./rendererConfig";
+import { inertRemarkPlugins, rehypePlugins, remarkPlugins } from "./rendererConfig";
 import { externalHttpUrl, localMediaAttachmentId, markdownUrlTransform } from "./urlPolicy";
 
 interface MarkdownRendererProps {
+  allowLocalMedia?: boolean;
   citationMentions?: GroundedCitationMention[];
   onOpenCitation?: (citationNumber: number) => void;
   onOpenExternalUrl?: (url: string) => Promise<void> | void;
@@ -12,6 +13,7 @@ interface MarkdownRendererProps {
 }
 
 export function MarkdownRenderer({
+  allowLocalMedia = true,
   citationMentions = [],
   onOpenCitation,
   onOpenExternalUrl,
@@ -23,8 +25,14 @@ export function MarkdownRenderer({
     [citationMentions, nonce, source],
   );
   const components = useMemo(
-    () => rendererComponents(onOpenExternalUrl, onOpenCitation, trustedCitations.hrefs),
-    [onOpenCitation, onOpenExternalUrl, trustedCitations.hrefs],
+    () =>
+      rendererComponents(
+        onOpenExternalUrl,
+        onOpenCitation,
+        trustedCitations.hrefs,
+        allowLocalMedia,
+      ),
+    [allowLocalMedia, onOpenCitation, onOpenExternalUrl, trustedCitations.hrefs],
   );
 
   return (
@@ -33,7 +41,7 @@ export function MarkdownRenderer({
         <ReactMarkdown
           components={components}
           rehypePlugins={rehypePlugins}
-          remarkPlugins={remarkPlugins}
+          remarkPlugins={allowLocalMedia ? remarkPlugins : inertRemarkPlugins}
           urlTransform={markdownUrlTransform}
         >
           {trustedCitations.source}
@@ -47,6 +55,7 @@ function rendererComponents(
   onOpenExternalUrl: ((url: string) => Promise<void> | void) | undefined,
   onOpenCitation: ((citationNumber: number) => void) | undefined,
   trustedCitationHrefs: ReadonlyMap<string, number>,
+  allowLocalMedia: boolean,
 ): Components {
   return {
     a({ children, href }) {
@@ -85,7 +94,7 @@ function rendererComponents(
       );
     },
     img({ alt, src, title }) {
-      const attachmentId = localMediaAttachmentId(src);
+      const attachmentId = allowLocalMedia ? localMediaAttachmentId(src) : null;
       if (attachmentId && title === "kosh-pdf") {
         return (
           <figure className="kosh-markdown__pdf">

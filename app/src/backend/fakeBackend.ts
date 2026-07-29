@@ -41,6 +41,7 @@ import type {
   StartResearchProcessOutput,
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
+import { neutralizeUntrustedMediaReferences } from "../markdown/mediaTokens";
 
 interface FakeCitationSnapshot {
   revision: TidbitRecord;
@@ -699,7 +700,7 @@ export class FakeBackend implements Backend {
     }
     const tidbit = await this.createTidbit({
       title: `Research: ${truncate(run.query, 86)}`,
-      bodyMarkdown: run.finalAnswer.markdown,
+      bodyMarkdown: neutralizeUntrustedMediaReferences(run.finalAnswer.markdown),
       sources: [],
     });
     run.savedTidbitId = tidbit.id;

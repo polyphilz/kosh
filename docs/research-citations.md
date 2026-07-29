@@ -55,6 +55,12 @@ per-render target that raw model-authored Markdown cannot claim. Plain markers,
 HTML attributes, guessed links, malformed ranges, and overlapping ranges stay
 inert.
 
+Research answers also disable Kosh media-token and `kosh-media://` expansion.
+Claude-authored Markdown cannot display an attachment by guessing its UUID.
+Saving an answer as a tidbit neutralizes every reserved media token and local
+media URL at the native database boundary; only media explicitly attached
+through an authored draft can become live content.
+
 Source URLs are provenance supplied to Kosh by the user. They may be displayed
 or opened from trusted citation detail, but Kosh Research does not fetch them
 and has no web-search or web-fetch tool.
@@ -87,6 +93,7 @@ Tests must continue to cover:
 - copied URLs and citation-looking plain text;
 - repeated handles and exact evidence identity;
 - stale revision snapshots;
+- guessed local-media tokens and protocol URLs;
 - prompt injection embedded in tidbits;
 - citation tokens inside code;
 - uncited substantive claims;

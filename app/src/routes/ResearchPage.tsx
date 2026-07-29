@@ -435,6 +435,7 @@ export function ResearchPage() {
                   )}
                   <article className="research-answer">
                     <MarkdownRenderer
+                      allowLocalMedia={false}
                       citationMentions={run.finalAnswer.mentions}
                       onOpenCitation={(number) => {
                         const citation =

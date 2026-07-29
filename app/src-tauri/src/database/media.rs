@@ -28,6 +28,7 @@ pub(crate) const PDF_RECOVERY_BATCH_SIZE: usize = 64;
 const IMAGE_TOKEN_PREFIX: &str = "{{kosh:image:";
 const ATTACHMENT_TOKEN_PREFIX: &str = "{{kosh:attachment:";
 const PDF_TOKEN_PREFIX: &str = "{{kosh:pdf:";
+const MEDIA_PROTOCOL_PREFIX: &str = "kosh-media://localhost/attachment/";
 const TOKEN_SUFFIX: &str = "}}";
 const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
 const IMAGE_OCR_EXTRACTOR: &str = "ocr";
@@ -3580,6 +3581,22 @@ pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference>
         cursor = payload_start + end + TOKEN_SUFFIX.len();
     }
     references
+}
+
+pub(crate) fn neutralize_untrusted_media_references(markdown: &str) -> String {
+    [
+        (IMAGE_TOKEN_PREFIX, "{{kosh-reference:image:"),
+        (ATTACHMENT_TOKEN_PREFIX, "{{kosh-reference:attachment:"),
+        (PDF_TOKEN_PREFIX, "{{kosh-reference:pdf:"),
+        (
+            MEDIA_PROTOCOL_PREFIX,
+            "kosh-reference://localhost/attachment/",
+        ),
+    ]
+    .into_iter()
+    .fold(markdown.to_owned(), |value, (from, to)| {
+        value.replace(from, to)
+    })
 }
 
 pub(crate) fn markdown_references_attachment(markdown: &str, attachment_id: &str) -> bool {

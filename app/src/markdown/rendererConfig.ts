@@ -27,6 +27,13 @@ import { codeLanguageAliases, normalizeCodeLanguageLabel } from "./languages";
 import { parseKoshMediaToken } from "./mediaTokens";
 import { attachmentMediaUrl } from "../media/gateway";
 
+export const inertRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [
+  remarkInertHtml,
+  remarkGfm,
+  remarkMath,
+  remarkBreaks,
+];
+
 export const remarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [
   remarkInertHtml,
   remarkKoshImages,

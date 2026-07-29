@@ -111,6 +111,26 @@ it("renders a canonical generic attachment with its authored caption", () => {
   );
 });
 
+it("keeps agent-authored local media tokens and URLs inert", () => {
+  const attachmentId = "01980c8e-6c00-7000-8000-000000000243";
+  const source = [
+    `{{kosh:image:${attachmentId};width=70%}}`,
+    "",
+    `{{kosh:pdf:${attachmentId}}}`,
+    "",
+    `{{kosh:attachment:${attachmentId}}}`,
+    "",
+    `![direct local media](kosh-media://localhost/attachment/${attachmentId} "kosh-image:70:")`,
+  ].join("\n");
+  const { container } = render(<MarkdownRenderer allowLocalMedia={false} source={source} />);
+
+  expect(container.querySelector("img, object, a")).toBeNull();
+  expect(container).toHaveTextContent(`{{kosh:image:${attachmentId};width=70%}}`);
+  expect(container).toHaveTextContent(`{{kosh:pdf:${attachmentId}}}`);
+  expect(container).toHaveTextContent(`{{kosh:attachment:${attachmentId}}}`);
+  expect(container).toHaveTextContent("Image: direct local media");
+});
+
 it("leaves malformed and nonlocal Kosh-like image references inert", () => {
   const imageId = "01980c8e-6c00-7000-8000-000000000242";
   const { container } = render(

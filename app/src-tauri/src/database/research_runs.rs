@@ -455,8 +455,8 @@ pub(super) fn save_answer_as_tidbit(
         .get("markdown")
         .and_then(Value::as_str)
         .filter(|markdown| !markdown.trim().is_empty())
-        .ok_or_else(|| DatabaseError::InvalidInput("research answer has no Markdown".into()))?
-        .to_owned();
+        .ok_or_else(|| DatabaseError::InvalidInput("research answer has no Markdown".into()))?;
+    let body_markdown = super::media::neutralize_untrusted_media_references(body_markdown);
     let title = format!(
         "Research: {}",
         truncate_chars(query.trim(), MAX_TITLE_CHARS - 10)
