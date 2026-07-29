@@ -64,26 +64,26 @@ for (const icon of [...expectedIcons, "icons/icon.png", "icons/tray-icon.png"]) 
   assertRegularFile(resolve("src-tauri", icon), `icon ${icon}`);
 }
 assertEqual(
-  run("sips", [
-    "-g",
-    "pixelWidth",
-    "-g",
-    "pixelHeight",
-    "-g",
-    "hasAlpha",
-    "src-tauri/icons/tray-icon.png",
-  ])
-    .split(/\r?\n/u)
-    .slice(1)
-    .map((line) => line.trim()),
-  ["pixelWidth: 32", "pixelHeight: 32", "hasAlpha: yes"],
+  readPngHeader("src-tauri/icons/tray-icon.png"),
+  { width: 32, height: 32, bitDepth: 8, hasAlpha: true },
   "tray template dimensions",
 );
 
-const entitlements = JSON.parse(
-  run("plutil", ["-convert", "json", "-o", "-", "src-tauri/Entitlements.plist"]),
+const entitlementsPath = "src-tauri/Entitlements.plist";
+const entitlementsSource = readFileSync(entitlementsPath, "utf8");
+assert(
+  /^<\?xml version="1\.0" encoding="UTF-8"\?>\s*<!DOCTYPE plist PUBLIC "-\/\/Apple\/\/DTD PLIST 1\.0\/\/EN" "http:\/\/www\.apple\.com\/DTDs\/PropertyList-1\.0\.dtd">\s*<plist version="1\.0">\s*<dict\/>\s*<\/plist>\s*$/u.test(
+    entitlementsSource,
+  ),
+  "entitlements must be a canonical empty property list",
 );
-assertEqual(entitlements, {}, "least-privilege entitlements");
+if (process.platform === "darwin") {
+  assertEqual(
+    JSON.parse(run("plutil", ["-convert", "json", "-o", "-", entitlementsPath])),
+    {},
+    "least-privilege entitlements",
+  );
+}
 
 assertEqual(
   readJson("src-tauri/capabilities/default.json"),
@@ -129,6 +129,20 @@ function assertRegularFile(path, label) {
   const metadata = lstatSync(path);
   assert(metadata.isFile(), `${label} is not a regular file`);
   assert(!metadata.isSymbolicLink(), `${label} must not be a symlink`);
+}
+
+function readPngHeader(path) {
+  const bytes = readFileSync(path);
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  assert(bytes.subarray(0, signature.length).equals(signature), `${path} must be a PNG`);
+  assert(bytes.toString("ascii", 12, 16) === "IHDR", `${path} must start with IHDR`);
+  const colorType = bytes.readUInt8(25);
+  return {
+    width: bytes.readUInt32BE(16),
+    height: bytes.readUInt32BE(20),
+    bitDepth: bytes.readUInt8(24),
+    hasAlpha: colorType === 4 || colorType === 6 || bytes.includes(Buffer.from("tRNS")),
+  };
 }
 
 function run(command, arguments_) {
