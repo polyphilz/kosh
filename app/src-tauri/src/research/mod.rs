@@ -367,6 +367,12 @@ impl ResearchRun {
         tool: &str,
         arguments: Value,
     ) -> Result<Value, ResearchError> {
+        if self.tool_calls >= self.limits.max_tool_calls {
+            return Err(ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the research run exhausted its tool-call budget",
+            ));
+        }
         match self.call_tool_with_envelope(tool, arguments, |output| {
             Ok(mcp_tool_response(output, false))
         }) {
@@ -384,6 +390,12 @@ impl ResearchRun {
     where
         F: FnOnce(&Value) -> Result<Value, ResearchError>,
     {
+        if self.tool_calls >= self.limits.max_tool_calls {
+            return Err(ResearchError::new(
+                ResearchErrorCode::LimitExceeded,
+                "the research run exhausted its tool-call budget",
+            ));
+        }
         if tool.len() > MAX_TOOL_NAME_BYTES {
             return Err(ResearchError::new(
                 ResearchErrorCode::UnknownTool,
@@ -409,14 +421,6 @@ impl ResearchRun {
             let error = ResearchError::new(
                 ResearchErrorCode::LimitExceeded,
                 "the research tool request exceeded its byte limit",
-            );
-            self.record_error(tool, call_number, argument_bytes, &error);
-            return Err(error);
-        }
-        if call_number > self.limits.max_tool_calls {
-            let error = ResearchError::new(
-                ResearchErrorCode::LimitExceeded,
-                "the research run exhausted its tool-call budget",
             );
             self.record_error(tool, call_number, argument_bytes, &error);
             return Err(error);

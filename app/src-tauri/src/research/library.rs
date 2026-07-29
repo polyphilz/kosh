@@ -115,8 +115,12 @@ impl ResearchLibrary {
                 "this tool requires a tidbit owner handle",
             ));
         };
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(ResearchError::from_sqlite)?;
         let tidbit =
-            tidbits::load_tidbit(&self.connection, id).map_err(ResearchError::from_database)?;
+            tidbits::load_tidbit(&transaction, id).map_err(ResearchError::from_database)?;
         if tidbit.deleted_at_ms.is_some() {
             return Err(ResearchError::new(
                 ResearchErrorCode::ContentDeleted,
@@ -141,29 +145,30 @@ impl ResearchLibrary {
                 "the tidbit page offset is too large",
             )
         })?;
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT passage.id
+        let mut ids = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT passage.id
                  FROM passage
                  JOIN active_passage ON active_passage.passage_id = passage.id
                  WHERE passage.tidbit_revision_id = ?1
                    AND passage.owner_kind = 'AUTHOR'
                  ORDER BY passage.ordinal
                  LIMIT ?2 OFFSET ?3",
-            )
-            .map_err(ResearchError::from_sqlite)?;
-        let rows = statement
-            .query_map(params![revision_id, query_limit, query_offset], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(ResearchError::from_sqlite)?;
-        let mut ids = rows
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(ResearchError::from_sqlite)?;
+                )
+                .map_err(ResearchError::from_sqlite)?;
+            let rows = statement
+                .query_map(params![revision_id, query_limit, query_offset], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(ResearchError::from_sqlite)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(ResearchError::from_sqlite)?
+        };
         let has_more = ids.len() > limit;
         ids.truncate(limit);
         let passages = self.resolve_current_passages(ids)?;
+        transaction.commit().map_err(ResearchError::from_sqlite)?;
         Ok((tidbit, passages, has_more))
     }
 
@@ -185,8 +190,11 @@ impl ResearchLibrary {
                 "this tool requires an attachment owner handle",
             ));
         };
-        let deleted = self
+        let transaction = self
             .connection
+            .unchecked_transaction()
+            .map_err(ResearchError::from_sqlite)?;
+        let deleted = transaction
             .query_row(
                 "SELECT deleted_at IS NOT NULL FROM attachment WHERE id = ?1",
                 params![id],
@@ -206,8 +214,7 @@ impl ResearchLibrary {
                 "the attachment was deleted after this research handle was issued",
             ));
         }
-        let provenance_is_current = self
-            .connection
+        let provenance_is_current = transaction
             .query_row(
                 "SELECT EXISTS (
                     SELECT 1
@@ -238,10 +245,10 @@ impl ResearchLibrary {
                 "the attachment page offset is too large",
             )
         })?;
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT passage.id
+        let mut ids = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT passage.id
                  FROM current_attachment_passage AS current
                  JOIN passage ON passage.id = current.passage_id
                  JOIN attachment_segment AS segment
@@ -250,20 +257,21 @@ impl ResearchLibrary {
                    AND current.extraction_id = ?2
                  ORDER BY segment.ordinal, passage.ordinal
                  LIMIT ?3 OFFSET ?4",
-            )
-            .map_err(ResearchError::from_sqlite)?;
-        let rows = statement
-            .query_map(
-                params![id, extraction_id, query_limit, query_offset],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(ResearchError::from_sqlite)?;
-        let mut ids = rows
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(ResearchError::from_sqlite)?;
+                )
+                .map_err(ResearchError::from_sqlite)?;
+            let rows = statement
+                .query_map(
+                    params![id, extraction_id, query_limit, query_offset],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(ResearchError::from_sqlite)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(ResearchError::from_sqlite)?
+        };
         let has_more = ids.len() > limit;
         ids.truncate(limit);
         let passages = self.resolve_current_passages(ids)?;
+        transaction.commit().map_err(ResearchError::from_sqlite)?;
         Ok((passages, has_more))
     }
 

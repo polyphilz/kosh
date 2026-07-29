@@ -652,8 +652,14 @@ fn malformed_calls_and_budgets_fail_with_compact_events() {
             .code,
         ResearchErrorCode::LimitExceeded
     );
+    assert_eq!(
+        run.call_tool(EXACT_SEARCH_TOOL, json!({ "query": "sixth call" }))
+            .expect_err("exhausted tool call budget remains terminal")
+            .code,
+        ResearchErrorCode::LimitExceeded
+    );
 
-    assert_eq!(run.events().len(), 10);
+    assert_eq!(run.events().len(), 8);
     assert!(run
         .events()
         .chunks_exact(2)
