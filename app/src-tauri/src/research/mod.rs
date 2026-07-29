@@ -238,6 +238,7 @@ enum ResearchResourceSnapshot {
     Attachment {
         id: String,
         extraction_id: String,
+        provenance_passage_id: String,
         display_filename: String,
         media_type: String,
         sources: Vec<TidbitSource>,
@@ -264,6 +265,12 @@ enum ResearchCursor {
         display_filename: String,
         media_type: String,
         passages: Vec<CitationResolution>,
+        offset: usize,
+    },
+    Sources {
+        citation_handle: Option<String>,
+        owner_handle: Option<String>,
+        sources: Vec<TidbitSource>,
         offset: usize,
     },
 }
@@ -356,6 +363,37 @@ impl ResearchRun {
     }
 
     pub fn call_tool(&mut self, tool: &str, arguments: Value) -> Result<Value, ResearchError> {
+        self.call_tool_with_envelope(tool, arguments, |output| Ok(output.clone()))
+    }
+
+    pub(super) fn call_tool_for_mcp(
+        &mut self,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<Value, ResearchError> {
+        self.call_tool_with_envelope(tool, arguments, |output| {
+            let text = serde_json::to_string(output)
+                .map_err(|error| ResearchError::malformed(error.to_string()))?;
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": text,
+                }],
+                "structuredContent": output,
+                "isError": false,
+            }))
+        })
+    }
+
+    fn call_tool_with_envelope<F>(
+        &mut self,
+        tool: &str,
+        arguments: Value,
+        envelope: F,
+    ) -> Result<Value, ResearchError>
+    where
+        F: FnOnce(&Value) -> Result<Value, ResearchError>,
+    {
         if tool.len() > MAX_TOOL_NAME_BYTES {
             return Err(ResearchError::new(
                 ResearchErrorCode::UnknownTool,
@@ -405,7 +443,8 @@ impl ResearchRun {
         let result = self.dispatch(tool, arguments);
         match result {
             Ok((output, item_count)) => {
-                let bytes = serde_json::to_vec(&output)
+                let response = envelope(&output)?;
+                let bytes = serde_json::to_vec(&response)
                     .map_err(|error| ResearchError::malformed(error.to_string()))?
                     .len();
                 if bytes > self.limits.max_response_bytes {
@@ -435,7 +474,7 @@ impl ResearchRun {
                     item_count: Some(item_count),
                     error_code: None,
                 });
-                Ok(output)
+                Ok(response)
             }
             Err(error) => {
                 self.record_error(tool, call_number, argument_bytes, &error);
@@ -695,35 +734,51 @@ impl ResearchRun {
 
     fn inspect_sources(&mut self, arguments: Value) -> Result<(Value, usize), ResearchError> {
         let input: InspectSourcesInput = parse_arguments(arguments)?;
-        let (citation_handle, sources) = match (
+        let limit = self.validate_page_limit(input.limit)?;
+        let (citation_handle, owner_handle, sources, offset) = match (
             input.citation_handle.as_deref(),
             input.owner_handle.as_deref(),
+            input.cursor.as_deref(),
         ) {
-            (Some(citation_handle), None) => (
+            (Some(citation_handle), None, None) => (
                 Some(citation_handle.to_owned()),
+                None,
                 self.resolve_citation_handle(citation_handle)?
                     .sources
                     .clone(),
+                0,
             ),
-            (None, Some(owner_handle)) => (
+            (None, Some(owner_handle), None) => (
                 None,
+                Some(owner_handle.to_owned()),
                 self.resolve_resource_handle(owner_handle)?
                     .sources()
                     .to_vec(),
+                0,
             ),
+            (None, None, Some(cursor)) => {
+                let ResearchCursor::Sources {
+                    citation_handle,
+                    owner_handle,
+                    sources,
+                    offset,
+                } = self.take_cursor(cursor, "inspect sources")?
+                else {
+                    return Err(ResearchError::new(
+                        ResearchErrorCode::CursorWrongTool,
+                        "the pagination cursor belongs to a different research tool",
+                    ));
+                };
+                (citation_handle, owner_handle, sources, offset)
+            }
             _ => {
                 return Err(ResearchError::invalid(
-                    "provide exactly one of citationHandle or ownerHandle",
+                    "provide exactly one of citationHandle, ownerHandle, or cursor",
                 ));
             }
         };
-        if sources.len() > self.limits.max_passages_per_response as usize {
-            return Err(ResearchError::new(
-                ResearchErrorCode::LimitExceeded,
-                "the source list exceeds the per-response item limit",
-            ));
-        }
-        let items = sources
+        let end = (offset + limit).min(sources.len());
+        let items = sources[offset..end]
             .iter()
             .map(|source| {
                 json!({
@@ -732,12 +787,22 @@ impl ResearchRun {
                 })
             })
             .collect::<Vec<_>>();
+        let next_cursor = (end < sources.len()).then(|| {
+            self.store_cursor(ResearchCursor::Sources {
+                citation_handle: citation_handle.clone(),
+                owner_handle: owner_handle.clone(),
+                sources,
+                offset: end,
+            })
+        });
         let output = json!({
             "version": RESEARCH_OUTPUT_VERSION,
             "citationHandle": citation_handle,
+            "ownerHandle": owner_handle,
             "items": items,
+            "nextCursor": next_cursor,
         });
-        Ok((output, sources.len()))
+        Ok((output, end - offset))
     }
 
     fn inspect_attachment_segments(
@@ -858,6 +923,7 @@ impl ResearchRun {
                 let owner_handle = self.register_resource(ResearchResourceSnapshot::Attachment {
                     id: attachment.id.clone(),
                     extraction_id: attachment.extraction_id.clone(),
+                    provenance_passage_id: citation.passage_id.clone(),
                     display_filename: attachment.display_filename.clone(),
                     media_type: attachment.media_type.clone(),
                     sources: citation.sources.clone(),
@@ -1011,8 +1077,11 @@ impl ResearchResourceSnapshot {
                 id, revision_id, ..
             } => format!("tidbit:{id}:{revision_id}"),
             Self::Attachment {
-                id, extraction_id, ..
-            } => format!("attachment:{id}:{extraction_id}"),
+                id,
+                extraction_id,
+                provenance_passage_id,
+                ..
+            } => format!("attachment:{id}:{extraction_id}:{provenance_passage_id}"),
         }
     }
 
@@ -1076,4 +1145,8 @@ struct InspectSourcesInput {
     citation_handle: Option<String>,
     #[serde(default)]
     owner_handle: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    limit: Option<u32>,
 }

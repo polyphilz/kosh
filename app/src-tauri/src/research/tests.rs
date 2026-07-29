@@ -355,6 +355,68 @@ fn context_tidbit_and_sources_expand_only_trusted_handles() {
 }
 
 #[test]
+fn valid_source_lists_are_cursor_paginated() {
+    let library = TestLibrary::new();
+    let sources = (0..15)
+        .map(|index| SourceDraft {
+            label: Some(format!("Source {index:02}")),
+            url: Some(format!("https://example.com/many/{index}")),
+        })
+        .collect::<Vec<_>>();
+    library
+        .database
+        .client()
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                title: Some("Many sources".into()),
+                body_markdown: "many_sources_research_evidence.".into(),
+                sources,
+            },
+            now_ms: 0xa00,
+            tidbit_id: id(0xa00),
+            revision_id: id(0xa01),
+            source_ids: (0..15).map(|index| id(0xa10 + index)).collect(),
+        })
+        .expect("create many-source tidbit");
+    let mut run = library.run();
+    let search = run
+        .call_tool(
+            EXACT_SEARCH_TOOL,
+            json!({ "query": "many_sources_research_evidence" }),
+        )
+        .expect("many-source search");
+    let owner_handle = item_string(&search, 0, "ownerHandle");
+    let mut page = run
+        .call_tool(
+            INSPECT_SOURCES_TOOL,
+            json!({ "ownerHandle": owner_handle, "limit": 4 }),
+        )
+        .expect("first source page");
+    let mut labels = Vec::new();
+    loop {
+        labels.extend(
+            page["items"]
+                .as_array()
+                .expect("source page")
+                .iter()
+                .map(|source| source["label"].as_str().expect("source label").to_owned()),
+        );
+        let Some(cursor) = page["nextCursor"].as_str() else {
+            break;
+        };
+        page = run
+            .call_tool(
+                INSPECT_SOURCES_TOOL,
+                json!({ "cursor": cursor, "limit": 4 }),
+            )
+            .expect("continued source page");
+    }
+    assert_eq!(labels.len(), 15);
+    assert_eq!(labels.first().map(String::as_str), Some("Source 00"));
+    assert_eq!(labels.last().map(String::as_str), Some("Source 14"));
+}
+
+#[test]
 fn stale_and_deleted_content_never_silently_retargets_handles() {
     let library = TestLibrary::new();
     let created = library.create_tidbit(
@@ -454,6 +516,17 @@ fn attachment_segments_are_bounded_paginated_and_citable() {
     let owner_handle = item_string(&search, 0, "ownerHandle");
     assert_eq!(search["items"][0]["evidenceKind"], "TEXT_LINES");
     assert!(!search.to_string().contains(&attachment_id));
+    let other_passage = run
+        .call_tool(
+            EXACT_SEARCH_TOOL,
+            json!({ "query": "segment_3_exact_research_evidence" }),
+        )
+        .expect("other attachment passage");
+    assert_ne!(
+        owner_handle,
+        item_string(&other_passage, 0, "ownerHandle"),
+        "attachment owner capabilities retain passage-specific provenance"
+    );
 
     let first = run
         .call_tool(
@@ -552,6 +625,58 @@ fn malformed_calls_and_budgets_fail_with_compact_events() {
     let serialized = serde_json::to_string(run.events()).expect("serialize compact events");
     assert!(!serialized.contains("large_response_research_evidence"));
     assert!(!serialized.contains("bounded bounded"));
+}
+
+#[test]
+fn mcp_byte_budget_counts_text_and_structured_copies() {
+    let library = TestLibrary::new();
+    library.create_tidbit(
+        0xb00,
+        &format!(
+            "mcp_envelope_budget_evidence {}",
+            "duplicated response content. ".repeat(40)
+        ),
+        "Envelope source",
+    );
+    let arguments = json!({ "query": "mcp_envelope_budget_evidence" });
+    let raw = library
+        .run()
+        .call_tool(EXACT_SEARCH_TOOL, arguments.clone())
+        .expect("raw research output");
+    let raw_bytes = serde_json::to_vec(&raw)
+        .expect("serialize raw output")
+        .len();
+    let wrapped = json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(&raw).expect("serialize text copy"),
+        }],
+        "structuredContent": raw,
+        "isError": false,
+    });
+    let wrapped_bytes = serde_json::to_vec(&wrapped)
+        .expect("serialize wrapped output")
+        .len();
+    assert!(raw_bytes >= 1_024);
+    assert!(wrapped_bytes > raw_bytes);
+    let limit = raw_bytes + (wrapped_bytes - raw_bytes) / 2;
+    let limits = ResearchLimits {
+        max_response_bytes: limit,
+        max_run_response_bytes: limit * 2,
+        ..ResearchLimits::default()
+    };
+    library
+        .run_with_limits(limits)
+        .call_tool(EXACT_SEARCH_TOOL, arguments.clone())
+        .expect("raw output remains within the selected limit");
+    assert_eq!(
+        library
+            .run_with_limits(limits)
+            .call_tool_for_mcp(EXACT_SEARCH_TOOL, arguments)
+            .expect_err("MCP envelope exceeds the selected limit")
+            .code,
+        ResearchErrorCode::LimitExceeded
+    );
 }
 
 #[test]

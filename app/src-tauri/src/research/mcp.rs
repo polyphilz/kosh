@@ -188,21 +188,9 @@ impl ResearchMcpSession {
         }
         match self
             .run
-            .call_tool(&params.name, params.arguments.unwrap_or_else(|| json!({})))
+            .call_tool_for_mcp(&params.name, params.arguments.unwrap_or_else(|| json!({})))
         {
-            Ok(output) => {
-                let text = serde_json::to_string(&output).map_err(|_| {
-                    McpProtocolError::new(-32603, "could not serialize the tool result", None)
-                })?;
-                Ok(json!({
-                    "content": [{
-                        "type": "text",
-                        "text": text,
-                    }],
-                    "structuredContent": output,
-                    "isError": false,
-                }))
-            }
+            Ok(output) => Ok(output),
             Err(error) => {
                 let output = json!({
                     "version": "v1",
@@ -360,10 +348,13 @@ pub fn research_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "citationHandle": { "type": "string", "minLength": 1 },
                     "ownerHandle": { "type": "string", "minLength": 1 },
+                    "cursor": { "type": "string", "minLength": 1 },
+                    "limit": { "type": "integer", "minimum": 1 },
                 },
                 "oneOf": [
                     { "required": ["citationHandle"] },
                     { "required": ["ownerHandle"] },
+                    { "required": ["cursor"] },
                 ],
             }),
         ),
