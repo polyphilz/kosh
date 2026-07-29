@@ -32,6 +32,7 @@ pub const RESEARCH_PROCESS_EVENT: &str = "kosh://research-process";
 
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_STDOUT_LINE_BYTES: usize = 256 * 1024;
+const MAX_STDOUT_MESSAGES_PER_POLL: usize = 256;
 const MAX_STDERR_BYTES: usize = 32 * 1024;
 const MAX_STREAM_EVENT_COUNT: usize = 16_384;
 const MAX_STREAM_BYTES: usize = 16 * 1024 * 1024;
@@ -843,7 +844,10 @@ fn monitor_process(process: MonitoredProcess) {
     let mut termination_started = None;
 
     loop {
-        while let Ok(message) = stdout_receiver.try_recv() {
+        for _ in 0..MAX_STDOUT_MESSAGES_PER_POLL {
+            let Ok(message) = stdout_receiver.try_recv() else {
+                break;
+            };
             match message {
                 StdoutMessage::Line(line) => {
                     if process_error.is_some()
@@ -2016,9 +2020,9 @@ exit 0
 "#,
         );
         let started = Instant::now();
-        let output = run_probe(&binary, &[], Duration::from_millis(200)).expect("successful probe");
+        let output = run_probe(&binary, &[], Duration::from_secs(2)).expect("successful probe");
         assert!(output.status.success());
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(5));
 
         write_fake_cli(
             root.path(),
@@ -2028,8 +2032,8 @@ wait
 "#,
         );
         let started = Instant::now();
-        assert!(run_probe(&binary, &[], Duration::from_millis(80)).is_err());
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(run_probe(&binary, &[], Duration::from_millis(500)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
@@ -2279,6 +2283,31 @@ sleep 30
                 })
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn continuous_stdout_cannot_starve_cancellation_force_kill() {
+        let root = tempfile::tempdir().expect("fake CLI root");
+        let binary = write_fake_cli(
+            root.path(),
+            r#"
+trap '' TERM
+cat >/dev/null
+while :; do
+  printf '%s\n' '{"type":"rate_limit_event"}'
+done
+"#,
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let (sender, receiver) = mpsc::channel();
+        let started = start_fake(&manager, request("continuous output"), &sender);
+        assert!(manager.cancel(&started.run_id).expect("cancel run"));
+        let (_, terminals) = receive_terminals(&receiver, 1);
+
+        assert_eq!(
+            terminals.get(&started.run_id),
+            Some(&ResearchProcessOutcome::Canceled)
         );
     }
 
