@@ -22,7 +22,13 @@ pub(crate) struct NativeLogDiagnostics {
     pub disk_usage_bytes: u64,
 }
 
-pub(crate) fn install(data_root: &Path) -> io::Result<()> {
+pub(crate) fn install(data_root: &Path) {
+    if let Err(error) = try_install(data_root) {
+        eprintln!("Kosh native file logging is unavailable: {error}");
+    }
+}
+
+fn try_install(data_root: &Path) -> io::Result<()> {
     let logger = NativeLogger {
         sink: Mutex::new(RotatingLog::open(&log_directory(data_root))?),
     };
@@ -189,7 +195,19 @@ impl RotatingLog {
 
 #[cfg(test)]
 mod tests {
-    use super::{bound_line, diagnostics, RotatingLog, MAX_LOG_FILES, MAX_LOG_FILE_BYTES};
+    use super::{
+        bound_line, diagnostics, install, try_install, RotatingLog, MAX_LOG_FILES,
+        MAX_LOG_FILE_BYTES,
+    };
+
+    #[test]
+    fn unavailable_log_directory_never_aborts_startup() {
+        let root = tempfile::tempdir().expect("temporary root");
+        std::fs::write(root.path().join("logs"), b"directory blocker").expect("blocking file");
+
+        assert!(try_install(root.path()).is_err());
+        install(root.path());
+    }
 
     #[test]
     fn oversized_unicode_log_lines_are_truncated_on_a_character_boundary() {

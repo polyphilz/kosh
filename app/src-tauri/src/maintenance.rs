@@ -95,23 +95,14 @@ pub(crate) async fn run_integrity_check(
     let gate = state.maintenance_gate();
     let now_ms = state.now_ms();
     run_blocking(move || {
-        let _guard = gate
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         client.full_integrity_check()?;
         let media = client.media_integrity_report(now_ms)?;
         let issues = media.missing_blob_attachment_ids.len()
             + media.corrupt_blob_sha256.len()
             + media.extra_blob_sha256.len()
             + media.orphaned_attachment_ids.len();
-        let message = if issues == 0 {
-            "Both databases and all referenced media passed integrity checks.".into()
-        } else {
-            format!(
-                "Database integrity passed; media inspection found {issues} item{} that need attention.",
-                if issues == 1 { "" } else { "s" }
-            )
-        };
+        let message = integrity_message(&media);
         log::info!("maintenance integrity check completed with {issues} media issues");
         Ok(IntegrityCheckOutcome {
             database_ok: true,
@@ -356,6 +347,25 @@ fn semantic_log_paths(root: &Path) -> Vec<String> {
     .collect()
 }
 
+fn integrity_message(media: &MediaIntegrityReport) -> String {
+    let issues = media.missing_blob_attachment_ids.len()
+        + media.corrupt_blob_sha256.len()
+        + media.extra_blob_sha256.len()
+        + media.orphaned_attachment_ids.len();
+    if issues == 0 {
+        return "Both databases and all referenced media passed integrity checks.".into();
+    }
+    if media.diagnostics_truncated {
+        return format!(
+            "Database integrity passed; media inspection found at least {issues} items that need attention. Diagnostic details were truncated."
+        );
+    }
+    format!(
+        "Database integrity passed; media inspection found {issues} item{} that need attention.",
+        if issues == 1 { "" } else { "s" }
+    )
+}
+
 fn format_bytes(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
@@ -375,7 +385,8 @@ fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{directory_size, format_bytes, sqlite_family_size};
+    use super::{directory_size, format_bytes, integrity_message, sqlite_family_size};
+    use crate::database::MediaIntegrityReport;
 
     #[test]
     fn storage_scan_is_recursive_and_does_not_follow_symlinks() {
@@ -400,5 +411,18 @@ mod tests {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_bytes(12 * 1024), "12 KB");
+    }
+
+    #[test]
+    fn integrity_message_never_presents_a_truncated_count_as_exact() {
+        let report = MediaIntegrityReport {
+            missing_blob_attachment_ids: vec!["one".into(), "two".into()],
+            diagnostics_truncated: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            integrity_message(&report),
+            "Database integrity passed; media inspection found at least 2 items that need attention. Diagnostic details were truncated."
+        );
     }
 }

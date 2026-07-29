@@ -206,6 +206,7 @@ export function SettingsDiagnostics() {
   ].includes(semantic.phase);
   const failedExtractionCount =
     diagnostics.library.imageOcr.failed + diagnostics.library.pdfExtraction.failed;
+  const semanticSearch = semanticSearchHealth(semantic, embeddings);
   const unhealthyIndexes = diagnostics.library.indexes.filter(
     (index) => index.status === "FAILED" || index.error,
   ).length;
@@ -235,8 +236,8 @@ export function SettingsDiagnostics() {
           <DiagnosticItem
             detail={`${formatBytes(semantic.modelDiskUsageBytes)} on disk · ${embeddings.indexedPassages.toLocaleString()} of ${embeddings.totalPassages.toLocaleString()} passages`}
             label="Semantic search"
-            value={semanticPhaseLabel(semantic)}
-            warning={semantic.phase === "FAILED"}
+            value={semanticSearch.label}
+            warning={semanticSearch.warning}
           />
           <DiagnosticItem
             detail={
@@ -552,6 +553,28 @@ function semanticPhaseLabel(status: SemanticRuntimeStatus): string {
       return "Needs attention";
     case "UNAVAILABLE":
       return "Unavailable";
+  }
+}
+
+function semanticSearchHealth(
+  runtime: SemanticRuntimeStatus,
+  embeddings: PassageEmbeddingIndexStatus,
+): { label: string; warning: boolean } {
+  if (runtime.phase !== "READY") {
+    return {
+      label: semanticPhaseLabel(runtime),
+      warning: runtime.phase === "FAILED" || runtime.phase === "UNAVAILABLE",
+    };
+  }
+  switch (embeddings.phase) {
+    case "READY":
+      return { label: "Ready", warning: false };
+    case "INDEXING":
+      return { label: "Indexing", warning: false };
+    case "WAITING_FOR_RUNTIME":
+      return { label: "Index waiting", warning: true };
+    case "FAILED":
+      return { label: "Index failed", warning: true };
   }
 }
 

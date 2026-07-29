@@ -207,7 +207,7 @@ pub fn run() {
         );
         let resource_dir = app.path().resource_dir().ok();
         std::fs::create_dir_all(&data_dir)?;
-        native_log::install(&data_dir)?;
+        native_log::install(&data_dir);
         let runtime = RuntimeState::production(data_dir, resource_dir)?;
         let shortcut_settings = runtime.database_client().load_shortcut_settings()?;
         app.manage(runtime);

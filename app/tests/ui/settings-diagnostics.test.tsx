@@ -2,7 +2,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { MaintenanceOutcome } from "../../src/backend/contracts";
+import type { MaintenanceOutcome, PassageEmbeddingIndexPhase } from "../../src/backend/contracts";
 import { BackendProvider } from "../../src/backend/context";
 import { FakeBackend } from "../../src/backend/fakeBackend";
 import { AppearanceProvider } from "../../src/components/Appearance";
@@ -95,6 +95,34 @@ describe("settings diagnostics and maintenance", () => {
       await screen.findByText("No current failed OCR or PDF extractions needed a retry."),
     ).toBeInTheDocument();
   });
+
+  it.each([
+    ["FAILED", "Index failed"],
+    ["WAITING_FOR_RUNTIME", "Index waiting"],
+  ] satisfies [PassageEmbeddingIndexPhase, string][])(
+    "reports a ready runtime with a %s embedding index as unhealthy",
+    async (phase, label) => {
+      const backend = new FakeBackend();
+      await backend.prepareSemanticRuntime();
+      vi.spyOn(backend, "passageEmbeddingIndexStatus").mockResolvedValue({
+        phase,
+        embeddingIndexId: "019f547b-6200-7000-8000-000000000002",
+        indexKey: "jina_v1",
+        indexedPassages: 2,
+        totalPassages: 3,
+        active: false,
+        message: "controlled index state",
+      });
+      renderSettings(backend);
+
+      const semanticSearch = (await screen.findByText("Semantic search")).closest(
+        ".settings-diagnostic",
+      );
+      expect(semanticSearch).not.toBeNull();
+      expect(within(semanticSearch as HTMLElement).getByText(label)).toBeInTheDocument();
+      expect(semanticSearch).toHaveClass("settings-diagnostic--warning");
+    },
+  );
 });
 
 function renderSettings(backend: FakeBackend) {

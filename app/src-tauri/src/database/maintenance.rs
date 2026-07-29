@@ -99,8 +99,8 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
         search_documents: count(connection, "passage_search_document")?,
         attachments,
         attachment_bytes,
-        image_ocr: queue_counts(connection, "image_ocr_queue")?,
-        pdf_extraction: queue_counts(connection, "pdf_extraction_queue")?,
+        image_ocr: queue_counts(connection, "image_ocr_queue", "ocr")?,
+        pdf_extraction: queue_counts(connection, "pdf_extraction_queue", "pdf-text")?,
         research: research_counts(connection)?,
         indexes,
     })
@@ -251,18 +251,27 @@ fn reset_extractions(
     Ok(())
 }
 
-fn queue_counts(connection: &Connection, table: &str) -> Result<QueueCounts> {
+fn queue_counts(connection: &Connection, table: &str, extractor: &str) -> Result<QueueCounts> {
     let sql = format!(
         "SELECT
-            count(*) FILTER (WHERE state = 'PENDING'),
-            count(*) FILTER (WHERE state = 'RUNNING'),
-            count(*) FILTER (WHERE state = 'RETRY_WAIT'),
-            count(*) FILTER (WHERE state = 'READY'),
-            count(*) FILTER (WHERE state = 'FAILED')
-         FROM {table}"
+            count(*) FILTER (WHERE queue.state = 'PENDING'),
+            count(*) FILTER (WHERE queue.state = 'RUNNING'),
+            count(*) FILTER (WHERE queue.state = 'RETRY_WAIT'),
+            count(*) FILTER (WHERE queue.state = 'READY'),
+            count(*) FILTER (WHERE queue.state = 'FAILED')
+         FROM {table} AS queue
+         JOIN attachment_extraction AS extraction ON extraction.id = queue.extraction_id
+         JOIN attachment_extractor_config AS config
+           ON config.extractor = extraction.extractor
+          AND config.version = extraction.extractor_version
+         JOIN attachment
+           ON attachment.id = extraction.attachment_id
+          AND attachment.sha256 = extraction.content_hash
+          AND attachment.deleted_at IS NULL
+         WHERE extraction.extractor = ?1"
     );
     connection
-        .query_row(&sql, [], |row| {
+        .query_row(&sql, params![extractor], |row| {
             Ok(QueueCounts {
                 pending: nonnegative(row.get(0)?)?,
                 running: nonnegative(row.get(1)?)?,
