@@ -13,7 +13,7 @@ use crate::{
     database::{
         media::{
             IngestAttachmentMetadata, IngestGenericAttachmentWrite, StagedAttachment,
-            TextFileSegment,
+            TextFileSegment, MAX_TEXT_FILE_PASSAGES,
         },
         DatabaseError, GenericAttachmentRecord, GenericAttachmentStatusRecord, ImageRecord,
         PdfRecord,
@@ -304,9 +304,7 @@ fn extract_text(bytes: &[u8]) -> std::result::Result<Vec<TextFileSegment>, Strin
     if decoded.contains('\0') {
         return Err("Text extraction stopped because the file contains NUL bytes".into());
     }
-    Ok(split_text_passages(
-        &decoded.replace("\r\n", "\n").replace('\r', "\n"),
-    ))
+    split_text_passages(&decoded.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
 fn decode_text(bytes: &[u8]) -> std::result::Result<String, String> {
@@ -343,7 +341,20 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> std::result::Result<String
         .map_err(|_| "The text file contains invalid UTF-16".into())
 }
 
-fn split_text_passages(text: &str) -> Vec<TextFileSegment> {
+fn push_text_passage(
+    passages: &mut Vec<TextFileSegment>,
+    passage: TextFileSegment,
+) -> std::result::Result<(), String> {
+    if passages.len() >= MAX_TEXT_FILE_PASSAGES {
+        return Err(format!(
+            "Text extraction is limited to {MAX_TEXT_FILE_PASSAGES} passages"
+        ));
+    }
+    passages.push(passage);
+    Ok(())
+}
+
+fn split_text_passages(text: &str) -> std::result::Result<Vec<TextFileSegment>, String> {
     let mut passages = Vec::new();
     let mut buffered = String::new();
     let mut buffered_start = 0_u32;
@@ -352,18 +363,23 @@ fn split_text_passages(text: &str) -> Vec<TextFileSegment> {
     let flush = |passages: &mut Vec<TextFileSegment>,
                  buffered: &mut String,
                  buffered_start: &mut u32,
-                 buffered_end: &mut u32| {
+                 buffered_end: &mut u32|
+     -> std::result::Result<(), String> {
         if !buffered.trim().is_empty() {
-            passages.push(TextFileSegment {
-                start_line: *buffered_start,
-                end_line: *buffered_end,
-                content: std::mem::take(buffered),
-            });
+            push_text_passage(
+                passages,
+                TextFileSegment {
+                    start_line: *buffered_start,
+                    end_line: *buffered_end,
+                    content: std::mem::take(buffered),
+                },
+            )?;
         } else {
             buffered.clear();
         }
         *buffered_start = 0;
         *buffered_end = 0;
+        Ok(())
     };
 
     for (index, line) in text.split('\n').enumerate() {
@@ -376,7 +392,7 @@ fn split_text_passages(text: &str) -> Vec<TextFileSegment> {
                 &mut buffered,
                 &mut buffered_start,
                 &mut buffered_end,
-            );
+            )?;
             continue;
         }
         let line_chars = line.chars().count();
@@ -386,27 +402,33 @@ fn split_text_passages(text: &str) -> Vec<TextFileSegment> {
                 &mut buffered,
                 &mut buffered_start,
                 &mut buffered_end,
-            );
+            )?;
             let mut chunk = String::new();
             let mut chunk_chars = 0;
             for character in line.chars() {
                 chunk.push(character);
                 chunk_chars += 1;
                 if chunk_chars == MAX_TEXT_PASSAGE_CHARS {
-                    passages.push(TextFileSegment {
-                        start_line: line_number,
-                        end_line: line_number,
-                        content: std::mem::take(&mut chunk),
-                    });
+                    push_text_passage(
+                        &mut passages,
+                        TextFileSegment {
+                            start_line: line_number,
+                            end_line: line_number,
+                            content: std::mem::take(&mut chunk),
+                        },
+                    )?;
                     chunk_chars = 0;
                 }
             }
             if !chunk.is_empty() {
-                passages.push(TextFileSegment {
-                    start_line: line_number,
-                    end_line: line_number,
-                    content: chunk,
-                });
+                push_text_passage(
+                    &mut passages,
+                    TextFileSegment {
+                        start_line: line_number,
+                        end_line: line_number,
+                        content: chunk,
+                    },
+                )?;
             }
             continue;
         }
@@ -417,7 +439,7 @@ fn split_text_passages(text: &str) -> Vec<TextFileSegment> {
                 &mut buffered,
                 &mut buffered_start,
                 &mut buffered_end,
-            );
+            )?;
         }
         if buffered.is_empty() {
             buffered_start = line_number;
@@ -432,8 +454,8 @@ fn split_text_passages(text: &str) -> Vec<TextFileSegment> {
         &mut buffered,
         &mut buffered_start,
         &mut buffered_end,
-    );
-    passages
+    )?;
+    Ok(passages)
 }
 
 fn attachment_media_type(filename: &str) -> &'static str {
@@ -791,7 +813,7 @@ mod tests {
         attachment_media_type, decode_text, extract_text, looks_like_pdf,
         materialize_for_external_use, read_bounded_attachment, recover_attachment_open_directory,
         safe_attachment_filename, split_text_passages, MAX_OPEN_MATERIALIZATIONS,
-        MAX_TEXT_EXTRACTION_BYTES,
+        MAX_TEXT_EXTRACTION_BYTES, MAX_TEXT_FILE_PASSAGES,
     };
 
     #[test]
@@ -808,7 +830,7 @@ mod tests {
     #[test]
     fn passages_have_exact_ordered_line_ranges_and_bound_long_lines() {
         let text = format!("first\nsecond\n\n{}\nlast", "x".repeat(2_001));
-        let passages = split_text_passages(&text);
+        let passages = split_text_passages(&text).expect("bounded passages");
         assert_eq!(
             passages
                 .iter()
@@ -824,7 +846,7 @@ mod tests {
     #[test]
     fn maximum_single_line_extraction_is_split_in_linear_bounded_chunks() {
         let text = "é".repeat(MAX_TEXT_EXTRACTION_BYTES / 2);
-        let passages = split_text_passages(&text);
+        let passages = split_text_passages(&text).expect("bounded passages");
 
         assert_eq!(
             passages
@@ -839,6 +861,15 @@ mod tests {
         assert!(passages
             .iter()
             .all(|passage| (passage.start_line, passage.end_line) == (1, 1)));
+    }
+
+    #[test]
+    fn tiny_paragraphs_stop_at_the_passage_limit() {
+        let text = "x\n\n".repeat(MAX_TEXT_FILE_PASSAGES + 1);
+        assert_eq!(
+            split_text_passages(&text).expect_err("passage limit"),
+            format!("Text extraction is limited to {MAX_TEXT_FILE_PASSAGES} passages")
+        );
     }
 
     #[test]

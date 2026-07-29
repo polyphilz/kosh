@@ -33,6 +33,7 @@ const IMAGE_PREVIEW_MEDIA_TYPE: &str = "image/webp";
 const IMAGE_OCR_EXTRACTOR: &str = "ocr";
 const PDF_TEXT_EXTRACTOR: &str = "pdf-text";
 const TEXT_FILE_EXTRACTOR: &str = "text";
+pub(crate) const MAX_TEXT_FILE_PASSAGES: usize = 5_000;
 const MAX_IMAGE_OCR_ATTEMPTS: u32 = 4;
 const MAX_PDF_EXTRACTION_ATTEMPTS: u32 = 3;
 const PDF_PASSAGE_TARGET_CHARS: usize = 700;
@@ -837,6 +838,11 @@ pub(crate) fn ingest_generic_attachment(
 fn validate_text_file_segments(
     segments: Vec<TextFileSegment>,
 ) -> std::result::Result<Vec<TextFileSegment>, String> {
+    if segments.len() > MAX_TEXT_FILE_PASSAGES {
+        return Err(format!(
+            "text attachment has more than {MAX_TEXT_FILE_PASSAGES} passages"
+        ));
+    }
     let mut previous_range = None;
     for segment in &segments {
         let follows_previous = previous_range.is_none_or(|(start, end)| {
