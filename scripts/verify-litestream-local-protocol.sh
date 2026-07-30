@@ -75,14 +75,14 @@ sqlite3 "$database" \
 daemon_pid=$!
 wait_for_socket "$daemon_pid" "$socket" "$log"
 
-sqlite3 "$database" "INSERT INTO fence_events(marker) VALUES('inside-fence');"
+sqlite_write "$database" "INSERT INTO fence_events(marker) VALUES('inside-fence');"
 local_sync=$("$BINARY" sync -json -socket "$socket" "$database")
 local_txid=$(printf '%s' "$local_sync" | jq -er \
   --arg database "$database" \
   'select(.db_path == $database and (.replica_txid == null)) | .txid')
 fenced_txid=$(printf '%016x' "$local_txid")
 
-sqlite3 "$database" "INSERT INTO fence_events(marker) VALUES('after-fence');"
+sqlite_write "$database" "INSERT INTO fence_events(marker) VALUES('after-fence');"
 remote_sync=$("$BINARY" sync -wait -timeout 60 -json -socket "$socket" "$database")
 replica_txid=$(printf '%s' "$remote_sync" | jq -er \
   --arg database "$database" \
@@ -140,7 +140,7 @@ done
 assert_exact_fence_restore "$run_root/restores/post-compaction.sqlite3"
 assert_restore_result "$run_root/restores/post-compaction-result.json" "$fenced_txid"
 
-sqlite3 "$database" "INSERT INTO fence_events(marker) VALUES('shutdown-only-sync');"
+sqlite_write "$database" "INSERT INTO fence_events(marker) VALUES('shutdown-only-sync');"
 kill -TERM "$daemon_pid"
 wait "$daemon_pid"
 stopped_pid=$daemon_pid
@@ -186,7 +186,7 @@ wait_for_socket "$expiry_daemon_pid" "$expiry_socket" "$expiry_log"
 interior_txid=
 sequence=1
 while test "$sequence" -le 16; do
-  sqlite3 "$expiry_database" \
+  sqlite_write "$expiry_database" \
     "INSERT INTO expiry_events(marker) VALUES('event-$sequence');"
   sync_json=$("$BINARY" sync -json -socket "$expiry_socket" "$expiry_database")
   current_txid=$(printf '%s' "$sync_json" | jq -er '.txid')
@@ -307,6 +307,12 @@ render_file_config() {
         }
       }]
     }' >"$output"
+}
+
+sqlite_write() {
+  database_path=$1
+  statement=$2
+  sqlite3 -cmd '.timeout 30000' "$database_path" "$statement"
 }
 
 wait_for_socket() {
