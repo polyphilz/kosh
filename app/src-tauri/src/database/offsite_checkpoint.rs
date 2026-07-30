@@ -13,6 +13,8 @@ use crate::backup::{
 
 use super::{migrations, DatabaseError, Result};
 
+pub(super) const FAILED_CHECKPOINT_RETENTION: u32 = 32;
+
 #[derive(Clone, Debug)]
 pub(crate) struct PrepareOffsiteCheckpointInput {
     pub(crate) checkpoint_id: CheckpointId,
@@ -266,6 +268,7 @@ pub(super) fn mark_failed(
     )?;
     exactly_one(changed)?;
     delete_captured_references(&transaction, checkpoint_id)?;
+    prune_failed_checkpoints(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
@@ -297,6 +300,7 @@ pub(super) fn fail_incomplete(
          )",
         [CheckpointPhase::Failed.as_db_str()],
     )?;
+    prune_failed_checkpoints(&transaction)?;
     transaction.commit()?;
     Ok(changed as u64)
 }
@@ -570,6 +574,24 @@ fn delete_captured_references(connection: &Connection, checkpoint_id: &Checkpoin
         "DELETE FROM offsite_backup_checkpoint_media
          WHERE checkpoint_id = ?1",
         [checkpoint_id.as_str()],
+    )?;
+    Ok(())
+}
+
+fn prune_failed_checkpoints(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "DELETE FROM offsite_backup_checkpoint
+         WHERE checkpoint_id IN (
+             SELECT checkpoint_id
+             FROM offsite_backup_checkpoint
+             WHERE phase = ?1
+             ORDER BY updated_at DESC, created_at DESC, checkpoint_id DESC
+             LIMIT -1 OFFSET ?2
+         )",
+        params![
+            CheckpointPhase::Failed.as_db_str(),
+            FAILED_CHECKPOINT_RETENTION,
+        ],
     )?;
     Ok(())
 }

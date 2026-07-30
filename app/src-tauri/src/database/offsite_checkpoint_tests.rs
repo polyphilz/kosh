@@ -28,6 +28,7 @@ use super::{
 use super::{
     drafts::SaveDraftWrite,
     media::{IngestAttachmentMetadata, StagedAttachment},
+    offsite_checkpoint::FAILED_CHECKPOINT_RETENTION,
 };
 
 struct InspectingSync {
@@ -230,6 +231,73 @@ fn failed_fence_is_durable_without_replacing_the_last_published_checkpoint() {
             .checkpoint_id,
         published
     );
+}
+
+#[test]
+fn terminal_checkpoint_cleanup_bounds_headers_without_pruning_publications() {
+    let (_root, database, config) = enabled_database();
+    let published = publish(&database, &config, 1);
+    let mut newest_failed = None;
+    for created_at_ms in 2..=i64::from(FAILED_CHECKPOINT_RETENTION) + 8 {
+        let checkpoint_id = CheckpointId::new();
+        database
+            .client()
+            .prepare_offsite_checkpoint(input(checkpoint_id.clone(), &config, created_at_ms))
+            .expect("prepare failed checkpoint");
+        database
+            .client()
+            .mark_offsite_checkpoint_failed(
+                checkpoint_id.clone(),
+                CheckpointErrorCode::NetworkTimeout,
+            )
+            .expect("record failed checkpoint");
+        newest_failed = Some(checkpoint_id);
+    }
+    for created_at_ms in 100..104 {
+        let checkpoint_id = CheckpointId::new();
+        database
+            .client()
+            .prepare_offsite_checkpoint(input(checkpoint_id.clone(), &config, created_at_ms))
+            .expect("prepare interrupted checkpoint");
+        newest_failed = Some(checkpoint_id);
+    }
+    assert_eq!(
+        database
+            .client()
+            .fail_incomplete_offsite_checkpoints(CheckpointErrorCode::WorkerUnavailable)
+            .expect("recover interrupted checkpoints"),
+        4
+    );
+
+    let connection = Connection::open_with_flags(
+        &database.paths().main,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .expect("open main database");
+    let failed_count = connection
+        .query_row(
+            "SELECT count(*) FROM offsite_backup_checkpoint WHERE phase = ?1",
+            [CheckpointPhase::Failed.as_db_str()],
+            |row| row.get::<_, u32>(0),
+        )
+        .expect("count failed checkpoints");
+    assert_eq!(failed_count, FAILED_CHECKPOINT_RETENTION);
+    let newest_phase = connection
+        .query_row(
+            "SELECT phase FROM offsite_backup_checkpoint WHERE checkpoint_id = ?1",
+            [newest_failed.expect("newest failed").as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("load newest failed checkpoint");
+    assert_eq!(newest_phase, CheckpointPhase::Failed.as_db_str());
+    let published_phase = connection
+        .query_row(
+            "SELECT phase FROM offsite_backup_checkpoint WHERE checkpoint_id = ?1",
+            [published.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("load published checkpoint");
+    assert_eq!(published_phase, CheckpointPhase::Published.as_db_str());
 }
 
 #[test]

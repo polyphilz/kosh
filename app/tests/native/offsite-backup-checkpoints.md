@@ -65,7 +65,9 @@ result. Its timeout atomically cancels work that has not begun immutable
 publication; if publication already won that race, the caller waits for its
 bounded exact outcome instead of receiving a failure that could later publish.
 Relational, media-upload, and complete-checkpoint status remain separate and
-contain no credentials or raw remote errors.
+contain no credentials or raw remote errors. Terminal checkpoint cleanup keeps
+only the newest 32 failed headers while preserving every published checkpoint,
+so a sustained outage cannot grow retry diagnostics without bound.
 
 The Litestream checkpoint handle references only the supervisor's current
 daemon generation. Reload, crash, disable, and shutdown clear that control
@@ -84,6 +86,8 @@ The native suite proves:
   fence before publication;
 - phase transitions are monotonic, failures preserve the last publication, and
   publication sequence is correct even if the wall clock moves backwards;
+- repeated terminal failures retain only the newest 32 diagnostic headers
+  without pruning published checkpoints;
 - authored mutations advance the content clock while checkpoint bookkeeping
   does not;
 - media references persist with the PREPARED row and keyset-page as 8/8/3 for
