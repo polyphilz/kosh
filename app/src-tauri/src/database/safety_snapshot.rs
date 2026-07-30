@@ -46,6 +46,7 @@ struct SnapshotId {
 pub(crate) enum SafetySnapshotReason {
     Migration,
     MediaReclaim,
+    Restore,
 }
 
 impl SafetySnapshotReason {
@@ -53,11 +54,12 @@ impl SafetySnapshotReason {
         match self {
             Self::Migration => "migration",
             Self::MediaReclaim => "media-reclaim",
+            Self::Restore => "restore",
         }
     }
 
     fn verifies_derived_media(self) -> bool {
-        matches!(self, Self::MediaReclaim)
+        matches!(self, Self::MediaReclaim | Self::Restore)
     }
 }
 
@@ -199,6 +201,26 @@ fn verify_pair(paths: &DatabasePaths, reason: SafetySnapshotReason) -> Result<()
     let main = connection::open_read_only(&paths.main, DatabaseKind::Main)?;
     let media = connection::open_read_only(&paths.media, DatabaseKind::Media)?;
     verify_pair_connections(&main, &media, reason)
+}
+
+pub(super) fn verify_restore_pair(paths: &DatabasePaths) -> Result<()> {
+    verify_pair(paths, SafetySnapshotReason::Restore)
+}
+
+pub(super) fn create_pre_restore(paths: &DatabasePaths) -> Result<SafetySnapshotReport> {
+    let main_state = connection::inspect_file(&paths.main)?;
+    let media_state = connection::inspect_file(&paths.media)?;
+    if main_state != connection::FileState::Existing
+        || media_state != connection::FileState::Existing
+    {
+        return Err(DatabaseError::IncompletePair {
+            main_state: main_state.label(),
+            media_state: media_state.label(),
+        });
+    }
+    let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, main_state)?;
+    let mut media = connection::open_writer(&paths.media, DatabaseKind::Media, media_state)?;
+    create(&mut main, &mut media, paths, SafetySnapshotReason::Restore)
 }
 
 fn verify_pair_connections(
@@ -644,6 +666,8 @@ fn is_owned_snapshot_name(id: &str) -> bool {
 fn parse_owned_snapshot_id(id: &str) -> Option<SnapshotId> {
     let (reason, tail) = if let Some(tail) = id.strip_prefix("migration-") {
         (SafetySnapshotReason::Migration, tail)
+    } else if let Some(tail) = id.strip_prefix("restore-") {
+        (SafetySnapshotReason::Restore, tail)
     } else {
         (
             SafetySnapshotReason::MediaReclaim,

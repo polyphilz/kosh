@@ -109,6 +109,10 @@ pub enum LitestreamError {
     UnexpectedDatabasePath,
     #[error("Litestream returned too many restore files")]
     RestorePlanTooLarge,
+    #[error("Litestream restore response does not match the requested exact transaction")]
+    InvalidRestoreContract,
+    #[error("Litestream restore destination already exists")]
+    RestoreDestinationExists,
     #[error("Litestream commands require an absolute database path")]
     RelativeDatabasePath,
 }
@@ -1212,6 +1216,260 @@ pub fn parse_restore_result_json(bytes: &[u8]) -> Result<RestoreResult, Litestre
     })
 }
 
+pub(crate) trait RelationalRestoreEngine: Send + Sync {
+    fn preview(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestorePlan, LitestreamError>;
+
+    fn restore(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestoreResult, LitestreamError>;
+}
+
+/// Runs the pinned offline restore command with credentials supplied only
+/// through the child's inherited stdin descriptor. No credential value is
+/// written to arguments, environment values, configuration, or logs.
+#[allow(
+    dead_code,
+    reason = "constructed by the Settings restore IPC in chunk 29g"
+)]
+pub(crate) struct CommandLitestreamRestore<'a> {
+    binary: &'a Path,
+    config: &'a Path,
+    credentials: &'a R2Credentials,
+    timeout: Duration,
+}
+
+#[allow(
+    dead_code,
+    reason = "constructed by the Settings restore IPC in chunk 29g"
+)]
+impl<'a> CommandLitestreamRestore<'a> {
+    pub(crate) fn new(
+        binary: &'a Path,
+        config: &'a Path,
+        credentials: &'a R2Credentials,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            binary,
+            config,
+            credentials,
+            timeout,
+        }
+    }
+
+    fn execute(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        dry_run: bool,
+    ) -> Result<Vec<u8>, LitestreamError> {
+        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        if !dry_run && target_path.exists() {
+            return Err(LitestreamError::RestoreDestinationExists);
+        }
+        let arguments = restore_arguments(
+            self.config,
+            source_database_path,
+            target_path,
+            txid,
+            dry_run,
+        );
+        execute_credentialed_command(
+            self.binary,
+            &arguments,
+            self.credentials,
+            self.timeout,
+            if dry_run {
+                MAX_RESTORE_PLAN_OUTPUT_BYTES
+            } else {
+                MAX_CONTROL_OUTPUT_BYTES
+            },
+        )
+    }
+}
+
+impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
+    fn preview(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestorePlan, LitestreamError> {
+        let bytes = self.execute(source_database_path, target_path, txid, true)?;
+        let plan = parse_restore_plan_json(&bytes)?;
+        if plan.source != source_database_path.to_string_lossy()
+            || plan.target_path != target_path
+            || plan.replica != ReplicaKind::S3
+            || plan.min_txid > txid
+            || plan.max_txid < txid
+            || plan.files.is_empty()
+            || !plan
+                .files
+                .iter()
+                .any(|file| file.min_txid <= txid && file.max_txid >= txid)
+        {
+            return Err(LitestreamError::InvalidRestoreContract);
+        }
+        Ok(plan)
+    }
+
+    fn restore(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestoreResult, LitestreamError> {
+        let bytes = self.execute(source_database_path, target_path, txid, false)?;
+        let result = parse_restore_result_json(&bytes)?;
+        if result.database_path != target_path
+            || result.replica != ReplicaKind::S3
+            || result.txid != txid
+            || result.integrity_check != IntegrityCheck::Full
+        {
+            return Err(LitestreamError::InvalidRestoreContract);
+        }
+        Ok(result)
+    }
+}
+
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn restore_arguments(
+    config: &Path,
+    source_database_path: &Path,
+    target_path: &Path,
+    txid: LitestreamTxid,
+    dry_run: bool,
+) -> Vec<OsString> {
+    let mut arguments = vec![
+        OsString::from("restore"),
+        OsString::from("-config"),
+        config.as_os_str().to_owned(),
+        OsString::from("-txid"),
+        OsString::from(txid.to_string()),
+    ];
+    if dry_run {
+        arguments.push(OsString::from("-dry-run"));
+    }
+    arguments.push(OsString::from("-json"));
+    if !dry_run {
+        arguments.extend([OsString::from("-integrity-check"), OsString::from("full")]);
+    }
+    arguments.extend([
+        OsString::from("-o"),
+        target_path.as_os_str().to_owned(),
+        source_database_path.as_os_str().to_owned(),
+    ]);
+    arguments
+}
+
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn execute_credentialed_command(
+    binary: &Path,
+    arguments: &[OsString],
+    credentials: &R2Credentials,
+    timeout: Duration,
+    output_limit: usize,
+) -> Result<Vec<u8>, LitestreamError> {
+    let mut command = Command::new(binary);
+    command
+        .args(arguments)
+        .env_clear()
+        .env(
+            AWS_SHARED_CREDENTIALS_FILE_ENV,
+            AWS_SHARED_CREDENTIALS_FILE_FD,
+        )
+        .env(AWS_EC2_METADATA_DISABLED_ENV, "true")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(LitestreamError::Execute)?;
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        LitestreamError::Execute(std::io::Error::other(
+            "Litestream restore credential pipe is unavailable",
+        ))
+    })?;
+    if let Err(error) = write_aws_shared_credentials(&mut stdin, credentials) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(LitestreamError::Execute(error));
+    }
+    drop(stdin);
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(LitestreamError::Execute(std::io::Error::other(
+            "Litestream restore stdout pipe is unavailable",
+        )));
+    };
+    let reader = match thread::Builder::new()
+        .name("kosh-litestream-restore-output".into())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            stdout
+                .by_ref()
+                .take(output_limit as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            Ok::<_, std::io::Error>(bytes)
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(LitestreamError::Execute(error));
+        }
+    };
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(COMMAND_POLL_INTERVAL),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(LitestreamError::Execute(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Litestream restore timed out",
+                )));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(LitestreamError::Execute(error));
+            }
+        }
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| {
+            LitestreamError::Execute(std::io::Error::other(
+                "Litestream restore output reader panicked",
+            ))
+        })?
+        .map_err(LitestreamError::Execute)?;
+    if bytes.len() > output_limit {
+        return Err(LitestreamError::OversizedControlResponse);
+    }
+    if !status.success() {
+        return Err(LitestreamError::CommandFailed {
+            exit_code: status.code(),
+        });
+    }
+    Ok(bytes)
+}
+
 fn ensure_bounded_output(bytes: &[u8], limit: usize) -> Result<(), LitestreamError> {
     if bytes.len() > limit {
         return Err(LitestreamError::OversizedControlResponse);
@@ -1611,6 +1869,118 @@ mod tests {
         .expect("restore result");
         assert_eq!(result.txid, plan.max_txid);
         assert_eq!(result.integrity_check, IntegrityCheck::Full);
+    }
+
+    #[test]
+    fn restore_commands_pin_exact_txid_and_full_integrity_without_secrets() {
+        let source = Path::new("/data/kosh.sqlite3");
+        let target = Path::new("/data/restore/kosh.sqlite3");
+        let config = Path::new("/data/run/backup/ls.yml");
+        let txid = LitestreamTxid::from_local(42);
+        let preview = restore_arguments(config, source, target, txid, true);
+        let restore = restore_arguments(config, source, target, txid, false);
+        assert_eq!(
+            preview,
+            [
+                "restore",
+                "-config",
+                "/data/run/backup/ls.yml",
+                "-txid",
+                "000000000000002a",
+                "-dry-run",
+                "-json",
+                "-o",
+                "/data/restore/kosh.sqlite3",
+                "/data/kosh.sqlite3",
+            ]
+            .map(OsString::from)
+        );
+        assert_eq!(
+            restore,
+            [
+                "restore",
+                "-config",
+                "/data/run/backup/ls.yml",
+                "-txid",
+                "000000000000002a",
+                "-json",
+                "-integrity-check",
+                "full",
+                "-o",
+                "/data/restore/kosh.sqlite3",
+                "/data/kosh.sqlite3",
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn offline_restore_supplies_credentials_only_through_stdin_and_checks_exact_results() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let binary = root.path().join("litestream");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+set -eu
+test "${AWS_SHARED_CREDENTIALS_FILE:-}" = "/dev/fd/0"
+test "${AWS_EC2_METADATA_DISABLED:-}" = "true"
+test -z "${UNRELATED_SECRET:-}"
+credentials=$(cat)
+case "$credentials" in
+  *"aws_access_key_id = 00000000000000000000000000000000"*"aws_secret_access_key = 0000000000000000000000000000000000000000000000000000000000000000"*) ;;
+  *) exit 91 ;;
+esac
+dry=0
+target=
+txid=
+source=
+while test "$#" -gt 0; do
+  case "$1" in
+    -config) shift 2 ;;
+    -txid) txid=$2; shift 2 ;;
+    -dry-run) dry=1; shift ;;
+    -integrity-check) test "$2" = "full"; shift 2 ;;
+    -json) shift ;;
+    -o) target=$2; shift 2 ;;
+    restore) shift ;;
+    -*) exit 92 ;;
+    *) source=$1; shift ;;
+  esac
+done
+if test "$dry" = 1; then
+  printf '{"source":"%s","target_path":"%s","replica":"s3","min_txid":"%s","max_txid":"%s","files":[{"level":0,"name":"exact.ltx","min_txid":"%s","max_txid":"%s","size":12,"timestamp":"2026-07-30T19:00:00Z"}]}' "$source" "$target" "$txid" "$txid" "$txid" "$txid"
+else
+  printf 'restored' >"$target"
+  printf '{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_check":"full"}' "$target" "$txid"
+fi
+"#,
+        )
+        .expect("fake Litestream");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
+            .expect("fake Litestream permissions");
+        let config = root.path().join("ls.yml");
+        fs::write(&config, "not inspected by fake").expect("config");
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let target = root.path().join("restored.sqlite3");
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine =
+            CommandLitestreamRestore::new(&binary, &config, &credentials, Duration::from_secs(5));
+        let txid = LitestreamTxid::from_local(42);
+
+        let plan = engine
+            .preview(&source, &target, txid)
+            .expect("credentialed preview");
+        assert_eq!(plan.max_txid, txid);
+        let result = engine
+            .restore(&source, &target, txid)
+            .expect("credentialed restore");
+        assert_eq!(result.txid, txid);
+        assert_eq!(fs::read(target).expect("restore bytes"), b"restored");
     }
 
     #[test]

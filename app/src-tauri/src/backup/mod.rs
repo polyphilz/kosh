@@ -15,4 +15,5 @@ pub(crate) mod media_reconciler;
 pub(crate) mod object_store;
 pub(crate) mod owner;
 pub(crate) mod probe;
+pub(crate) mod restore;
 pub(crate) mod writer_identity;

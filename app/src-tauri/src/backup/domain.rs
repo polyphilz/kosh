@@ -11,7 +11,7 @@ pub(crate) const OBJECT_FORMAT_VERSION: u32 = 1;
 pub(crate) const FIXED_R2_PREFIX: &str = "kosh/v1/backup-sets";
 pub(crate) const CHECKPOINT_MANIFEST_FORMAT_VERSION: u32 = 1;
 const MAX_OBJECT_KEY_BYTES: usize = 1_024;
-const MAX_MANIFEST_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_KOSH_VERSION_BYTES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -584,6 +584,10 @@ impl R2Keyspace {
         )))
     }
 
+    pub(crate) fn checkpoint_prefix(&self) -> R2ListPrefix {
+        R2ListPrefix(format!("{}/checkpoints/v1/", self.root))
+    }
+
     pub(crate) fn probe_prefix(&self, run_id: &ProbeRunId) -> R2ListPrefix {
         R2ListPrefix(format!("{}/probes/{}/", self.root, run_id.as_str()))
     }
@@ -800,6 +804,58 @@ impl CheckpointManifestV1 {
             && self.media.referenced_total_bytes == evidence.referenced_total_bytes
             && self.media.referenced_hash_set_sha256 == evidence.referenced_hash_set_sha256
             && self.main.txid == evidence.litestream_txid
+    }
+
+    pub(crate) fn backup_set_id(&self) -> &BackupSetId {
+        &self.backup_set_id
+    }
+
+    pub(crate) fn replica_epoch_id(&self) -> &ReplicaEpochId {
+        &self.replica_epoch_id
+    }
+
+    pub(crate) fn checkpoint_id(&self) -> &CheckpointId {
+        &self.checkpoint_id
+    }
+
+    pub(crate) fn created_at(&self) -> &UtcTimestamp {
+        &self.created_at
+    }
+
+    pub(crate) fn kosh_version(&self) -> &str {
+        &self.kosh_version
+    }
+
+    pub(crate) const fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
+    pub(crate) const fn main_migration_head(&self) -> u32 {
+        self.main.migration_head
+    }
+
+    pub(crate) fn litestream_path(&self) -> &str {
+        &self.main.litestream_path
+    }
+
+    pub(crate) fn txid(&self) -> &str {
+        &self.main.txid
+    }
+
+    pub(crate) const fn media_migration_head(&self) -> u32 {
+        self.media.migration_head
+    }
+
+    pub(crate) const fn referenced_hash_count(&self) -> u64 {
+        self.media.referenced_hash_count
+    }
+
+    pub(crate) const fn referenced_total_bytes(&self) -> u64 {
+        self.media.referenced_total_bytes
+    }
+
+    pub(crate) const fn referenced_hash_set_sha256(&self) -> ContentSha256 {
+        self.media.referenced_hash_set_sha256
     }
 }
 
