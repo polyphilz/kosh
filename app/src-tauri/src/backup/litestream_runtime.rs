@@ -1215,8 +1215,10 @@ fn sweep_stale_runtime(
         ));
     }
     if !process_exists(record.pid) {
+        remove_socket_if_present(runtime).map_err(|_| {
+            RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true)
+        })?;
         remove_pid_record_if_owned(runtime, record.pid);
-        remove_socket_if_present(runtime);
         return Ok(());
     }
     if !process_matches_record(&record) {
@@ -1232,8 +1234,9 @@ fn sweep_stale_runtime(
             false,
         ));
     }
+    remove_socket_if_present(runtime)
+        .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true))?;
     remove_pid_record_if_owned(runtime, record.pid);
-    remove_socket_if_present(runtime);
     Ok(())
 }
 
@@ -1292,10 +1295,10 @@ fn cleanup_owned_runtime(
     expected_pid: u32,
     remove_socket: bool,
 ) {
-    remove_pid_record_if_owned(runtime, expected_pid);
-    if remove_socket {
-        remove_socket_if_present(runtime);
+    if remove_socket && remove_socket_if_present(runtime).is_err() {
+        return;
     }
+    remove_pid_record_if_owned(runtime, expected_pid);
 }
 
 fn process_matches_record(record: &LitestreamPidRecord) -> bool {
@@ -1432,11 +1435,11 @@ fn remove_pid_record_if_owned(runtime: &LitestreamRuntimePaths, expected_pid: u3
     }
 }
 
-fn remove_socket_if_present(runtime: &LitestreamRuntimePaths) {
+fn remove_socket_if_present(runtime: &LitestreamRuntimePaths) -> std::io::Result<()> {
     match fs::remove_file(runtime.socket()) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => {}
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -2264,6 +2267,44 @@ mod tests {
             b"replacement socket"
         );
         cleanup_owned_runtime(&replacement, &runtime, replacement_pid, true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_retains_the_pid_record_until_the_socket_is_removed() {
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        runtime.write_config("safe config").expect("write config");
+        let binary = root.path().join("litestream");
+        let database = root.path().join("kosh.sqlite3");
+        fs::write(&binary, b"binary").expect("binary fixture");
+        fs::write(&database, b"database").expect("database fixture");
+        let pid = u32::MAX;
+        write_pid_record(
+            &runtime,
+            pid,
+            &binary,
+            &database,
+            &LaunchIdentity {
+                backup_set_id: BackupSetId::new().to_string(),
+                replica_epoch_id: ReplicaEpochId::new().to_string(),
+                config_sha256: sha256_hex(b"safe config"),
+            },
+        )
+        .expect("PID record");
+        fs::create_dir(runtime.socket()).expect("unremovable socket fixture");
+        let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
+
+        cleanup_owned_runtime(&ownership, &runtime, pid, true);
+
+        assert!(
+            runtime.pid().exists(),
+            "the ownership record must survive a failed socket unlink"
+        );
+        fs::remove_dir(runtime.socket()).expect("remove socket fixture");
+        cleanup_owned_runtime(&ownership, &runtime, pid, true);
+        assert!(!runtime.pid().exists());
     }
 
     #[cfg(unix)]
