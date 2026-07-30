@@ -12,24 +12,26 @@ For an enabled configuration the supervisor:
 
 1. verifies the bundled universal Litestream bytes and release manifest;
 2. creates real, non-symlinked `run/backup` directories with mode `0700`;
-3. atomically writes a mode-`0600` fixed-protocol configuration through a
+3. loads the active backup-set credential from macOS Keychain into zeroizing
+   process memory;
+4. derives a domain-separated writer identity from macOS's hardware-provided
+   `IOPlatformUUID`, which is not part of migrated user data;
+5. conditionally claims and reads back the fixed R2 owner object with that
+   device-local writer identity before any replication process exists;
+6. atomically writes a mode-`0600` fixed-protocol configuration through a
    create-new, no-follow temporary file containing environment-variable
    references rather than credential values;
-4. loads the active backup-set credential from macOS Keychain into zeroizing
-   process memory;
-5. conditionally claims and reads back the fixed R2 owner object with the
-   Keychain-local writer identity before any replication process exists;
-6. launches Kosh's inert Litestream activation helper with an otherwise empty
+7. launches Kosh's inert Litestream activation helper with an otherwise empty
    environment and a dedicated process group;
-7. durably writes a bounded private PID record binding the exact executable,
+8. durably writes a bounded private PID record binding the exact executable,
    database, config, socket, backup set, replica epoch, and config digest;
-8. only then activates the helper through its private inherited pipe, which
+9. only then activates the helper through its private inherited pipe, which
    atomically replaces itself with `litestream replicate`; parent death before
    activation closes the pipe and leaves no replicating orphan;
-9. retains an exclusive, non-inherited runtime-generation lock from stale
-   cleanup through daemon cleanup;
-10. accepts readiness only from a Unix socket with mode `0600`; and
-11. confirms the canonical local and remote TXID through a bounded control
+10. retains an exclusive, non-inherited runtime-generation lock from stale
+    cleanup through daemon cleanup;
+11. accepts readiness only from a Unix socket with mode `0600`; and
+12. confirms the canonical local and remote TXID through a bounded control
     command.
 
 Status contains only fixed phase/error enums, canonical 16-character TXIDs,
@@ -41,13 +43,16 @@ stuck behind Litestream's full network timeout.
 ## Failure and shutdown contract
 
 The supervisor polls for configuration changes and process exit independently
-of the database writer. Transient launch, Keychain, process, and remote-sync
-failures use exponential backoff capped at five minutes. A structural binary,
-path, socket, PID-record, or configuration failure blocks only the current
-configuration revision. Capture, editing, and Exact search continue through
-all of these states. A remote owner belonging to another Keychain-local writer
-identity blocks Litestream before launch; network failure while claiming or
-verifying the owner remains retryable.
+of the database writer. Transient launch, Keychain, device-identity, process,
+and remote-sync failures use exponential backoff capped at five minutes. A
+structural binary, path, socket, PID-record, or configuration failure blocks
+only the current configuration revision. Capture, editing, and Exact search
+continue through all of these states. A remote owner belonging to another
+hardware-bound writer identity blocks Litestream before launch; network failure
+while claiming or verifying the owner remains retryable. Remote owner acquisition runs in a
+non-launching worker watched at 50-millisecond intervals. Application shutdown
+cancels between requests and detaches from one already-stalled bounded R2
+request, so it cannot hold application exit or subsequently launch a daemon.
 
 On application exit, Kosh first stops Claude and gives its monitor a bounded
 window to persist the terminal research event, then closes and joins the sole
@@ -93,6 +98,10 @@ The focused native suite proves:
   idempotently or advances its epoch with an ETag guard, and a second
   installation using copied configuration and R2 keys is rejected before
   launch;
+- credential migrations strip embedded writer IDs, hardware identity parsing
+  is strict, and a fresh device gets a different domain-separated identity;
+- shutdown interrupts a stalled remote-owner start operation without waiting
+  for the R2 request timeout;
 - application exit persists the Claude terminal event and closes the sole
   SQLite writer before the final Litestream sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;

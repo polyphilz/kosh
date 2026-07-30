@@ -24,11 +24,19 @@ R2 access and secret keys exist only in zeroizing process memory or a
 versioned payload in the macOS Keychain service
 `com.rohan.kosh.offsite-backup.r2`. Debug output is redacted. A Keychain save
 is read back and decoded before it succeeds; a mismatched readback removes the
-new item and fails. The payload also contains a generated, non-secret writer
-identity that is local to this Keychain installation, is never accepted from
-the settings form, and remains stable across credential updates. Legacy
-payloads are upgraded with one durable writer identity under the same verified
-rollback protocol.
+new item and fails. Credential payloads never contain the backup writer
+identity. Legacy payloads that embedded one are verified, upgraded, and stripped
+under the same rollback protocol.
+
+The non-secret writer identity is instead a domain-separated SHA-256 digest of
+macOS's hardware-provided `IOPlatformUUID`. Kosh reads that property from the
+fixed `/usr/sbin/ioreg` binary with an empty environment, bounded output, and
+strict canonical parsing. It is never accepted from the settings form, remains
+stable across credential updates, and comes from the destination hardware
+rather than migrated user data. Restoring or copying the R2 credential payload
+onto another Mac therefore yields a different writer identity and cannot
+impersonate the remote owner. This also works in unsigned development builds
+without a Keychain prompt or application window.
 
 ## Network and namespace contract
 

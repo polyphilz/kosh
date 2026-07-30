@@ -1,5 +1,7 @@
 #![cfg_attr(feature = "test-support", allow(dead_code))]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -48,6 +50,8 @@ impl RemoteOwnerDocument {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RemoteOwnerError {
+    #[error("remote owner acquisition was cancelled")]
+    Cancelled,
     #[error("another installation owns this backup set")]
     Conflict,
     #[error("the remote owner record is invalid")]
@@ -63,6 +67,25 @@ pub(crate) fn claim_remote_owner(
     replica_epoch_id: &ReplicaEpochId,
     writer_id: &BackupWriterId,
 ) -> Result<(), RemoteOwnerError> {
+    claim_remote_owner_cancellable(
+        store,
+        keyspace,
+        backup_set_id,
+        replica_epoch_id,
+        writer_id,
+        &AtomicBool::new(false),
+    )
+}
+
+pub(crate) fn claim_remote_owner_cancellable(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+    replica_epoch_id: &ReplicaEpochId,
+    writer_id: &BackupWriterId,
+    cancelled: &AtomicBool,
+) -> Result<(), RemoteOwnerError> {
+    ensure_not_cancelled(cancelled)?;
     let expected = RemoteOwnerDocument::new(backup_set_id, replica_epoch_id, writer_id);
     let expected_bytes = expected.encode()?;
     let key = keyspace.owner();
@@ -75,13 +98,16 @@ pub(crate) fn claim_remote_owner(
         condition: PutCondition::IfAbsent,
     })? {
         PutObjectOutcome::Stored => {
+            ensure_not_cancelled(cancelled)?;
             return verify_exact_owner(store, &key, &expected, &expected_bytes).map(|_| ());
         }
         PutObjectOutcome::ConditionNotMet => {}
     }
 
     for _ in 0..MAX_CLAIM_ATTEMPTS {
+        ensure_not_cancelled(cancelled)?;
         let current = read_owner(store, &key)?;
+        ensure_not_cancelled(cancelled)?;
         if current.document == expected {
             return Ok(());
         }
@@ -98,12 +124,21 @@ pub(crate) fn claim_remote_owner(
             condition: PutCondition::IfMatch(current.version),
         })? {
             PutObjectOutcome::Stored => {
+                ensure_not_cancelled(cancelled)?;
                 return verify_exact_owner(store, &key, &expected, &expected_bytes).map(|_| ());
             }
             PutObjectOutcome::ConditionNotMet => {}
         }
     }
     Err(RemoteOwnerError::Conflict)
+}
+
+fn ensure_not_cancelled(cancelled: &AtomicBool) -> Result<(), RemoteOwnerError> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(RemoteOwnerError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 struct ReadOwner {
@@ -277,11 +312,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_cancelled_claim_performs_no_remote_operation() {
+        let (backup_set_id, keyspace, store, epoch, writer) = fixture();
+        let cancelled = AtomicBool::new(true);
+
+        assert!(matches!(
+            claim_remote_owner_cancellable(
+                &store,
+                &keyspace,
+                &backup_set_id,
+                &epoch,
+                &writer,
+                &cancelled,
+            ),
+            Err(RemoteOwnerError::Cancelled)
+        ));
+        assert!(store.operations().is_empty());
+    }
+
     impl RemoteOwnerError {
         fn store_code(&self) -> Option<ObjectStoreErrorCode> {
             match self {
                 Self::Store(error) => Some(error.code),
-                Self::Conflict | Self::Invalid => None,
+                Self::Cancelled | Self::Conflict | Self::Invalid => None,
             }
         }
     }

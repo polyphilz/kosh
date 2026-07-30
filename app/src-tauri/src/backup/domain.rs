@@ -3,6 +3,7 @@
 use std::{fmt, str::FromStr};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 use uuid::{Uuid, Variant};
 
 pub(crate) const OBJECT_FORMAT_VERSION: u32 = 1;
@@ -131,7 +132,67 @@ macro_rules! uuid_v7_id {
 uuid_v7_id!(BackupSetId, "backupSetId");
 uuid_v7_id!(ReplicaEpochId, "replicaEpochId");
 uuid_v7_id!(ProbeRunId, "probeRunId");
-uuid_v7_id!(BackupWriterId, "backupWriterId");
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct BackupWriterId(String);
+
+impl BackupWriterId {
+    pub(crate) fn new() -> Self {
+        Self::derive_from_device_identifier(Uuid::now_v7().as_bytes())
+    }
+
+    pub(crate) fn derive_from_device_identifier(identifier: &[u8]) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(b"com.rohan.kosh.backup-writer.v1\0");
+        digest.update(identifier);
+        Self(format!("{:x}", digest.finalize()))
+    }
+
+    pub(crate) fn parse(value: impl Into<String>) -> Result<Self, BackupDomainError> {
+        let value = value.into();
+        if value.len() != 64 || !is_lower_hex(&value) {
+            return Err(BackupDomainError::InvalidField("backupWriterId"));
+        }
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for BackupWriterId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for BackupWriterId {
+    type Err = BackupDomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl Serialize for BackupWriterId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for BackupWriterId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(de::Error::custom)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct R2AccountId(String);
@@ -440,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn identifiers_are_canonical_uuid_v7_values() {
+    fn event_identifiers_are_canonical_uuid_v7_values() {
         let backup_set = BackupSetId::new();
         assert_eq!(
             BackupSetId::parse(backup_set.as_str()).expect("round trip"),
@@ -448,11 +509,18 @@ mod tests {
         );
         assert!(BackupSetId::parse("550e8400-e29b-41d4-a716-446655440000").is_err());
         assert!(ReplicaEpochId::parse("not-an-id").is_err());
+    }
+
+    #[test]
+    fn writer_identifiers_are_canonical_sha256_values() {
         let writer = BackupWriterId::new();
         assert_eq!(
             BackupWriterId::parse(writer.as_str()).expect("writer round trip"),
             writer
         );
+        assert_eq!(writer.as_str().len(), 64);
+        assert!(BackupWriterId::parse("not-an-id").is_err());
+        assert!(BackupWriterId::parse("A".repeat(64)).is_err());
     }
 
     #[test]
@@ -465,8 +533,7 @@ mod tests {
 
             assert!(BackupSetId::parse(invalid.clone()).is_err());
             assert!(ReplicaEpochId::parse(invalid.clone()).is_err());
-            assert!(ProbeRunId::parse(invalid.clone()).is_err());
-            assert!(BackupWriterId::parse(invalid).is_err());
+            assert!(ProbeRunId::parse(invalid).is_err());
         }
     }
 }

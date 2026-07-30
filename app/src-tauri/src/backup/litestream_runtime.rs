@@ -25,7 +25,8 @@ use super::{
         VerifiedLitestreamBinary,
     },
     object_store::{ObjectStoreErrorCode, R2ObjectStore},
-    owner::{claim_remote_owner, RemoteOwnerError},
+    owner::{claim_remote_owner_cancellable, RemoteOwnerError},
+    writer_identity::{MacOsHardwareWriterIdentity, WriterIdentityError, WriterIdentityProvider},
 };
 
 const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -42,6 +43,7 @@ const DAEMON_LAUNCH_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 const STALE_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const OWNER_CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PID_RECORD_FORMAT_VERSION: u32 = 1;
 const MAX_PID_RECORD_BYTES: u64 = 16 * 1024;
 const LITESTREAM_LAUNCHER_ARG: &str = "--kosh-litestream-launcher";
@@ -150,6 +152,7 @@ pub(crate) enum RelationalBackupErrorCode {
     RemoteSyncFailed,
     RemoteOwnerConflict,
     RemoteOwnerInvalid,
+    WriterIdentityUnavailable,
     WorkerUnavailable,
 }
 
@@ -190,6 +193,7 @@ impl LitestreamRuntimeService {
                 database_path,
                 resource_dir,
                 credentials: MacOsKeychainCredentialStore,
+                writer_identity: MacOsHardwareWriterIdentity,
             }),
             WorkerSchedule::production(),
         )
@@ -348,6 +352,7 @@ trait RuntimeFactory: Send + Sync {
     fn start(
         &self,
         config: &OffsiteBackupConfig,
+        shutdown: Arc<AtomicBool>,
     ) -> Result<Box<dyn ManagedLitestream>, RuntimeFailure>;
 }
 
@@ -482,7 +487,7 @@ fn supervisor_worker(
             && Instant::now() >= next_start
         {
             lock_status(&status).phase = RelationalBackupPhase::Starting;
-            match factory.start(config) {
+            match factory.start(config, Arc::clone(&shutdown)) {
                 Ok(started) => {
                     daemon = Some(started);
                     next_remote_status = Instant::now();
@@ -560,6 +565,7 @@ fn update_failure_status(
         }
         RelationalBackupErrorCode::KeychainUnavailable
         | RelationalBackupErrorCode::BinaryUnavailable
+        | RelationalBackupErrorCode::WriterIdentityUnavailable
         | RelationalBackupErrorCode::WorkerUnavailable => RelationalBackupPhase::Unavailable,
         _ if failure.retryable => RelationalBackupPhase::Degraded,
         _ => RelationalBackupPhase::Blocked,
@@ -589,14 +595,15 @@ fn system_now_ms() -> Option<i64> {
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
 }
 
-struct SystemRuntimeFactory<C> {
+struct SystemRuntimeFactory<C, I> {
     data_root: PathBuf,
     database_path: PathBuf,
     resource_dir: Option<PathBuf>,
     credentials: C,
+    writer_identity: I,
 }
 
-impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
+impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRuntimeFactory<C, I> {
     fn sweep_stale(&self) -> Result<(), RuntimeFailure> {
         let runtime =
             LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
@@ -616,7 +623,11 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
     fn start(
         &self,
         config: &OffsiteBackupConfig,
+        shutdown: Arc<AtomicBool>,
     ) -> Result<Box<dyn ManagedLitestream>, RuntimeFailure> {
+        if shutdown.load(Ordering::Acquire) {
+            return Err(cancelled_start());
+        }
         let resource_dir = self.resource_dir.as_deref().ok_or_else(|| {
             RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
         })?;
@@ -632,17 +643,24 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
             .credentials
             .load(&config.backup_set_id)
             .map_err(map_credential_start_error)?;
+        let writer_id = self
+            .writer_identity
+            .load()
+            .map_err(map_writer_identity_start_error)?;
         let keyspace = config.target.keyspace(&config.backup_set_id);
         let store = R2ObjectStore::new(config.target.clone(), keyspace.clone(), &credentials)
             .map_err(|error| map_remote_owner_error(RemoteOwnerError::Store(error)))?;
-        claim_remote_owner(
-            &store,
-            &keyspace,
-            &config.backup_set_id,
-            &config.replica_epoch_id,
-            credentials.writer_id(),
-        )
-        .map_err(map_remote_owner_error)?;
+        claim_remote_owner_interruptibly(
+            store,
+            keyspace.clone(),
+            config.backup_set_id.clone(),
+            config.replica_epoch_id.clone(),
+            writer_id,
+            Arc::clone(&shutdown),
+        )?;
+        if shutdown.load(Ordering::Acquire) {
+            return Err(cancelled_start());
+        }
         let replica_path = keyspace.litestream(&config.replica_epoch_id);
         let endpoint = config.target.endpoint();
         let rendered = LitestreamConfig {
@@ -670,6 +688,62 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
         )?;
         Ok(Box::new(daemon))
     }
+}
+
+fn claim_remote_owner_interruptibly(
+    store: R2ObjectStore,
+    keyspace: super::domain::R2Keyspace,
+    backup_set_id: super::domain::BackupSetId,
+    replica_epoch_id: super::domain::ReplicaEpochId,
+    writer_id: super::domain::BackupWriterId,
+    shutdown: Arc<AtomicBool>,
+) -> Result<(), RuntimeFailure> {
+    run_start_operation_interruptibly(shutdown, "kosh-remote-owner-claim", move |cancelled| {
+        claim_remote_owner_cancellable(
+            &store,
+            &keyspace,
+            &backup_set_id,
+            &replica_epoch_id,
+            &writer_id,
+            &cancelled,
+        )
+        .map_err(map_remote_owner_error)
+    })
+}
+
+fn run_start_operation_interruptibly<T: Send + 'static>(
+    shutdown: Arc<AtomicBool>,
+    worker_name: &'static str,
+    operation: impl FnOnce(Arc<AtomicBool>) -> Result<T, RuntimeFailure> + Send + 'static,
+) -> Result<T, RuntimeFailure> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker_shutdown = Arc::clone(&shutdown);
+    thread::Builder::new()
+        .name(worker_name.into())
+        .spawn(move || {
+            let _ = sender.send(operation(worker_shutdown));
+        })
+        .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::WorkerUnavailable, true))?;
+
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            return Err(cancelled_start());
+        }
+        match receiver.recv_timeout(OWNER_CLAIM_POLL_INTERVAL) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(RuntimeFailure::new(
+                    RelationalBackupErrorCode::WorkerUnavailable,
+                    true,
+                ));
+            }
+        }
+    }
+}
+
+fn cancelled_start() -> RuntimeFailure {
+    RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, true)
 }
 
 fn stale_runtime_residue_exists(runtime: &LitestreamRuntimePaths) -> Result<bool, RuntimeFailure> {
@@ -704,8 +778,20 @@ fn map_credential_start_error(error: CredentialError) -> RuntimeFailure {
     }
 }
 
+fn map_writer_identity_start_error(error: WriterIdentityError) -> RuntimeFailure {
+    match error {
+        WriterIdentityError::Unavailable => {
+            RuntimeFailure::new(RelationalBackupErrorCode::WriterIdentityUnavailable, true)
+        }
+        WriterIdentityError::Invalid => {
+            RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false)
+        }
+    }
+}
+
 fn map_remote_owner_error(error: RemoteOwnerError) -> RuntimeFailure {
     match error {
+        RemoteOwnerError::Cancelled => cancelled_start(),
         RemoteOwnerError::Conflict => {
             RuntimeFailure::new(RelationalBackupErrorCode::RemoteOwnerConflict, false)
         }
@@ -1483,6 +1569,7 @@ mod tests {
         fn start(
             &self,
             _config: &OffsiteBackupConfig,
+            _shutdown: Arc<AtomicBool>,
         ) -> Result<Box<dyn ManagedLitestream>, RuntimeFailure> {
             self.starts.fetch_add(1, Ordering::SeqCst);
             match self
@@ -1838,6 +1925,48 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_interrupts_a_stalled_start_operation_without_waiting_for_its_timeout() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker_started = Arc::clone(&started);
+        let worker_release = Arc::clone(&release);
+        let outer = thread::spawn(move || {
+            let result = run_start_operation_interruptibly(
+                worker_shutdown,
+                "kosh-test-stalled-owner-request",
+                move |_| {
+                    worker_started.store(true, Ordering::Release);
+                    while !worker_release.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Ok(())
+                },
+            );
+            completed_tx.send(result).expect("completion receiver");
+        });
+        wait_until(Duration::from_secs(1), || started.load(Ordering::Acquire));
+
+        let quit_started = Instant::now();
+        shutdown.store(true, Ordering::Release);
+        assert_eq!(
+            completed_rx
+                .recv_timeout(Duration::from_millis(500))
+                .expect("interruptible operation result"),
+            Err(cancelled_start())
+        );
+        assert!(
+            quit_started.elapsed() < Duration::from_millis(500),
+            "shutdown waited for the stalled owner request"
+        );
+
+        release.store(true, Ordering::Release);
+        outer.join().expect("interruptible operation caller");
+    }
+
+    #[test]
     fn restart_backoff_is_exponential_and_capped() {
         let policy = RestartPolicy {
             base: Duration::from_secs(1),
@@ -1884,10 +2013,22 @@ mod tests {
         })
         .expect("bounded status");
         assert!(!json.contains(ACCOUNT_ID));
+        assert_eq!(
+            map_writer_identity_start_error(WriterIdentityError::Unavailable),
+            RuntimeFailure::new(RelationalBackupErrorCode::WriterIdentityUnavailable, true)
+        );
+        assert_eq!(
+            map_writer_identity_start_error(WriterIdentityError::Invalid),
+            RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false)
+        );
     }
 
     #[test]
     fn remote_owner_failures_block_conflicts_and_retry_transport_outages() {
+        assert_eq!(
+            map_remote_owner_error(RemoteOwnerError::Cancelled),
+            cancelled_start()
+        );
         assert_eq!(
             map_remote_owner_error(RemoteOwnerError::Conflict),
             RuntimeFailure::new(RelationalBackupErrorCode::RemoteOwnerConflict, false)
