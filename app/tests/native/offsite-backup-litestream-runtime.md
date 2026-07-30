@@ -81,6 +81,9 @@ artifacts are gone. Cleanup accepts only digests in the embedded, bounded,
 append-only trusted-cleanup registry. Each release retains every prior
 Litestream pin in that registry, so an upgraded or relocated app can reap its
 genuine old daemon without trusting a digest supplied only by the PID record.
+Reading this embedded registry is independent of current launch-binary and
+release-manifest verification, so a missing or corrupt new resource cannot
+strand a previously authenticated daemon.
 If shutdown arrives while a verified stale daemon ignores SIGTERM, cleanup
 immediately escalates to SIGKILL and finishes ownership cleanup instead of
 waiting through the normal 35-second graceful window before escalation.
@@ -113,6 +116,8 @@ The focused native suite proves:
 - a current or previously trusted pinned binary digest authorizes cleanup after
   the app upgrades or relocates, while a digest outside the embedded registry
   fails closed without killing the child;
+- stale cleanup succeeds from the embedded registry when the current launch
+  binary is unavailable;
 - the first writer conditionally claims R2, the same installation reclaims
   idempotently or advances its epoch with an ETag guard, and a second
   installation using copied configuration and R2 keys is rejected before

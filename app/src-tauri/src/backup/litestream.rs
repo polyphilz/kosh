@@ -152,7 +152,6 @@ struct StagedBinary {
 pub struct VerifiedLitestreamBinary {
     path: PathBuf,
     sha256: String,
-    trusted_cleanup_sha256s: Vec<String>,
 }
 
 impl VerifiedLitestreamBinary {
@@ -166,9 +165,10 @@ impl VerifiedLitestreamBinary {
         &self.sha256
     }
 
-    #[must_use]
-    pub fn trusted_cleanup_sha256s(&self) -> &[String] {
-        &self.trusted_cleanup_sha256s
+    pub fn trusted_cleanup_sha256s() -> Result<Vec<String>, LitestreamError> {
+        let manifest = embedded_manifest()?;
+        validate_protocol_manifest(&manifest)?;
+        Ok(manifest.binary.trusted_cleanup_sha256s)
     }
 
     pub fn resolve(resource_dir: &Path) -> Result<Self, LitestreamError> {
@@ -191,7 +191,6 @@ impl VerifiedLitestreamBinary {
         Ok(Self {
             path,
             sha256: manifest.binary.universal.sha256,
-            trusted_cleanup_sha256s: manifest.binary.trusted_cleanup_sha256s,
         })
     }
 
@@ -203,7 +202,6 @@ impl VerifiedLitestreamBinary {
         Ok(Self {
             path: path.to_owned(),
             sha256: manifest.binary.universal.sha256,
-            trusted_cleanup_sha256s: manifest.binary.trusted_cleanup_sha256s,
         })
     }
 }
@@ -1382,6 +1380,11 @@ mod tests {
             manifest.binary.trusted_cleanup_sha256s,
             vec![current_sha256.clone()],
             "the first release starts the append-only cleanup registry"
+        );
+        assert_eq!(
+            VerifiedLitestreamBinary::trusted_cleanup_sha256s().expect("embedded cleanup registry"),
+            manifest.binary.trusted_cleanup_sha256s,
+            "cleanup authentication must not require a staged launch binary"
         );
 
         let mut upgraded = manifest.clone();

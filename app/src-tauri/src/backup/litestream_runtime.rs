@@ -705,15 +705,12 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
         }
         runtime.prepare().map_err(map_litestream_start_error)?;
         let ownership = acquire_runtime_ownership(&runtime)?;
-        let resource_dir = self.resource_dir.as_deref().ok_or_else(|| {
-            RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
-        })?;
-        let binary =
-            VerifiedLitestreamBinary::resolve(resource_dir).map_err(map_litestream_start_error)?;
+        let trusted_cleanup_sha256s = VerifiedLitestreamBinary::trusted_cleanup_sha256s()
+            .map_err(map_litestream_start_error)?;
         sweep_stale_runtime(
             &ownership,
             &runtime,
-            binary.trusted_cleanup_sha256s(),
+            &trusted_cleanup_sha256s,
             &self.database_path,
             &shutdown,
         )
@@ -727,22 +724,24 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
         if shutdown.load(Ordering::Acquire) {
             return Err(cancelled_start());
         }
+        let runtime =
+            LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
+        runtime.prepare().map_err(map_litestream_start_error)?;
+        let ownership = acquire_runtime_ownership(&runtime)?;
+        let trusted_cleanup_sha256s = VerifiedLitestreamBinary::trusted_cleanup_sha256s()
+            .map_err(map_litestream_start_error)?;
+        sweep_stale_runtime(
+            &ownership,
+            &runtime,
+            &trusted_cleanup_sha256s,
+            &self.database_path,
+            &shutdown,
+        )?;
         let resource_dir = self.resource_dir.as_deref().ok_or_else(|| {
             RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
         })?;
         let binary =
             VerifiedLitestreamBinary::resolve(resource_dir).map_err(map_litestream_start_error)?;
-        let runtime =
-            LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
-        runtime.prepare().map_err(map_litestream_start_error)?;
-        let ownership = acquire_runtime_ownership(&runtime)?;
-        sweep_stale_runtime(
-            &ownership,
-            &runtime,
-            binary.trusted_cleanup_sha256s(),
-            &self.database_path,
-            &shutdown,
-        )?;
 
         let credentials = self
             .credentials
@@ -2494,6 +2493,79 @@ mod tests {
         )
         .expect("sweep dead owned runtime");
         assert!(!runtime.pid().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_sweep_does_not_require_current_binary_availability() {
+        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        runtime.write_config("safe config").expect("write config");
+        let binary = root.path().join("previous-litestream");
+        let database = root.path().join("kosh.sqlite3");
+        let script = b"#!/bin/sh\nwhile :; do /bin/sleep 1; done\n";
+        fs::write(&binary, script).expect("previous binary fixture");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
+            .expect("executable previous binary");
+        fs::write(&database, b"database").expect("database fixture");
+        let mut command = Command::new(&binary);
+        command
+            .arg("replicate")
+            .arg("-config")
+            .arg(runtime.config())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let child = command.spawn().expect("previous Litestream child");
+        let pid = child.id();
+        let trusted_cleanup_sha256s =
+            VerifiedLitestreamBinary::trusted_cleanup_sha256s().expect("embedded cleanup registry");
+        write_pid_record(
+            &runtime,
+            pid,
+            &binary,
+            &database,
+            &LaunchIdentity {
+                backup_set_id: BackupSetId::new().to_string(),
+                replica_epoch_id: ReplicaEpochId::new().to_string(),
+                config_sha256: sha256_hex(b"safe config"),
+                executable_sha256: trusted_cleanup_sha256s[0].clone(),
+            },
+        )
+        .expect("PID record");
+        let record = read_pid_record(&runtime)
+            .expect("read PID record")
+            .expect("previous PID record");
+        wait_until(Duration::from_secs(1), || process_matches_record(&record));
+        let (reaped_tx, reaped_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            reaped_tx
+                .send(child.wait_with_output().map(|output| output.status))
+                .expect("reaped status receiver");
+        });
+        let factory = SystemRuntimeFactory {
+            data_root: root.path().to_owned(),
+            database_path: database.clone(),
+            resource_dir: None,
+            credentials: MacOsKeychainCredentialStore,
+            writer_identity: MacOsInstallationWriterIdentity::new(root.path().to_owned()),
+        };
+
+        factory
+            .sweep_stale(Arc::new(AtomicBool::new(false)))
+            .expect("cleanup from embedded registry");
+
+        reaped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reaped previous child")
+            .expect("wait for previous child");
+        waiter.join().expect("previous child waiter");
+        assert!(!runtime.pid().exists());
+        assert!(!process_exists(pid));
     }
 
     #[cfg(unix)]
