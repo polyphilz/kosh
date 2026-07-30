@@ -152,11 +152,17 @@ graceful shutdown, and zero-residue real-R2 spike are documented in
 Capture and lexical search remain completely local when Litestream,
 credentials, or the network are unavailable.
 
-The dormant persistence/R2 boundary stores only non-secret configuration,
-keeps R2 keys in macOS Keychain, derives only Cloudflare endpoints, and
-confines production objects to a fixed per-backup-set namespace. Its fake and
-live object-store probes are documented in
+The persistence/R2 boundary stores only non-secret configuration, keeps R2
+keys in macOS Keychain, derives only Cloudflare endpoints, and confines
+production objects to a fixed per-backup-set namespace. Its fake and live
+object-store probes are documented in
 [app/tests/native/offsite-backup-foundation.md](app/tests/native/offsite-backup-foundation.md).
+
+Enabled backups durably reconcile referenced source and preview blobs through
+a create-only background uploader that never performs network I/O on the
+authored database writer. Crash, offline retry, and metadata-verification
+contracts are documented in
+[app/tests/native/offsite-backup-media.md](app/tests/native/offsite-backup-media.md).
 
 Repository policy and secret checks run from the repository root:
 

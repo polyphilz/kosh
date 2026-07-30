@@ -170,6 +170,7 @@ pub(crate) async fn ingest_pdf_bytes(
     .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
     .map_err(crate::database::commands::CommandError::from)?;
     state.wake_pdf_extraction();
+    state.wake_media_backup();
     Ok(record)
 }
 

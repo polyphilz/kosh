@@ -1,3 +1,4 @@
+mod backup_media;
 mod backup_state;
 pub(crate) mod commands;
 pub(crate) mod connection;
@@ -17,6 +18,8 @@ pub(crate) mod tidbits;
 mod validation;
 mod writer;
 
+#[cfg(test)]
+mod backup_media_tests;
 #[cfg(test)]
 mod backup_state_tests;
 #[cfg(test)]
@@ -43,13 +46,16 @@ use std::{
     io::Read,
     sync::{
         mpsc::{self, Receiver},
-        Mutex,
+        Arc, Mutex,
     },
     thread::{self, JoinHandle},
 };
 
 use rusqlite::Connection;
 
+pub(crate) use backup_media::{OffsiteMediaUploadClaim, OffsiteMediaUploadFailureCode};
+#[cfg(test)]
+pub(crate) use backup_state::SaveOffsiteBackupConfigInput;
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use maintenance::MaintenanceDatabaseSnapshot;
@@ -180,7 +186,7 @@ impl Database {
         settings::load_shortcut_settings(&main)?;
 
         let (sender, receiver) = mpsc::channel();
-        let client = DatabaseClient::new(sender.clone());
+        let client = DatabaseClient::new(sender.clone(), Arc::new(Mutex::new(())));
         let writer_paths = paths.clone();
         let writer_thread = thread::Builder::new()
             .name("kosh-database-writer".into())
@@ -310,6 +316,47 @@ fn writer_loop(
                     &mut main,
                     &backup_set_id,
                 ));
+            }
+            WriterMessage::ReconcileOffsiteMediaUploads { now_ms, reply } => {
+                let _ = reply.send(backup_media::reconcile(&mut main, now_ms));
+            }
+            WriterMessage::RecoverInterruptedOffsiteMediaUploads { now_ms, reply } => {
+                let _ = reply.send(backup_media::recover_interrupted(&main, now_ms));
+            }
+            WriterMessage::ClaimNextOffsiteMediaUpload {
+                now_ms,
+                lease_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_media::claim_next(&mut main, now_ms, lease_id));
+            }
+            WriterMessage::AuthorizeOffsiteMediaRemoteWrite { claim, reply } => {
+                let _ = reply.send(backup_media::authorize_remote_write(&main, &claim));
+            }
+            WriterMessage::CompleteOffsiteMediaUpload {
+                claim,
+                remote_version,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(backup_media::complete(
+                    &main,
+                    &claim,
+                    &remote_version,
+                    now_ms,
+                ));
+            }
+            WriterMessage::FailOffsiteMediaUpload {
+                claim,
+                code,
+                retry_at_ms,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(backup_media::fail(&main, &claim, code, retry_at_ms, now_ms));
+            }
+            WriterMessage::OffsiteMediaUploadProgress { reply } => {
+                let _ = reply.send(backup_media::progress(&main));
             }
             WriterMessage::FullIntegrityCheck { reply } => {
                 let _ = reply.send(validation::full_integrity_check_pair(&main, &media));
@@ -643,19 +690,29 @@ fn writer_loop(
                 now_ms,
                 limits,
                 cursor,
+                reply,
             } => match media::recover_media_lifecycle_batch(
                 &mut main, &mut media, now_ms, limits, cursor,
             ) {
                 Ok(Some(cursor)) => {
-                    let _ = sender.send(WriterMessage::RecoverMediaLifecycleBatch {
+                    if let Err(error) = sender.send(WriterMessage::RecoverMediaLifecycleBatch {
                         now_ms,
                         limits,
                         cursor: Some(cursor),
-                    });
+                        reply,
+                    }) {
+                        let WriterMessage::RecoverMediaLifecycleBatch { reply, .. } = error.0
+                        else {
+                            unreachable!("failed message retained its variant");
+                        };
+                        let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                    }
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    let _ = reply.send(Ok(()));
+                }
                 Err(error) => {
-                    log::warn!("background media lifecycle recovery could not complete: {error}");
+                    let _ = reply.send(Err(error));
                 }
             },
             WriterMessage::CreateTidbit { write, reply } => {

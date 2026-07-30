@@ -345,6 +345,7 @@ pub(crate) async fn ingest_image_bytes(
     .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
     .map_err(crate::database::commands::CommandError::from)?;
     state.wake_image_ocr();
+    state.wake_media_backup();
     Ok(record)
 }
 

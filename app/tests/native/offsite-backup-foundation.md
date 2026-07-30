@@ -1,8 +1,8 @@
 # Off-site backup state and R2 boundary
 
-This boundary is dormant: it exposes no Tauri command, starts no process, and
-performs no network or Keychain operation during ordinary startup. Capture and
-Exact search therefore remain independent of backup configuration.
+Relational replication remains dormant. When backup is absent or disabled,
+ordinary startup performs no network or Keychain operation. Capture and Exact
+search therefore remain independent of backup configuration.
 
 ## Persistence contract
 
