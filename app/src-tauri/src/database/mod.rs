@@ -46,7 +46,7 @@ use std::{
     io::Read,
     sync::{
         mpsc::{self, Receiver},
-        Mutex,
+        Arc, Mutex,
     },
     thread::{self, JoinHandle},
 };
@@ -186,7 +186,7 @@ impl Database {
         settings::load_shortcut_settings(&main)?;
 
         let (sender, receiver) = mpsc::channel();
-        let client = DatabaseClient::new(sender.clone());
+        let client = DatabaseClient::new(sender.clone(), Arc::new(Mutex::new(())));
         let writer_paths = paths.clone();
         let writer_thread = thread::Builder::new()
             .name("kosh-database-writer".into())
@@ -329,6 +329,9 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(backup_media::claim_next(&mut main, now_ms, lease_id));
+            }
+            WriterMessage::IsCurrentOffsiteMediaUpload { claim, reply } => {
+                let _ = reply.send(backup_media::is_current(&main, &claim));
             }
             WriterMessage::CompleteOffsiteMediaUpload {
                 claim,

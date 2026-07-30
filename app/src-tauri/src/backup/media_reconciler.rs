@@ -1,6 +1,9 @@
 use std::{
     io::Read,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        mpsc::{self, Receiver, RecvTimeoutError},
+        Arc, Condvar, Mutex,
+    },
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -23,6 +26,7 @@ use super::{
 };
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_millis(250);
 const INITIAL_RETRY_DELAY_MS: i64 = 5_000;
 const MAX_RETRY_DELAY_MS: i64 = 15 * 60 * 1_000;
 
@@ -49,6 +53,7 @@ struct CoordinatorControl {
 pub(crate) struct MediaBackupCoordinator {
     control: Arc<CoordinatorControl>,
     worker: Option<JoinHandle<()>>,
+    completed: Option<Mutex<Receiver<()>>>,
 }
 
 impl MediaBackupCoordinator {
@@ -58,12 +63,17 @@ impl MediaBackupCoordinator {
     ) -> crate::database::Result<Self> {
         let control = Arc::new(CoordinatorControl::default());
         let worker_control = Arc::clone(&control);
+        let (completed_sender, completed_receiver) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("kosh-offsite-media".into())
-            .spawn(move || run_coordinator(client, paths, worker_control))?;
+            .spawn(move || {
+                run_coordinator(client, paths, worker_control);
+                let _ = completed_sender.send(());
+            })?;
         Ok(Self {
             control,
             worker: Some(worker),
+            completed: Some(Mutex::new(completed_receiver)),
         })
     }
 
@@ -71,6 +81,7 @@ impl MediaBackupCoordinator {
         Self {
             control: Arc::new(CoordinatorControl::default()),
             worker: None,
+            completed: None,
         }
     }
 
@@ -99,6 +110,21 @@ impl Drop for MediaBackupCoordinator {
             state.shutdown = true;
             state.generation = state.generation.wrapping_add(1);
             self.control.changed.notify_all();
+        }
+        let finished = self.completed.take().is_some_and(|completed| {
+            let completed = completed
+                .into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match completed.recv_timeout(SHUTDOWN_JOIN_GRACE) {
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => true,
+                Err(RecvTimeoutError::Timeout) => false,
+            }
+        });
+        if !finished {
+            log::warn!(
+                "off-site media worker did not stop within the shutdown grace period; detaching it"
+            );
+            return;
         }
         if worker.join().is_err() {
             log::warn!("off-site media worker stopped unexpectedly");
@@ -238,25 +264,23 @@ pub(crate) fn process_claim(
             return record_failure(client, claim, code, retryable, clock());
         }
     };
-    if let Err(error) = store.put_media(request) {
-        let (code, retryable) = classify_object_store_error(error);
-        return record_failure(client, claim, code, retryable, clock());
-    }
     let key = keyspace.media(claim.sha256);
-    let metadata = match store.head(&key) {
-        Ok(Some(metadata)) => metadata,
-        Ok(None) => {
-            return record_failure(
-                client,
-                claim,
-                OffsiteMediaUploadFailureCode::RemoteInvalidResponse,
-                true,
-                clock(),
-            );
-        }
-        Err(error) => {
+    let remote = client.with_current_offsite_media_upload(&claim, || {
+        store.put_media(request)?;
+        store
+            .head(&key)?
+            .ok_or_else(|| ObjectStoreError::new(ObjectStoreErrorCode::InvalidResponse))
+    });
+    let metadata = match remote {
+        Ok(Some(Ok(metadata))) => metadata,
+        Ok(Some(Err(error))) => {
             let (code, retryable) = classify_object_store_error(error);
             return record_failure(client, claim, code, retryable, clock());
+        }
+        Ok(None) => return MediaUploadDisposition::Stale,
+        Err(error) => {
+            log::warn!("off-site media upload fence could not be validated: {error}");
+            return MediaUploadDisposition::Stale;
         }
     };
     if !remote_media_matches(&metadata, claim.sha256, expected_length) {
@@ -419,10 +443,13 @@ mod tests {
             Arc, Mutex,
         },
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
-    use super::{process_claim, retry_delay_ms, MediaUploadDisposition};
+    use super::{
+        process_claim, retry_delay_ms, CoordinatorControl, MediaBackupCoordinator,
+        MediaUploadDisposition, SHUTDOWN_JOIN_GRACE,
+    };
     use crate::{
         backup::{
             domain::{
@@ -677,6 +704,37 @@ mod tests {
     }
 
     #[test]
+    fn configuration_change_before_remote_write_fences_the_stale_claim() {
+        let library = TestLibrary::new(b"configuration-fenced media");
+        let client = library.database.client();
+        let store = FakeObjectStore::new(library.keyspace.clone());
+        let claim = library.claim(100, 35);
+        let config = client
+            .load_offsite_backup_config()
+            .expect("load config")
+            .expect("stored config");
+        client
+            .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                expected_revision: config.revision,
+                backup_set_id: config.backup_set_id,
+                replica_epoch_id: config.replica_epoch_id,
+                enabled: false,
+                target: config.target,
+                now_ms: 150,
+            })
+            .expect("disable backup");
+
+        assert_eq!(
+            process_claim(&client, &library.paths, &store, claim, &|| 200),
+            MediaUploadDisposition::Stale
+        );
+        assert!(
+            store.operations().is_empty(),
+            "a stale claim must not reach the remote store"
+        );
+    }
+
+    #[test]
     fn blocked_network_upload_does_not_block_the_database_writer() {
         let library = TestLibrary::new(b"nonblocking authored data");
         let client = library.database.client();
@@ -708,11 +766,70 @@ mod tests {
         assert!(diagnostics.main_foreign_keys);
         assert!(diagnostics.media_foreign_keys);
 
-        release_sender.send(()).expect("release upload");
-        assert_eq!(
-            worker.join().expect("worker"),
-            MediaUploadDisposition::Uploaded
+        let config = client
+            .load_offsite_backup_config()
+            .expect("load config")
+            .expect("stored config");
+        let config_client = client.clone();
+        let (saved_sender, saved_receiver) = mpsc::sync_channel(1);
+        let config_worker = thread::spawn(move || {
+            let result = config_client.save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                expected_revision: config.revision,
+                backup_set_id: config.backup_set_id,
+                replica_epoch_id: config.replica_epoch_id,
+                enabled: false,
+                target: config.target,
+                now_ms: 150,
+            });
+            saved_sender.send(result).expect("report config save");
+        });
+        assert!(
+            saved_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "configuration changes must wait for an in-flight remote operation"
         );
+
+        release_sender.send(()).expect("release upload");
+        assert!(matches!(
+            worker.join().expect("worker"),
+            MediaUploadDisposition::Uploaded | MediaUploadDisposition::Stale
+        ));
+        saved_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("configuration save completed after upload")
+            .expect("disable backup");
+        config_worker.join().expect("configuration worker");
+    }
+
+    #[test]
+    fn coordinator_shutdown_detaches_an_uninterruptible_worker_after_a_bounded_grace() {
+        let control = Arc::new(CoordinatorControl::default());
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let (completed_sender, completed_receiver) = mpsc::sync_channel(1);
+        let (exited_sender, exited_receiver) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            release_receiver.recv().expect("release detached worker");
+            let _ = completed_sender.send(());
+            exited_sender.send(()).expect("report detached worker exit");
+        });
+        let coordinator = MediaBackupCoordinator {
+            control,
+            worker: Some(worker),
+            completed: Some(Mutex::new(completed_receiver)),
+        };
+
+        let started = Instant::now();
+        drop(coordinator);
+        assert!(
+            started.elapsed() < SHUTDOWN_JOIN_GRACE + Duration::from_millis(500),
+            "coordinator shutdown exceeded its bounded grace"
+        );
+
+        release_sender.send(()).expect("release detached worker");
+        exited_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("detached worker exited");
     }
 
     struct MismatchedMetadataStore {

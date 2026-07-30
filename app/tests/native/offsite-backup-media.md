@@ -25,6 +25,14 @@ and completion transactions. A separate supervised thread:
    metadata, object-format version, and remote version;
 5. records `UPLOADED` only while the exact lease is still current.
 
+Configuration saves and remote media operations share a process-local fence.
+The worker revalidates its exact lease, enabled backup set, and destination
+while holding that fence before PUT. Therefore a disable or retarget either
+finishes first and prevents the remote operation, or waits until an already
+started operation has finished. Shutdown signals the worker, waits only a
+bounded grace period, and detaches an uninterruptible HTTP request rather than
+stalling application exit through the network timeout.
+
 Network, authentication, rate-limit, and temporary local-read failures use a
 bounded exponential retry. Missing or corrupt local content and conflicting
 remote metadata fail closed. No media deletion capability is exposed. A crash
@@ -44,6 +52,9 @@ The native suite proves:
 - retry timing and state survive a database close/reopen cycle;
 - replay after a simulated post-upload crash is idempotent;
 - remote metadata mismatch never records completion;
+- disabling before a remote write fences the stale lease without touching R2;
+- disabling during a remote write waits for that operation's fence;
+- an uninterruptible worker cannot extend shutdown beyond the grace period;
 - a deliberately blocked object-store upload leaves the authored database
   writer responsive.
 

@@ -1,6 +1,9 @@
 #![cfg_attr(feature = "test-support", allow(dead_code))]
 
-use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::{
+    mpsc::{self, Sender, SyncSender},
+    Arc, Mutex,
+};
 
 use rusqlite::{params, Connection, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -101,6 +104,10 @@ pub(super) enum WriterMessage {
         now_ms: i64,
         lease_id: String,
         reply: SyncSender<Result<Option<OffsiteMediaUploadClaim>>>,
+    },
+    IsCurrentOffsiteMediaUpload {
+        claim: OffsiteMediaUploadClaim,
+        reply: SyncSender<Result<bool>>,
     },
     CompleteOffsiteMediaUpload {
         claim: OffsiteMediaUploadClaim,
@@ -396,11 +403,15 @@ pub(super) enum MediaMaintenanceSnapshotState {
 #[derive(Clone, Debug)]
 pub struct DatabaseClient {
     sender: Sender<WriterMessage>,
+    offsite_media_fence: Arc<Mutex<()>>,
 }
 
 impl DatabaseClient {
-    pub(super) fn new(sender: Sender<WriterMessage>) -> Self {
-        Self { sender }
+    pub(super) fn new(sender: Sender<WriterMessage>, offsite_media_fence: Arc<Mutex<()>>) -> Self {
+        Self {
+            sender,
+            offsite_media_fence,
+        }
     }
 
     pub fn diagnostics(&self) -> Result<DatabaseDiagnostics> {
@@ -441,9 +452,41 @@ impl DatabaseClient {
         &self,
         input: SaveOffsiteBackupConfigInput,
     ) -> Result<OffsiteBackupConfig> {
+        let _fence = self
+            .offsite_media_fence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::SaveOffsiteBackupConfig { input, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn with_current_offsite_media_upload<T>(
+        &self,
+        claim: &OffsiteMediaUploadClaim,
+        operation: impl FnOnce() -> T,
+    ) -> Result<Option<T>> {
+        let _fence = self
+            .offsite_media_fence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !self.is_current_offsite_media_upload(claim)? {
+            return Ok(None);
+        }
+        Ok(Some(operation()))
+    }
+
+    fn is_current_offsite_media_upload(&self, claim: &OffsiteMediaUploadClaim) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::IsCurrentOffsiteMediaUpload {
+                claim: claim.clone(),
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
