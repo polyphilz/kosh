@@ -480,6 +480,12 @@ impl UtcTimestamp {
         &self.0
     }
 
+    pub(crate) fn unix_timestamp_nanos(&self) -> Result<i128, BackupDomainError> {
+        OffsetDateTime::parse(&self.0, &Rfc3339)
+            .map(OffsetDateTime::unix_timestamp_nanos)
+            .map_err(|_| BackupDomainError::InvalidField("createdAt"))
+    }
+
     fn basic_utc(&self) -> Result<String, BackupDomainError> {
         let value = OffsetDateTime::parse(&self.0, &Rfc3339)
             .map_err(|_| BackupDomainError::InvalidField("createdAt"))?;
