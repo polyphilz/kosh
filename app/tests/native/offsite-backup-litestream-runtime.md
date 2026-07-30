@@ -42,9 +42,14 @@ path, socket, PID-record, or configuration failure blocks only the current
 configuration revision. Capture, editing, and Exact search continue through
 all of these states.
 
-On disable, retarget, application exit, or supervisor drop, Kosh sends SIGTERM
-to the owned process group. The pinned Litestream configuration then performs
-its graceful final remote sync for at most 30 seconds. Kosh allows a bounded
+On application exit, Kosh first stops Claude and gives its monitor a bounded
+window to persist the terminal research event, then closes and joins the sole
+SQLite writer. That writer fence makes every completed local transaction
+visible and prevents any later transaction before Litestream receives SIGTERM
+for its final remote sync. On disable, retarget, application exit, or
+supervisor drop, Kosh sends SIGTERM to the owned process group. The pinned
+Litestream configuration then performs its graceful final remote sync for at
+most 30 seconds. Kosh allows a bounded
 35-second process window, then kills and reaps the still-owned group. The PID
 record and socket are removed only after their ownership checks pass. A stale
 record is never used to kill an unrelated process, and an unowned socket is
@@ -69,6 +74,8 @@ The focused native suite proves:
   parent-pipe EOF without executing Litestream;
 - disabled configuration preserves and retries stale-sweep failures until
   recovery;
+- application exit persists the Claude terminal event and closes the sole
+  SQLite writer before the final Litestream sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;
 - credential errors map to bounded redacted status;
 - PID records are private and an owned dead runtime is swept; and

@@ -245,7 +245,11 @@ impl RuntimeState {
         self.litestream_backup.status()
     }
 
-    pub(crate) fn shutdown_relational_backup(&self) {
+    pub(crate) fn shutdown_for_exit(&self) {
+        self.claude_processes.shutdown();
+        if let Err(error) = self.database.shutdown() {
+            log::error!("could not quiesce the database writer before backup shutdown: {error}");
+        }
         self.litestream_backup.shutdown();
     }
 
@@ -763,6 +767,25 @@ mod tests {
         let coordinator = start_optional_image_ocr(unavailable_client);
 
         assert!(!coordinator.is_disabled());
+    }
+
+    #[test]
+    fn exit_shutdown_fences_database_writes_before_relational_backup_stops() {
+        let directory = tempfile::tempdir().expect("temporary exit database");
+        let state = RuntimeState::deterministic(
+            directory.path().join("data"),
+            Arc::new(deterministic::FixedClock(100)),
+            deterministic::SequenceIds::new([]),
+        );
+        let client = state.database_client();
+
+        state.shutdown_for_exit();
+        state.shutdown_for_exit();
+
+        assert!(
+            client.diagnostics().is_err(),
+            "the database writer must be closed before final replication shutdown"
+        );
     }
 
     #[test]

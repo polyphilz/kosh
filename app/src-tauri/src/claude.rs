@@ -6,7 +6,7 @@ use std::{
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
-        mpsc, Arc, Mutex, Weak,
+        mpsc, Arc, Condvar, Mutex, Weak,
     },
     thread,
     time::{Duration, Instant, SystemTime},
@@ -45,6 +45,7 @@ const MAX_VISIBLE_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 2_048;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TERMINATION_GRACE: Duration = Duration::from_millis(500);
+const SHUTDOWN_MONITOR_GRACE: Duration = Duration::from_secs(5);
 const SETUP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MIN_RUN_TIMEOUT_SECS: u64 = 5;
@@ -294,6 +295,7 @@ struct ManagerInner {
     default_timeout: Duration,
     active: Mutex<Option<ActiveProcess>>,
     owned_processes: Mutex<HashMap<String, ActiveProcess>>,
+    owned_processes_changed: Condvar,
     shutting_down: AtomicBool,
 }
 
@@ -403,6 +405,7 @@ impl ClaudeProcessManager {
                 default_timeout,
                 active: Mutex::new(None),
                 owned_processes: Mutex::new(HashMap::new()),
+                owned_processes_changed: Condvar::new(),
                 shutting_down: AtomicBool::new(false),
             }),
         }
@@ -640,7 +643,7 @@ impl ClaudeProcessManager {
                 let mut slot = lock(&self.inner.active);
                 slot.take_if(|active| active.generation == generation);
             }
-            lock(&self.inner.owned_processes).remove(&generation);
+            self.inner.remove_owned_process(&generation);
             force_kill_process_group(process_id);
             let _ = child.wait();
             return Err(error);
@@ -680,7 +683,6 @@ impl ClaudeProcessManager {
                 if let Some(active) = active {
                     terminate_active(&active, TerminationReason::Canceled);
                 }
-                lock(&self.inner.owned_processes).remove(&generation);
                 if let Some(mut child) = lock(&child_slot).take() {
                     force_kill_process_group(child.id());
                     let _ = child.wait();
@@ -694,6 +696,7 @@ impl ClaudeProcessManager {
                     Some(error.message.clone()),
                     false,
                 );
+                self.inner.remove_owned_process(&generation);
                 error
             })?;
 
@@ -717,18 +720,18 @@ impl ClaudeProcessManager {
     }
 
     pub(crate) fn shutdown(&self) {
-        if self.inner.shutting_down.swap(true, Ordering::AcqRel) {
-            return;
+        if !self.inner.shutting_down.swap(true, Ordering::AcqRel) {
+            let active = lock(&self.inner.active);
+            let processes = lock(&self.inner.owned_processes)
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            drop(active);
+            for process in processes {
+                force_owned_process_for_shutdown(&process);
+            }
         }
-        let active = lock(&self.inner.active);
-        let processes = lock(&self.inner.owned_processes)
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        drop(active);
-        for process in processes {
-            force_owned_process_for_shutdown(&process);
-        }
+        self.inner.wait_for_owned_processes();
     }
 
     fn resolved_binary(&self) -> Option<PathBuf> {
@@ -743,6 +746,37 @@ impl ClaudeProcessManager {
                     .then(discover_claude_binary)
                     .flatten()
             })
+    }
+}
+
+impl ManagerInner {
+    fn remove_owned_process(&self, generation: &str) {
+        lock(&self.owned_processes).remove(generation);
+        self.owned_processes_changed.notify_all();
+    }
+
+    fn wait_for_owned_processes(&self) {
+        let deadline = Instant::now() + SHUTDOWN_MONITOR_GRACE;
+        let mut owned = lock(&self.owned_processes);
+        while !owned.is_empty() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let (next, wait) = self
+                .owned_processes_changed
+                .wait_timeout(owned, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            owned = next;
+            if wait.timed_out() {
+                break;
+            }
+        }
+        if !owned.is_empty() {
+            log::warn!(
+                "{} Claude monitor(s) did not quiesce before the shutdown deadline",
+                owned.len()
+            );
+        }
     }
 }
 
@@ -1178,7 +1212,6 @@ fn monitor_process(process: MonitoredProcess) {
         {
             *active = None;
         }
-        lock(&manager.owned_processes).remove(&generation);
     }
 
     let stderr = lock(&stderr_tail);
@@ -1193,6 +1226,9 @@ fn monitor_process(process: MonitoredProcess) {
         &stderr_text,
     );
     emitter.finish(outcome, error, stderr_truncated);
+    if let Some(manager) = manager.upgrade() {
+        manager.remove_owned_process(&generation);
+    }
 }
 
 fn finish_outcome(
@@ -3061,12 +3097,22 @@ sleep 30
         let (sender, receiver) = mpsc::channel();
         let started = start_fake(&manager, request("shutdown"), &sender);
         manager.shutdown();
-        let (_, terminals) = receive_terminals(&receiver, 1);
+        let events = receiver.try_iter().collect::<Vec<_>>();
+        let terminal = events.iter().find_map(|event| {
+            if event.run_id == started.run_id {
+                if let ResearchProcessEventDetail::Finished { outcome, .. } = event.detail {
+                    return Some(outcome);
+                }
+            }
+            None
+        });
 
         assert_eq!(
-            terminals.get(&started.run_id),
-            Some(&ResearchProcessOutcome::Shutdown)
+            terminal,
+            Some(ResearchProcessOutcome::Shutdown),
+            "shutdown must return only after the terminal event is emitted"
         );
+        assert!(lock(&manager.inner.owned_processes).is_empty());
         assert_eq!(
             manager
                 .start_with_invocation(
@@ -3078,6 +3124,71 @@ sleep 30
                 .code,
             ClaudeProcessErrorCode::ShuttingDown
         );
+    }
+
+    #[test]
+    fn shutdown_persists_the_durable_terminal_before_returning() {
+        let root = tempfile::tempdir().expect("fake durable shutdown root");
+        let binary = write_fake_cli(
+            root.path(),
+            r#"
+trap 'exit 0' TERM
+cat >/dev/null
+sleep 30
+"#,
+        );
+        let manager = test_manager(binary, &root, Duration::from_secs(2));
+        let history = Database::initialize(DatabasePaths::new(root.path().join("history")))
+            .expect("history database");
+        let input = request("durable shutdown");
+        history
+            .client()
+            .create_research_run(CreateResearchRunWrite {
+                id: input.run_id.clone(),
+                rerun_of_id: None,
+                query: input.prompt.clone(),
+                requested_model: None,
+                requested_effort: None,
+                now_ms: 10,
+            })
+            .expect("create durable run");
+        let (sender, receiver) = mpsc::channel();
+        manager
+            .start_with_invocation(
+                input.clone(),
+                invocation(),
+                Arc::new(DurableProcessEventSink {
+                    database: history.client(),
+                    clock: Arc::new(FixedClock(20)),
+                    downstream: Arc::new(ChannelSink { sender }),
+                }),
+            )
+            .expect("start durable fake Claude");
+
+        manager.shutdown();
+
+        let stored = history
+            .client()
+            .load_research_run(input.run_id.clone())
+            .expect("load shutdown history");
+        assert_eq!(
+            serde_json::to_value(stored.summary.status).expect("serialize stored status"),
+            serde_json::json!("INTERRUPTED")
+        );
+        assert!(stored.events.iter().any(|event| {
+            event.get("kind").and_then(Value::as_str) == Some("FINISHED")
+                && event.get("outcome").and_then(Value::as_str) == Some("SHUTDOWN")
+        }));
+        assert!(receiver.try_iter().any(|event| {
+            event.run_id == input.run_id
+                && matches!(
+                    event.detail,
+                    ResearchProcessEventDetail::Finished {
+                        outcome: ResearchProcessOutcome::Shutdown,
+                        ..
+                    }
+                )
+        }));
     }
 
     #[test]
