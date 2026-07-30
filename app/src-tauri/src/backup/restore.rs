@@ -1,6 +1,7 @@
 #![cfg_attr(feature = "test-support", allow(dead_code))]
 
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
     path::Path,
 };
@@ -15,8 +16,8 @@ use crate::database::{
 
 use super::{
     domain::{
-        BackupSetId, CheckpointId, CheckpointManifestV1, ContentSha256, R2Keyspace, R2ObjectKey,
-        ReplicaEpochId, MAX_MANIFEST_BYTES, OBJECT_FORMAT_VERSION,
+        BackupSetId, CheckpointId, CheckpointManifestV1, ContentSha256, R2Keyspace, ReplicaEpochId,
+        MAX_MANIFEST_BYTES, OBJECT_FORMAT_VERSION,
     },
     litestream::{
         LitestreamError, LitestreamTxid, RelationalRestoreEngine, ReplicaKind, RestorePlan,
@@ -31,7 +32,6 @@ const MAX_REFERENCED_MEDIA: u64 = 100_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RemoteCheckpoint {
-    key: R2ObjectKey,
     manifest: CheckpointManifestV1,
 }
 
@@ -127,6 +127,7 @@ pub(crate) fn discover_checkpoints(
     let prefix = keyspace.checkpoint_prefix();
     let mut continuation = None;
     let mut checkpoints = Vec::new();
+    let mut seen_keys = BTreeSet::new();
     let mut pages = 0_usize;
     loop {
         pages += 1;
@@ -138,6 +139,9 @@ pub(crate) fn discover_checkpoints(
             return Err(RestoreError::Manifest);
         }
         for listed in page.objects {
+            if !seen_keys.insert(listed.key.as_str().to_owned()) {
+                return Err(RestoreError::Manifest);
+            }
             if checkpoints.len() >= MAX_DISCOVERED_CHECKPOINTS {
                 return Err(RestoreError::TooManyCheckpoints);
             }
@@ -164,10 +168,7 @@ pub(crate) fn discover_checkpoints(
             {
                 return Err(RestoreError::Manifest);
             }
-            checkpoints.push(RemoteCheckpoint {
-                key: listed.key,
-                manifest,
-            });
+            checkpoints.push(RemoteCheckpoint { manifest });
         }
         continuation = page.next;
         if continuation.is_none() {
