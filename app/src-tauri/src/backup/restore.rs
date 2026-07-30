@@ -278,12 +278,14 @@ pub(crate) fn install_checkpoint(
     live_paths: &DatabasePaths,
     staged: &StagedRestore,
 ) -> Result<RestoreInstallReport, RestoreError> {
-    install_restored_pair(
+    let report = install_restored_pair(
         live_paths,
         &staged.paths,
         staged.checkpoint.checkpoint_id().clone(),
     )
-    .map_err(RestoreError::Database)
+    .map_err(RestoreError::Database)?;
+    remove_owned_staging(&staged.paths.root)?;
+    Ok(report)
 }
 
 pub(crate) fn drill_checkpoint(
@@ -606,7 +608,11 @@ fn prepare_empty_staging(root: &Path) -> Result<(), RestoreError> {
 }
 
 fn remove_owned_staging(root: &Path) -> Result<(), RestoreError> {
-    let metadata = fs::symlink_metadata(root)?;
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(RestoreError::InvalidStaging);
     }
@@ -1135,6 +1141,10 @@ mod tests {
         let live_paths = DatabasePaths::new(clean_root.path());
         let first = install_checkpoint(&live_paths, &staged).expect("first install");
         assert!(first.safety_snapshot_id.is_none());
+        assert!(
+            !staged.paths.root.exists(),
+            "successful install must remove its staging pair"
+        );
         let second = install_checkpoint(&live_paths, &staged).expect("idempotent install");
         assert_eq!(
             format!("{:?}", second.outcome),
