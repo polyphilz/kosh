@@ -8,8 +8,10 @@ schema validation, and transactionally reclaims its child rows when the
 checkpoint becomes `PUBLISHED` or `FAILED`. The checkpoint header retains its
 aggregate evidence without checkpoint-by-media growth. Every recoverable
 main-database mutation advances the clock in the same SQLite transaction.
-Backup configuration and checkpoint bookkeeping are excluded, so publishing
-a checkpoint cannot recursively schedule another one.
+Startup compares every content-clock trigger and its clock delete guard against
+the embedded checksummed V20 definitions, rejecting missing or altered
+definitions. Backup configuration and checkpoint bookkeeping are excluded, so
+publishing a checkpoint cannot recursively schedule another one.
 
 ## Publication contract
 
@@ -88,6 +90,7 @@ The native suite proves:
   publication sequence is correct even if the wall clock moves backwards;
 - repeated terminal failures retain only the newest 32 diagnostic headers
   without pruning published checkpoints;
+- startup rejects missing or altered content-clock trigger definitions;
 - authored mutations advance the content clock while checkpoint bookkeeping
   does not;
 - media references persist with the PREPARED row and keyset-page as 8/8/3 for
