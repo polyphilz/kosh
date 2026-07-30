@@ -24,9 +24,11 @@ For an enabled configuration the supervisor:
 7. only then activates the helper through its private inherited pipe, which
    atomically replaces itself with `litestream replicate`; parent death before
    activation closes the pipe and leaves no replicating orphan;
-8. accepts readiness only from a Unix socket with mode `0600`; and
-9. confirms the canonical local and remote TXID through a bounded control
-   command.
+8. retains an exclusive, non-inherited runtime-generation lock from stale
+   cleanup through daemon cleanup;
+9. accepts readiness only from a Unix socket with mode `0600`; and
+10. confirms the canonical local and remote TXID through a bounded control
+    command.
 
 Status contains only fixed phase/error enums, canonical 16-character TXIDs,
 one timestamp, and a saturating restart count. Raw child output and credential
@@ -56,7 +58,9 @@ record and socket are removed only after their ownership checks pass. A stale
 record is never used to kill an unrelated process, and an unowned socket is
 never deleted. Failed stale-ownership inspection remains visible and retries
 with capped backoff even while backup is disabled; `OFF` is reported only
-after ownership is resolved.
+after ownership is resolved. The runtime-generation lock prevents a replacement
+Kosh instance from publishing ownership between removal of the exiting
+generation's PID record and socket.
 
 ## Executable evidence
 
@@ -79,6 +83,8 @@ The focused native suite proves:
   path;
 - config and PID-record atomic writes reject symlinked temporary files without
   touching their targets;
+- runtime ownership keeps cleanup serialized until both generation artifacts
+  are gone, then permits a replacement daemon to publish its own artifacts;
 - application exit persists the Claude terminal event and closes the sole
   SQLite writer before the final Litestream sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;

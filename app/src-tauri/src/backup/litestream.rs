@@ -295,6 +295,7 @@ pub struct LitestreamRuntimePaths {
     config: PathBuf,
     socket: PathBuf,
     pid: PathBuf,
+    ownership_lock: PathBuf,
 }
 
 impl LitestreamRuntimePaths {
@@ -304,6 +305,7 @@ impl LitestreamRuntimePaths {
             config: directory.join("ls.yml"),
             socket: directory.join("ls.sock"),
             pid: directory.join("ls.pid.json"),
+            ownership_lock: directory.join("ownership.lock"),
             directory,
         };
         ensure_socket_path_fits(&paths.socket)?;
@@ -328,6 +330,11 @@ impl LitestreamRuntimePaths {
     #[must_use]
     pub fn pid(&self) -> &Path {
         &self.pid
+    }
+
+    #[must_use]
+    pub fn ownership_lock(&self) -> &Path {
+        &self.ownership_lock
     }
 
     pub fn prepare(&self) -> Result<(), LitestreamError> {

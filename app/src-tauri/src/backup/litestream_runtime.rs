@@ -599,13 +599,14 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
         if !stale_runtime_residue_exists(&runtime)? {
             return Ok(());
         }
+        runtime.prepare().map_err(map_litestream_start_error)?;
+        let ownership = acquire_runtime_ownership(&runtime)?;
         let resource_dir = self.resource_dir.as_deref().ok_or_else(|| {
             RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
         })?;
         let binary =
             VerifiedLitestreamBinary::resolve(resource_dir).map_err(map_litestream_start_error)?;
-        runtime.prepare().map_err(map_litestream_start_error)?;
-        sweep_stale_runtime(&runtime, binary.path(), &self.database_path)
+        sweep_stale_runtime(&ownership, &runtime, binary.path(), &self.database_path)
     }
 
     fn start(
@@ -620,7 +621,8 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
         let runtime =
             LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
         runtime.prepare().map_err(map_litestream_start_error)?;
-        sweep_stale_runtime(&runtime, binary.path(), &self.database_path)?;
+        let ownership = acquire_runtime_ownership(&runtime)?;
+        sweep_stale_runtime(&ownership, &runtime, binary.path(), &self.database_path)?;
 
         let credentials = self
             .credentials
@@ -645,6 +647,7 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
         let daemon = SystemManagedLitestream::launch(
             binary.path().to_owned(),
             runtime,
+            ownership,
             self.database_path.clone(),
             config.backup_set_id.as_str().to_owned(),
             config.replica_epoch_id.as_str().to_owned(),
@@ -740,6 +743,7 @@ fn map_control_error(error: LitestreamError) -> RuntimeFailure {
 struct SystemManagedLitestream {
     child: Option<Child>,
     runtime: LitestreamRuntimePaths,
+    ownership: LitestreamRuntimeOwnership,
     database_path: PathBuf,
     control: CommandLitestreamControl<SystemCommandExecutor>,
 }
@@ -749,6 +753,7 @@ impl SystemManagedLitestream {
     fn launch(
         binary: PathBuf,
         runtime: LitestreamRuntimePaths,
+        ownership: LitestreamRuntimeOwnership,
         database_path: PathBuf,
         backup_set_id: String,
         replica_epoch_id: String,
@@ -782,11 +787,11 @@ impl SystemManagedLitestream {
             replica_epoch_id,
             config_sha256,
         };
-        let ownership = child
+        let activation = child
             .stdin
             .as_mut()
             .ok_or_else(|| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true));
-        if ownership
+        if activation
             .and_then(|activation| {
                 write_pid_record_then_activate(
                     &runtime,
@@ -803,7 +808,7 @@ impl SystemManagedLitestream {
             .is_err()
         {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
-            remove_pid_record_if_owned(&runtime, pid);
+            cleanup_owned_runtime(&ownership, &runtime, pid, false);
             return Err(RuntimeFailure::new(
                 RelationalBackupErrorCode::ControlUnavailable,
                 true,
@@ -812,8 +817,7 @@ impl SystemManagedLitestream {
         child.stdin.take();
         if let Err(failure) = wait_for_control_socket(&mut child, &runtime) {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
-            remove_pid_record_if_owned(&runtime, pid);
-            remove_socket_if_present(&runtime);
+            cleanup_owned_runtime(&ownership, &runtime, pid, true);
             return Err(failure);
         }
         let control = CommandLitestreamControl::new(
@@ -825,14 +829,14 @@ impl SystemManagedLitestream {
         Ok(Self {
             child: Some(child),
             runtime,
+            ownership,
             database_path,
             control,
         })
     }
 
     fn cleanup(&self, pid: u32) {
-        remove_pid_record_if_owned(&self.runtime, pid);
-        remove_socket_if_present(&self.runtime);
+        cleanup_owned_runtime(&self.ownership, &self.runtime, pid, true);
     }
 }
 
@@ -1030,6 +1034,7 @@ fn read_pid_record(
 }
 
 fn sweep_stale_runtime(
+    _ownership: &LitestreamRuntimeOwnership,
     runtime: &LitestreamRuntimePaths,
     expected_binary: &Path,
     expected_database_path: &Path,
@@ -1092,6 +1097,67 @@ fn sweep_stale_runtime(
     remove_pid_record_if_owned(runtime, record.pid);
     remove_socket_if_present(runtime);
     Ok(())
+}
+
+struct LitestreamRuntimeOwnership {
+    _file: fs::File,
+}
+
+fn acquire_runtime_ownership(
+    runtime: &LitestreamRuntimePaths,
+) -> Result<LitestreamRuntimeOwnership, RuntimeFailure> {
+    let mut options = fs::OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let file = options
+        .open(runtime.ownership_lock())
+        .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true))?;
+    if !metadata.is_file() {
+        return Err(RuntimeFailure::new(
+            RelationalBackupErrorCode::ControlUnavailable,
+            false,
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|_| {
+                RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true)
+            })?;
+    }
+    match file.try_lock() {
+        Ok(()) => Ok(LitestreamRuntimeOwnership { _file: file }),
+        Err(fs::TryLockError::WouldBlock) => Err(RuntimeFailure::new(
+            RelationalBackupErrorCode::ControlUnavailable,
+            true,
+        )),
+        Err(fs::TryLockError::Error(_)) => Err(RuntimeFailure::new(
+            RelationalBackupErrorCode::ControlUnavailable,
+            true,
+        )),
+    }
+}
+
+fn cleanup_owned_runtime(
+    _ownership: &LitestreamRuntimeOwnership,
+    runtime: &LitestreamRuntimePaths,
+    expected_pid: u32,
+    remove_socket: bool,
+) {
+    remove_pid_record_if_owned(runtime, expected_pid);
+    if remove_socket {
+        remove_socket_if_present(runtime);
+    }
 }
 
 fn process_matches_record(record: &LitestreamPidRecord) -> bool {
@@ -1906,8 +1972,109 @@ mod tests {
             0o600
         );
 
-        sweep_stale_runtime(&runtime, &binary, &database).expect("sweep dead owned runtime");
+        let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
+        sweep_stale_runtime(&ownership, &runtime, &binary, &database)
+            .expect("sweep dead owned runtime");
         assert!(!runtime.pid().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_ownership_serializes_cleanup_before_a_replacement_generation() {
+        use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        runtime.write_config("safe config").expect("write config");
+        let binary = root.path().join("litestream");
+        let database = root.path().join("kosh.sqlite3");
+        fs::write(&binary, b"binary").expect("binary fixture");
+        fs::write(&database, b"database").expect("database fixture");
+        let identity = || LaunchIdentity {
+            backup_set_id: BackupSetId::new().to_string(),
+            replica_epoch_id: ReplicaEpochId::new().to_string(),
+            config_sha256: sha256_hex(b"safe config"),
+        };
+        let exiting_pid = u32::MAX - 1;
+        let replacement_pid = u32::MAX;
+        let exiting = acquire_runtime_ownership(&runtime).expect("exiting generation ownership");
+        // SAFETY: F_GETFD only reads flags from this live, owned descriptor.
+        let descriptor_flags = unsafe { libc::fcntl(exiting._file.as_raw_fd(), libc::F_GETFD) };
+        assert!(descriptor_flags >= 0);
+        assert_ne!(descriptor_flags & libc::FD_CLOEXEC, 0);
+        assert_eq!(
+            fs::metadata(runtime.ownership_lock())
+                .expect("ownership metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        write_pid_record(&runtime, exiting_pid, &binary, &database, &identity())
+            .expect("exiting PID record");
+        fs::write(runtime.socket(), b"exiting socket").expect("exiting socket");
+
+        assert_eq!(
+            acquire_runtime_ownership(&runtime).err(),
+            Some(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                true,
+            ))
+        );
+        cleanup_owned_runtime(&exiting, &runtime, exiting_pid, true);
+        assert!(!runtime.pid().exists());
+        assert!(!runtime.socket().exists());
+        assert_eq!(
+            acquire_runtime_ownership(&runtime).err(),
+            Some(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                true,
+            )),
+            "cleanup retains ownership until both generation artifacts are gone"
+        );
+
+        drop(exiting);
+        let replacement =
+            acquire_runtime_ownership(&runtime).expect("replacement generation ownership");
+        write_pid_record(&runtime, replacement_pid, &binary, &database, &identity())
+            .expect("replacement PID record");
+        fs::write(runtime.socket(), b"replacement socket").expect("replacement socket");
+
+        assert_eq!(
+            read_pid_record(&runtime)
+                .expect("replacement record")
+                .expect("replacement ownership")
+                .pid,
+            replacement_pid
+        );
+        assert_eq!(
+            fs::read(runtime.socket()).expect("replacement socket"),
+            b"replacement socket"
+        );
+        cleanup_owned_runtime(&replacement, &runtime, replacement_pid, true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_ownership_rejects_a_symlinked_lock_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        let target = root.path().join("must-not-change");
+        fs::write(&target, b"retained").expect("lock symlink target");
+        symlink(&target, runtime.ownership_lock()).expect("ownership lock symlink");
+
+        assert_eq!(
+            acquire_runtime_ownership(&runtime).err(),
+            Some(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                true,
+            ))
+        );
+        assert_eq!(fs::read(&target).expect("unchanged target"), b"retained");
     }
 
     #[cfg(unix)]
@@ -2026,9 +2193,11 @@ mod tests {
         let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
         runtime.prepare().expect("prepare runtime");
         fs::write(runtime.socket(), b"not owned").expect("unowned socket");
+        let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
 
         assert_eq!(
             sweep_stale_runtime(
+                &ownership,
                 &runtime,
                 &root.path().join("litestream"),
                 &root.path().join("kosh.sqlite3"),
@@ -2051,9 +2220,11 @@ mod tests {
         runtime.prepare().expect("prepare runtime");
         symlink(root.path().join("missing-target"), runtime.socket())
             .expect("dangling socket symlink");
+        let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
 
         assert_eq!(
             sweep_stale_runtime(
+                &ownership,
                 &runtime,
                 &root.path().join("litestream"),
                 &root.path().join("kosh.sqlite3"),
