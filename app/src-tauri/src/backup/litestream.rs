@@ -3,7 +3,7 @@ use std::{
     ffi::OsString,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
@@ -59,6 +59,10 @@ pub enum LitestreamError {
     BinarySizeMismatch,
     #[error("the Litestream executable checksum does not match the application pin")]
     BinaryChecksumMismatch,
+    #[error("the immutable Litestream launch copy could not be staged")]
+    StageBinary(#[source] std::io::Error),
+    #[error("the immutable Litestream launch copy is invalid")]
+    InvalidStagedBinary,
     #[error("the Litestream manifest does not preserve exact TXIDs for 30 days")]
     UnsafeProtocolPin,
     #[error("the Litestream runtime path is not valid UTF-8")]
@@ -148,8 +152,16 @@ struct StagedBinary {
 }
 
 /// A regular, executable Litestream binary whose bytes match the embedded pin.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct VerifiedLitestreamBinary {
+    path: PathBuf,
+    sha256: String,
+    size: u64,
+    file: File,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImmutableLitestreamBinary {
     path: PathBuf,
     sha256: String,
     size: u64,
@@ -193,11 +205,12 @@ impl VerifiedLitestreamBinary {
             verify_release_manifest(resource_dir, &manifest)?;
             resource_dir.join(&manifest.binary.bundle_path)
         };
-        verify_binary(&path, &manifest.binary.universal)?;
+        let file = verify_binary(&path, &manifest.binary.universal)?;
         Ok(Self {
             path,
             sha256: manifest.binary.universal.sha256,
             size: manifest.binary.universal.size,
+            file,
         })
     }
 
@@ -205,12 +218,37 @@ impl VerifiedLitestreamBinary {
     pub fn resolve_staged_for_test(path: &Path) -> Result<Self, LitestreamError> {
         let manifest = embedded_manifest()?;
         validate_protocol_manifest(&manifest)?;
-        verify_binary(path, &manifest.binary.universal)?;
+        let file = verify_binary(path, &manifest.binary.universal)?;
         Ok(Self {
             path: path.to_owned(),
             sha256: manifest.binary.universal.sha256,
             size: manifest.binary.universal.size,
+            file,
         })
+    }
+
+    pub(crate) fn stage_immutable(
+        &self,
+        runtime: &LitestreamRuntimePaths,
+    ) -> Result<ImmutableLitestreamBinary, LitestreamError> {
+        stage_immutable_binary(self, runtime)
+    }
+}
+
+impl ImmutableLitestreamBinary {
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     pub(crate) fn reverify_for_launch(
@@ -227,14 +265,18 @@ impl VerifiedLitestreamBinary {
         {
             return Err(LitestreamError::BinaryChecksumMismatch);
         }
-        verify_binary(
+        let file = verify_binary(
             path,
             &BinaryPin {
                 sha256: expected_sha256.to_owned(),
                 size: expected_size,
                 code_signature_identifier: String::new(),
             },
-        )
+        )?;
+        validate_immutable_file(&file)?;
+        let parent = path.parent().ok_or(LitestreamError::InvalidStagedBinary)?;
+        validate_immutable_directory(parent)?;
+        Ok(())
     }
 }
 
@@ -315,7 +357,7 @@ fn verify_release_manifest(
     Ok(())
 }
 
-fn verify_binary(path: &Path, manifest: &BinaryPin) -> Result<(), LitestreamError> {
+fn verify_binary(path: &Path, manifest: &BinaryPin) -> Result<File, LitestreamError> {
     #[cfg(not(unix))]
     {
         let path_metadata = fs::symlink_metadata(path)
@@ -376,6 +418,274 @@ fn verify_binary(path: &Path, manifest: &BinaryPin) -> Result<(), LitestreamErro
     if actual != manifest.sha256 {
         return Err(LitestreamError::BinaryChecksumMismatch);
     }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| LitestreamError::BinaryChecksumMismatch)?;
+    Ok(file)
+}
+
+fn stage_immutable_binary(
+    binary: &VerifiedLitestreamBinary,
+    runtime: &LitestreamRuntimePaths,
+) -> Result<ImmutableLitestreamBinary, LitestreamError> {
+    runtime.prepare()?;
+    let stage_root = runtime.directory().join("verified-litestream");
+    prepare_private_runtime_directory(&stage_root).map_err(LitestreamError::StageBinary)?;
+    let final_directory = stage_root.join(&binary.sha256);
+    let final_path = final_directory.join("litestream");
+    match fs::symlink_metadata(&final_directory) {
+        Ok(_) => match validate_immutable_stage(&final_directory, &final_path, binary) {
+            Ok(()) => {
+                return Ok(ImmutableLitestreamBinary {
+                    path: final_path,
+                    sha256: binary.sha256.clone(),
+                    size: binary.size,
+                });
+            }
+            Err(_) => {
+                remove_partial_stage(&final_directory).map_err(LitestreamError::StageBinary)?;
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(LitestreamError::StageBinary(error)),
+    }
+
+    let temporary_directory = stage_root.join(format!(".{}.tmp", binary.sha256));
+    remove_partial_stage(&temporary_directory).map_err(LitestreamError::StageBinary)?;
+    fs::create_dir(&temporary_directory).map_err(LitestreamError::StageBinary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temporary_directory, fs::Permissions::from_mode(0o700))
+            .map_err(LitestreamError::StageBinary)?;
+    }
+    let temporary_path = temporary_directory.join("litestream");
+    let mut options = OpenOptions::new();
+    options.create_new(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o500)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let mut destination = options
+        .open(&temporary_path)
+        .map_err(LitestreamError::StageBinary)?;
+    let mut source = binary
+        .file
+        .try_clone()
+        .map_err(LitestreamError::StageBinary)?;
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(LitestreamError::StageBinary)?;
+    let copied = std::io::copy(&mut source.take(binary.size + 1), &mut destination)
+        .map_err(LitestreamError::StageBinary)?;
+    if copied != binary.size {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    destination
+        .sync_all()
+        .map_err(LitestreamError::StageBinary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        destination
+            .set_permissions(fs::Permissions::from_mode(0o500))
+            .map_err(LitestreamError::StageBinary)?;
+    }
+    drop(destination);
+    File::open(&temporary_directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(LitestreamError::StageBinary)?;
+    fs::rename(&temporary_directory, &final_directory).map_err(LitestreamError::StageBinary)?;
+    let staged = verify_binary(
+        &final_path,
+        &BinaryPin {
+            sha256: binary.sha256.clone(),
+            size: binary.size,
+            code_signature_identifier: String::new(),
+        },
+    )?;
+    set_user_immutable(&staged).map_err(LitestreamError::StageBinary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&final_directory, fs::Permissions::from_mode(0o500))
+            .map_err(LitestreamError::StageBinary)?;
+    }
+    let directory =
+        open_directory_no_follow(&final_directory).map_err(LitestreamError::StageBinary)?;
+    set_user_immutable(&directory).map_err(LitestreamError::StageBinary)?;
+    directory.sync_all().map_err(LitestreamError::StageBinary)?;
+    File::open(&stage_root)
+        .and_then(|root| root.sync_all())
+        .map_err(LitestreamError::StageBinary)?;
+    validate_immutable_stage(&final_directory, &final_path, binary)?;
+    Ok(ImmutableLitestreamBinary {
+        path: final_path,
+        sha256: binary.sha256.clone(),
+        size: binary.size,
+    })
+}
+
+fn validate_immutable_stage(
+    directory_path: &Path,
+    binary_path: &Path,
+    binary: &VerifiedLitestreamBinary,
+) -> Result<(), LitestreamError> {
+    let directory =
+        open_directory_no_follow(directory_path).map_err(LitestreamError::StageBinary)?;
+    validate_immutable_directory_file(&directory)?;
+    let staged = verify_binary(
+        binary_path,
+        &BinaryPin {
+            sha256: binary.sha256.clone(),
+            size: binary.size,
+            code_signature_identifier: String::new(),
+        },
+    )?;
+    validate_immutable_file(&staged)
+}
+
+fn validate_immutable_file(file: &File) -> Result<(), LitestreamError> {
+    let metadata = file.metadata().map_err(LitestreamError::StageBinary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 != 0o500 {
+            return Err(LitestreamError::InvalidStagedBinary);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        if metadata.st_flags() & libc::UF_IMMUTABLE == 0 {
+            return Err(LitestreamError::InvalidStagedBinary);
+        }
+    }
+    Ok(())
+}
+
+fn validate_immutable_directory(path: &Path) -> Result<(), LitestreamError> {
+    let directory = open_directory_no_follow(path).map_err(LitestreamError::StageBinary)?;
+    validate_immutable_directory_file(&directory)
+}
+
+fn validate_immutable_directory_file(directory: &File) -> Result<(), LitestreamError> {
+    let metadata = directory.metadata().map_err(LitestreamError::StageBinary)?;
+    if !metadata.is_dir() {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 != 0o500 {
+            return Err(LitestreamError::InvalidStagedBinary);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        if metadata.st_flags() & libc::UF_IMMUTABLE == 0 {
+            return Err(LitestreamError::InvalidStagedBinary);
+        }
+    }
+    Ok(())
+}
+
+fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    options.open(path)
+}
+
+#[cfg(target_os = "macos")]
+fn set_user_immutable(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `file` owns a live descriptor and `fchflags` does not retain it.
+    let result = unsafe { libc::fchflags(file.as_raw_fd(), libc::UF_IMMUTABLE) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_user_immutable(_file: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn remove_partial_stage(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::other(
+            "Litestream staging temporary is not a real directory",
+        ));
+    }
+    let directory = open_directory_no_follow(path)?;
+    clear_user_immutable(&directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+    }
+    let entries = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+    if entries.len() > 1
+        || entries
+            .first()
+            .is_some_and(|entry| entry.file_name() != "litestream")
+    {
+        return Err(std::io::Error::other(
+            "Litestream staging temporary has unexpected contents",
+        ));
+    }
+    if let Some(entry) = entries.first() {
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(std::io::Error::other(
+                "Litestream staging temporary file is not regular",
+            ));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+        }
+        let file = options.open(entry.path())?;
+        clear_user_immutable(&file)?;
+        drop(file);
+        fs::remove_file(entry.path())?;
+    }
+    drop(directory);
+    fs::remove_dir(path)
+}
+
+#[cfg(target_os = "macos")]
+fn clear_user_immutable(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `file` owns a live descriptor and `fchflags` does not retain it.
+    let result = unsafe { libc::fchflags(file.as_raw_fd(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clear_user_immutable(_file: &File) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -1564,6 +1874,80 @@ mod tests {
             verify_binary(&link, &manifest),
             Err(LitestreamError::BinaryNotRegular)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn immutable_launch_stage_reuses_verified_bytes_and_rejects_path_replacement() {
+        let directory = tempfile::tempdir().expect("binary root");
+        let source_path = directory.path().join("source-litestream");
+        let bytes = b"pinned-litestream";
+        fs::write(&source_path, bytes).expect("source binary");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o700))
+            .expect("source permissions");
+        let pin = BinaryPin {
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            size: bytes.len() as u64,
+            code_signature_identifier: "com.rohan.kosh.litestream".into(),
+        };
+        let verified = VerifiedLitestreamBinary {
+            path: source_path,
+            sha256: pin.sha256.clone(),
+            size: pin.size,
+            file: verify_binary(&directory.path().join("source-litestream"), &pin)
+                .expect("verified source descriptor"),
+        };
+        let runtime = LitestreamRuntimePaths::new(directory.path()).expect("runtime paths");
+        runtime.prepare().expect("prepared runtime");
+        let partial_directory = runtime
+            .directory()
+            .join("verified-litestream")
+            .join(&pin.sha256);
+        fs::create_dir_all(&partial_directory).expect("partial immutable directory");
+        fs::write(partial_directory.join("litestream"), b"partial")
+            .expect("partial immutable binary");
+
+        let immutable = verified
+            .stage_immutable(&runtime)
+            .expect("recovered immutable launch stage");
+        ImmutableLitestreamBinary::reverify_for_launch(
+            immutable.path(),
+            immutable.size(),
+            immutable.sha256(),
+        )
+        .expect("immutable stage verification");
+        assert_eq!(
+            verified
+                .stage_immutable(&runtime)
+                .expect("reused immutable launch stage")
+                .path(),
+            immutable.path()
+        );
+
+        let replacement = directory.path().join("replacement");
+        fs::write(&replacement, bytes).expect("replacement binary");
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o700))
+            .expect("replacement permissions");
+        assert!(
+            fs::rename(&replacement, immutable.path()).is_err(),
+            "immutable directory must reject executable replacement"
+        );
+
+        let immutable_directory = immutable.path().parent().expect("immutable directory");
+        let displaced_directory = directory.path().join("displaced-immutable-stage");
+        assert!(
+            fs::rename(immutable_directory, &displaced_directory).is_err(),
+            "immutable directory must reject parent-path displacement"
+        );
+        let directory_file =
+            File::open(immutable_directory).expect("immutable directory descriptor");
+        clear_user_immutable(&directory_file).expect("thaw immutable directory");
+        fs::set_permissions(immutable_directory, fs::Permissions::from_mode(0o700))
+            .expect("thawed directory permissions");
+        let binary_file = File::open(immutable.path()).expect("immutable binary descriptor");
+        clear_user_immutable(&binary_file).expect("thaw immutable binary");
+        fs::set_permissions(immutable.path(), fs::Permissions::from_mode(0o700))
+            .expect("thawed binary permissions");
     }
 
     #[cfg(unix)]

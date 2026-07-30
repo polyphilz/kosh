@@ -20,9 +20,9 @@ use crate::database::{DatabaseClient, OffsiteBackupConfig};
 use super::{
     credentials::{CredentialError, CredentialStore, MacOsKeychainCredentialStore},
     litestream::{
-        configure_credentials_environment, CommandLitestreamControl, LitestreamConfig,
-        LitestreamError, LitestreamRuntimePaths, SyncResult, SystemCommandExecutor,
-        VerifiedLitestreamBinary,
+        configure_credentials_environment, CommandLitestreamControl, ImmutableLitestreamBinary,
+        LitestreamConfig, LitestreamError, LitestreamRuntimePaths, SyncResult,
+        SystemCommandExecutor, VerifiedLitestreamBinary,
     },
     object_store::{ObjectStoreErrorCode, R2ObjectStore},
     owner::{claim_remote_owner_cancellable, RemoteOwnerError},
@@ -62,7 +62,7 @@ pub(crate) fn run_launcher_if_requested() -> Option<i32> {
     if await_activation(&mut std::io::stdin()).is_err() {
         return Some(LITESTREAM_LAUNCHER_IO_EXIT);
     }
-    if VerifiedLitestreamBinary::reverify_for_launch(
+    if ImmutableLitestreamBinary::reverify_for_launch(
         &request.binary,
         request.expected_size,
         &request.expected_sha256,
@@ -769,6 +769,9 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
         })?;
         let binary =
             VerifiedLitestreamBinary::resolve(resource_dir).map_err(map_litestream_start_error)?;
+        let binary = binary
+            .stage_immutable(&runtime)
+            .map_err(map_litestream_start_error)?;
 
         let credentials = self
             .credentials
@@ -989,6 +992,8 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
         | LitestreamError::BinaryNotExecutable
         | LitestreamError::BinarySizeMismatch
         | LitestreamError::BinaryChecksumMismatch
+        | LitestreamError::StageBinary(_)
+        | LitestreamError::InvalidStagedBinary
         | LitestreamError::UnsafeProtocolPin
         | LitestreamError::RestorePlanTooLarge => {
             RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
@@ -1018,7 +1023,7 @@ struct SystemManagedLitestream {
 impl SystemManagedLitestream {
     #[allow(clippy::too_many_arguments)]
     fn launch(
-        binary: VerifiedLitestreamBinary,
+        binary: ImmutableLitestreamBinary,
         runtime: LitestreamRuntimePaths,
         ownership: LitestreamRuntimeOwnership,
         database_path: PathBuf,

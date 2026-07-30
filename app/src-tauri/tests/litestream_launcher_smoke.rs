@@ -20,7 +20,9 @@ const SECRET_KEY_ENV: &str = "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY";
 fn fake_litestream(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
 
-    let binary = root.join("fake-litestream");
+    let stage = root.join("immutable-stage");
+    fs::create_dir(&stage).expect("immutable stage directory");
+    let binary = stage.join("fake-litestream");
     let config = root.join("ls.yml");
     let marker = root.join("ls.yml.started");
     fs::write(
@@ -35,6 +37,7 @@ fn fake_litestream(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn spawn_launcher(binary: &Path, config: &Path) -> Child {
+    freeze_stage(binary);
     let bytes = fs::read(binary).expect("fake Litestream bytes");
     Command::new(env!("CARGO_BIN_EXE_kosh"))
         .arg(LAUNCHER_ARG)
@@ -53,6 +56,46 @@ fn spawn_launcher(binary: &Path, config: &Path) -> Child {
         .spawn()
         .expect("Kosh Litestream launcher")
 }
+
+fn freeze_stage(binary: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = binary.parent().expect("stage parent");
+    fs::set_permissions(binary, fs::Permissions::from_mode(0o500))
+        .expect("immutable binary permissions");
+    let file = fs::File::open(binary).expect("immutable binary descriptor");
+    set_user_immutable(&file, true);
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o500))
+        .expect("immutable directory permissions");
+    let directory = fs::File::open(directory).expect("immutable directory descriptor");
+    set_user_immutable(&directory, true);
+}
+
+fn thaw_stage(binary: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory_path = binary.parent().expect("stage parent");
+    let directory = fs::File::open(directory_path).expect("immutable directory descriptor");
+    set_user_immutable(&directory, false);
+    fs::set_permissions(directory_path, fs::Permissions::from_mode(0o700))
+        .expect("thawed directory permissions");
+    let file = fs::File::open(binary).expect("immutable binary descriptor");
+    set_user_immutable(&file, false);
+    fs::set_permissions(binary, fs::Permissions::from_mode(0o700))
+        .expect("thawed binary permissions");
+}
+
+#[cfg(target_os = "macos")]
+fn set_user_immutable(file: &fs::File, enabled: bool) {
+    use std::os::fd::AsRawFd;
+
+    let flags = if enabled { libc::UF_IMMUTABLE } else { 0 };
+    // SAFETY: `file` owns a live descriptor and `fchflags` does not retain it.
+    assert_eq!(unsafe { libc::fchflags(file.as_raw_fd(), flags) }, 0);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_user_immutable(_file: &fs::File, _enabled: bool) {}
 
 fn wait_for_exit(child: &mut Child) -> ExitStatus {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -90,6 +133,7 @@ fn actual_kosh_launcher_waits_for_durable_activation_before_exec() {
         fs::read_to_string(marker).expect("fake Litestream evidence"),
         "replicate\n-config\n"
     );
+    thaw_stage(&binary);
 }
 
 #[cfg(unix)]
@@ -106,6 +150,7 @@ fn actual_kosh_launcher_exits_on_parent_pipe_eof_without_exec() {
         !marker.exists(),
         "Litestream executed after pre-activation parent death"
     );
+    thaw_stage(&binary);
 }
 
 #[cfg(unix)]
@@ -128,7 +173,18 @@ fn actual_kosh_launcher_rejects_a_path_swap_before_activation() {
     .expect("replacement Litestream");
     fs::set_permissions(&replacement, fs::Permissions::from_mode(0o700))
         .expect("replacement permissions");
-    fs::rename(&replacement, &binary).expect("swap Litestream pathname");
+    assert!(
+        fs::rename(&replacement, &binary).is_err(),
+        "the immutable stage must reject pathname replacement"
+    );
+    assert!(
+        fs::rename(
+            binary.parent().expect("immutable stage parent"),
+            root.path().join("displaced-immutable-stage"),
+        )
+        .is_err(),
+        "the immutable stage directory must reject parent-path displacement"
+    );
 
     let mut activation = child.stdin.take().expect("launcher activation pipe");
     activation
@@ -136,13 +192,11 @@ fn actual_kosh_launcher_rejects_a_path_swap_before_activation() {
         .expect("activate verified Litestream");
     drop(activation);
 
-    assert_eq!(wait_for_exit(&mut child).code(), Some(74));
-    assert!(
-        !marker.exists(),
-        "a replaced path cannot execute the formerly verified bytes"
-    );
+    assert!(wait_for_exit(&mut child).success());
+    assert!(marker.exists(), "the immutable verified copy must execute");
     assert!(
         !replacement_marker.exists(),
         "the substituted pathname must never execute"
     );
+    thaw_stage(&binary);
 }

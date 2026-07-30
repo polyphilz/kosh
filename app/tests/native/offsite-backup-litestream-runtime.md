@@ -10,7 +10,10 @@ or contact R2.
 
 For an enabled configuration the supervisor:
 
-1. verifies the bundled universal Litestream bytes and release manifest;
+1. verifies the bundled universal Litestream bytes and release manifest,
+   retains that open descriptor, and copies only those verified bytes into a
+   private content-addressed launch directory whose file and directory are
+   mode `0500` and user-immutable;
 2. creates real, non-symlinked `run/backup` directories with mode `0700`;
 3. loads the active backup-set credential from macOS Keychain into zeroizing
    process memory;
@@ -22,17 +25,18 @@ For an enabled configuration the supervisor:
 6. atomically writes a mode-`0600` fixed-protocol configuration through a
    create-new, no-follow temporary file containing environment-variable
    references rather than credential values;
-7. launches Kosh's inert Litestream activation helper with the verified size
-   and digest, an otherwise empty environment, and a dedicated process group;
+7. launches Kosh's inert Litestream activation helper with the immutable-copy
+   path, verified size and digest, an otherwise empty environment, and a
+   dedicated process group;
 8. durably writes a bounded private PID record binding the exact command
    executable, the pinned binary digest, database, config, socket, backup set,
    replica epoch, and config digest;
 9. only then activates the helper through its private inherited pipe; the
    helper immediately reopens without following symlinks, revalidates the
-   descriptor's type, size, mode, and digest, and atomically replaces itself
-   with `litestream replicate`; replacing the bundle path fails closed, while
-   parent death before activation closes the pipe and leaves no replicating
-   orphan;
+   descriptor's type, size, mode, digest, and immutable file/directory flags,
+   and atomically replaces itself with `litestream replicate`; replacing the
+   source bundle path cannot alter the immutable copy, while parent death
+   before activation closes the pipe and leaves no replicating orphan;
 10. retains an exclusive, non-inherited runtime-generation lock from stale
     cleanup through daemon cleanup;
 11. accepts readiness only from a Unix socket with mode `0600`, while allowing
@@ -109,8 +113,11 @@ The focused native suite proves:
 - the activation token is emitted only after the durable ownership record;
 - the actual Kosh executable remains inert before activation and exits on
   parent-pipe EOF without executing Litestream;
-- the actual launcher rejects an atomically replaced Litestream pathname
-  before activation and executes neither the old nor substituted bytes;
+- the immutable launch stage is reusable, preserves the verified descriptor's
+  bytes, safely replaces an interrupted partial stage, and rejects executable
+  and parent-directory pathname replacement before activation;
+- the actual launcher executes the immutable copy while an attempted pathname
+  replacement fails and substituted bytes never run;
 - disabled configuration preserves and retries stale-sweep failures until
   recovery;
 - unreadable runtime residue fails closed and remains on the stale-sweep retry
