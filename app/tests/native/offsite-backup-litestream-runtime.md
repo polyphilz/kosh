@@ -117,9 +117,9 @@ The focused native suite proves:
   idempotently or advances its epoch with an ETag guard, and a second
   installation using copied configuration and R2 keys is rejected before
   launch;
-- credential migrations strip embedded writer IDs, hardware identity parsing
-  is strict, and copied profiles on either the same or a different device get
-  distinct domain-separated identities;
+- credential migrations accept and strip the canonical hash emitted by v2,
+  hardware identity parsing is strict, and copied profiles on either the same
+  or a different device get distinct domain-separated identities;
 - shutdown interrupts a stalled remote-owner start operation without waiting
   for the R2 request timeout;
 - disabling during a stalled start cancels that generation and aborts any

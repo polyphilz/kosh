@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
-use super::domain::BackupSetId;
+use super::domain::{BackupSetId, BackupWriterId};
 
 const KEYCHAIN_SERVICE: &str = "com.rohan.kosh.offsite-backup.r2";
 const CREDENTIAL_FORMAT_VERSION: u32 = 3;
@@ -93,7 +93,7 @@ impl R2Credentials {
                 let mut payload: EmbeddedWriterCredentialPayload =
                     serde_json::from_slice(bytes).map_err(|_| CredentialError::CorruptPayload)?;
                 if payload.format_version != EMBEDDED_WRITER_CREDENTIAL_FORMAT_VERSION
-                    || !is_canonical_legacy_writer_id(&payload.writer_id)
+                    || BackupWriterId::parse(payload.writer_id.as_str()).is_err()
                 {
                     payload.access_key_id.zeroize();
                     payload.secret_access_key.zeroize();
@@ -142,15 +142,6 @@ fn is_lower_hex(value: &str) -> bool {
     value
         .bytes()
         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn is_canonical_legacy_writer_id(value: &str) -> bool {
-    let Ok(parsed) = uuid::Uuid::parse_str(value) else {
-        return false;
-    };
-    parsed.get_version_num() == 7
-        && parsed.get_variant() == uuid::Variant::RFC4122
-        && parsed.hyphenated().to_string() == value
 }
 
 #[derive(Serialize)]
@@ -480,6 +471,10 @@ mod tests {
         )
         .is_err());
         assert!(R2Credentials::decode(
+            br#"{"formatVersion":2,"accessKeyId":"0123456789abcdef0123456789abcdef","secretAccessKey":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","writerId":"018f47cb-4ab8-7def-8000-000000000001"}"#
+        )
+        .is_err());
+        assert!(R2Credentials::decode(
             br#"{"formatVersion":3,"accessKeyId":"0123456789abcdef0123456789abcdef","secretAccessKey":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","writerId":"018f47cb-4ab8-7def-8000-000000000001"}"#
         )
         .is_err());
@@ -572,7 +567,7 @@ mod tests {
             (KEYCHAIN_SERVICE.to_owned(), backup_set_id.to_string()),
             format!(
                 r#"{{"formatVersion":2,"accessKeyId":"{ACCESS_KEY}","secretAccessKey":"{SECRET_KEY}","writerId":"{}"}}"#,
-                uuid::Uuid::now_v7()
+                BackupWriterId::derive_from_device_identifier(b"v2 credential fixture")
             )
             .into_bytes(),
         );
