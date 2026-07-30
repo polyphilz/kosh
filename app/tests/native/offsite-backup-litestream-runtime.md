@@ -25,18 +25,22 @@ For an enabled configuration the supervisor:
 6. atomically writes a mode-`0600` fixed-protocol configuration through a
    create-new, no-follow temporary file containing no credential values or
    credential environment-variable names;
-7. launches `litestream replicate` directly with an otherwise empty
-   environment, a dedicated process group, and one private inherited stream
-   named as its AWS shared-credentials file, but does not write credentials;
-8. asks the macOS kernel for the spawned image's `CS_OPS_CDHASH` and requires
-   the exact per-architecture code-directory hash pinned in the release
-   manifest, so a pathname replacement starts but can never receive secrets;
+7. asks macOS `posix_spawn` to load the selected executable with its initial
+   thread kernel-suspended, an otherwise empty environment, a dedicated process
+   group, and one private inherited stream named as its AWS shared-credentials
+   file, so no instruction from a pathname-swapped image can run;
+8. while that initial thread remains suspended, asks the macOS kernel for the
+   loaded image's `CS_OPS_CDHASH` and requires the exact per-architecture
+   code-directory hash pinned in the release manifest; a mismatched image is
+   killed and reaped before it can fork, read the stream, or execute any other
+   userspace instruction;
 9. durably writes a bounded private PID record binding the exact command
    executable, the pinned binary digest, database, config, socket, backup set,
    replica epoch, and config digest;
 10. only then writes the zeroizing Keychain values as a one-use AWS credential
-    profile through that inherited stream and closes it; parent death or any
-    identity/ownership failure produces EOF without exposing credentials;
+    profile through that inherited stream, closes it, and resumes the verified
+    image; parent death or any identity/ownership failure produces EOF without
+    exposing credentials;
 11. retains an exclusive, non-inherited runtime-generation lock from stale
     cleanup through daemon cleanup;
 12. accepts readiness only from a Unix socket with mode `0600`, while allowing
@@ -114,6 +118,9 @@ The focused native suite proves:
   record, while the child environment contains no raw credentials;
 - the macOS kernel code-directory hash binds the spawned image to the pinned
   architecture and rejects a mismatched process before credential release;
+- a selected image and its inherited credential descriptor remain
+  kernel-suspended until identity acceptance, so even code that would copy the
+  credential stream cannot run before Kosh explicitly resumes it;
 - the actual pinned universal Litestream starts headlessly with the inherited
   one-use credential profile and private control socket;
 - the immutable launch stage is reusable, preserves the verified descriptor's

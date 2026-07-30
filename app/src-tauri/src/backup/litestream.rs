@@ -19,9 +19,9 @@ use super::credentials::R2Credentials;
 
 const EMBEDDED_MANIFEST: &str = include_str!("../../resources/sidecars/litestream-v1.json");
 const DEVELOPMENT_BINARY_OVERRIDE_ENV: &str = "KOSH_LITESTREAM_PATH";
-const AWS_SHARED_CREDENTIALS_FILE_ENV: &str = "AWS_SHARED_CREDENTIALS_FILE";
-const AWS_SHARED_CREDENTIALS_FILE_FD: &str = "/dev/fd/0";
-const AWS_EC2_METADATA_DISABLED_ENV: &str = "AWS_EC2_METADATA_DISABLED";
+pub(crate) const AWS_SHARED_CREDENTIALS_FILE_ENV: &str = "AWS_SHARED_CREDENTIALS_FILE";
+pub(crate) const AWS_SHARED_CREDENTIALS_FILE_FD: &str = "/dev/fd/0";
+pub(crate) const AWS_EC2_METADATA_DISABLED_ENV: &str = "AWS_EC2_METADATA_DISABLED";
 const REQUIRED_L0_RETENTION: &str = "720h";
 const MAX_CONTROL_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -30,6 +30,7 @@ const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+#[cfg(test)]
 pub(crate) fn configure_credential_pipe_environment(command: &mut Command) {
     command
         .env_clear()

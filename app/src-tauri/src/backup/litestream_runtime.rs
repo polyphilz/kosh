@@ -1,11 +1,14 @@
 use std::{
+    ffi::CString,
     fs,
     io::{Read, Write},
     net::Shutdown,
-    os::fd::OwnedFd,
+    os::fd::{AsRawFd, OwnedFd},
+    os::unix::ffi::OsStrExt,
     os::unix::net::UnixStream,
+    os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
@@ -13,6 +16,9 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(test)]
+use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,9 +28,10 @@ use crate::database::{DatabaseClient, OffsiteBackupConfig};
 use super::{
     credentials::{CredentialError, CredentialStore, MacOsKeychainCredentialStore},
     litestream::{
-        configure_credential_pipe_environment, write_aws_shared_credentials,
-        CommandLitestreamControl, ImmutableLitestreamBinary, LitestreamConfig, LitestreamError,
-        LitestreamRuntimePaths, SyncResult, SystemCommandExecutor, VerifiedLitestreamBinary,
+        write_aws_shared_credentials, CommandLitestreamControl, ImmutableLitestreamBinary,
+        LitestreamConfig, LitestreamError, LitestreamRuntimePaths, SyncResult,
+        SystemCommandExecutor, VerifiedLitestreamBinary, AWS_EC2_METADATA_DISABLED_ENV,
+        AWS_SHARED_CREDENTIALS_FILE_ENV, AWS_SHARED_CREDENTIALS_FILE_FD,
     },
     object_store::{ObjectStoreErrorCode, R2ObjectStore},
     owner::{claim_remote_owner_cancellable, RemoteOwnerError},
@@ -911,8 +918,239 @@ fn map_control_error(error: LitestreamError) -> RuntimeFailure {
     }
 }
 
+trait RuntimeChild {
+    fn id(&self) -> u32;
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
+    fn kill(&mut self) -> std::io::Result<()>;
+    fn wait(&mut self) -> std::io::Result<ExitStatus>;
+}
+
+impl RuntimeChild for Child {
+    fn id(&self) -> u32 {
+        Child::id(self)
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        Child::kill(self)
+    }
+
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        Child::wait(self)
+    }
+}
+
+struct SuspendedLitestreamChild {
+    pid: libc::pid_t,
+    reaped: bool,
+    resumed: bool,
+}
+
+impl SuspendedLitestreamChild {
+    fn resume(&mut self) -> std::io::Result<()> {
+        if self.resumed {
+            return Ok(());
+        }
+        // POSIX_SPAWN_START_SUSPENDED stops the initial thread before any
+        // userspace instruction from the selected executable can run.
+        let result = unsafe { libc::kill(self.pid, libc::SIGCONT) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.resumed = true;
+        Ok(())
+    }
+}
+
+impl RuntimeChild for SuspendedLitestreamChild {
+    fn id(&self) -> u32 {
+        u32::try_from(self.pid).expect("posix_spawn returned a positive PID")
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        if self.reaped {
+            return Err(std::io::Error::other("Litestream child was already reaped"));
+        }
+        let mut status = 0;
+        // SAFETY: `status` is writable and `self.pid` belongs to this process.
+        let result = unsafe { libc::waitpid(self.pid, &mut status, libc::WNOHANG) };
+        if result == 0 {
+            return Ok(None);
+        }
+        if result < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.reaped = true;
+        Ok(Some(ExitStatus::from_raw(status)))
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        if self.reaped {
+            return Ok(());
+        }
+        // SAFETY: `self.pid` is the live child returned by posix_spawn.
+        let result = unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        if self.reaped {
+            return Err(std::io::Error::other("Litestream child was already reaped"));
+        }
+        let mut status = 0;
+        loop {
+            // SAFETY: `status` is writable and `self.pid` belongs to this process.
+            let result = unsafe { libc::waitpid(self.pid, &mut status, 0) };
+            if result > 0 {
+                self.reaped = true;
+                return Ok(ExitStatus::from_raw(status));
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+}
+
+impl Drop for SuspendedLitestreamChild {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.kill();
+            let _ = self.wait();
+        }
+    }
+}
+
+fn spawn_litestream_suspended(
+    binary: &Path,
+    config: &Path,
+    credential_reader: OwnedFd,
+) -> std::io::Result<SuspendedLitestreamChild> {
+    let binary = CString::new(binary.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::other("Litestream path contains NUL"))?;
+    let config = CString::new(config.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::other("Litestream config path contains NUL"))?;
+    let arguments = [
+        binary.clone(),
+        CString::new("replicate").expect("literal has no NUL"),
+        CString::new("-config").expect("literal has no NUL"),
+        config,
+    ];
+    let environment = [
+        CString::new(format!(
+            "{AWS_SHARED_CREDENTIALS_FILE_ENV}={AWS_SHARED_CREDENTIALS_FILE_FD}"
+        ))
+        .expect("credential environment has no NUL"),
+        CString::new(format!("{AWS_EC2_METADATA_DISABLED_ENV}=true"))
+            .expect("metadata environment has no NUL"),
+    ];
+    let mut argument_pointers = arguments
+        .iter()
+        .map(|value| value.as_ptr().cast_mut())
+        .chain(std::iter::once(std::ptr::null_mut()))
+        .collect::<Vec<_>>();
+    let mut environment_pointers = environment
+        .iter()
+        .map(|value| value.as_ptr().cast_mut())
+        .chain(std::iter::once(std::ptr::null_mut()))
+        .collect::<Vec<_>>();
+    let null_device = CString::new("/dev/null").expect("literal has no NUL");
+
+    let mut actions = std::mem::MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
+    // SAFETY: every initialized spawn object is destroyed below, and all C
+    // strings and pointer arrays outlive the posix_spawn call.
+    let actions_result = unsafe { libc::posix_spawn_file_actions_init(actions.as_mut_ptr()) };
+    if actions_result != 0 {
+        return Err(std::io::Error::from_raw_os_error(actions_result));
+    }
+    let mut actions = unsafe { actions.assume_init() };
+
+    let mut attributes = std::mem::MaybeUninit::<libc::posix_spawnattr_t>::uninit();
+    let attributes_result = unsafe { libc::posix_spawnattr_init(attributes.as_mut_ptr()) };
+    if attributes_result != 0 {
+        unsafe {
+            libc::posix_spawn_file_actions_destroy(&mut actions);
+        }
+        return Err(std::io::Error::from_raw_os_error(attributes_result));
+    }
+    let mut attributes = unsafe { attributes.assume_init() };
+
+    let spawn_result = (|| {
+        let duplicate_result = unsafe {
+            libc::posix_spawn_file_actions_adddup2(
+                &mut actions,
+                credential_reader.as_raw_fd(),
+                libc::STDIN_FILENO,
+            )
+        };
+        if duplicate_result != 0 {
+            return Err(std::io::Error::from_raw_os_error(duplicate_result));
+        }
+        for descriptor in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let open_result = unsafe {
+                libc::posix_spawn_file_actions_addopen(
+                    &mut actions,
+                    descriptor,
+                    null_device.as_ptr(),
+                    libc::O_WRONLY,
+                    0,
+                )
+            };
+            if open_result != 0 {
+                return Err(std::io::Error::from_raw_os_error(open_result));
+            }
+        }
+        let flags = libc::POSIX_SPAWN_START_SUSPENDED
+            | libc::POSIX_SPAWN_SETPGROUP
+            | libc::POSIX_SPAWN_CLOEXEC_DEFAULT;
+        let flags_result =
+            unsafe { libc::posix_spawnattr_setflags(&mut attributes, flags as libc::c_short) };
+        if flags_result != 0 {
+            return Err(std::io::Error::from_raw_os_error(flags_result));
+        }
+        let group_result = unsafe { libc::posix_spawnattr_setpgroup(&mut attributes, 0) };
+        if group_result != 0 {
+            return Err(std::io::Error::from_raw_os_error(group_result));
+        }
+
+        let mut pid = 0;
+        let result = unsafe {
+            libc::posix_spawn(
+                &mut pid,
+                binary.as_ptr(),
+                &actions,
+                &attributes,
+                argument_pointers.as_mut_ptr(),
+                environment_pointers.as_mut_ptr(),
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::from_raw_os_error(result));
+        }
+        Ok(SuspendedLitestreamChild {
+            pid,
+            reaped: false,
+            resumed: false,
+        })
+    })();
+
+    unsafe {
+        libc::posix_spawnattr_destroy(&mut attributes);
+        libc::posix_spawn_file_actions_destroy(&mut actions);
+    }
+    spawn_result
+}
+
 struct SystemManagedLitestream {
-    child: Option<Child>,
+    child: Option<SuspendedLitestreamChild>,
     runtime: LitestreamRuntimePaths,
     ownership: LitestreamRuntimeOwnership,
     database_path: PathBuf,
@@ -939,26 +1177,12 @@ impl SystemManagedLitestream {
         let (credential_reader, mut credential_writer) = UnixStream::pair()
             .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
         let credential_reader: OwnedFd = credential_reader.into();
-        let mut command = Command::new(&binary_path);
-        command
-            .arg("replicate")
-            .arg("-config")
-            .arg(runtime.config())
-            .stdin(Stdio::from(credential_reader))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        configure_credential_pipe_environment(&mut command);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
+        let mut child =
+            spawn_litestream_suspended(&binary_path, runtime.config(), credential_reader)
+                .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
         let pid = child.id();
         if let Err(error) = binary.verify_running_process(pid) {
-            terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
+            kill_process_group(&mut child);
             cleanup_owned_runtime(&ownership, &runtime, pid, false);
             return Err(map_litestream_start_error(error));
         }
@@ -980,7 +1204,7 @@ impl SystemManagedLitestream {
         .and_then(|()| credential_writer.shutdown(Shutdown::Write))
         .is_err()
         {
-            terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
+            kill_process_group(&mut child);
             cleanup_owned_runtime(&ownership, &runtime, pid, false);
             return Err(RuntimeFailure::new(
                 RelationalBackupErrorCode::ControlUnavailable,
@@ -988,6 +1212,14 @@ impl SystemManagedLitestream {
             ));
         }
         drop(credential_writer);
+        if child.resume().is_err() {
+            kill_process_group(&mut child);
+            cleanup_owned_runtime(&ownership, &runtime, pid, false);
+            return Err(RuntimeFailure::new(
+                RelationalBackupErrorCode::LaunchFailed,
+                true,
+            ));
+        }
         if let Err(failure) = wait_for_control_socket(&mut child, &runtime, shutdown) {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
             cleanup_owned_runtime(&ownership, &runtime, pid, true);
@@ -1063,7 +1295,7 @@ impl Drop for SystemManagedLitestream {
 }
 
 fn wait_for_control_socket(
-    child: &mut Child,
+    child: &mut impl RuntimeChild,
     runtime: &LitestreamRuntimePaths,
     shutdown: &AtomicBool,
 ) -> Result<(), RuntimeFailure> {
@@ -1432,7 +1664,7 @@ fn process_exists(pid: u32) -> bool {
 }
 
 #[cfg(unix)]
-fn terminate_process_group(child: &mut Child, timeout: Duration) {
+fn terminate_process_group(child: &mut impl RuntimeChild, timeout: Duration) {
     if child.try_wait().ok().flatten().is_some() {
         let _ = child.wait();
         return;
@@ -1462,13 +1694,13 @@ fn terminate_process_group(child: &mut Child, timeout: Duration) {
 }
 
 #[cfg(not(unix))]
-fn terminate_process_group(child: &mut Child, _timeout: Duration) {
+fn terminate_process_group(child: &mut impl RuntimeChild, _timeout: Duration) {
     let _ = child.kill();
     let _ = child.wait();
 }
 
 #[cfg(unix)]
-fn kill_process_group(child: &mut Child) {
+fn kill_process_group(child: &mut impl RuntimeChild) {
     if child.try_wait().ok().flatten().is_some() {
         let _ = child.wait();
         return;
@@ -1485,7 +1717,7 @@ fn kill_process_group(child: &mut Child) {
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(child: &mut Child) {
+fn kill_process_group(child: &mut impl RuntimeChild) {
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -1635,6 +1867,64 @@ mod tests {
     };
 
     const ACCOUNT_ID: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn daemon_image_is_kernel_suspended_before_any_selected_code_runs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TempDir::new().expect("temporary runtime");
+        let config = root.path().join("ls.yml");
+        let selected_code_marker = root.path().join("selected-code-ran");
+        let inherited_credential_copy = root.path().join("inherited-credential-copy");
+        let selected_executable = root.path().join("selected-executable");
+        fs::write(&config, b"").expect("config");
+        fs::write(
+            &selected_executable,
+            format!(
+                "#!/bin/sh\n/bin/cat > \"{}\"\n/usr/bin/touch \"{}\"\n",
+                inherited_credential_copy.display(),
+                selected_code_marker.display()
+            ),
+        )
+        .expect("selected executable");
+        fs::set_permissions(&selected_executable, fs::Permissions::from_mode(0o700))
+            .expect("selected executable permissions");
+        let (credential_reader, mut credential_writer) =
+            UnixStream::pair().expect("credential stream");
+        let mut child =
+            spawn_litestream_suspended(&selected_executable, &config, credential_reader.into())
+                .expect("suspended spawn");
+        credential_writer
+            .write_all(b"fake-r2-credential")
+            .expect("credential payload");
+        credential_writer
+            .shutdown(Shutdown::Write)
+            .expect("credential EOF");
+
+        let mut status = 0;
+        // SAFETY: this observes the state of the live child without reaping it.
+        let observed = unsafe {
+            libc::waitpid(
+                i32::try_from(child.id()).expect("PID"),
+                &mut status,
+                libc::WUNTRACED | libc::WNOHANG,
+            )
+        };
+        assert_eq!(observed, i32::try_from(child.id()).expect("PID"));
+        assert!(libc::WIFSTOPPED(status));
+        assert!(child.try_wait().expect("child status").is_none());
+        assert!(!selected_code_marker.exists());
+        assert!(!inherited_credential_copy.exists());
+
+        drop(credential_writer);
+        child.resume().expect("resume verified image");
+        assert!(child.wait().expect("child exit").success());
+        assert!(selected_code_marker.exists());
+        assert_eq!(
+            fs::read(&inherited_credential_copy).expect("inherited credential copy"),
+            b"fake-r2-credential"
+        );
+    }
 
     enum StartPlan {
         Failure(RuntimeFailure),
