@@ -79,7 +79,10 @@ pub fn register_sqlite_vec() -> Result<()> {
 }
 
 pub fn inspect_file(path: &Path) -> Result<FileState> {
-    match fs::metadata(path) {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => Err(DatabaseError::InvalidInput(
+            format!("database path is not a regular file: {}", path.display()),
+        )),
         Ok(metadata) if metadata.len() > 0 => Ok(FileState::Existing),
         Ok(_) => Ok(FileState::Fresh),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FileState::Fresh),
@@ -254,4 +257,28 @@ fn invalid<T>(reason: String) -> Result<T> {
         kind: "connection",
         reason,
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+
+    #[test]
+    fn inspection_rejects_symlinks_without_following_the_target() {
+        let directory = tempfile::tempdir().expect("database inspection root");
+        let target = directory.path().join("outside.sqlite3");
+        let linked = directory.path().join("kosh.sqlite3");
+        fs::write(&target, b"outside database").expect("target fixture");
+        symlink(&target, &linked).expect("database symlink");
+
+        let error = inspect_file(&linked).expect_err("symlink must be rejected");
+
+        assert!(matches!(error, DatabaseError::InvalidInput(_)));
+        assert_eq!(
+            fs::read(&target).expect("unchanged target"),
+            b"outside database"
+        );
+    }
 }
