@@ -5,7 +5,10 @@ use std::sync::mpsc::{self, Sender, SyncSender};
 use rusqlite::{params, Connection, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
+use crate::backup::domain::BackupSetId;
+
 use super::{
+    backup_state::{OffsiteBackupConfig, SaveOffsiteBackupConfigInput},
     drafts::{ClearDraftInput, Draft, SaveDraftWrite},
     embedding_index::{
         InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
@@ -67,6 +70,21 @@ pub(crate) struct LexicalBenchmarkAttachmentWrite {
 pub(super) enum WriterMessage {
     Diagnostics {
         reply: SyncSender<Result<DatabaseDiagnostics>>,
+    },
+    LoadOffsiteBackupConfig {
+        enabled_only: bool,
+        reply: SyncSender<Result<Option<OffsiteBackupConfig>>>,
+    },
+    SaveOffsiteBackupConfig {
+        input: SaveOffsiteBackupConfigInput,
+        reply: SyncSender<Result<OffsiteBackupConfig>>,
+    },
+    LoadOffsiteCredentialCleanup {
+        reply: SyncSender<Result<Vec<BackupSetId>>>,
+    },
+    CompleteOffsiteCredentialCleanup {
+        backup_set_id: BackupSetId,
+        reply: SyncSender<Result<()>>,
     },
     FullIntegrityCheck {
         reply: SyncSender<Result<()>>,
@@ -357,6 +375,69 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::Diagnostics { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_offsite_backup_config(&self) -> Result<Option<OffsiteBackupConfig>> {
+        self.load_offsite_backup_config_inner(false)
+    }
+
+    pub(crate) fn load_enabled_offsite_backup_config(&self) -> Result<Option<OffsiteBackupConfig>> {
+        self.load_offsite_backup_config_inner(true)
+    }
+
+    fn load_offsite_backup_config_inner(
+        &self,
+        enabled_only: bool,
+    ) -> Result<Option<OffsiteBackupConfig>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadOffsiteBackupConfig {
+                enabled_only,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn save_offsite_backup_config(
+        &self,
+        input: SaveOffsiteBackupConfigInput,
+    ) -> Result<OffsiteBackupConfig> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::SaveOffsiteBackupConfig { input, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_offsite_credential_cleanup(&self) -> Result<Vec<BackupSetId>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadOffsiteCredentialCleanup { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn complete_offsite_credential_cleanup(
+        &self,
+        backup_set_id: BackupSetId,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::CompleteOffsiteCredentialCleanup {
+                backup_set_id,
+                reply,
+            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

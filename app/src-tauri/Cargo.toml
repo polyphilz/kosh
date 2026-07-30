@@ -36,6 +36,7 @@ reqwest = { version = "=0.13.4", default-features = false, features = [
   "rustls",
 ] }
 rusqlite = { version = "=0.39.0", features = ["blob", "bundled", "functions", "limits"] }
+rusty-s3 = { version = "=0.10.1", default-features = false, features = ["rustcrypto", "xml"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"
@@ -49,6 +50,7 @@ tiny_http = "=0.12.0"
 unicode-normalization = "=0.1.25"
 url = "=2.5.8"
 uuid = { version = "=1.23.5", features = ["v7"] }
+zeroize = "=1.9.0"
 image = { version = "=0.25.10", default-features = false, features = [
   "gif",
   "jpeg",
@@ -62,6 +64,7 @@ webp = { version = "=0.3.1", default-features = false }
 libc = "=0.2.189"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=4.1.5", default-features = false, features = ["v1"] }
 objc2 = "=0.6.4"
 objc2-app-kit = "=0.3.2"
 objc2-foundation = "=0.3.2"

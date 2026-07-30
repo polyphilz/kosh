@@ -1,3 +1,4 @@
+mod backup_state;
 pub(crate) mod commands;
 pub(crate) mod connection;
 pub(crate) mod drafts;
@@ -16,6 +17,8 @@ pub(crate) mod tidbits;
 mod validation;
 mod writer;
 
+#[cfg(test)]
+mod backup_state_tests;
 #[cfg(test)]
 mod drafts_tests;
 #[cfg(test)]
@@ -281,6 +284,32 @@ fn writer_loop(
         match message {
             WriterMessage::Diagnostics { reply } => {
                 let _ = reply.send(writer::diagnostics(&mut main, &mut media));
+            }
+            WriterMessage::LoadOffsiteBackupConfig {
+                enabled_only,
+                reply,
+            } => {
+                let result = if enabled_only {
+                    backup_state::load_enabled(&main)
+                } else {
+                    backup_state::load(&main)
+                };
+                let _ = reply.send(result);
+            }
+            WriterMessage::SaveOffsiteBackupConfig { input, reply } => {
+                let _ = reply.send(backup_state::save(&mut main, input));
+            }
+            WriterMessage::LoadOffsiteCredentialCleanup { reply } => {
+                let _ = reply.send(backup_state::load_credential_cleanup(&main));
+            }
+            WriterMessage::CompleteOffsiteCredentialCleanup {
+                backup_set_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_state::complete_credential_cleanup(
+                    &main,
+                    &backup_set_id,
+                ));
             }
             WriterMessage::FullIntegrityCheck { reply } => {
                 let _ = reply.send(validation::full_integrity_check_pair(&main, &media));

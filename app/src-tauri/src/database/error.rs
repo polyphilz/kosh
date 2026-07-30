@@ -48,6 +48,12 @@ pub enum DatabaseError {
     #[error("invalid database command: {0}")]
     InvalidInput(String),
 
+    #[error("invalid off-site backup configuration: {0}")]
+    InvalidOffsiteBackupConfig(String),
+
+    #[error("off-site backup configuration changed before this operation")]
+    StaleOffsiteBackupConfig,
+
     #[error("{entity} {id} was not found")]
     NotFound { entity: &'static str, id: String },
 
