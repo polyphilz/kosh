@@ -1069,6 +1069,8 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
         LitestreamError::PrepareRuntime(_)
         | LitestreamError::WriteConfig(_)
         | LitestreamError::StageRestoreConfig(_)
+        | LitestreamError::PrepareRestoreDestination(_)
+        | LitestreamError::PublishRestoreDestination(_)
         | LitestreamError::Execute(_) => {
             RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true)
         }
@@ -1086,6 +1088,7 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
         | LitestreamError::InvalidTxid
         | LitestreamError::InvalidSyncContract
         | LitestreamError::InvalidRestoreContract
+        | LitestreamError::InvalidRestoreDestination
         | LitestreamError::UnexpectedDatabasePath
         | LitestreamError::OversizedControlResponse => {
             RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, false)
