@@ -212,6 +212,18 @@ codesign --force --sign - --timestamp=none \
   --identifier "$(jq -er '.binary.universal.codeSignatureIdentifier' "$PIN")" \
   "$universal"
 codesign --verify --strict --verbose=2 "$universal"
+for architecture in $(jq -er '.target.architectures[]' "$PIN"); do
+  expected_cdhash=$(jq -er --arg architecture "$architecture" \
+    '.binary.universal.codeSignatureCdhashByArchitecture[$architecture]' "$PIN")
+  actual_cdhash=$(
+    codesign -d --verbose=4 --arch "$architecture" "$universal" 2>&1 |
+      awk -F= '$1 == "CDHash" { print $2; exit }'
+  )
+  test "$actual_cdhash" = "$expected_cdhash" || {
+    echo "Litestream $architecture code-directory hash mismatch" >&2
+    exit 1
+  }
+done
 
 universal_sha256=$(shasum -a 256 "$universal" | awk '{print $1}')
 universal_size=$(wc -c <"$universal" | tr -d ' ')

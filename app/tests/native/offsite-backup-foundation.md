@@ -1,8 +1,9 @@
 # Off-site backup state and R2 boundary
 
-Relational replication remains dormant. When backup is absent or disabled,
-ordinary startup performs no network or Keychain operation. Capture and Exact
-search therefore remain independent of backup configuration.
+Relational replication is supervised only when backup is enabled. When backup
+is absent or disabled, ordinary startup performs no network or Keychain
+operation. Capture and Exact search therefore remain independent of backup
+configuration.
 
 ## Persistence contract
 
@@ -23,7 +24,21 @@ R2 access and secret keys exist only in zeroizing process memory or a
 versioned payload in the macOS Keychain service
 `com.rohan.kosh.offsite-backup.r2`. Debug output is redacted. A Keychain save
 is read back and decoded before it succeeds; a mismatched readback removes the
-new item and fails.
+new item and fails. Credential payloads never contain the backup writer
+identity. Legacy payloads that embedded one are verified, upgraded, and stripped
+under the same rollback protocol.
+
+The non-secret writer identity is instead a domain-separated SHA-256 digest of
+macOS's hardware-provided `IOPlatformUUID` plus the profile data directory's
+filesystem device and inode. Kosh reads the hardware property from the fixed
+`/usr/sbin/ioreg` binary with an empty environment, bounded output, and strict
+canonical parsing; it reads the profile identity from directory metadata, not
+from a copyable file. The identity is never accepted from the settings form,
+remains stable across credential updates and directory renames, and changes
+when a profile is copied or restored into a new directory—even on the same Mac.
+Migrating to another Mac also changes the hardware component. A copied profile
+therefore cannot impersonate the remote owner. This works in unsigned
+development builds without a Keychain prompt or application window.
 
 ## Network and namespace contract
 
@@ -39,7 +54,10 @@ kosh/v1/backup-sets/<canonical-backup-set-id>/
 Both the production and fake clients reject keys or list prefixes belonging
 to another backup set. Responses are bounded, redirects are disabled, HTTPS is
 mandatory, returned keys are revalidated, and conditional writes are
-supported.
+supported. Relational replication conditionally creates and reads back
+`owner/v1.json` before launch. A different local writer identity fails closed;
+the current owner may advance its replica epoch only through an ETag-guarded
+replacement.
 
 ## Probe contract
 

@@ -42,6 +42,7 @@
   "binary": {
     "archivePath": "litestream",
     "bundlePath": "bin/litestream",
+    "trustedCleanupSha256s": ["c535829126d7bb8f3e8c2e7a4f9e3507c63dad1ed91815824aeabf9a5217760b"],
     "versionArguments": ["version"],
     "versionOutputByArchitecture": {
       "arm64": "0.5.15",
@@ -50,7 +51,11 @@
     "universal": {
       "sha256": "c535829126d7bb8f3e8c2e7a4f9e3507c63dad1ed91815824aeabf9a5217760b",
       "size": 77508256,
-      "codeSignatureIdentifier": "com.rohan.kosh.litestream"
+      "codeSignatureIdentifier": "com.rohan.kosh.litestream",
+      "codeSignatureCdhashByArchitecture": {
+        "arm64": "71aba3c4b6ae015b5dde89c29ccfc5f45d0d1475",
+        "x86_64": "e34d4df0221f1d31c52f68dd7b8db8e3bb4b3c89"
+      }
     }
   },
   "resourceDestinations": {

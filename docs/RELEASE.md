@@ -187,10 +187,11 @@ plus logs. Inspect the newest `safety-snapshots/migration-*` manifest before
 copying anything. The acceptance recovery command operates only on ignored
 test profiles; it is not authorization to overwrite production data.
 
-The package contains the pinned dormant Litestream executable and verified
-protocol contracts, but backup remains impossible to enable until the
-remaining Chunk 29 persistence, ownership, checkpoint, restore, and Settings
-slices land. This release does not claim multi-device sync or off-site restore.
+The package contains the pinned Litestream executable, verified protocol
+contracts, and an opt-in supervised runtime. End-user backup remains
+unavailable until the remaining checkpoint, restore, Settings, and packaged
+acceptance slices land. This release does not claim multi-device sync or
+off-site restore.
 
 ## Public distribution is future work
 

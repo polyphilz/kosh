@@ -221,6 +221,19 @@ impl ProbeDeleteAuthorization {
 pub(crate) trait ObjectStore: Send + Sync {
     fn head(&self, key: &R2ObjectKey) -> Result<Option<ObjectMetadata>, ObjectStoreError>;
     fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError>;
+    fn get_bounded(
+        &self,
+        key: &R2ObjectKey,
+        max_bytes: usize,
+    ) -> Result<GetObjectResult, ObjectStoreError> {
+        let result = self.get(key)?;
+        if result.bytes.len() > max_bytes {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorCode::ResponseTooLarge,
+            ));
+        }
+        Ok(result)
+    }
     fn put(&self, request: PutObjectRequest) -> Result<PutObjectOutcome, ObjectStoreError>;
     fn put_media(&self, request: PutMediaRequest) -> Result<PutObjectOutcome, ObjectStoreError>;
     fn list(
@@ -374,6 +387,29 @@ impl R2ObjectStore {
         parse_version(response.headers())?;
         Ok(PutObjectOutcome::Stored)
     }
+
+    fn get_with_limit(
+        &self,
+        key: &R2ObjectKey,
+        max_bytes: usize,
+    ) -> Result<GetObjectResult, ObjectStoreError> {
+        self.validate_key(key)?;
+        if max_bytes > MAX_OBJECT_BYTES {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorCode::ResponseTooLarge,
+            ));
+        }
+        let credentials = self.credentials.clone();
+        let action = self.bucket.get_object(Some(&credentials), key.as_str());
+        let response = self.send(self.client.get(action.sign(SIGNED_URL_LIFETIME)))?;
+        ensure_success(response.status())?;
+        let metadata = parse_metadata(response.headers())?;
+        let bytes = read_bounded(response, max_bytes)?;
+        if bytes.len() as u64 != metadata.byte_length {
+            return Err(invalid_response());
+        }
+        Ok(GetObjectResult { metadata, bytes })
+    }
 }
 
 impl ObjectStore for R2ObjectStore {
@@ -390,17 +426,15 @@ impl ObjectStore for R2ObjectStore {
     }
 
     fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError> {
-        self.validate_key(key)?;
-        let credentials = self.credentials.clone();
-        let action = self.bucket.get_object(Some(&credentials), key.as_str());
-        let response = self.send(self.client.get(action.sign(SIGNED_URL_LIFETIME)))?;
-        ensure_success(response.status())?;
-        let metadata = parse_metadata(response.headers())?;
-        let bytes = read_bounded(response, MAX_OBJECT_BYTES)?;
-        if bytes.len() as u64 != metadata.byte_length {
-            return Err(invalid_response());
-        }
-        Ok(GetObjectResult { metadata, bytes })
+        self.get_with_limit(key, MAX_OBJECT_BYTES)
+    }
+
+    fn get_bounded(
+        &self,
+        key: &R2ObjectKey,
+        max_bytes: usize,
+    ) -> Result<GetObjectResult, ObjectStoreError> {
+        self.get_with_limit(key, max_bytes)
     }
 
     fn put(&self, request: PutObjectRequest) -> Result<PutObjectOutcome, ObjectStoreError> {

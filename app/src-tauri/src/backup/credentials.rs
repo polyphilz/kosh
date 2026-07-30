@@ -5,10 +5,12 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
-use super::domain::BackupSetId;
+use super::domain::{BackupSetId, BackupWriterId};
 
 const KEYCHAIN_SERVICE: &str = "com.rohan.kosh.offsite-backup.r2";
-const CREDENTIAL_FORMAT_VERSION: u32 = 1;
+const CREDENTIAL_FORMAT_VERSION: u32 = 3;
+const EMBEDDED_WRITER_CREDENTIAL_FORMAT_VERSION: u32 = 2;
+const LEGACY_CREDENTIAL_FORMAT_VERSION: u32 = 1;
 const MAX_CREDENTIAL_PAYLOAD_BYTES: usize = 4 * 1024;
 
 pub(crate) struct R2Credentials {
@@ -61,23 +63,68 @@ impl R2Credentials {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, CredentialError> {
+        Self::decode_with_migration(bytes).map(|(credentials, _)| credentials)
+    }
+
+    fn decode_with_migration(bytes: &[u8]) -> Result<(Self, bool), CredentialError> {
         if bytes.len() > MAX_CREDENTIAL_PAYLOAD_BYTES {
             return Err(CredentialError::CorruptPayload);
         }
-        let mut payload: CredentialPayload =
+        let envelope: CredentialPayloadVersion =
             serde_json::from_slice(bytes).map_err(|_| CredentialError::CorruptPayload)?;
-        if payload.format_version != CREDENTIAL_FORMAT_VERSION {
-            payload.access_key_id.zeroize();
-            payload.secret_access_key.zeroize();
-            return Err(CredentialError::UnsupportedPayloadVersion);
+        match envelope.format_version {
+            CREDENTIAL_FORMAT_VERSION => {
+                let mut payload: CredentialPayload =
+                    serde_json::from_slice(bytes).map_err(|_| CredentialError::CorruptPayload)?;
+                if payload.format_version != CREDENTIAL_FORMAT_VERSION {
+                    payload.access_key_id.zeroize();
+                    payload.secret_access_key.zeroize();
+                    return Err(CredentialError::CorruptPayload);
+                }
+                let credentials = Self::new(
+                    std::mem::take(&mut payload.access_key_id),
+                    std::mem::take(&mut payload.secret_access_key),
+                )?;
+                payload.access_key_id.zeroize();
+                payload.secret_access_key.zeroize();
+                Ok((credentials, false))
+            }
+            EMBEDDED_WRITER_CREDENTIAL_FORMAT_VERSION => {
+                let mut payload: EmbeddedWriterCredentialPayload =
+                    serde_json::from_slice(bytes).map_err(|_| CredentialError::CorruptPayload)?;
+                if payload.format_version != EMBEDDED_WRITER_CREDENTIAL_FORMAT_VERSION
+                    || BackupWriterId::parse(payload.writer_id.as_str()).is_err()
+                {
+                    payload.access_key_id.zeroize();
+                    payload.secret_access_key.zeroize();
+                    return Err(CredentialError::CorruptPayload);
+                }
+                let credentials = Self::new(
+                    std::mem::take(&mut payload.access_key_id),
+                    std::mem::take(&mut payload.secret_access_key),
+                );
+                payload.access_key_id.zeroize();
+                payload.secret_access_key.zeroize();
+                credentials.map(|credentials| (credentials, true))
+            }
+            LEGACY_CREDENTIAL_FORMAT_VERSION => {
+                let mut payload: LegacyCredentialPayload =
+                    serde_json::from_slice(bytes).map_err(|_| CredentialError::CorruptPayload)?;
+                if payload.format_version != LEGACY_CREDENTIAL_FORMAT_VERSION {
+                    payload.access_key_id.zeroize();
+                    payload.secret_access_key.zeroize();
+                    return Err(CredentialError::CorruptPayload);
+                }
+                let credentials = Self::new(
+                    std::mem::take(&mut payload.access_key_id),
+                    std::mem::take(&mut payload.secret_access_key),
+                );
+                payload.access_key_id.zeroize();
+                payload.secret_access_key.zeroize();
+                credentials.map(|credentials| (credentials, true))
+            }
+            _ => Err(CredentialError::UnsupportedPayloadVersion),
         }
-        let credentials = Self::new(
-            std::mem::take(&mut payload.access_key_id),
-            std::mem::take(&mut payload.secret_access_key),
-        );
-        payload.access_key_id.zeroize();
-        payload.secret_access_key.zeroize();
-        credentials
     }
 }
 
@@ -106,8 +153,31 @@ struct CredentialPayloadRef<'a> {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CredentialPayloadVersion {
+    format_version: u32,
+}
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CredentialPayload {
+    format_version: u32,
+    access_key_id: String,
+    secret_access_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EmbeddedWriterCredentialPayload {
+    format_version: u32,
+    access_key_id: String,
+    secret_access_key: String,
+    writer_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyCredentialPayload {
     format_version: u32,
     access_key_id: String,
     secret_access_key: String,
@@ -220,6 +290,44 @@ fn save_verified(
 }
 
 #[cfg(target_os = "macos")]
+fn load_and_upgrade(
+    backend: &impl KeychainBackend,
+    backup_set_id: &BackupSetId,
+) -> Result<R2Credentials, CredentialError> {
+    let original = Zeroizing::new(backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str())?);
+    let (credentials, needs_upgrade) = R2Credentials::decode_with_migration(original.as_slice())?;
+    if !needs_upgrade {
+        return Ok(credentials);
+    }
+    let upgraded = credentials.encode()?;
+    if let Err(error) = backend.save(
+        KEYCHAIN_SERVICE,
+        backup_set_id.as_str(),
+        upgraded.as_slice(),
+    ) {
+        restore_previous(backend, backup_set_id, Some(original.as_slice()))
+            .map_err(|_| CredentialError::Unavailable)?;
+        return Err(error);
+    }
+    let verified = match backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str()) {
+        Ok(payload) => Zeroizing::new(payload),
+        Err(error) => {
+            restore_previous(backend, backup_set_id, Some(original.as_slice()))
+                .map_err(|_| CredentialError::Unavailable)?;
+            return Err(error);
+        }
+    };
+    if verified.as_slice() != upgraded.as_slice()
+        || R2Credentials::decode(verified.as_slice()).is_err()
+    {
+        restore_previous(backend, backup_set_id, Some(original.as_slice()))
+            .map_err(|_| CredentialError::Unavailable)?;
+        return Err(CredentialError::Unavailable);
+    }
+    Ok(credentials)
+}
+
+#[cfg(target_os = "macos")]
 fn rollback_and_return(
     backend: &impl KeychainBackend,
     backup_set_id: &BackupSetId,
@@ -273,9 +381,7 @@ impl CredentialStore for MacOsKeychainCredentialStore {
         let _guard = KEYCHAIN_OPERATION_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let payload =
-            Zeroizing::new(SystemKeychainBackend.load(KEYCHAIN_SERVICE, backup_set_id.as_str())?);
-        R2Credentials::decode(payload.as_slice())
+        load_and_upgrade(&SystemKeychainBackend, backup_set_id)
     }
 
     fn remove(&self, backup_set_id: &BackupSetId) -> Result<(), CredentialError> {
@@ -346,6 +452,10 @@ mod tests {
         let decoded = R2Credentials::decode(payload.as_slice()).expect("decoded");
         assert_eq!(decoded.access_key_id(), ACCESS_KEY);
         assert_eq!(decoded.secret_access_key(), SECRET_KEY);
+        let json: serde_json::Value =
+            serde_json::from_slice(payload.as_slice()).expect("credential JSON");
+        assert_eq!(json["formatVersion"], CREDENTIAL_FORMAT_VERSION);
+        assert!(json.get("writerId").is_none());
         let debug = format!("{credentials:?}");
         assert!(!debug.contains(ACCESS_KEY));
         assert!(!debug.contains(SECRET_KEY));
@@ -358,6 +468,14 @@ mod tests {
         assert!(R2Credentials::new(ACCESS_KEY, "short").is_err());
         assert!(R2Credentials::decode(
             br#"{"formatVersion":2,"accessKeyId":"0123456789abcdef0123456789abcdef","secretAccessKey":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
+        )
+        .is_err());
+        assert!(R2Credentials::decode(
+            br#"{"formatVersion":2,"accessKeyId":"0123456789abcdef0123456789abcdef","secretAccessKey":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","writerId":"018f47cb-4ab8-7def-8000-000000000001"}"#
+        )
+        .is_err());
+        assert!(R2Credentials::decode(
+            br#"{"formatVersion":3,"accessKeyId":"0123456789abcdef0123456789abcdef","secretAccessKey":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","writerId":"018f47cb-4ab8-7def-8000-000000000001"}"#
         )
         .is_err());
         assert!(R2Credentials::decode(
@@ -401,6 +519,65 @@ mod tests {
         .expect("restored credentials");
         assert_eq!(restored.access_key_id(), ACCESS_KEY);
         assert_eq!(restored.secret_access_key(), SECRET_KEY);
+
+        save_verified(&backend, &backup_set_id, &replacement).expect("replacement save");
+        let replaced = R2Credentials::decode(
+            &backend
+                .entry(KEYCHAIN_SERVICE, backup_set_id.as_str())
+                .expect("replacement payload"),
+        )
+        .expect("replacement credentials");
+        assert_eq!(replaced.access_key_id(), replacement.access_key_id());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn legacy_and_embedded_writer_payloads_upgrade_without_copyable_writer_identity() {
+        let backend = FakeKeychainBackend::default();
+        let backup_set_id = BackupSetId::new();
+        backend.entries().insert(
+            (KEYCHAIN_SERVICE.to_owned(), backup_set_id.to_string()),
+            format!(
+                r#"{{"formatVersion":1,"accessKeyId":"{ACCESS_KEY}","secretAccessKey":"{SECRET_KEY}"}}"#
+            )
+            .into_bytes(),
+        );
+        backend.corrupt_verification_after_next_save();
+        assert!(matches!(
+            load_and_upgrade(&backend, &backup_set_id),
+            Err(CredentialError::Unavailable)
+        ));
+        let restored: serde_json::Value = serde_json::from_slice(
+            &backend
+                .entry(KEYCHAIN_SERVICE, backup_set_id.as_str())
+                .expect("restored legacy payload"),
+        )
+        .expect("legacy payload");
+        assert_eq!(restored["formatVersion"], LEGACY_CREDENTIAL_FORMAT_VERSION);
+
+        load_and_upgrade(&backend, &backup_set_id).expect("legacy upgrade");
+        let stored = backend
+            .entry(KEYCHAIN_SERVICE, backup_set_id.as_str())
+            .expect("upgraded payload");
+        let json: serde_json::Value = serde_json::from_slice(&stored).expect("payload json");
+        assert_eq!(json["formatVersion"], CREDENTIAL_FORMAT_VERSION);
+        assert!(json.get("writerId").is_none());
+
+        backend.entries().insert(
+            (KEYCHAIN_SERVICE.to_owned(), backup_set_id.to_string()),
+            format!(
+                r#"{{"formatVersion":2,"accessKeyId":"{ACCESS_KEY}","secretAccessKey":"{SECRET_KEY}","writerId":"{}"}}"#,
+                BackupWriterId::derive_from_device_identifier(b"v2 credential fixture")
+            )
+            .into_bytes(),
+        );
+        load_and_upgrade(&backend, &backup_set_id).expect("embedded writer upgrade");
+        let stored = backend
+            .entry(KEYCHAIN_SERVICE, backup_set_id.as_str())
+            .expect("upgraded embedded-writer payload");
+        let json: serde_json::Value = serde_json::from_slice(&stored).expect("payload json");
+        assert_eq!(json["formatVersion"], CREDENTIAL_FORMAT_VERSION);
+        assert!(json.get("writerId").is_none());
     }
 
     #[cfg(target_os = "macos")]

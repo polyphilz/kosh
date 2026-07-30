@@ -48,6 +48,7 @@ pub(crate) struct RuntimeState {
     data_dir: PathBuf,
     claude_processes: ClaudeProcessManager,
     passage_embedding_indexer: PassageEmbeddingIndexer,
+    litestream_backup: crate::backup::litestream_runtime::LitestreamRuntimeService,
     media_backup: crate::backup::media_reconciler::MediaBackupCoordinator,
     database: Arc<Database>,
     embedding_runtime: Arc<EmbeddingRuntime>,
@@ -140,6 +141,12 @@ impl RuntimeState {
         {
             log::warn!("startup media lifecycle recovery could not complete: {error}");
         }
+        let litestream_backup = crate::backup::litestream_runtime::LitestreamRuntimeService::start(
+            database.client(),
+            data_dir.clone(),
+            database.paths().main.clone(),
+            resource_dir.clone(),
+        );
         let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
@@ -150,6 +157,7 @@ impl RuntimeState {
             claude_processes: ClaudeProcessManager::production(&data_dir),
             data_dir,
             passage_embedding_indexer,
+            litestream_backup,
             media_backup,
             database: Arc::new(database),
             embedding_runtime,
@@ -177,6 +185,10 @@ impl RuntimeState {
         ) {
             log::warn!("startup attachment materialization recovery could not complete: {error}");
         }
+        log::debug!(
+            "relational backup supervisor initialized in {:?} phase",
+            state.relational_backup_status().phase
+        );
         Ok(state)
     }
 
@@ -193,6 +205,8 @@ impl RuntimeState {
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
             passage_embedding_indexer: PassageEmbeddingIndexer::disabled(),
+            litestream_backup:
+                crate::backup::litestream_runtime::LitestreamRuntimeService::disabled(),
             media_backup: crate::backup::media_reconciler::MediaBackupCoordinator::disabled(),
             database: Arc::new(database),
             clock,
@@ -223,6 +237,20 @@ impl RuntimeState {
 
     pub(crate) fn maintenance_gate(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.maintenance_gate)
+    }
+
+    pub(crate) fn relational_backup_status(
+        &self,
+    ) -> crate::backup::litestream_runtime::RelationalBackupStatus {
+        self.litestream_backup.status()
+    }
+
+    pub(crate) fn shutdown_for_exit(&self) {
+        self.claude_processes.shutdown();
+        if let Err(error) = self.database.shutdown() {
+            log::error!("could not quiesce the database writer before backup shutdown: {error}");
+        }
+        self.litestream_backup.shutdown();
     }
 
     pub(crate) fn claude_processes(&self) -> &ClaudeProcessManager {
@@ -742,6 +770,25 @@ mod tests {
     }
 
     #[test]
+    fn exit_shutdown_fences_database_writes_before_relational_backup_stops() {
+        let directory = tempfile::tempdir().expect("temporary exit database");
+        let state = RuntimeState::deterministic(
+            directory.path().join("data"),
+            Arc::new(deterministic::FixedClock(100)),
+            deterministic::SequenceIds::new([]),
+        );
+        let client = state.database_client();
+
+        state.shutdown_for_exit();
+        state.shutdown_for_exit();
+
+        assert!(
+            client.diagnostics().is_err(),
+            "the database writer must be closed before final replication shutdown"
+        );
+    }
+
+    #[test]
     fn native_image_drops_expose_only_opaque_single_use_capabilities() {
         let directory = tempfile::tempdir().expect("temporary image drop directory");
         let image = directory.path().join("private shower thought.png");
@@ -891,6 +938,10 @@ mod tests {
         assert_eq!(
             state.embedding_runtime.status().phase,
             crate::embedding_runtime::SemanticRuntimePhase::Unavailable
+        );
+        assert_eq!(
+            state.relational_backup_status().phase,
+            crate::backup::litestream_runtime::RelationalBackupPhase::Off
         );
     }
 }

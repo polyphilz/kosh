@@ -31,6 +31,11 @@ assertEqual(pin.target.architectures, ["arm64", "x86_64"], "Litestream architect
 assertEqual(pin.target.minimumSystemVersion, "14.0", "packaged minimum macOS");
 assertEqual(pin.binary.bundlePath, "bin/litestream", "Litestream bundle path");
 assertEqual(
+  pin.binary.trustedCleanupSha256s,
+  ["c535829126d7bb8f3e8c2e7a4f9e3507c63dad1ed91815824aeabf9a5217760b"],
+  "append-only trusted Litestream cleanup pins",
+);
+assertEqual(
   pin.binary.codeSignatureIdentifier,
   undefined,
   "signature identifier must be scoped to the universal pin",
@@ -39,6 +44,14 @@ assertEqual(
   pin.binary.universal.codeSignatureIdentifier,
   "com.rohan.kosh.litestream",
   "Litestream signature identifier",
+);
+assertEqual(
+  pin.binary.universal.codeSignatureCdhashByArchitecture,
+  {
+    arm64: "71aba3c4b6ae015b5dde89c29ccfc5f45d0d1475",
+    x86_64: "e34d4df0221f1d31c52f68dd7b8db8e3bb4b3c89",
+  },
+  "Litestream per-architecture code-directory hashes",
 );
 assertEqual(pin.binary.universal.size, 77_508_256, "universal byte length");
 assertSha256(pin.binary.universal.sha256, "universal Litestream");
@@ -128,8 +141,8 @@ for (const contract of [
   "l0-retention: 720h",
   "auto-recover: false",
   "verify-compaction: true",
-  "KOSH_LITESTREAM_R2_ACCESS_KEY_ID",
-  "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "CS_OPS_CDHASH",
   "MAX_CONTROL_OUTPUT_BYTES",
   "ControlSocketPathTooLong",
 ]) {
@@ -165,6 +178,7 @@ for (const contract of [
   "official checksums",
   "lipo -create",
   "codesign --force --sign -",
+  "codeSignatureCdhashByArchitecture",
   "binary.universal.sha256",
 ]) {
   assert(stage.includes(contract), `Litestream staging omits ${contract}`);
