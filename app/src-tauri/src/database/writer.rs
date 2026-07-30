@@ -105,7 +105,7 @@ pub(super) enum WriterMessage {
         lease_id: String,
         reply: SyncSender<Result<Option<OffsiteMediaUploadClaim>>>,
     },
-    IsCurrentOffsiteMediaUpload {
+    AuthorizeOffsiteMediaRemoteWrite {
         claim: OffsiteMediaUploadClaim,
         reply: SyncSender<Result<bool>>,
     },
@@ -474,16 +474,19 @@ impl DatabaseClient {
             .offsite_media_fence
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !self.is_current_offsite_media_upload(claim)? {
+        if !self.authorize_offsite_media_remote_write(claim)? {
             return Ok(None);
         }
         Ok(Some(operation()))
     }
 
-    fn is_current_offsite_media_upload(&self, claim: &OffsiteMediaUploadClaim) -> Result<bool> {
+    fn authorize_offsite_media_remote_write(
+        &self,
+        claim: &OffsiteMediaUploadClaim,
+    ) -> Result<bool> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::IsCurrentOffsiteMediaUpload {
+            .send(WriterMessage::AuthorizeOffsiteMediaRemoteWrite {
                 claim: claim.clone(),
                 reply,
             })

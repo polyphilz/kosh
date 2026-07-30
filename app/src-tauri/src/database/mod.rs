@@ -330,8 +330,8 @@ fn writer_loop(
             } => {
                 let _ = reply.send(backup_media::claim_next(&mut main, now_ms, lease_id));
             }
-            WriterMessage::IsCurrentOffsiteMediaUpload { claim, reply } => {
-                let _ = reply.send(backup_media::is_current(&main, &claim));
+            WriterMessage::AuthorizeOffsiteMediaRemoteWrite { claim, reply } => {
+                let _ = reply.send(backup_media::authorize_remote_write(&main, &claim));
             }
             WriterMessage::CompleteOffsiteMediaUpload {
                 claim,

@@ -335,16 +335,18 @@ pub(super) fn complete(
     Ok(changed == 1)
 }
 
-pub(super) fn is_current(connection: &Connection, claim: &OffsiteMediaUploadClaim) -> Result<bool> {
+pub(super) fn authorize_remote_write(
+    connection: &Connection,
+    claim: &OffsiteMediaUploadClaim,
+) -> Result<bool> {
     let Some(config) = backup_state::load_enabled(connection)? else {
         return Ok(false);
     };
     if config.backup_set_id != claim.config.backup_set_id || config.target != claim.config.target {
         return Ok(false);
     }
-    connection
-        .query_row(
-            "SELECT EXISTS(
+    let current_lease = connection.query_row(
+        "SELECT EXISTS(
                 SELECT 1
                 FROM offsite_media_upload
                 WHERE backup_set_id = ?1
@@ -352,14 +354,46 @@ pub(super) fn is_current(connection: &Connection, claim: &OffsiteMediaUploadClai
                   AND state = 'RUNNING'
                   AND lease_id = ?3
              )",
-            params![
-                claim.config.backup_set_id.as_str(),
-                claim.sha256.as_bytes().as_slice(),
-                &claim.lease_id,
-            ],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(Into::into)
+        params![
+            claim.config.backup_set_id.as_str(),
+            claim.sha256.as_bytes().as_slice(),
+            &claim.lease_id,
+        ],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !current_lease {
+        return Ok(false);
+    }
+
+    let reference_query = format!(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM ({REFERENCED_MEDIA_SELECT}) AS referenced
+            WHERE referenced.sha256 = ?1
+         )"
+    );
+    let retained = connection.query_row(
+        &reference_query,
+        [claim.sha256.as_bytes().as_slice()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if retained {
+        return Ok(true);
+    }
+
+    connection.execute(
+        "DELETE FROM offsite_media_upload
+         WHERE backup_set_id = ?1
+           AND sha256 = ?2
+           AND state = 'RUNNING'
+           AND lease_id = ?3",
+        params![
+            claim.config.backup_set_id.as_str(),
+            claim.sha256.as_bytes().as_slice(),
+            &claim.lease_id,
+        ],
+    )?;
+    Ok(false)
 }
 
 pub(super) fn fail(

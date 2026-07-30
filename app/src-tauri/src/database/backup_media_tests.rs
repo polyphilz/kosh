@@ -10,7 +10,7 @@ use crate::backup::domain::{
 };
 
 use super::{
-    backup_media::OffsiteMediaUploadFailureCode,
+    backup_media::{self, OffsiteMediaUploadFailureCode},
     backup_state::SaveOffsiteBackupConfigInput,
     connection::{self, DatabaseKind, FileState},
     drafts::SaveDraftWrite,
@@ -366,6 +366,67 @@ fn running_leases_recover_after_restart_and_stale_workers_cannot_mutate_them() {
         .expect("completed progress");
     assert_eq!(progress.uploaded, 1);
     assert_eq!(progress.running + progress.retry_wait + progress.failed, 0);
+}
+
+#[test]
+fn remote_write_authorization_cancels_a_claim_after_its_last_reference_is_removed() {
+    let root = tempfile::tempdir().expect("temporary retention fence root");
+    let paths = DatabasePaths::new(root.path());
+    let mut connection = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Fresh)
+        .expect("main writer");
+    migrations::main_runner()
+        .run(&mut connection)
+        .expect("migrate main database");
+    let backup_set_id = BackupSetId::new();
+    connection
+        .execute(
+            "INSERT INTO offsite_backup_config(
+                singleton_id, revision, backup_set_id, replica_epoch_id, enabled,
+                provider, jurisdiction, account_id, bucket, created_at, updated_at
+             ) VALUES(1, 1, ?1, ?2, 1, 'R2', 'DEFAULT', ?3, 'kosh-local', 10, 10)",
+            params![
+                backup_set_id.as_str(),
+                ReplicaEpochId::new().as_str(),
+                ACCOUNT_ID,
+            ],
+        )
+        .expect("backup config");
+    let attachment_id = id(450);
+    let hash = Sha256::digest(b"retained media").to_vec();
+    connection
+        .execute(
+            "INSERT INTO attachment(
+                id, created_at, updated_at, deleted_at, sha256, display_filename,
+                media_type, byte_length, kind, extraction_state
+             ) VALUES(?1, 20, 20, NULL, ?2, 'retained.bin',
+                      'application/octet-stream', 14, 'BINARY', 'NOT_APPLICABLE')",
+            params![&attachment_id, &hash],
+        )
+        .expect("retained attachment");
+    let claim = backup_media::claim_next(&mut connection, 30, id(451))
+        .expect("claim query")
+        .expect("retained claim");
+    assert!(backup_media::authorize_remote_write(&connection, &claim)
+        .expect("authorize retained claim"));
+
+    connection
+        .execute(
+            "UPDATE attachment
+             SET deleted_at = 40, updated_at = 40
+             WHERE id = ?1",
+            [&attachment_id],
+        )
+        .expect("remove final live reference");
+    assert!(!backup_media::authorize_remote_write(&connection, &claim)
+        .expect("reject unretained claim"));
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM offsite_media_upload", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("canceled queue count"),
+        0
+    );
 }
 
 #[test]
