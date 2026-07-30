@@ -140,9 +140,16 @@ pub(crate) fn install(
         let rollback_error = rollback(paths, &transaction, had_existing_pair).err();
         return Err(rollback_error.unwrap_or(error));
     }
-    write_control(&paths.root.join(RECEIPT_FILENAME), &control)?;
-    sync_directory(&paths.root)?;
-    remove_owned_transaction(&transaction)?;
+    finish_install(
+        paths,
+        &transaction,
+        &control,
+        had_existing_pair,
+        |receipt, control| {
+            write_control(receipt, control)?;
+            sync_directory(&paths.root)
+        },
+    )?;
     Ok(RestoreInstallReport {
         checkpoint_id,
         outcome: RestoreInstallOutcome::Installed,
@@ -220,6 +227,38 @@ fn install_transaction(
         return Err(invalid("installed restore bytes changed during validation"));
     }
     Ok(())
+}
+
+fn finish_install(
+    paths: &DatabasePaths,
+    transaction: &Path,
+    control: &InstallControl,
+    had_existing_pair: bool,
+    persist_receipt: impl FnOnce(&Path, &InstallControl) -> Result<()>,
+) -> Result<()> {
+    let receipt = paths.root.join(RECEIPT_FILENAME);
+    if let Err(error) = persist_receipt(&receipt, control) {
+        let cleanup_error = remove_receipt_artifacts(&receipt).err();
+        let rollback_error = rollback(paths, transaction, had_existing_pair).err();
+        return Err(rollback_error.or(cleanup_error).unwrap_or(error));
+    }
+    remove_owned_transaction(transaction)
+}
+
+fn remove_receipt_artifacts(receipt: &Path) -> Result<()> {
+    let temporary = receipt.with_extension("json.tmp");
+    let mut first_error = None;
+    for path in [receipt, temporary.as_path()] {
+        if let Err(error) = remove_regular_if_present(path) {
+            first_error.get_or_insert(error);
+        }
+    }
+    if let Some(parent) = receipt.parent() {
+        if let Err(error) = sync_directory(parent) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn rollback(paths: &DatabasePaths, transaction: &Path, had_existing_pair: bool) -> Result<()> {
@@ -538,6 +577,33 @@ mod tests {
         assert_eq!(fs::read(&paths.main).expect("main"), b"new main");
         assert_eq!(fs::read(&paths.media).expect("media"), b"new media");
         assert!(!transaction.exists());
+    }
+
+    #[test]
+    fn receipt_persistence_failure_rolls_back_the_installed_pair() {
+        let root = tempfile::tempdir().expect("restore root");
+        let paths = DatabasePaths::new(root.path());
+        let transaction = root.path().join(TRANSACTION_DIRECTORY);
+        fs::create_dir(&transaction).expect("transaction");
+        let checkpoint_id = CheckpointId::new();
+        let control = control(checkpoint_id, true, b"new main", b"new media");
+        write_control(&transaction.join(JOURNAL_FILENAME), &control).expect("journal");
+        write_bytes(&transaction.join("old-main.sqlite3"), b"original main");
+        write_bytes(&transaction.join("old-media.sqlite3"), b"original media");
+        write_bytes(&paths.main, b"new main");
+        write_bytes(&paths.media, b"new media");
+
+        let result = finish_install(&paths, &transaction, &control, true, |receipt, control| {
+            write_control(receipt, control)?;
+            Err(invalid("injected receipt durability failure"))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&paths.main).expect("main"), b"original main");
+        assert_eq!(fs::read(&paths.media).expect("media"), b"original media");
+        assert!(!transaction.exists());
+        assert!(!root.path().join(RECEIPT_FILENAME).exists());
+        assert!(!root.path().join("restore-install-v1.json.tmp").exists());
     }
 
     #[test]
