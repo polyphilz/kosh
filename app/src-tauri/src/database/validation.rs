@@ -26,6 +26,8 @@ const MAIN_TABLES: &[&str] = &[
     "index_state",
     "media_ingest_lease",
     "media_blob_reap_candidate",
+    "offsite_backup_config",
+    "offsite_credential_cleanup",
     "passage",
     "passage_embedding",
     "passage_embedding_index",
