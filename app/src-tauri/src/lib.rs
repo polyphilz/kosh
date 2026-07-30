@@ -245,6 +245,10 @@ pub fn run_pdf_worker_if_requested() -> Option<i32> {
     pdf::run_worker_if_requested()
 }
 
+pub fn run_litestream_launcher_if_requested() -> Option<i32> {
+    backup::litestream_runtime::run_launcher_if_requested()
+}
+
 pub use database::{
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, AttachmentRecord,
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,

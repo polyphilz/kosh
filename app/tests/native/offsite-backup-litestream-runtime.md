@@ -16,12 +16,15 @@ For an enabled configuration the supervisor:
    environment-variable references rather than credential values;
 4. loads the active backup-set credential from macOS Keychain into zeroizing
    process memory;
-5. launches `litestream replicate` with an otherwise empty environment and a
-   dedicated process group;
-6. writes a bounded private PID record binding the exact executable, database,
-   config, socket, backup set, replica epoch, and config digest;
-7. accepts readiness only from a Unix socket with mode `0600`; and
-8. confirms the canonical local and remote TXID through a bounded control
+5. launches Kosh's inert Litestream activation helper with an otherwise empty
+   environment and a dedicated process group;
+6. durably writes a bounded private PID record binding the exact executable,
+   database, config, socket, backup set, replica epoch, and config digest;
+7. only then activates the helper through its private inherited pipe, which
+   atomically replaces itself with `litestream replicate`; parent death before
+   activation closes the pipe and leaves no replicating orphan;
+8. accepts readiness only from a Unix socket with mode `0600`; and
+9. confirms the canonical local and remote TXID through a bounded control
    command.
 
 Status contains only fixed phase/error enums, canonical 16-character TXIDs,
@@ -57,6 +60,9 @@ The focused native suite proves:
 - crashed children restart with capped backoff while database diagnostics
   remain responsive;
 - transient failures recover and structural failures do not spin;
+- the activation token is emitted only after the durable ownership record;
+- the actual Kosh executable remains inert before activation and exits on
+  parent-pipe EOF without executing Litestream;
 - disabling and service shutdown invoke exactly one graceful child shutdown;
 - credential errors map to bounded redacted status;
 - PID records are private and an owned dead runtime is swept; and
@@ -67,6 +73,8 @@ Run it from the repository root:
 ```sh
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
   --features test-support --lib litestream_runtime
+cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
+  --features test-support --test litestream_launcher_smoke
 ```
 
 The existing Litestream protocol gate independently proves exact-TXID control,

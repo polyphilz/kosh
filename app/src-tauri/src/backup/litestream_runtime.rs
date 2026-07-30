@@ -1,5 +1,7 @@
 use std::{
+    ffi::{OsStr, OsString},
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -40,6 +42,85 @@ const STALE_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PID_RECORD_FORMAT_VERSION: u32 = 1;
 const MAX_PID_RECORD_BYTES: u64 = 16 * 1024;
+const LITESTREAM_LAUNCHER_ARG: &str = "--kosh-litestream-launcher";
+const LITESTREAM_ACTIVATION_TOKEN: &[u8] = b"kosh-litestream-activate-v1\n";
+const LITESTREAM_LAUNCHER_USAGE_EXIT: i32 = 64;
+const LITESTREAM_LAUNCHER_IO_EXIT: i32 = 74;
+
+pub(crate) fn run_launcher_if_requested() -> Option<i32> {
+    let request = match parse_launcher_request(std::env::args_os())? {
+        Ok(request) => request,
+        Err(()) => return Some(LITESTREAM_LAUNCHER_USAGE_EXIT),
+    };
+    if await_activation(&mut std::io::stdin()).is_err() {
+        return Some(LITESTREAM_LAUNCHER_IO_EXIT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = Command::new(request.binary)
+            .arg("replicate")
+            .arg("-config")
+            .arg(request.config)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .exec();
+        let _ = error;
+        Some(LITESTREAM_LAUNCHER_IO_EXIT)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request;
+        Some(LITESTREAM_LAUNCHER_IO_EXIT)
+    }
+}
+
+struct LauncherRequest {
+    binary: PathBuf,
+    config: PathBuf,
+}
+
+fn parse_launcher_request(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Option<Result<LauncherRequest, ()>> {
+    let mut arguments = arguments.into_iter();
+    let _executable = arguments.next();
+    let operation = arguments.next()?;
+    if operation != OsStr::new(LITESTREAM_LAUNCHER_ARG) {
+        return None;
+    }
+    let Some(binary) = arguments.next().map(PathBuf::from) else {
+        return Some(Err(()));
+    };
+    let Some(replicate) = arguments.next() else {
+        return Some(Err(()));
+    };
+    let Some(config_flag) = arguments.next() else {
+        return Some(Err(()));
+    };
+    let Some(config) = arguments.next().map(PathBuf::from) else {
+        return Some(Err(()));
+    };
+    if arguments.next().is_some()
+        || replicate != OsStr::new("replicate")
+        || config_flag != OsStr::new("-config")
+        || !binary.is_absolute()
+        || !config.is_absolute()
+    {
+        return Some(Err(()));
+    }
+    Some(Ok(LauncherRequest { binary, config }))
+}
+
+fn await_activation(reader: &mut impl Read) -> std::io::Result<()> {
+    let mut activation = [0_u8; LITESTREAM_ACTIVATION_TOKEN.len()];
+    reader.read_exact(&mut activation)?;
+    if activation != LITESTREAM_ACTIVATION_TOKEN {
+        return Err(std::io::Error::other("invalid Litestream activation token"));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -644,12 +725,16 @@ impl SystemManagedLitestream {
         config_sha256: String,
         credentials: super::credentials::R2Credentials,
     ) -> Result<Self, RuntimeFailure> {
-        let mut command = Command::new(&binary);
+        let launcher = std::env::current_exe()
+            .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
+        let mut command = Command::new(&launcher);
         command
+            .arg(LITESTREAM_LAUNCHER_ARG)
+            .arg(&binary)
             .arg("replicate")
             .arg("-config")
             .arg(runtime.config())
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         configure_credentials_environment(&mut command, &credentials);
@@ -667,13 +752,34 @@ impl SystemManagedLitestream {
             replica_epoch_id,
             config_sha256,
         };
-        if write_pid_record(&runtime, pid, &binary, &database_path, &identity).is_err() {
+        let ownership = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true));
+        if ownership
+            .and_then(|activation| {
+                write_pid_record_then_activate(
+                    &runtime,
+                    pid,
+                    &binary,
+                    &database_path,
+                    &identity,
+                    activation,
+                )
+                .map_err(|_| {
+                    RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true)
+                })
+            })
+            .is_err()
+        {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
+            remove_pid_record_if_owned(&runtime, pid);
             return Err(RuntimeFailure::new(
                 RelationalBackupErrorCode::ControlUnavailable,
                 true,
             ));
         }
+        child.stdin.take();
         if let Err(failure) = wait_for_control_socket(&mut child, &runtime) {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
             remove_pid_record_if_owned(&runtime, pid);
@@ -821,6 +927,19 @@ struct LaunchIdentity {
     backup_set_id: String,
     replica_epoch_id: String,
     config_sha256: String,
+}
+
+fn write_pid_record_then_activate(
+    runtime: &LitestreamRuntimePaths,
+    pid: u32,
+    binary: &Path,
+    database_path: &Path,
+    identity: &LaunchIdentity,
+    activation: &mut impl Write,
+) -> std::io::Result<()> {
+    write_pid_record(runtime, pid, binary, database_path, identity)?;
+    activation.write_all(LITESTREAM_ACTIVATION_TOKEN)?;
+    activation.flush()
 }
 
 fn write_pid_record(
@@ -1102,7 +1221,11 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     drop(file);
-    fs::rename(temporary, path)
+    fs::rename(temporary, path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("private file has no parent directory"))?;
+    fs::File::open(parent)?.sync_all()
 }
 
 fn utf8_path(path: &Path) -> std::io::Result<String> {
@@ -1516,6 +1639,107 @@ mod tests {
         })
         .expect("bounded status");
         assert!(!json.contains(ACCOUNT_ID));
+    }
+
+    #[test]
+    fn launcher_protocol_requires_exact_arguments_and_activation_token() {
+        let request = parse_launcher_request([
+            OsString::from("/Applications/Kosh.app/Contents/MacOS/kosh"),
+            OsString::from(LITESTREAM_LAUNCHER_ARG),
+            OsString::from("/Applications/Kosh.app/Contents/Resources/litestream"),
+            OsString::from("replicate"),
+            OsString::from("-config"),
+            OsString::from("/tmp/kosh/run/backup/ls.yml"),
+        ])
+        .expect("launcher operation")
+        .expect("launcher request");
+        assert_eq!(
+            request.binary,
+            PathBuf::from("/Applications/Kosh.app/Contents/Resources/litestream")
+        );
+        assert_eq!(request.config, PathBuf::from("/tmp/kosh/run/backup/ls.yml"));
+        assert!(matches!(
+            parse_launcher_request([
+                OsString::from("/Applications/Kosh.app/Contents/MacOS/kosh"),
+                OsString::from(LITESTREAM_LAUNCHER_ARG),
+                OsString::from("relative-litestream"),
+                OsString::from("replicate"),
+                OsString::from("-config"),
+                OsString::from("/tmp/kosh/run/backup/ls.yml"),
+            ]),
+            Some(Err(()))
+        ));
+        assert!(await_activation(&mut std::io::Cursor::new(LITESTREAM_ACTIVATION_TOKEN)).is_ok());
+        assert!(await_activation(&mut std::io::Cursor::new(b"truncated")).is_err());
+        assert!(
+            await_activation(&mut std::io::Cursor::new(b"kosh-litestream-activate-v2\n")).is_err()
+        );
+    }
+
+    #[test]
+    fn child_activation_is_emitted_only_after_durable_ownership_record() {
+        struct OwnershipProbe<'a> {
+            runtime: &'a LitestreamRuntimePaths,
+            expected_pid: u32,
+            activated: Vec<u8>,
+        }
+
+        impl Write for OwnershipProbe<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let record = read_pid_record(self.runtime)?.ok_or_else(|| {
+                    std::io::Error::other("activation preceded the ownership record")
+                })?;
+                if record.pid != self.expected_pid {
+                    return Err(std::io::Error::other(
+                        "activation observed the wrong ownership record",
+                    ));
+                }
+                self.activated.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let root = tempfile::tempdir().expect("temporary activation root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        runtime.write_config("safe config").expect("write config");
+        let binary = root.path().join("litestream");
+        let database = root.path().join("kosh.sqlite3");
+        fs::write(&binary, b"binary").expect("binary fixture");
+        fs::write(&database, b"database").expect("database fixture");
+        let identity = LaunchIdentity {
+            backup_set_id: BackupSetId::new().to_string(),
+            replica_epoch_id: ReplicaEpochId::new().to_string(),
+            config_sha256: sha256_hex(b"safe config"),
+        };
+        let mut activation = OwnershipProbe {
+            runtime: &runtime,
+            expected_pid: u32::MAX,
+            activated: Vec::new(),
+        };
+
+        write_pid_record_then_activate(
+            &runtime,
+            u32::MAX,
+            &binary,
+            &database,
+            &identity,
+            &mut activation,
+        )
+        .expect("durable ownership and activation");
+
+        assert_eq!(activation.activated, LITESTREAM_ACTIVATION_TOKEN);
+        assert_eq!(
+            read_pid_record(&runtime)
+                .expect("PID record")
+                .expect("owned PID record")
+                .config_sha256,
+            identity.config_sha256
+        );
     }
 
     #[cfg(unix)]
