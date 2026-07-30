@@ -1264,27 +1264,11 @@ fn write_pid_record(
 fn read_pid_record(
     runtime: &LitestreamRuntimePaths,
 ) -> std::io::Result<Option<LitestreamPidRecord>> {
-    let metadata = match fs::symlink_metadata(runtime.pid()) {
-        Ok(metadata) => metadata,
+    let bytes = match read_private_bounded_regular_file(runtime.pid(), MAX_PID_RECORD_BYTES) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_PID_RECORD_BYTES
-    {
-        return Err(std::io::Error::other("invalid Litestream PID record"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(std::io::Error::other(
-                "Litestream PID record is not private",
-            ));
-        }
-    }
-    let bytes = fs::read(runtime.pid())?;
     let record: LitestreamPidRecord =
         serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
     if record.format_version != PID_RECORD_FORMAT_VERSION
@@ -1365,56 +1349,41 @@ fn sweep_stale_runtime(
 }
 
 fn read_private_bounded_config(path: &Path) -> std::io::Result<Vec<u8>> {
-    let path_metadata = fs::symlink_metadata(path)?;
-    if path_metadata.file_type().is_symlink()
-        || !path_metadata.is_file()
-        || path_metadata.len() > MAX_LITESTREAM_CONFIG_BYTES
+    read_private_bounded_regular_file(path, MAX_LITESTREAM_CONFIG_BYTES)
+}
+
+fn read_private_bounded_regular_file(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    #[cfg(not(unix))]
     {
-        return Err(std::io::Error::other(
-            "invalid Litestream runtime configuration",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if path_metadata.permissions().mode() & 0o077 != 0 {
-            return Err(std::io::Error::other(
-                "Litestream runtime configuration is not private",
-            ));
+        let path_metadata = fs::symlink_metadata(path)?;
+        if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+            return Err(std::io::Error::other("invalid private runtime file"));
         }
     }
-
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
     }
     let file = options.open(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > MAX_LITESTREAM_CONFIG_BYTES {
-        return Err(std::io::Error::other(
-            "invalid Litestream runtime configuration",
-        ));
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return Err(std::io::Error::other("invalid private runtime file"));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(std::io::Error::other(
-                "Litestream runtime configuration is not private",
-            ));
+            return Err(std::io::Error::other("private runtime file is not private"));
         }
     }
 
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_LITESTREAM_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_LITESTREAM_CONFIG_BYTES {
-        return Err(std::io::Error::other(
-            "Litestream runtime configuration is oversized",
-        ));
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(std::io::Error::other("private runtime file is oversized"));
     }
     Ok(bytes)
 }
@@ -2665,6 +2634,43 @@ mod tests {
         assert!(
             read_private_bounded_config(runtime.config()).is_err(),
             "the FIFO must be rejected from metadata before any blocking open"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_record_reads_reject_special_symlinked_and_oversized_files_without_blocking() {
+        use std::{
+            ffi::CString,
+            os::unix::{
+                ffi::OsStrExt,
+                fs::{symlink, PermissionsExt},
+            },
+        };
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+
+        fs::write(runtime.pid(), vec![b'x'; MAX_PID_RECORD_BYTES as usize + 1])
+            .expect("oversized PID record");
+        fs::set_permissions(runtime.pid(), fs::Permissions::from_mode(0o600))
+            .expect("private oversized PID record");
+        assert!(read_pid_record(&runtime).is_err());
+
+        fs::remove_file(runtime.pid()).expect("remove oversized PID record");
+        symlink("/dev/null", runtime.pid()).expect("PID symlink to device");
+        assert!(read_pid_record(&runtime).is_err());
+
+        fs::remove_file(runtime.pid()).expect("remove PID symlink");
+        let fifo = CString::new(runtime.pid().as_os_str().as_bytes()).expect("FIFO path");
+        // SAFETY: `fifo` is a live, NUL-terminated path and `mkfifo` does not
+        // retain its pointer after returning.
+        let result = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        assert_eq!(result, 0, "create PID FIFO fixture");
+        assert!(
+            read_pid_record(&runtime).is_err(),
+            "the nonblocking descriptor must reject the FIFO"
         );
     }
 
