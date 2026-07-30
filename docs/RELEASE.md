@@ -2,13 +2,14 @@
 
 This is the authoritative runbook for a Kosh personal release. Build from a
 clean, reviewed `main` checkout. Ordinary `pnpm tauri build` is not a release
-build because it does not stage or verify the pinned native sidecar.
+build because it does not stage or verify the pinned native sidecars.
 
 ## Current distribution policy
 
 - The supported artifact is a universal `Kosh.app` for macOS 14 or newer.
-- The app and bundled universal `llama-server` are ad-hoc signed. This is a
-  local/personal artifact, not a notarized public download.
+- The app and bundled universal `llama-server` and `litestream` executables are
+  ad-hoc signed. This is a local/personal artifact, not a notarized public
+  download.
 - The release has explicit empty entitlements, no updater, no DMG, and no
   automatic tag-to-release workflow.
 - The 232,883,776-byte embedding model is not bundled. Capture and lexical
@@ -83,12 +84,14 @@ The build:
 2. checks out the exact pinned llama.cpp revision;
 3. builds arm64 and x86_64 `llama-server` slices with embedded Metal shaders;
 4. runs the pinned model/golden fixtures on CPU and Metal for both slices;
-5. combines the slices and rejects non-system dependencies;
-6. stages only the binary, generated manifest, license, and embedding
+5. verifies both official Litestream archives and their upstream checksum
+   file, then assembles the pinned universal `litestream`;
+6. rejects non-system dependencies and verifies every sidecar slice;
+7. stages only binaries, generated manifests, licenses/notices, and embedding
    contracts;
-7. builds a universal Tauri application;
-8. ad-hoc signs the app and nested executable; and
-9. checks architectures, hashes, versions, executable bits, Info.plist,
+8. builds a universal Tauri application;
+9. ad-hoc signs the app and nested executables; and
+10. checks architectures, hashes, versions, executable bits, Info.plist,
    signatures, exact resources, and bundle isolation.
 
 The verified artifact is:
@@ -165,8 +168,8 @@ Use the copy under `/Applications`, not the build directory.
 - Quit with `Cmd+Q`, reopen, and confirm all durable content survives.
 - Confirm capture and lexical search still work with Claude unavailable and
   while semantic setup is unavailable.
-- Quit and confirm no Kosh, `llama-server`, PDF worker, or Claude subprocess
-  remains.
+- Quit and confirm no Kosh, `llama-server`, `litestream`, PDF worker, or Claude
+  subprocess remains.
 
 GUI apps do not inherit a login shell's `PATH`. Kosh probes
 `~/.local/bin/claude`, `~/.claude/local/claude`,
@@ -184,8 +187,10 @@ plus logs. Inspect the newest `safety-snapshots/migration-*` manifest before
 copying anything. The acceptance recovery command operates only on ignored
 test profiles; it is not authorization to overwrite production data.
 
-Chunk 29 adds single-writer Litestream/R2 disaster recovery separately. This
-release does not claim multi-device sync or off-site restore.
+The package contains the pinned dormant Litestream executable and verified
+protocol contracts, but backup remains impossible to enable until the
+remaining Chunk 29 persistence, ownership, checkpoint, restore, and Settings
+slices land. This release does not claim multi-device sync or off-site restore.
 
 ## Public distribution is future work
 

@@ -59,12 +59,16 @@ describe("desktop security boundary", () => {
     });
   });
 
-  it("bundles only pinned semantic runtime metadata and the staged sidecar", () => {
+  it("bundles only pinned semantic and recovery runtime resources", () => {
     expect(Object.keys(release.bundle.resources ?? {}).toSorted()).toEqual([
       "resources/embedding-indexes/jina-v1-golden.json",
       "resources/embedding-indexes/jina-v1.json",
+      "resources/release/bin/litestream",
       "resources/release/bin/llama-server",
+      "resources/release/licenses/litestream-LICENSE",
+      "resources/release/licenses/litestream-NOTICE",
       "resources/release/licenses/llama.cpp-LICENSE",
+      "resources/release/litestream.json",
       "resources/release/llama-server.json",
     ]);
     expect(JSON.stringify(release.bundle.resources)).not.toMatch(

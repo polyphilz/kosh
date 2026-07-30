@@ -141,6 +141,17 @@ See [docs/RELEASE.md](docs/RELEASE.md) for universal artifact verification,
 packaged-app acceptance, installation, rollback, and the notarization
 boundary.
 
+## Litestream protocol foundation
+
+Kosh ships a pinned universal Litestream executable as the foundation for the
+optional single-writer R2 disaster-recovery feature. Backup is not enabled by
+the protocol slice and is never a startup dependency. The official archives,
+checksums, exact-TXID fence, compaction behavior, full-integrity restore,
+graceful shutdown, and zero-residue real-R2 spike are documented in
+[app/tests/native/litestream-protocol.md](app/tests/native/litestream-protocol.md).
+Capture and lexical search remain completely local when Litestream,
+credentials, or the network are unavailable.
+
 Repository policy and secret checks run from the repository root:
 
 ```bash

@@ -212,9 +212,19 @@ jobs:
         with:
           workspaces: app/src-tauri
       - run: pnpm install --frozen-lockfile
+      - name: Prove pinned Litestream transaction and restore protocol
+        run: ../scripts/verify-litestream-ci-protocol.sh
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-support -- -D warnings
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support
+      - name: Retain Litestream protocol receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: litestream-protocol-${{ github.run_id }}
+          path: app/.data/litestream-protocol/runs/*/report.json
+          if-no-files-found: warn
+          retention-days: 14
 
   native-startup:
     name: native startup, restart, search, and citation

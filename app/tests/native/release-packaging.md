@@ -21,7 +21,8 @@ Record one row only after both commands pass on the exact reviewed commit.
 | arm64 + x86_64 app slices     | pending |
 | arm64 + x86_64 sidecar slices | pending |
 | CPU + Metal fixture matrix    | pending |
-| Sidecar SHA-256 / bytes       | pending |
+| llama-server SHA-256 / bytes  | pending |
+| Litestream SHA-256 / bytes    | pending |
 | Ad-hoc deep signature         | pending |
 | Identifier / minimum macOS    | pending |
 | Exact resources and license   | pending |

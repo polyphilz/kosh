@@ -1,4 +1,5 @@
 mod attachments;
+pub mod backup;
 mod claude;
 mod database;
 mod embedding;

@@ -1,0 +1,9 @@
+Litestream 0.5.15
+Copyright 2018-2026 Ben Johnson
+
+Upstream project: https://github.com/benbjohnson/litestream
+License: Apache License 2.0
+
+Kosh redistributes the unmodified upstream macOS arm64 and x86_64 release
+binaries as a universal executable. The corresponding Apache-2.0 license text
+is bundled as litestream-LICENSE.

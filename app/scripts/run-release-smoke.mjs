@@ -78,6 +78,10 @@ try {
     !existsSync(join(dataDirectory, "logs/llama-server.log")),
     "llama-server started without a semantic query",
   );
+  assert(
+    !existsSync(join(dataDirectory, "logs/litestream.log")),
+    "Litestream started while backup was unconfigured",
+  );
 
   console.info(
     `Packaged runtime smoke passed: the release React roots captured a cited canary through IPC, resolved it through exact search on both surfaces, and preserved its identity across restart in ${dataDirectory} without Claude or a semantic model.`,
@@ -106,6 +110,13 @@ async function launch(label, expectation, receiptPath) {
   for (const name of [
     "KOSH_DATA_DIR",
     "KOSH_LLAMA_SERVER_PATH",
+    "KOSH_LITESTREAM_PATH",
+    "KOSH_LITESTREAM_R2_ACCOUNT_ID",
+    "KOSH_LITESTREAM_R2_JURISDICTION",
+    "KOSH_LITESTREAM_R2_BUCKET",
+    "KOSH_LITESTREAM_R2_PREFIX",
+    "KOSH_LITESTREAM_R2_ACCESS_KEY_ID",
+    "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY",
     "KOSH_EMBEDDING_MODEL_PATH",
     "KOSH_STARTUP_SMOKE_RECEIPT",
     "KOSH_STARTUP_SMOKE_HEAD",

@@ -4,11 +4,17 @@ import { basename, extname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const pin = readJson("src-tauri/resources/sidecars/llama-server-v1.json");
+const litestreamPin = readJson("src-tauri/resources/sidecars/litestream-v1.json");
 const stage = resolve("src-tauri/resources/release");
 const manifestPath = resolve(stage, pin.stagingPaths.releaseManifest);
 const manifest = readJson(manifestPath);
 const binary = resolve(stage, pin.stagingPaths.binary);
 const license = resolve(stage, pin.stagingPaths.license);
+const litestreamManifestPath = resolve(stage, litestreamPin.stagingPaths.releaseManifest);
+const litestreamManifest = readJson(litestreamManifestPath);
+const litestreamBinary = resolve(stage, litestreamPin.stagingPaths.binary);
+const litestreamLicense = resolve(stage, litestreamPin.stagingPaths.license);
+const litestreamNotice = resolve(stage, litestreamPin.stagingPaths.notice);
 
 assertEqual(stripGeneratedFields(manifest), pin, "release inputs");
 assertEqual(manifest.verification.modelBundled, false, "model bundle policy");
@@ -49,12 +55,76 @@ assertEqual(
 );
 assertEqual(sha256File(license), manifest.licenseNotices[0].sha256, "license SHA-256");
 
+assertEqual(
+  stripLitestreamGeneratedFields(litestreamManifest),
+  litestreamPin,
+  "Litestream release inputs",
+);
+assertEqual(
+  litestreamManifest.stagedBinary.sha256,
+  litestreamPin.binary.universal.sha256,
+  "Litestream staged SHA-256 pin",
+);
+assertEqual(
+  litestreamManifest.stagedBinary.size,
+  litestreamPin.binary.universal.size,
+  "Litestream staged byte-length pin",
+);
+assertEqual(
+  litestreamManifest.verification.architectureChecks,
+  litestreamPin.target.architectures.map((architecture) => ({
+    architecture,
+    executable: true,
+    systemLibrariesOnly: true,
+  })),
+  "Litestream architecture verification",
+);
+assertRegularExecutable(litestreamBinary, "staged Litestream");
+assertEqual(
+  lstatSync(litestreamBinary).size,
+  litestreamPin.binary.universal.size,
+  "Litestream binary byte length",
+);
+assertEqual(
+  sha256File(litestreamBinary),
+  litestreamPin.binary.universal.sha256,
+  "Litestream binary SHA-256",
+);
+assertArchitectures(litestreamBinary, litestreamPin.target.architectures);
+assertSystemDependencies(litestreamBinary, litestreamPin.target.architectures);
+run("codesign", ["--verify", "--strict", "--verbose=2", litestreamBinary]);
+for (const architecture of litestreamPin.target.architectures) {
+  assertEqual(
+    run("arch", [`-${architecture}`, litestreamBinary, "version"]),
+    litestreamPin.binary.versionOutputByArchitecture[architecture],
+    `${architecture} Litestream version`,
+  );
+}
+assertEqual(
+  sha256File(litestreamLicense),
+  litestreamPin.licenseNotices[0].sha256,
+  "Litestream license SHA-256",
+);
+assertEqual(
+  sha256File(litestreamNotice),
+  sha256File("src-tauri/resources/sidecars/litestream-NOTICE"),
+  "Litestream notice SHA-256",
+);
+
 const stagedFiles = listFiles(stage)
   .map((path) => path.slice(stage.length + 1).replaceAll("\\", "/"))
   .sort();
 assertEqual(
   stagedFiles,
-  ["bin/llama-server", "licenses/llama.cpp-LICENSE", "llama-server.json"],
+  [
+    "bin/litestream",
+    "bin/llama-server",
+    "licenses/litestream-LICENSE",
+    "licenses/litestream-NOTICE",
+    "licenses/llama.cpp-LICENSE",
+    "litestream.json",
+    "llama-server.json",
+  ],
   "staged release files",
 );
 for (const path of listFiles(stage)) {
@@ -68,7 +138,7 @@ for (const path of listFiles(stage)) {
 }
 
 console.info(
-  `Release resources passed: universal ${pin.target.architectures.join("+")} llama-server ${manifest.binary.sha256} (${manifest.binary.size} bytes), CPU and Metal fixtures verified.`,
+  `Release resources passed: universal ${pin.target.architectures.join("+")} llama-server ${manifest.binary.sha256} and Litestream ${litestreamPin.binary.universal.sha256}; CPU, Metal, and backup protocol artifacts verified.`,
 );
 
 function stripGeneratedFields(value) {
@@ -79,6 +149,13 @@ function stripGeneratedFields(value) {
     delete notice.sha256;
     return notice;
   });
+  return normalized;
+}
+
+function stripLitestreamGeneratedFields(value) {
+  const normalized = structuredClone(value);
+  delete normalized.stagedBinary;
+  delete normalized.verification.architectureChecks;
   return normalized;
 }
 

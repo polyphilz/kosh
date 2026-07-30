@@ -9,15 +9,19 @@ const appPath = resolve(
 const resources = resolve(appPath, "Contents/Resources");
 const appBinary = resolve(appPath, "Contents/MacOS/kosh");
 const sidecar = resolve(resources, "bin/llama-server");
+const litestream = resolve(resources, "bin/litestream");
 const releaseManifestPath = resolve(resources, "release/llama-server.json");
 const manifest = readJson(releaseManifestPath);
 const pin = readJson("src-tauri/resources/sidecars/llama-server-v1.json");
+const litestreamManifest = readJson(resolve(resources, "release/litestream.json"));
+const litestreamPin = readJson("src-tauri/resources/sidecars/litestream-v1.json");
 const packageJson = readJson("package.json");
 const infoPlist = resolve(appPath, "Contents/Info.plist");
 
 assertDirectory(appPath, "Kosh.app");
 assertRegularExecutable(appBinary, "Kosh executable");
 assertRegularExecutable(sidecar, "bundled llama-server");
+assertRegularExecutable(litestream, "bundled Litestream");
 assertEqual(sha256File(sidecar), manifest.binary.sha256, "bundled llama-server SHA-256");
 assertEqual(
   sha256File("src-tauri/resources/release/bin/llama-server"),
@@ -40,11 +44,42 @@ assertEqual(
   manifest.licenseNotices[0].sha256,
   "bundled license SHA-256",
 );
+assertEqual(
+  sha256File(litestream),
+  litestreamPin.binary.universal.sha256,
+  "bundled Litestream SHA-256",
+);
+assertEqual(
+  sha256File("src-tauri/resources/release/bin/litestream"),
+  litestreamPin.binary.universal.sha256,
+  "staged Litestream SHA-256",
+);
+assertEqual(
+  lstatSync(litestream).size,
+  litestreamPin.binary.universal.size,
+  "bundled Litestream size",
+);
+assertEqual(
+  litestreamManifest.stagedBinary.sha256,
+  litestreamPin.binary.universal.sha256,
+  "bundled Litestream manifest SHA-256",
+);
+assertEqual(
+  sha256File(resolve(resources, litestreamPin.licenseNotices[0].bundlePath)),
+  litestreamPin.licenseNotices[0].sha256,
+  "bundled Litestream license SHA-256",
+);
+assertEqual(
+  sha256File(resolve(resources, litestreamPin.resourceDestinations.notice)),
+  sha256File("src-tauri/resources/sidecars/litestream-NOTICE"),
+  "bundled Litestream notice SHA-256",
+);
 
-for (const binary of [appBinary, sidecar]) {
+for (const binary of [appBinary, sidecar, litestream]) {
   assertArchitectures(binary, pin.target.architectures);
 }
 assertSystemDependencies(sidecar, pin.target.architectures);
+assertSystemDependencies(litestream, litestreamPin.target.architectures);
 for (const architecture of pin.target.architectures) {
   assertEqual(
     run("arch", [`-${architecture}`, sidecar, "--version"]),
@@ -52,9 +87,17 @@ for (const architecture of pin.target.architectures) {
     `bundled ${architecture} llama-server version`,
   );
 }
+for (const architecture of litestreamPin.target.architectures) {
+  assertEqual(
+    run("arch", [`-${architecture}`, litestream, "version"]),
+    litestreamPin.binary.versionOutputByArchitecture[architecture],
+    `bundled ${architecture} Litestream version`,
+  );
+}
 
 run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
 run("codesign", ["--verify", "--strict", "--verbose=2", sidecar]);
+run("codesign", ["--verify", "--strict", "--verbose=2", litestream]);
 const signature = run("codesign", ["-dv", "--verbose=4", appPath]);
 assertEqual(
   signatureField(signature, "Identifier"),
@@ -78,11 +121,15 @@ assertEqual(
 );
 
 const expectedResources = [
+  "bin/litestream",
   "bin/llama-server",
   "embedding-indexes/jina-v1-golden.json",
   "embedding-indexes/jina-v1.json",
   "icon.icns",
+  "licenses/litestream-LICENSE",
+  "licenses/litestream-NOTICE",
   "licenses/llama.cpp-LICENSE",
+  "release/litestream.json",
   "release/llama-server.json",
 ].sort();
 const packagedResources = listFiles(resources)
@@ -109,7 +156,7 @@ const quarantine = spawnSync("xattr", ["-p", "com.apple.quarantine", appPath], {
 assert(quarantine.status !== 0, "locally built Kosh.app unexpectedly has a quarantine attribute");
 
 console.info(
-  `Packaged app passed: ${appPath}, ad-hoc signed universal ${pin.target.architectures.join("+")} macOS ${pin.target.minimumSystemVersion}+, pinned llama-server ${manifest.binary.sha256}.`,
+  `Packaged app passed: ${appPath}, ad-hoc signed universal ${pin.target.architectures.join("+")} macOS ${pin.target.minimumSystemVersion}+, pinned llama-server ${manifest.binary.sha256} and Litestream ${litestreamPin.binary.universal.sha256}.`,
 );
 
 function plist(key) {

@@ -6,6 +6,7 @@ const local = readJson("src-tauri/tauri.conf.json");
 const release = readJson("src-tauri/tauri.release.conf.json");
 const packageJson = readJson("package.json");
 const pin = readJson("src-tauri/resources/sidecars/llama-server-v1.json");
+const litestreamPin = readJson("src-tauri/resources/sidecars/litestream-v1.json");
 const cargo = readFileSync("src-tauri/Cargo.toml", "utf8");
 
 assertEqual(local.productName, "Kosh", "product name");
@@ -47,6 +48,11 @@ assertEqual(
   release.bundle.macOS.minimumSystemVersion,
   pin.target.minimumSystemVersion,
   "minimum macOS version",
+);
+assertEqual(
+  release.bundle.macOS.minimumSystemVersion,
+  litestreamPin.target.minimumSystemVersion,
+  "Litestream minimum macOS version",
 );
 assertEqual(release.bundle.macOS.signingIdentity, "-", "ad-hoc signing identity");
 assertEqual(release.bundle.macOS.hardenedRuntime, false, "personal-v1 hardened-runtime policy");
@@ -110,8 +116,12 @@ assertEqual(
 
 const expectedResources = {
   "resources/release/bin/llama-server": "bin/llama-server",
+  "resources/release/bin/litestream": "bin/litestream",
   "resources/release/llama-server.json": "release/llama-server.json",
+  "resources/release/litestream.json": "release/litestream.json",
   "resources/release/licenses/llama.cpp-LICENSE": "licenses/llama.cpp-LICENSE",
+  "resources/release/licenses/litestream-LICENSE": "licenses/litestream-LICENSE",
+  "resources/release/licenses/litestream-NOTICE": "licenses/litestream-NOTICE",
   "resources/embedding-indexes/jina-v1.json": "embedding-indexes/jina-v1.json",
   "resources/embedding-indexes/jina-v1-golden.json": "embedding-indexes/jina-v1-golden.json",
 };
