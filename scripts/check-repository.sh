@@ -18,6 +18,10 @@ scripts/check-secrets.sh
 scripts/test-secret-check.sh
 scripts/test-bundle-check.sh
 node app/scripts/test-release-source.mjs
+(
+  cd app
+  node scripts/check-litestream-release-contracts.mjs
+)
 git diff --check
 git diff --cached --check
 if [[ -n "${KOSH_DIFF_BASE:-}" && ! "$KOSH_DIFF_BASE" =~ ^0+$ ]]; then

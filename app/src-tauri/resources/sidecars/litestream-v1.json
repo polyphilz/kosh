@@ -1,0 +1,96 @@
+{
+  "manifestVersion": 1,
+  "component": "litestream",
+  "upstream": {
+    "repository": "https://github.com/benbjohnson/litestream",
+    "releaseTag": "v0.5.15",
+    "releaseUrl": "https://github.com/benbjohnson/litestream/releases/tag/v0.5.15",
+    "checksums": {
+      "name": "checksums.txt",
+      "url": "https://github.com/benbjohnson/litestream/releases/download/v0.5.15/checksums.txt",
+      "size": 2536,
+      "sha256": "7078e046f6ca04b60e53ad9da5798f67c50140276dd2144cab941790b96e7655"
+    },
+    "assets": {
+      "arm64": {
+        "name": "litestream-0.5.15-darwin-arm64.tar.gz",
+        "url": "https://github.com/benbjohnson/litestream/releases/download/v0.5.15/litestream-0.5.15-darwin-arm64.tar.gz",
+        "size": 12927148,
+        "sha256": "5fdbeabc00c25daa979f9a430945cb3acca9b12e3026d624d530cafab78148f4",
+        "binarySize": 37234642,
+        "binarySha256": "716664654e5407d80ac8a27b57e556d48c3adf2ff3ed9690fa190139e301af6c"
+      },
+      "x86_64": {
+        "name": "litestream-0.5.15-darwin-x86_64.tar.gz",
+        "url": "https://github.com/benbjohnson/litestream/releases/download/v0.5.15/litestream-0.5.15-darwin-x86_64.tar.gz",
+        "size": 13841584,
+        "sha256": "d7e5eb81e3de1394df49b3a151a6a5242afb73c2698aa93185d912ad30942741",
+        "binarySize": 39907520,
+        "binarySha256": "0125d44e16e1bf10b4a3e1fa8d5b61163b3decceb4091e22efa9ea8faf07ebef"
+      }
+    }
+  },
+  "target": {
+    "operatingSystem": "macos",
+    "architectures": ["arm64", "x86_64"],
+    "minimumSystemVersion": "14.0",
+    "binaryMinimumSystemVersionByArchitecture": {
+      "arm64": "12.0",
+      "x86_64": "12.0"
+    }
+  },
+  "binary": {
+    "archivePath": "litestream",
+    "bundlePath": "bin/litestream",
+    "versionArguments": ["version"],
+    "versionOutputByArchitecture": {
+      "arm64": "0.5.15",
+      "x86_64": "0.5.15"
+    },
+    "universal": {
+      "sha256": "c535829126d7bb8f3e8c2e7a4f9e3507c63dad1ed91815824aeabf9a5217760b",
+      "size": 77508256,
+      "codeSignatureIdentifier": "com.rohan.kosh.litestream"
+    }
+  },
+  "resourceDestinations": {
+    "binary": "bin/litestream",
+    "releaseManifest": "release/litestream.json",
+    "license": "licenses/litestream-LICENSE",
+    "notice": "licenses/litestream-NOTICE"
+  },
+  "stagingPaths": {
+    "binary": "bin/litestream",
+    "releaseManifest": "litestream.json",
+    "license": "licenses/litestream-LICENSE",
+    "notice": "licenses/litestream-NOTICE"
+  },
+  "licenseNotices": [
+    {
+      "component": "Litestream",
+      "spdxLicense": "Apache-2.0",
+      "sourcePath": "LICENSE",
+      "bundlePath": "licenses/litestream-LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  ],
+  "verification": {
+    "verifiedAt": "2026-07-30",
+    "officialChecksumsMatched": true,
+    "universalMachO": true,
+    "systemLibrariesOnly": true,
+    "versionOutputMatched": true,
+    "controlSocketInPrivateRuntimeDirectory": true,
+    "localSyncJsonPassed": true,
+    "remoteWaitJsonPassed": true,
+    "exactTxidFencePassed": true,
+    "dryRunJsonPassed": true,
+    "fullIntegrityRestoreJsonPassed": true,
+    "ordinaryCompactionExactRestorePassed": true,
+    "defaultL0ExpiryInteriorTxidFailureObserved": true,
+    "requiredL0Retention": "720h",
+    "gracefulShutdownFinalSyncPassed": true,
+    "orphanProcessCheckPassed": true,
+    "realR2ProtocolPassed": true
+  }
+}
