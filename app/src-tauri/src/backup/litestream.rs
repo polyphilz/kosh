@@ -15,7 +15,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::credentials::R2Credentials;
+use super::{
+    credentials::R2Credentials,
+    domain::{R2ObjectKey, R2Target},
+};
 
 const EMBEDDED_MANIFEST: &str = include_str!("../../resources/sidecars/litestream-v1.json");
 const DEVELOPMENT_BINARY_OVERRIDE_ENV: &str = "KOSH_LITESTREAM_PATH";
@@ -1217,6 +1220,8 @@ pub fn parse_restore_result_json(bytes: &[u8]) -> Result<RestoreResult, Litestre
 }
 
 pub(crate) trait RelationalRestoreEngine: Send + Sync {
+    fn replica_path(&self) -> &str;
+
     fn preview(
         &self,
         source_database_path: &Path,
@@ -1241,7 +1246,8 @@ pub(crate) trait RelationalRestoreEngine: Send + Sync {
 )]
 pub(crate) struct CommandLitestreamRestore<'a> {
     binary: &'a ImmutableLitestreamBinary,
-    config: &'a Path,
+    config: PathBuf,
+    replica_path: R2ObjectKey,
     credentials: &'a R2Credentials,
     timeout: Duration,
 }
@@ -1253,16 +1259,30 @@ pub(crate) struct CommandLitestreamRestore<'a> {
 impl<'a> CommandLitestreamRestore<'a> {
     pub(crate) fn new(
         binary: &'a ImmutableLitestreamBinary,
-        config: &'a Path,
+        runtime: &LitestreamRuntimePaths,
+        target: &R2Target,
+        replica_path: &R2ObjectKey,
+        source_database_path: &Path,
         credentials: &'a R2Credentials,
         timeout: Duration,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, LitestreamError> {
+        let endpoint = target.endpoint();
+        let rendered = LitestreamConfig {
+            database_path: source_database_path,
+            runtime,
+            bucket: target.bucket.as_str(),
+            replica_path: replica_path.as_str(),
+            endpoint: &endpoint,
+        }
+        .render()?;
+        runtime.write_config(&rendered)?;
+        Ok(Self {
             binary,
-            config,
+            config: runtime.config().to_owned(),
+            replica_path: replica_path.clone(),
             credentials,
             timeout,
-        }
+        })
     }
 
     fn execute(
@@ -1279,7 +1299,7 @@ impl<'a> CommandLitestreamRestore<'a> {
             return Err(LitestreamError::RestoreDestinationExists);
         }
         let arguments = restore_arguments(
-            self.config,
+            &self.config,
             source_database_path,
             target_path,
             txid,
@@ -1301,6 +1321,10 @@ impl<'a> CommandLitestreamRestore<'a> {
 }
 
 impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
+    fn replica_path(&self) -> &str {
+        self.replica_path.as_str()
+    }
+
     fn preview(
         &self,
         source_database_path: &Path,
@@ -1729,6 +1753,9 @@ mod tests {
     };
 
     use super::*;
+    use crate::backup::domain::{
+        BackupSetId, R2AccountId, R2BucketName, R2Jurisdiction, ReplicaEpochId,
+    };
 
     fn staged_restore_test_binary(root: &Path, bytes: &[u8]) -> ImmutableLitestreamBinary {
         let source_path = root.join("source-litestream");
@@ -1785,6 +1812,19 @@ mod tests {
         clear_user_immutable(&file).expect("thaw immutable binary");
         fs::set_permissions(binary.path(), fs::Permissions::from_mode(0o700))
             .expect("thawed binary permissions");
+    }
+
+    fn restore_test_target() -> (R2Target, R2ObjectKey) {
+        let target = R2Target {
+            account_id: R2AccountId::parse("0123456789abcdef0123456789abcdef")
+                .expect("test account"),
+            jurisdiction: R2Jurisdiction::Default,
+            bucket: R2BucketName::parse("kosh-restore-test").expect("test bucket"),
+        };
+        let replica_path = target
+            .keyspace(&BackupSetId::new())
+            .litestream(&ReplicaEpochId::new());
+        (target, replica_path)
     }
 
     #[derive(Clone, Debug)]
@@ -2020,18 +2060,27 @@ else
 fi
 "#,
         );
-        let config = root.path().join("ls.yml");
-        fs::write(&config, "not inspected by fake").expect("config");
         let source = root.path().join("kosh.sqlite3");
         fs::write(&source, b"source").expect("source");
         let target = root.path().join("restored.sqlite3");
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
         let credentials = R2Credentials::new(
             "00000000000000000000000000000000",
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
         .expect("credentials");
-        let engine =
-            CommandLitestreamRestore::new(&binary, &config, &credentials, Duration::from_secs(5));
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
         let txid = LitestreamTxid::from_local(42);
 
         let plan = engine
@@ -2053,18 +2102,27 @@ fi
         let binary =
             staged_restore_test_binary(root.path(), b"#!/bin/sh\ncat >/dev/null\nexit 0\n");
         let marker = root.path().join("replacement-was-launched");
-        let config = root.path().join("ls.yml");
-        fs::write(&config, "restore test config").expect("config");
         let source = root.path().join("kosh.sqlite3");
         fs::write(&source, b"source").expect("source");
         let target = root.path().join("restored.sqlite3");
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
         let credentials = R2Credentials::new(
             "00000000000000000000000000000000",
             "0000000000000000000000000000000000000000000000000000000000000000",
         )
         .expect("credentials");
-        let engine =
-            CommandLitestreamRestore::new(&binary, &config, &credentials, Duration::from_secs(5));
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
 
         thaw_restore_test_binary(&binary);
         fs::write(

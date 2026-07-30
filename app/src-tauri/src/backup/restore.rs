@@ -52,6 +52,10 @@ impl RemoteCheckpoint {
         self.manifest.kosh_version()
     }
 
+    pub(crate) fn litestream_path(&self) -> &str {
+        self.manifest.litestream_path()
+    }
+
     pub(crate) const fn content_revision(&self) -> u64 {
         self.manifest.content_revision()
     }
@@ -199,6 +203,7 @@ pub(crate) fn preview_checkpoint(
         .into_iter()
         .find(|checkpoint| checkpoint.checkpoint_id() == checkpoint_id)
         .ok_or(RestoreError::CheckpointNotFound)?;
+    validate_replica_binding(engine, &checkpoint)?;
     let plan = engine.preview(
         source_database_path,
         preview_target_path,
@@ -233,6 +238,7 @@ pub(crate) fn stage_checkpoint(
     let paths = DatabasePaths::new(staging_root);
     prepare_empty_staging(staging_root)?;
     let operation = (|| {
+        validate_replica_binding(engine, checkpoint)?;
         let txid = checkpoint.txid()?;
         let plan = engine.preview(source_database_path, &paths.main, txid)?;
         validate_plan(&plan, source_database_path, &paths.main, checkpoint)?;
@@ -294,6 +300,16 @@ pub(crate) fn drill_checkpoint(
     };
     remove_owned_staging(drill_root)?;
     Ok(report)
+}
+
+fn validate_replica_binding(
+    engine: &dyn RelationalRestoreEngine,
+    checkpoint: &RemoteCheckpoint,
+) -> Result<(), RestoreError> {
+    if engine.replica_path() != checkpoint.litestream_path() {
+        return Err(RestoreError::Manifest);
+    }
+    Ok(())
 }
 
 fn validate_plan(
@@ -536,7 +552,7 @@ mod tests {
         backup::{
             domain::{
                 BackupWriterId, CheckpointManifestInput, R2AccountId, R2BucketName, R2Jurisdiction,
-                R2Target, UtcTimestamp,
+                R2ObjectKey, R2Target, UtcTimestamp,
             },
             litestream::{IntegrityCheck, RestoreFile, RestoreResult},
             object_store::{
@@ -569,10 +585,15 @@ mod tests {
 
     struct FakeRestoreEngine {
         source: PathBuf,
+        replica_path: R2ObjectKey,
         txid: LitestreamTxid,
     }
 
     impl RelationalRestoreEngine for FakeRestoreEngine {
+        fn replica_path(&self) -> &str {
+            self.replica_path.as_str()
+        }
+
         fn preview(
             &self,
             source_database_path: &Path,
@@ -760,6 +781,7 @@ mod tests {
                 .expect("checkpoint");
             let engine = FakeRestoreEngine {
                 source: source_paths.main.clone(),
+                replica_path: keyspace.litestream(&epoch),
                 txid,
             };
             Self {
@@ -810,6 +832,30 @@ mod tests {
             fs::read(&fixture.source_paths.main).expect("source bytes after drill"),
             source_before
         );
+    }
+
+    #[test]
+    fn preview_rejects_the_same_txid_from_a_different_replica_epoch() {
+        let fixture = Fixture::new();
+        let wrong_epoch_engine = FakeRestoreEngine {
+            source: fixture.source_paths.main.clone(),
+            replica_path: fixture.keyspace.litestream(&ReplicaEpochId::new()),
+            txid: fixture.engine.txid,
+        };
+        let preview_root = tempfile::tempdir().expect("preview root");
+
+        assert!(matches!(
+            preview_checkpoint(
+                &fixture.store,
+                &fixture.keyspace,
+                &fixture.backup_set_id,
+                fixture.checkpoint.checkpoint_id(),
+                &wrong_epoch_engine,
+                &fixture.source_paths.main,
+                &preview_root.path().join("preview.sqlite3"),
+            ),
+            Err(RestoreError::Manifest)
+        ));
     }
 
     #[test]
