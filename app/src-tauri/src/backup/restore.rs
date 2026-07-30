@@ -128,6 +128,7 @@ pub(crate) fn discover_checkpoints(
     let mut continuation = None;
     let mut checkpoints = Vec::new();
     let mut seen_keys = BTreeSet::new();
+    let mut seen_checkpoint_ids = BTreeSet::new();
     let mut pages = 0_usize;
     loop {
         pages += 1;
@@ -165,6 +166,7 @@ pub(crate) fn discover_checkpoints(
                     .object_key(keyspace)
                     .map_err(|_| RestoreError::Manifest)?
                     != listed.key
+                || !seen_checkpoint_ids.insert(manifest.checkpoint_id().clone())
             {
                 return Err(RestoreError::Manifest);
             }
@@ -808,6 +810,45 @@ mod tests {
             fs::read(&fixture.source_paths.main).expect("source bytes after drill"),
             source_before
         );
+    }
+
+    #[test]
+    fn discovery_rejects_duplicate_logical_checkpoint_ids_across_manifest_keys() {
+        let fixture = Fixture::new();
+        let original = &fixture.checkpoint.manifest;
+        let duplicate = CheckpointManifestV1::new(CheckpointManifestInput {
+            backup_set_id: original.backup_set_id().clone(),
+            replica_epoch_id: original.replica_epoch_id().clone(),
+            checkpoint_id: original.checkpoint_id().clone(),
+            created_at: UtcTimestamp::parse("2026-07-30T19:00:01Z").expect("timestamp"),
+            kosh_version: original.kosh_version().into(),
+            content_revision: original.content_revision(),
+            main_migration_head: original.main_migration_head(),
+            litestream_path: fixture.keyspace.litestream(original.replica_epoch_id()),
+            txid: original.txid().into(),
+            media_migration_head: original.media_migration_head(),
+            referenced_hash_count: original.referenced_hash_count(),
+            referenced_total_bytes: original.referenced_total_bytes(),
+            referenced_hash_set_sha256: original.referenced_hash_set_sha256(),
+        })
+        .expect("duplicate manifest");
+        fixture
+            .store
+            .put(PutObjectRequest {
+                key: duplicate
+                    .object_key(&fixture.keyspace)
+                    .expect("manifest key"),
+                bytes: duplicate.to_json().expect("manifest bytes"),
+                content_type: ObjectContentType::Json,
+                kosh_sha256: None,
+                condition: PutCondition::IfAbsent,
+            })
+            .expect("second manifest");
+
+        assert!(matches!(
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id),
+            Err(RestoreError::Manifest)
+        ));
     }
 
     #[test]
