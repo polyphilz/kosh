@@ -54,6 +54,7 @@ use std::{
 use rusqlite::Connection;
 
 pub(crate) use backup_media::{OffsiteMediaUploadClaim, OffsiteMediaUploadFailureCode};
+pub(crate) use backup_state::OffsiteBackupConfig;
 #[cfg(test)]
 pub(crate) use backup_state::SaveOffsiteBackupConfigInput;
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};

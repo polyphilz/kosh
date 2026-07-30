@@ -14,6 +14,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use super::credentials::R2Credentials;
+
 const EMBEDDED_MANIFEST: &str = include_str!("../../resources/sidecars/litestream-v1.json");
 const DEVELOPMENT_BINARY_OVERRIDE_ENV: &str = "KOSH_LITESTREAM_PATH";
 const ACCESS_KEY_ID_ENV: &str = "KOSH_LITESTREAM_R2_ACCESS_KEY_ID";
@@ -24,6 +26,16 @@ const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESTORE_FILES: usize = 100_000;
 const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+pub(crate) fn configure_credentials_environment(
+    command: &mut Command,
+    credentials: &R2Credentials,
+) {
+    command
+        .env_clear()
+        .env(ACCESS_KEY_ID_ENV, credentials.access_key_id());
+    command.env(SECRET_ACCESS_KEY_ENV, credentials.secret_access_key());
+}
 
 #[derive(Debug, Error)]
 pub enum LitestreamError {
@@ -932,6 +944,42 @@ mod tests {
         ] {
             assert!(malformed.parse::<LitestreamTxid>().is_err());
         }
+    }
+
+    #[test]
+    fn daemon_environment_contains_only_the_two_zeroizing_credentials() {
+        let credentials = R2Credentials::new(
+            "0123456789abcdef0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .expect("credentials");
+        let mut command = Command::new("/app/bin/litestream");
+        command.env("UNRELATED_SECRET", "must-not-survive");
+
+        configure_credentials_environment(&mut command, &credentials);
+
+        let environment = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            environment,
+            [
+                (
+                    ACCESS_KEY_ID_ENV.into(),
+                    Some(credentials.access_key_id().into()),
+                ),
+                (
+                    SECRET_ACCESS_KEY_ENV.into(),
+                    Some(credentials.secret_access_key().into()),
+                ),
+            ]
+        );
     }
 
     #[test]

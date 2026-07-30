@@ -233,7 +233,9 @@ pub fn run() {
             }
         }
         tauri::RunEvent::Exit => {
-            app.state::<RuntimeState>().claude_processes().shutdown();
+            let runtime = app.state::<RuntimeState>();
+            runtime.shutdown_relational_backup();
+            runtime.claude_processes().shutdown();
         }
         _ => {}
     });

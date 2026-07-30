@@ -164,6 +164,15 @@ authored database writer. Crash, offline retry, and metadata-verification
 contracts are documented in
 [app/tests/native/offsite-backup-media.md](app/tests/native/offsite-backup-media.md).
 
+The relational database is replicated only for an enabled configuration by a
+supervised Litestream child. Kosh writes a private fixed-protocol config,
+validates the private control socket, owns stale-process cleanup through a
+bound PID record, reports only bounded status codes, restarts transient
+failures with capped backoff, and gives Litestream its verified graceful final
+sync window during shutdown. Missing credentials, the helper binary, or the
+network degrade backup without delaying local startup or authored writes. See
+[app/tests/native/offsite-backup-litestream-runtime.md](app/tests/native/offsite-backup-litestream-runtime.md).
+
 Repository policy and secret checks run from the repository root:
 
 ```bash
