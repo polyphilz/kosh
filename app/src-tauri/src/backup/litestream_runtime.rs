@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -170,13 +170,69 @@ pub(crate) struct RelationalBackupStatus {
 }
 
 enum SupervisorSignal {
-    ReloadConfiguration,
+    ReloadConfiguration(u64),
     Shutdown,
+}
+
+#[derive(Default)]
+struct StartCancellation {
+    reload_generation: AtomicU64,
+    active: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+impl StartCancellation {
+    fn request_reload(&self) -> u64 {
+        let generation = self.reload_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.cancel_active();
+        generation
+    }
+
+    fn generation(&self) -> u64 {
+        self.reload_generation.load(Ordering::Acquire)
+    }
+
+    fn install(&self, expected_generation: u64, shutdown: &AtomicBool) -> Option<Arc<AtomicBool>> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if shutdown.load(Ordering::Acquire) || self.generation() != expected_generation {
+            return None;
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        *active = Some(Arc::clone(&cancellation));
+        Some(cancellation)
+    }
+
+    fn finish(&self, cancellation: &Arc<AtomicBool>) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, cancellation))
+        {
+            *active = None;
+        }
+    }
+
+    fn cancel_active(&self) {
+        if let Some(active) = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            active.store(true, Ordering::Release);
+        }
+    }
 }
 
 pub(crate) struct LitestreamRuntimeService {
     sender: mpsc::Sender<SupervisorSignal>,
     shutdown: Arc<AtomicBool>,
+    start_cancellation: Arc<StartCancellation>,
     status: Arc<Mutex<RelationalBackupStatus>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -208,6 +264,7 @@ impl LitestreamRuntimeService {
         Self {
             sender,
             shutdown: Arc::new(AtomicBool::new(true)),
+            start_cancellation: Arc::new(StartCancellation::default()),
             status: Arc::new(Mutex::new(RelationalBackupStatus::default())),
             worker: Mutex::new(None),
         }
@@ -220,8 +277,10 @@ impl LitestreamRuntimeService {
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
+        let start_cancellation = Arc::new(StartCancellation::default());
         let status = Arc::new(Mutex::new(RelationalBackupStatus::default()));
         let worker_shutdown = Arc::clone(&shutdown);
+        let worker_start_cancellation = Arc::clone(&start_cancellation);
         let worker_status = Arc::clone(&status);
         let spawned = thread::Builder::new()
             .name("kosh-litestream-supervisor".into())
@@ -231,6 +290,7 @@ impl LitestreamRuntimeService {
                     factory,
                     receiver,
                     worker_shutdown,
+                    worker_start_cancellation,
                     worker_status,
                     schedule,
                 );
@@ -249,6 +309,7 @@ impl LitestreamRuntimeService {
         let service = Self {
             sender,
             shutdown,
+            start_cancellation,
             status,
             worker: Mutex::new(worker),
         };
@@ -261,13 +322,18 @@ impl LitestreamRuntimeService {
     }
 
     pub(crate) fn reload_configuration(&self) {
-        self.signal(SupervisorSignal::ReloadConfiguration);
+        if self.shutdown.load(Ordering::Acquire) {
+            return;
+        }
+        let generation = self.start_cancellation.request_reload();
+        self.signal(SupervisorSignal::ReloadConfiguration(generation));
     }
 
     pub(crate) fn shutdown(&self) {
         if self.shutdown.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.start_cancellation.cancel_active();
         let _ = self.sender.send(SupervisorSignal::Shutdown);
         if let Some(worker) = self
             .worker
@@ -348,7 +414,7 @@ impl RuntimeFailure {
 }
 
 trait RuntimeFactory: Send + Sync {
-    fn sweep_stale(&self) -> Result<(), RuntimeFailure> {
+    fn sweep_stale(&self, _shutdown: Arc<AtomicBool>) -> Result<(), RuntimeFailure> {
         Ok(())
     }
 
@@ -363,6 +429,9 @@ trait ManagedLitestream: Send {
     fn has_exited(&mut self) -> Result<bool, RuntimeFailure>;
     fn sync_remote(&self, timeout: Duration) -> Result<SyncResult, RuntimeFailure>;
     fn shutdown(&mut self);
+    fn abort(&mut self) {
+        self.shutdown();
+    }
 }
 
 fn supervisor_worker(
@@ -370,6 +439,7 @@ fn supervisor_worker(
     factory: Arc<dyn RuntimeFactory>,
     receiver: mpsc::Receiver<SupervisorSignal>,
     shutdown: Arc<AtomicBool>,
+    start_cancellation: Arc<StartCancellation>,
     status: Arc<Mutex<RelationalBackupStatus>>,
     schedule: WorkerSchedule,
 ) {
@@ -384,6 +454,8 @@ fn supervisor_worker(
     let mut stale_sweep_failures = 0_u32;
     let mut next_stale_sweep = Instant::now();
     let mut force_reload = true;
+    let mut pending_reload_generation = None;
+    let mut applied_reload_generation = 0;
 
     loop {
         let signal = match receiver.recv_timeout(schedule.supervisor_poll_interval) {
@@ -397,8 +469,9 @@ fn supervisor_worker(
             break;
         }
         match signal {
-            Some(SupervisorSignal::ReloadConfiguration) => {
+            Some(SupervisorSignal::ReloadConfiguration(generation)) => {
                 force_reload = true;
+                pending_reload_generation = Some(generation);
                 blocked_revision = None;
                 restart_count = 0;
                 next_start = Instant::now();
@@ -411,7 +484,7 @@ fn supervisor_worker(
             if now < next_stale_sweep {
                 continue;
             }
-            match factory.sweep_stale() {
+            match factory.sweep_stale(Arc::clone(&shutdown)) {
                 Ok(()) => {
                     stale_sweep_pending = false;
                     stale_sweep_failures = 0;
@@ -429,6 +502,8 @@ fn supervisor_worker(
             }
         }
         if force_reload || now >= next_config_refresh {
+            let loading_reload_generation =
+                pending_reload_generation.unwrap_or(applied_reload_generation);
             match database.load_enabled_offsite_backup_config() {
                 Ok(config) => {
                     let previous_revision = current_config.as_ref().map(|value| value.revision);
@@ -449,6 +524,8 @@ fn supervisor_worker(
                             RelationalBackupStatus::default()
                         };
                     }
+                    applied_reload_generation = loading_reload_generation;
+                    pending_reload_generation = None;
                     force_reload = false;
                     next_config_refresh = now + schedule.config_refresh_interval;
                 }
@@ -489,8 +566,21 @@ fn supervisor_worker(
             && blocked_revision != Some(config.revision)
             && Instant::now() >= next_start
         {
+            let Some(start_cancel) =
+                start_cancellation.install(applied_reload_generation, &shutdown)
+            else {
+                continue;
+            };
             lock_status(&status).phase = RelationalBackupPhase::Starting;
-            match factory.start(config, Arc::clone(&shutdown)) {
+            let start_result = factory.start(config, Arc::clone(&start_cancel));
+            start_cancellation.finish(&start_cancel);
+            if start_cancel.load(Ordering::Acquire) || shutdown.load(Ordering::Acquire) {
+                if let Ok(mut started) = start_result {
+                    started.abort();
+                }
+                continue;
+            }
+            match start_result {
                 Ok(started) => {
                     daemon = Some(started);
                     next_remote_status = Instant::now();
@@ -607,7 +697,7 @@ struct SystemRuntimeFactory<C, I> {
 }
 
 impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRuntimeFactory<C, I> {
-    fn sweep_stale(&self) -> Result<(), RuntimeFailure> {
+    fn sweep_stale(&self, shutdown: Arc<AtomicBool>) -> Result<(), RuntimeFailure> {
         let runtime =
             LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
         if !stale_runtime_residue_exists(&runtime)? {
@@ -625,6 +715,7 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
             &runtime,
             binary.trusted_cleanup_sha256s(),
             &self.database_path,
+            &shutdown,
         )
     }
 
@@ -650,6 +741,7 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
             &runtime,
             binary.trusted_cleanup_sha256s(),
             &self.database_path,
+            &shutdown,
         )?;
 
         let credentials = self
@@ -1026,6 +1118,14 @@ impl ManagedLitestream for SystemManagedLitestream {
             self.cleanup(pid);
         }
     }
+
+    fn abort(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let pid = child.id();
+            kill_process_group(&mut child);
+            self.cleanup(pid);
+        }
+    }
 }
 
 impl Drop for SystemManagedLitestream {
@@ -1201,6 +1301,7 @@ fn sweep_stale_runtime(
     runtime: &LitestreamRuntimePaths,
     trusted_binary_sha256s: &[String],
     expected_database_path: &Path,
+    shutdown: &AtomicBool,
 ) -> Result<(), RuntimeFailure> {
     let record = read_pid_record(runtime)
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, false))?;
@@ -1250,7 +1351,7 @@ fn sweep_stale_runtime(
             false,
         ));
     }
-    terminate_stale_process_group(&record);
+    terminate_stale_process_group(&record, shutdown);
     if process_exists(record.pid) {
         return Err(RuntimeFailure::new(
             RelationalBackupErrorCode::ControlUnavailable,
@@ -1415,7 +1516,30 @@ fn terminate_process_group(child: &mut Child, _timeout: Duration) {
 }
 
 #[cfg(unix)]
-fn terminate_stale_process_group(record: &LitestreamPidRecord) {
+fn kill_process_group(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_some() {
+        let _ = child.wait();
+        return;
+    }
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: launch created a process group whose ID is the child PID.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    } else {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn terminate_stale_process_group(record: &LitestreamPidRecord, shutdown: &AtomicBool) {
     let Ok(pid) = i32::try_from(record.pid) else {
         return;
     };
@@ -1427,6 +1551,9 @@ fn terminate_stale_process_group(record: &LitestreamPidRecord) {
     while Instant::now() < deadline {
         if !process_exists(record.pid) {
             return;
+        }
+        if shutdown.load(Ordering::Acquire) {
+            break;
         }
         thread::sleep(PROCESS_POLL_INTERVAL);
     }
@@ -1447,7 +1574,7 @@ fn terminate_stale_process_group(record: &LitestreamPidRecord) {
 }
 
 #[cfg(not(unix))]
-fn terminate_stale_process_group(_record: &LitestreamPidRecord) {}
+fn terminate_stale_process_group(_record: &LitestreamPidRecord, _shutdown: &AtomicBool) {}
 
 fn remove_pid_record_if_owned(runtime: &LitestreamRuntimePaths, expected_pid: u32) {
     let Ok(Some(record)) = read_pid_record(runtime) else {
@@ -1593,7 +1720,7 @@ mod tests {
     }
 
     impl RuntimeFactory for FakeRuntimeFactory {
-        fn sweep_stale(&self) -> Result<(), RuntimeFailure> {
+        fn sweep_stale(&self, _shutdown: Arc<AtomicBool>) -> Result<(), RuntimeFailure> {
             self.sweeps.fetch_add(1, Ordering::SeqCst);
             self.sweep_plans
                 .lock()
@@ -1642,6 +1769,70 @@ mod tests {
 
         fn shutdown(&mut self) {
             self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct BlockingStartFactory {
+        started: AtomicBool,
+        returned: AtomicBool,
+        syncs: Arc<AtomicUsize>,
+        graceful_shutdowns: Arc<AtomicUsize>,
+        aborts: Arc<AtomicUsize>,
+    }
+
+    impl BlockingStartFactory {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                started: AtomicBool::new(false),
+                returned: AtomicBool::new(false),
+                syncs: Arc::new(AtomicUsize::new(0)),
+                graceful_shutdowns: Arc::new(AtomicUsize::new(0)),
+                aborts: Arc::new(AtomicUsize::new(0)),
+            })
+        }
+    }
+
+    impl RuntimeFactory for BlockingStartFactory {
+        fn start(
+            &self,
+            _config: &OffsiteBackupConfig,
+            cancellation: Arc<AtomicBool>,
+        ) -> Result<Box<dyn ManagedLitestream>, RuntimeFailure> {
+            self.started.store(true, Ordering::Release);
+            while !cancellation.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(2));
+            }
+            self.returned.store(true, Ordering::Release);
+            Ok(Box::new(ReturnedAfterCancellation {
+                syncs: Arc::clone(&self.syncs),
+                graceful_shutdowns: Arc::clone(&self.graceful_shutdowns),
+                aborts: Arc::clone(&self.aborts),
+            }))
+        }
+    }
+
+    struct ReturnedAfterCancellation {
+        syncs: Arc<AtomicUsize>,
+        graceful_shutdowns: Arc<AtomicUsize>,
+        aborts: Arc<AtomicUsize>,
+    }
+
+    impl ManagedLitestream for ReturnedAfterCancellation {
+        fn has_exited(&mut self) -> Result<bool, RuntimeFailure> {
+            Ok(false)
+        }
+
+        fn sync_remote(&self, _timeout: Duration) -> Result<SyncResult, RuntimeFailure> {
+            self.syncs.fetch_add(1, Ordering::SeqCst);
+            Ok(remote_sync())
+        }
+
+        fn shutdown(&mut self) {
+            self.graceful_shutdowns.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn abort(&mut self) {
+            self.aborts.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1935,6 +2126,47 @@ mod tests {
         });
 
         assert_eq!(factory.shutdowns.load(Ordering::SeqCst), 1);
+        assert!(database.client().diagnostics().is_ok());
+    }
+
+    #[test]
+    fn disabling_during_start_cancels_and_aborts_the_stale_generation_before_sync() {
+        let (_root, database) = configured_database(true);
+        let factory = BlockingStartFactory::new();
+        let service = LitestreamRuntimeService::start_with_parts(
+            database.client(),
+            factory.clone(),
+            schedule(),
+        );
+        wait_until(Duration::from_secs(1), || {
+            factory.started.load(Ordering::Acquire)
+        });
+        let current = database
+            .client()
+            .load_offsite_backup_config()
+            .expect("load config")
+            .expect("stored config");
+        database
+            .client()
+            .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                expected_revision: current.revision,
+                backup_set_id: current.backup_set_id,
+                replica_epoch_id: current.replica_epoch_id,
+                enabled: false,
+                target: current.target,
+                now_ms: 20,
+            })
+            .expect("disable config");
+
+        service.reload_configuration();
+        wait_until(Duration::from_secs(1), || {
+            factory.returned.load(Ordering::Acquire)
+                && factory.aborts.load(Ordering::SeqCst) == 1
+                && service.status().phase == RelationalBackupPhase::Off
+        });
+
+        assert_eq!(factory.syncs.load(Ordering::SeqCst), 0);
+        assert_eq!(factory.graceful_shutdowns.load(Ordering::SeqCst), 0);
         assert!(database.client().diagnostics().is_ok());
     }
 
@@ -2253,8 +2485,14 @@ mod tests {
         );
 
         let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
-        sweep_stale_runtime(&ownership, &runtime, &[sha256_hex(b"binary")], &database)
-            .expect("sweep dead owned runtime");
+        sweep_stale_runtime(
+            &ownership,
+            &runtime,
+            &[sha256_hex(b"binary")],
+            &database,
+            &AtomicBool::new(false),
+        )
+        .expect("sweep dead owned runtime");
         assert!(!runtime.pid().exists());
     }
 
@@ -2583,6 +2821,7 @@ mod tests {
                 &runtime,
                 &[sha256_hex(b"different binary")],
                 &database,
+                &AtomicBool::new(false),
             ),
             Err(RuntimeFailure::new(
                 RelationalBackupErrorCode::ControlUnavailable,
@@ -2596,6 +2835,7 @@ mod tests {
             &runtime,
             &[sha256_hex(b"new binary"), sha256_hex(script)],
             &database,
+            &AtomicBool::new(false),
         )
         .expect("reap relocated previously pinned daemon");
 
@@ -2605,6 +2845,101 @@ mod tests {
             .expect("reaped child status")
             .expect("wait for child");
         waiter.join().expect("child waiter");
+        assert!(!process_exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_escalates_stale_daemon_cleanup_without_waiting_for_graceful_timeout() {
+        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+
+        let root = tempfile::tempdir().expect("temporary stale daemon root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        runtime.write_config("safe config").expect("write config");
+        let binary = root.path().join("litestream");
+        let ready = root.path().join("ready");
+        let script =
+            b"#!/bin/sh\ntrap '' TERM\ntouch \"$KOSH_TEST_READY\"\nwhile :; do /bin/sleep 1; done\n";
+        fs::write(&binary, script).expect("stale Litestream fixture");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
+            .expect("executable stale fixture");
+        let database = root.path().join("kosh.sqlite3");
+        fs::write(&database, b"database").expect("database fixture");
+        let mut command = Command::new(&binary);
+        command
+            .arg("replicate")
+            .arg("-config")
+            .arg(runtime.config())
+            .env("KOSH_TEST_READY", &ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let child = command.spawn().expect("stale Litestream child");
+        let pid = child.id();
+        write_pid_record(
+            &runtime,
+            pid,
+            &binary,
+            &database,
+            &LaunchIdentity {
+                backup_set_id: BackupSetId::new().to_string(),
+                replica_epoch_id: ReplicaEpochId::new().to_string(),
+                config_sha256: sha256_hex(b"safe config"),
+                executable_sha256: sha256_hex(script),
+            },
+        )
+        .expect("PID record");
+        wait_until(Duration::from_secs(1), || ready.exists());
+        let record = read_pid_record(&runtime)
+            .expect("read PID record")
+            .expect("stale PID record");
+        wait_until(Duration::from_secs(1), || process_matches_record(&record));
+
+        let (reaped_tx, reaped_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            reaped_tx
+                .send(child.wait_with_output().map(|output| output.status))
+                .expect("reaped status receiver");
+        });
+        let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker_runtime = runtime.clone();
+        let worker_database = database.clone();
+        let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+        let sweeper = thread::spawn(move || {
+            completed_tx
+                .send(sweep_stale_runtime(
+                    &ownership,
+                    &worker_runtime,
+                    &[sha256_hex(script)],
+                    &worker_database,
+                    &worker_shutdown,
+                ))
+                .expect("stale sweep result receiver");
+        });
+        thread::sleep(Duration::from_millis(75));
+
+        let quit_started = Instant::now();
+        shutdown.store(true, Ordering::Release);
+        completed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown-aware stale sweep")
+            .expect("stale daemon cleanup");
+        assert!(
+            quit_started.elapsed() < Duration::from_secs(1),
+            "shutdown waited for the stale daemon graceful timeout"
+        );
+
+        sweeper.join().expect("stale sweeper");
+        reaped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reaped stale child")
+            .expect("wait for stale child");
+        waiter.join().expect("stale child waiter");
+        assert!(!runtime.pid().exists());
         assert!(!process_exists(pid));
     }
 
@@ -2622,6 +2957,7 @@ mod tests {
                 &runtime,
                 &[sha256_hex(b"binary")],
                 &root.path().join("kosh.sqlite3"),
+                &AtomicBool::new(false),
             ),
             Err(RuntimeFailure::new(
                 RelationalBackupErrorCode::ControlUnavailable,
@@ -2649,6 +2985,7 @@ mod tests {
                 &runtime,
                 &[sha256_hex(b"binary")],
                 &root.path().join("kosh.sqlite3"),
+                &AtomicBool::new(false),
             ),
             Err(RuntimeFailure::new(
                 RelationalBackupErrorCode::ControlUnavailable,

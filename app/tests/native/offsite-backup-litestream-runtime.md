@@ -56,6 +56,10 @@ while claiming or verifying the owner remains retryable. Remote owner acquisitio
 non-launching worker watched at 50-millisecond intervals. Application shutdown
 cancels between requests and detaches from one already-stalled bounded R2
 request, so it cannot hold application exit or subsequently launch a daemon.
+Every explicit configuration reload also advances a start-generation token and
+cancels the active owner/readiness operation. A daemon returned across that
+boundary is killed without a graceful remote sync before the queued
+configuration can be applied.
 
 On application exit, Kosh first stops Claude and gives its monitor a bounded
 window to persist the terminal research event, then closes and joins the sole
@@ -77,6 +81,9 @@ artifacts are gone. Cleanup accepts only digests in the embedded, bounded,
 append-only trusted-cleanup registry. Each release retains every prior
 Litestream pin in that registry, so an upgraded or relocated app can reap its
 genuine old daemon without trusting a digest supplied only by the PID record.
+If shutdown arrives while a verified stale daemon ignores SIGTERM, cleanup
+immediately escalates to SIGKILL and finishes ownership cleanup instead of
+waiting through the normal 35-second graceful window before escalation.
 
 ## Executable evidence
 
@@ -115,8 +122,12 @@ The focused native suite proves:
   distinct domain-separated identities;
 - shutdown interrupts a stalled remote-owner start operation without waiting
   for the R2 request timeout;
+- disabling during a stalled start cancels that generation and aborts any
+  returned daemon before its first supervisor-driven remote sync;
 - shutdown interrupts control-socket readiness and reaps the child without
   waiting for the startup timeout;
+- shutdown escalates a verified stale daemon that ignores SIGTERM without
+  waiting for the graceful timeout;
 - application exit persists the Claude terminal event and closes the sole
   SQLite writer before the final Litestream sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;
