@@ -943,31 +943,40 @@ impl RuntimeChild for Child {
     }
 }
 
-struct SuspendedLitestreamChild {
+struct TracedLitestreamChild {
     pid: libc::pid_t,
     reaped: bool,
-    resumed: bool,
+    detached: bool,
 }
 
-impl SuspendedLitestreamChild {
+impl TracedLitestreamChild {
     fn resume(&mut self) -> std::io::Result<()> {
-        if self.resumed {
+        if self.detached {
             return Ok(());
         }
-        // POSIX_SPAWN_START_SUSPENDED stops the initial thread before any
-        // userspace instruction from the selected executable can run.
-        let result = unsafe { libc::kill(self.pid, libc::SIGCONT) };
+        // The child called PT_TRACE_ME before exec, so the kernel holds the
+        // selected image at its exec trap until this tracing parent detaches.
+        // Job-control signals from another same-user process cannot bypass
+        // this stop.
+        let result = unsafe {
+            libc::ptrace(
+                libc::PT_DETACH,
+                self.pid,
+                std::ptr::without_provenance_mut(1),
+                0,
+            )
+        };
         if result != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        self.resumed = true;
+        self.detached = true;
         Ok(())
     }
 }
 
-impl RuntimeChild for SuspendedLitestreamChild {
+impl RuntimeChild for TracedLitestreamChild {
     fn id(&self) -> u32 {
-        u32::try_from(self.pid).expect("posix_spawn returned a positive PID")
+        u32::try_from(self.pid).expect("fork returned a positive PID")
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
@@ -991,7 +1000,7 @@ impl RuntimeChild for SuspendedLitestreamChild {
         if self.reaped {
             return Ok(());
         }
-        // SAFETY: `self.pid` is the live child returned by posix_spawn.
+        // SAFETY: `self.pid` is the live child returned by fork.
         let result = unsafe { libc::kill(self.pid, libc::SIGKILL) };
         if result == 0 {
             Ok(())
@@ -1020,7 +1029,7 @@ impl RuntimeChild for SuspendedLitestreamChild {
     }
 }
 
-impl Drop for SuspendedLitestreamChild {
+impl Drop for TracedLitestreamChild {
     fn drop(&mut self) {
         if !self.reaped {
             let _ = self.kill();
@@ -1029,11 +1038,11 @@ impl Drop for SuspendedLitestreamChild {
     }
 }
 
-fn spawn_litestream_suspended(
+fn spawn_litestream_traced(
     binary: &Path,
     config: &Path,
     credential_reader: OwnedFd,
-) -> std::io::Result<SuspendedLitestreamChild> {
+) -> std::io::Result<TracedLitestreamChild> {
     let binary = CString::new(binary.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::other("Litestream path contains NUL"))?;
     let config = CString::new(config.as_os_str().as_bytes())
@@ -1052,105 +1061,104 @@ fn spawn_litestream_suspended(
         CString::new(format!("{AWS_EC2_METADATA_DISABLED_ENV}=true"))
             .expect("metadata environment has no NUL"),
     ];
-    let mut argument_pointers = arguments
+    let argument_pointers = arguments
         .iter()
-        .map(|value| value.as_ptr().cast_mut())
-        .chain(std::iter::once(std::ptr::null_mut()))
+        .map(|value| value.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
         .collect::<Vec<_>>();
-    let mut environment_pointers = environment
+    let environment_pointers = environment
         .iter()
-        .map(|value| value.as_ptr().cast_mut())
-        .chain(std::iter::once(std::ptr::null_mut()))
+        .map(|value| value.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
         .collect::<Vec<_>>();
-    let null_device = CString::new("/dev/null").expect("literal has no NUL");
-
-    let mut actions = std::mem::MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
-    // SAFETY: every initialized spawn object is destroyed below, and all C
-    // strings and pointer arrays outlive the posix_spawn call.
-    let actions_result = unsafe { libc::posix_spawn_file_actions_init(actions.as_mut_ptr()) };
-    if actions_result != 0 {
-        return Err(std::io::Error::from_raw_os_error(actions_result));
+    let null_device = fs::OpenOptions::new().write(true).open("/dev/null")?;
+    // SAFETY: sysconf reads the process descriptor limit and has no retained
+    // pointers. The value is captured before fork so the child only loops and
+    // closes descriptors with async-signal-safe calls.
+    let max_descriptor = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    if max_descriptor < 3 || max_descriptor > i64::from(i32::MAX) {
+        return Err(std::io::Error::other(
+            "process descriptor limit is unavailable",
+        ));
     }
-    let mut actions = unsafe { actions.assume_init() };
+    let max_descriptor = i32::try_from(max_descriptor)
+        .map_err(|_| std::io::Error::other("process descriptor limit is too large"))?;
 
-    let mut attributes = std::mem::MaybeUninit::<libc::posix_spawnattr_t>::uninit();
-    let attributes_result = unsafe { libc::posix_spawnattr_init(attributes.as_mut_ptr()) };
-    if attributes_result != 0 {
+    // SAFETY: the child branch calls only async-signal-safe libc operations
+    // against values fully allocated before fork, then immediately execs or
+    // calls _exit. It never returns into Rust or runs a destructor.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if pid == 0 {
         unsafe {
-            libc::posix_spawn_file_actions_destroy(&mut actions);
+            let mut setup_ok = libc::setpgid(0, 0) == 0
+                && libc::dup2(credential_reader.as_raw_fd(), libc::STDIN_FILENO) >= 0
+                && libc::dup2(null_device.as_raw_fd(), libc::STDOUT_FILENO) >= 0
+                && libc::dup2(null_device.as_raw_fd(), libc::STDERR_FILENO) >= 0;
+            for descriptor in 3..max_descriptor {
+                libc::close(descriptor);
+            }
+            setup_ok = setup_ok && libc::ptrace(libc::PT_TRACE_ME, 0, std::ptr::null_mut(), 0) == 0;
+            if setup_ok {
+                libc::execve(
+                    binary.as_ptr(),
+                    argument_pointers.as_ptr(),
+                    environment_pointers.as_ptr(),
+                );
+            }
+            libc::_exit(127);
         }
-        return Err(std::io::Error::from_raw_os_error(attributes_result));
     }
-    let mut attributes = unsafe { attributes.assume_init() };
 
-    let spawn_result = (|| {
-        let duplicate_result = unsafe {
-            libc::posix_spawn_file_actions_adddup2(
-                &mut actions,
-                credential_reader.as_raw_fd(),
-                libc::STDIN_FILENO,
-            )
-        };
-        if duplicate_result != 0 {
-            return Err(std::io::Error::from_raw_os_error(duplicate_result));
+    let mut status = 0;
+    loop {
+        // SAFETY: `status` is writable and `pid` is this process's child.
+        let result = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if result > 0 {
+            break;
         }
-        for descriptor in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-            let open_result = unsafe {
-                libc::posix_spawn_file_actions_addopen(
-                    &mut actions,
-                    descriptor,
-                    null_device.as_ptr(),
-                    libc::O_WRONLY,
-                    0,
-                )
-            };
-            if open_result != 0 {
-                return Err(std::io::Error::from_raw_os_error(open_result));
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            kill_and_reap_untracked_child(pid);
+            return Err(error);
+        }
+    }
+    if !libc::WIFSTOPPED(status) || libc::WSTOPSIG(status) != libc::SIGTRAP {
+        if libc::WIFSTOPPED(status) {
+            kill_and_reap_untracked_child(pid);
+        }
+        return Err(std::io::Error::other(
+            "Litestream image did not stop at the traced exec boundary",
+        ));
+    }
+    Ok(TracedLitestreamChild {
+        pid,
+        reaped: false,
+        detached: false,
+    })
+}
+
+fn kill_and_reap_untracked_child(pid: libc::pid_t) {
+    // SAFETY: `pid` is the child returned by this launch attempt. SIGKILL is
+    // idempotent here, and waitpid is retried only for interruption.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        let mut status = 0;
+        loop {
+            let result = libc::waitpid(pid, &mut status, 0);
+            if result >= 0
+                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                break;
             }
         }
-        let flags = libc::POSIX_SPAWN_START_SUSPENDED
-            | libc::POSIX_SPAWN_SETPGROUP
-            | libc::POSIX_SPAWN_CLOEXEC_DEFAULT;
-        let flags_result =
-            unsafe { libc::posix_spawnattr_setflags(&mut attributes, flags as libc::c_short) };
-        if flags_result != 0 {
-            return Err(std::io::Error::from_raw_os_error(flags_result));
-        }
-        let group_result = unsafe { libc::posix_spawnattr_setpgroup(&mut attributes, 0) };
-        if group_result != 0 {
-            return Err(std::io::Error::from_raw_os_error(group_result));
-        }
-
-        let mut pid = 0;
-        let result = unsafe {
-            libc::posix_spawn(
-                &mut pid,
-                binary.as_ptr(),
-                &actions,
-                &attributes,
-                argument_pointers.as_mut_ptr(),
-                environment_pointers.as_mut_ptr(),
-            )
-        };
-        if result != 0 {
-            return Err(std::io::Error::from_raw_os_error(result));
-        }
-        Ok(SuspendedLitestreamChild {
-            pid,
-            reaped: false,
-            resumed: false,
-        })
-    })();
-
-    unsafe {
-        libc::posix_spawnattr_destroy(&mut attributes);
-        libc::posix_spawn_file_actions_destroy(&mut actions);
     }
-    spawn_result
 }
 
 struct SystemManagedLitestream {
-    child: Option<SuspendedLitestreamChild>,
+    child: Option<TracedLitestreamChild>,
     runtime: LitestreamRuntimePaths,
     ownership: LitestreamRuntimeOwnership,
     database_path: PathBuf,
@@ -1177,9 +1185,8 @@ impl SystemManagedLitestream {
         let (credential_reader, mut credential_writer) = UnixStream::pair()
             .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
         let credential_reader: OwnedFd = credential_reader.into();
-        let mut child =
-            spawn_litestream_suspended(&binary_path, runtime.config(), credential_reader)
-                .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
+        let mut child = spawn_litestream_traced(&binary_path, runtime.config(), credential_reader)
+            .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
         let pid = child.id();
         if let Err(error) = binary.verify_running_process(pid) {
             kill_process_group(&mut child);
@@ -1869,7 +1876,7 @@ mod tests {
     const ACCOUNT_ID: &str = "0123456789abcdef0123456789abcdef";
 
     #[test]
-    fn daemon_image_is_kernel_suspended_before_any_selected_code_runs() {
+    fn daemon_image_is_trapped_before_selected_code_and_stray_continue_cannot_release_it() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = TempDir::new().expect("temporary runtime");
@@ -1892,8 +1899,8 @@ mod tests {
         let (credential_reader, mut credential_writer) =
             UnixStream::pair().expect("credential stream");
         let mut child =
-            spawn_litestream_suspended(&selected_executable, &config, credential_reader.into())
-                .expect("suspended spawn");
+            spawn_litestream_traced(&selected_executable, &config, credential_reader.into())
+                .expect("traced spawn");
         credential_writer
             .write_all(b"fake-r2-credential")
             .expect("credential payload");
@@ -1901,17 +1908,13 @@ mod tests {
             .shutdown(Shutdown::Write)
             .expect("credential EOF");
 
-        let mut status = 0;
-        // SAFETY: this observes the state of the live child without reaping it.
-        let observed = unsafe {
-            libc::waitpid(
-                i32::try_from(child.id()).expect("PID"),
-                &mut status,
-                libc::WUNTRACED | libc::WNOHANG,
-            )
-        };
-        assert_eq!(observed, i32::try_from(child.id()).expect("PID"));
-        assert!(libc::WIFSTOPPED(status));
+        // A pathname-racing same-user process can send job-control signals,
+        // but only the tracing parent can release the exec trap.
+        assert_eq!(
+            unsafe { libc::kill(i32::try_from(child.id()).expect("PID"), libc::SIGCONT) },
+            0
+        );
+        thread::sleep(Duration::from_millis(50));
         assert!(child.try_wait().expect("child status").is_none());
         assert!(!selected_code_marker.exists());
         assert!(!inherited_credential_copy.exists());

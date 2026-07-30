@@ -25,15 +25,15 @@ For an enabled configuration the supervisor:
 6. atomically writes a mode-`0600` fixed-protocol configuration through a
    create-new, no-follow temporary file containing no credential values or
    credential environment-variable names;
-7. asks macOS `posix_spawn` to load the selected executable with its initial
-   thread kernel-suspended, an otherwise empty environment, a dedicated process
-   group, and one private inherited stream named as its AWS shared-credentials
-   file, so no instruction from a pathname-swapped image can run;
-8. while that initial thread remains suspended, asks the macOS kernel for the
-   loaded image's `CS_OPS_CDHASH` and requires the exact per-architecture
-   code-directory hash pinned in the release manifest; a mismatched image is
-   killed and reaped before it can fork, read the stream, or execute any other
-   userspace instruction;
+7. forks a trusted copy of the already-running Kosh process, installs an
+   otherwise empty environment, a dedicated process group, and one private
+   inherited stream named as its AWS shared-credentials file, then declares
+   tracing before immediately executing the selected Litestream pathname;
+8. macOS traps that newly loaded image at the traced exec boundary before its
+   first userspace instruction, where the Kosh parent requires the exact
+   per-architecture `CS_OPS_CDHASH` pinned in the release manifest; a
+   mismatched image is killed and reaped before it can fork or read the stream,
+   and a same-user `SIGCONT` cannot release the parent-owned trace stop;
 9. durably writes a bounded private PID record binding the exact command
    executable, the pinned binary digest, database, config, socket, backup set,
    replica epoch, and config digest;
@@ -118,9 +118,9 @@ The focused native suite proves:
   record, while the child environment contains no raw credentials;
 - the macOS kernel code-directory hash binds the spawned image to the pinned
   architecture and rejects a mismatched process before credential release;
-- a selected image and its inherited credential descriptor remain
-  kernel-suspended until identity acceptance, so even code that would copy the
-  credential stream cannot run before Kosh explicitly resumes it;
+- a selected image and its inherited credential descriptor remain trapped at
+  exec until identity acceptance; even a stray `SIGCONT` cannot let code that
+  would copy the credential stream run before Kosh explicitly detaches it;
 - the actual pinned universal Litestream starts headlessly with the inherited
   one-use credential profile and private control socket;
 - the immutable launch stage is reusable, preserves the verified descriptor's
