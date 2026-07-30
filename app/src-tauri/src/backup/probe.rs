@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 use super::{
     domain::{ContentSha256, ProbeRunId, R2Keyspace, OBJECT_FORMAT_VERSION},
     object_store::{
-        ContinuationToken, ObjectContentType, ObjectStore, ObjectStoreErrorCode, PutCondition,
-        PutObjectOutcome, PutObjectRequest,
+        ContinuationToken, ObjectContentType, ObjectStore, ObjectStoreErrorCode,
+        ProbeDeleteAuthorization, PutCondition, PutObjectOutcome, PutObjectRequest,
     },
 };
 
@@ -18,12 +18,18 @@ pub(crate) enum ProbeStage {
     Head,
     Get,
     List,
+    CleanupList,
+    CleanupDelete,
+    CleanupConfirm,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProbeCleanupStatus {
     Complete,
-    Failed(ObjectStoreErrorCode),
+    Failed {
+        stage: ProbeStage,
+        code: ObjectStoreErrorCode,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,10 +58,13 @@ pub(crate) fn verify_object_store(
             Ok(ObjectStoreProbeReport { run_id, cleanup })
         }
         Ok(()) => Err(ObjectStoreProbeError {
-            stage: ProbeStage::List,
+            stage: match cleanup {
+                ProbeCleanupStatus::Complete => unreachable!("matched above"),
+                ProbeCleanupStatus::Failed { stage, .. } => stage,
+            },
             code: match cleanup {
                 ProbeCleanupStatus::Complete => unreachable!("matched above"),
-                ProbeCleanupStatus::Failed(code) => code,
+                ProbeCleanupStatus::Failed { code, .. } => code,
             },
             cleanup,
         }),
@@ -130,15 +139,24 @@ fn cleanup_probe_prefix(
     run_id: &ProbeRunId,
 ) -> ProbeCleanupStatus {
     let prefix = keyspace.probe_prefix(run_id);
+    let delete_authorization = ProbeDeleteAuthorization::for_run(keyspace, run_id);
     let mut continuation: Option<ContinuationToken> = None;
     for _ in 0..MAX_CLEANUP_PAGES {
         let page = match object_store.list(&prefix, continuation.as_ref()) {
             Ok(page) => page,
-            Err(error) => return ProbeCleanupStatus::Failed(error.code),
+            Err(error) => {
+                return ProbeCleanupStatus::Failed {
+                    stage: ProbeStage::CleanupList,
+                    code: error.code,
+                }
+            }
         };
         for object in page.objects {
-            if let Err(error) = object_store.delete(&object.key) {
-                return ProbeCleanupStatus::Failed(error.code);
+            if let Err(error) = object_store.delete_probe(&delete_authorization, &object.key) {
+                return ProbeCleanupStatus::Failed {
+                    stage: ProbeStage::CleanupDelete,
+                    code: error.code,
+                };
             }
         }
         let Some(next) = page.next else {
@@ -146,13 +164,22 @@ fn cleanup_probe_prefix(
                 Ok(page) if page.objects.is_empty() && page.next.is_none() => {
                     ProbeCleanupStatus::Complete
                 }
-                Ok(_) => ProbeCleanupStatus::Failed(ObjectStoreErrorCode::InvalidResponse),
-                Err(error) => ProbeCleanupStatus::Failed(error.code),
+                Ok(_) => ProbeCleanupStatus::Failed {
+                    stage: ProbeStage::CleanupConfirm,
+                    code: ObjectStoreErrorCode::InvalidResponse,
+                },
+                Err(error) => ProbeCleanupStatus::Failed {
+                    stage: ProbeStage::CleanupConfirm,
+                    code: error.code,
+                },
             };
         };
         continuation = Some(next);
     }
-    ProbeCleanupStatus::Failed(ObjectStoreErrorCode::InvalidResponse)
+    ProbeCleanupStatus::Failed {
+        stage: ProbeStage::CleanupList,
+        code: ObjectStoreErrorCode::InvalidResponse,
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +236,28 @@ mod tests {
         assert_eq!(error.code, ObjectStoreErrorCode::RateLimited);
         assert_eq!(error.cleanup, ProbeCleanupStatus::Complete);
         assert!(store.operations().contains(&ObjectOperation::Delete));
+    }
+
+    #[test]
+    fn fake_probe_reports_cleanup_delete_failures_as_deletion_failures() {
+        let keyspace = target().keyspace(&BackupSetId::new());
+        let store = FakeObjectStore::new(keyspace.clone());
+        store.fail_next(
+            ObjectOperation::Delete,
+            ObjectStoreErrorCode::AuthorizationRejected,
+        );
+
+        let error = verify_object_store(&store, &keyspace).expect_err("cleanup delete failure");
+
+        assert_eq!(error.stage, ProbeStage::CleanupDelete);
+        assert_eq!(error.code, ObjectStoreErrorCode::AuthorizationRejected);
+        assert_eq!(
+            error.cleanup,
+            ProbeCleanupStatus::Failed {
+                stage: ProbeStage::CleanupDelete,
+                code: ObjectStoreErrorCode::AuthorizationRejected,
+            }
+        );
     }
 
     #[test]

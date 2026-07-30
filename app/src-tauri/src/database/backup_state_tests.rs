@@ -137,6 +137,25 @@ fn replacing_a_backup_set_durably_queues_keychain_cleanup() {
             .expect("credential cleanup"),
         vec![first.backup_set_id.clone()]
     );
+    assert!(matches!(
+        client.save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+            expected_revision: second.revision,
+            backup_set_id: first.backup_set_id.clone(),
+            replica_epoch_id: ReplicaEpochId::new(),
+            enabled: false,
+            target: target(R2Jurisdiction::Default, "kosh-local"),
+            now_ms: 25,
+        }),
+        Err(DatabaseError::OffsiteBackupSetPendingCredentialCleanup {
+            backup_set_id
+        }) if backup_set_id == first.backup_set_id.to_string()
+    ));
+    assert_eq!(
+        client
+            .load_offsite_backup_config()
+            .expect("unchanged configuration"),
+        Some(second.clone())
+    );
     client
         .complete_offsite_credential_cleanup(first.backup_set_id.clone())
         .expect("complete cleanup");
@@ -161,6 +180,33 @@ fn replacing_a_backup_set_durably_queues_keychain_cleanup() {
             .load_offsite_credential_cleanup()
             .expect("only retired second set"),
         vec![second.backup_set_id]
+    );
+}
+
+#[test]
+fn credential_cleanup_completion_is_idempotent_for_unqueued_sets() {
+    let root = TempDir::new().expect("temporary root");
+    let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+    let client = database.client();
+    let active = client
+        .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+            expected_revision: 0,
+            backup_set_id: BackupSetId::new(),
+            replica_epoch_id: ReplicaEpochId::new(),
+            enabled: false,
+            target: target(R2Jurisdiction::Default, "kosh-local"),
+            now_ms: 10,
+        })
+        .expect("active config");
+
+    client
+        .complete_offsite_credential_cleanup(active.backup_set_id.clone())
+        .expect("unqueued completion");
+    assert_eq!(
+        client
+            .load_offsite_backup_config()
+            .expect("active configuration"),
+        Some(active)
     );
 }
 

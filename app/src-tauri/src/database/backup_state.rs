@@ -81,6 +81,20 @@ pub(super) fn save(
     }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let current = load(&transaction)?;
+    let cleanup_pending = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM offsite_credential_cleanup
+            WHERE backup_set_id = ?1
+         )",
+        [input.backup_set_id.as_str()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if cleanup_pending {
+        return Err(DatabaseError::OffsiteBackupSetPendingCredentialCleanup {
+            backup_set_id: input.backup_set_id.to_string(),
+        });
+    }
     let retired_backup_set_id = current
         .as_ref()
         .filter(|config| config.backup_set_id != input.backup_set_id)
@@ -151,10 +165,6 @@ pub(super) fn save(
         }
     }
 
-    transaction.execute(
-        "DELETE FROM offsite_credential_cleanup WHERE backup_set_id = ?1",
-        [input.backup_set_id.as_str()],
-    )?;
     if let Some(retired_backup_set_id) = retired_backup_set_id {
         transaction.execute(
             "INSERT OR IGNORE INTO offsite_credential_cleanup(backup_set_id, created_at)
@@ -185,13 +195,42 @@ pub(super) fn load_credential_cleanup(connection: &Connection) -> Result<Vec<Bac
 }
 
 pub(super) fn complete_credential_cleanup(
-    connection: &Connection,
+    connection: &mut Connection,
     backup_set_id: &BackupSetId,
 ) -> Result<()> {
-    connection.execute(
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let pending = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM offsite_credential_cleanup
+            WHERE backup_set_id = ?1
+         )",
+        [backup_set_id.as_str()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !pending {
+        transaction.commit()?;
+        return Ok(());
+    }
+    let active = transaction
+        .query_row(
+            "SELECT backup_set_id
+             FROM offsite_backup_config
+             WHERE singleton_id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if active.as_deref() == Some(backup_set_id.as_str()) {
+        return Err(DatabaseError::OffsiteCredentialCleanupNotAuthorized {
+            backup_set_id: backup_set_id.to_string(),
+        });
+    }
+    transaction.execute(
         "DELETE FROM offsite_credential_cleanup WHERE backup_set_id = ?1",
         [backup_set_id.as_str()],
     )?;
+    transaction.commit()?;
     Ok(())
 }
 

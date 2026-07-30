@@ -54,6 +54,14 @@ pub enum DatabaseError {
     #[error("off-site backup configuration changed before this operation")]
     StaleOffsiteBackupConfig,
 
+    #[error(
+        "off-site backup set {backup_set_id} cannot be reused until its queued credential cleanup completes"
+    )]
+    OffsiteBackupSetPendingCredentialCleanup { backup_set_id: String },
+
+    #[error("credential cleanup for active off-site backup set {backup_set_id} is not authorized")]
+    OffsiteCredentialCleanupNotAuthorized { backup_set_id: String },
+
     #[error("{entity} {id} was not found")]
     NotFound { entity: &'static str, id: String },
 

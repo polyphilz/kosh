@@ -17,7 +17,8 @@ use rusty_s3::{actions::ListObjectsV2, Bucket, Credentials, S3Action, UrlStyle};
 use super::{
     credentials::R2Credentials,
     domain::{
-        ContentSha256, R2Keyspace, R2ListPrefix, R2ObjectKey, R2Target, OBJECT_FORMAT_VERSION,
+        ContentSha256, ProbeRunId, R2Keyspace, R2ListPrefix, R2ObjectKey, R2Target,
+        OBJECT_FORMAT_VERSION,
     },
 };
 
@@ -144,6 +145,29 @@ pub(crate) struct ListObjectsPage {
     pub(crate) next: Option<ContinuationToken>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ProbeDeleteAuthorization {
+    prefix: R2ListPrefix,
+}
+
+impl ProbeDeleteAuthorization {
+    pub(crate) fn for_run(keyspace: &R2Keyspace, run_id: &ProbeRunId) -> Self {
+        Self {
+            prefix: keyspace.probe_prefix(run_id),
+        }
+    }
+
+    fn authorize(&self, key: &R2ObjectKey) -> Result<(), ObjectStoreError> {
+        if key.as_str().starts_with(self.prefix.as_str()) {
+            Ok(())
+        } else {
+            Err(ObjectStoreError::new(
+                ObjectStoreErrorCode::DeletionNotAuthorized,
+            ))
+        }
+    }
+}
+
 pub(crate) trait ObjectStore: Send + Sync {
     fn head(&self, key: &R2ObjectKey) -> Result<Option<ObjectMetadata>, ObjectStoreError>;
     fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError>;
@@ -153,7 +177,11 @@ pub(crate) trait ObjectStore: Send + Sync {
         prefix: &R2ListPrefix,
         continuation: Option<&ContinuationToken>,
     ) -> Result<ListObjectsPage, ObjectStoreError>;
-    fn delete(&self, key: &R2ObjectKey) -> Result<(), ObjectStoreError>;
+    fn delete_probe(
+        &self,
+        authorization: &ProbeDeleteAuthorization,
+        key: &R2ObjectKey,
+    ) -> Result<(), ObjectStoreError>;
 }
 
 pub(crate) struct R2ObjectStore {
@@ -370,8 +398,13 @@ impl ObjectStore for R2ObjectStore {
         Ok(ListObjectsPage { objects, next })
     }
 
-    fn delete(&self, key: &R2ObjectKey) -> Result<(), ObjectStoreError> {
+    fn delete_probe(
+        &self,
+        authorization: &ProbeDeleteAuthorization,
+        key: &R2ObjectKey,
+    ) -> Result<(), ObjectStoreError> {
         self.validate_key(key)?;
+        authorization.authorize(key)?;
         let credentials = self.credentials.clone();
         let action = self.bucket.delete_object(Some(&credentials), key.as_str());
         let response = self.send(self.client.delete(action.sign(SIGNED_URL_LIFETIME)))?;
@@ -472,6 +505,7 @@ fn invalid_response() -> ObjectStoreError {
 pub(crate) enum ObjectStoreErrorCode {
     InvalidConfiguration,
     KeyOutsidePrefix,
+    DeletionNotAuthorized,
     Network,
     Timeout,
     AuthenticationRejected,
@@ -672,8 +706,13 @@ pub(crate) mod fake {
             })
         }
 
-        fn delete(&self, key: &R2ObjectKey) -> Result<(), ObjectStoreError> {
+        fn delete_probe(
+            &self,
+            authorization: &ProbeDeleteAuthorization,
+            key: &R2ObjectKey,
+        ) -> Result<(), ObjectStoreError> {
             self.validate_key(key)?;
+            authorization.authorize(key)?;
             let mut state = self.state.lock().expect("fake object store");
             Self::begin(&mut state, ObjectOperation::Delete)?;
             state.objects.remove(key.as_str());
@@ -702,7 +741,9 @@ mod tests {
     fn fake_enforces_conditions_and_all_object_operations() {
         let keyspace = target().keyspace(&BackupSetId::new());
         let store = FakeObjectStore::new(keyspace.clone());
-        let key = keyspace.identity();
+        let run_id = ProbeRunId::new();
+        let key = keyspace.probe_object(&run_id);
+        let delete_authorization = ProbeDeleteAuthorization::for_run(&keyspace, &run_id);
         let request = || PutObjectRequest {
             key: key.clone(),
             bytes: b"payload".to_vec(),
@@ -729,7 +770,9 @@ mod tests {
                 .len(),
             1
         );
-        store.delete(&key).expect("delete");
+        store
+            .delete_probe(&delete_authorization, &key)
+            .expect("delete");
         assert!(store.head(&key).expect("head after delete").is_none());
         assert_eq!(
             store.operations(),
@@ -743,6 +786,22 @@ mod tests {
                 ObjectOperation::Head,
             ]
         );
+    }
+
+    #[test]
+    fn probe_deletion_authorization_cannot_delete_non_probe_objects() {
+        let keyspace = target().keyspace(&BackupSetId::new());
+        let store = FakeObjectStore::new(keyspace.clone());
+        let run_id = ProbeRunId::new();
+        let authorization = ProbeDeleteAuthorization::for_run(&keyspace, &run_id);
+        let identity = keyspace.identity();
+        let media = keyspace.media(ContentSha256::from_bytes([0xab; 32]));
+
+        for (label, key) in [("identity", identity), ("media", media)] {
+            let error = store.delete_probe(&authorization, &key).expect_err(label);
+            assert_eq!(error.code, ObjectStoreErrorCode::DeletionNotAuthorized);
+        }
+        assert!(store.operations().is_empty());
     }
 
     #[test]

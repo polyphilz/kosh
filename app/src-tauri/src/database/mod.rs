@@ -307,7 +307,7 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(backup_state::complete_credential_cleanup(
-                    &main,
+                    &mut main,
                     &backup_set_id,
                 ));
             }
