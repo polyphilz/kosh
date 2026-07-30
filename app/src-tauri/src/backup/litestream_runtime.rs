@@ -2542,6 +2542,18 @@ mod tests {
             },
         )
         .expect("PID record");
+        let identity_deadline = Instant::now() + Duration::from_secs(1);
+        while !process_matches_record(
+            &read_pid_record(&runtime)
+                .expect("read PID record")
+                .expect("recorded Litestream fixture"),
+        ) {
+            assert!(
+                Instant::now() < identity_deadline,
+                "spawned Litestream fixture must expose its recorded process identity"
+            );
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
         let (reaped_tx, reaped_rx) = mpsc::sync_channel(1);
         let waiter = thread::spawn(move || {
             reaped_tx
