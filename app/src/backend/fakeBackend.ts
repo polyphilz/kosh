@@ -60,6 +60,7 @@ export const browserRuntimeProbe: RuntimeProbe = {
   nowMs: 1_785_201_600_000,
   requestId: "fixture-request-1",
   startupSmokeCanary: null,
+  startupSmokeCapture: false,
 };
 
 export class FakeBackend implements Backend {

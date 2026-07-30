@@ -57,8 +57,8 @@ before intentionally updating the reports:
 ```bash
 KOSH_EMBEDDING_MODEL_PATH=/path/to/v5-nano-retrieval-Q8_0.gguf \
 KOSH_LLAMA_SERVER_PATH=/path/to/llama-server \
-cargo run --manifest-path src-tauri/Cargo.toml --bin kosh-relevance -- \
-  hybrid-vectors
+cargo test --manifest-path src-tauri/Cargo.toml --test kosh-relevance -- \
+  --kosh-relevance-cli hybrid-vectors
 ```
 
 The generator rejects missing corpus/query coverage, non-normalized vectors,

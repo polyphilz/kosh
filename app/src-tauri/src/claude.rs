@@ -2019,15 +2019,36 @@ fn nonempty_bounded_text(bytes: &[u8], limit: usize) -> Option<String> {
 }
 
 fn discover_claude_binary() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let path = std::env::var_os("PATH");
+    discover_claude_binary_from(
+        home.as_deref(),
+        path.as_deref(),
+        &[
+            PathBuf::from("/opt/homebrew/bin/claude"),
+            PathBuf::from("/usr/local/bin/claude"),
+        ],
+        std::env::var_os("KOSH_CLAUDE_DISABLED").is_some_and(|value| value == "1"),
+    )
+}
+
+fn discover_claude_binary_from(
+    home: Option<&Path>,
+    path: Option<&std::ffi::OsStr>,
+    system_candidates: &[PathBuf],
+    explicitly_disabled: bool,
+) -> Option<PathBuf> {
+    if explicitly_disabled {
+        return None;
+    }
     let mut candidates = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = home {
         candidates.push(home.join(".local/bin/claude"));
         candidates.push(home.join(".claude/local/claude"));
     }
-    candidates.push(PathBuf::from("/opt/homebrew/bin/claude"));
-    candidates.push(PathBuf::from("/usr/local/bin/claude"));
-    if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(std::env::split_paths(&path).map(|directory| directory.join("claude")));
+    candidates.extend(system_candidates.iter().cloned());
+    if let Some(path) = path {
+        candidates.extend(std::env::split_paths(path).map(|directory| directory.join("claude")));
     }
     candidates.into_iter().find(|path| is_executable_file(path))
 }
@@ -2148,6 +2169,56 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
             .expect("make fake Claude CLI executable");
         path
+    }
+
+    #[test]
+    fn gui_discovery_finds_home_install_without_a_login_shell_path() {
+        let root = tempfile::tempdir().expect("temporary home");
+        let binary_directory = root.path().join(".local/bin");
+        fs::create_dir_all(&binary_directory).expect("home-local binary directory");
+        let binary = write_fake_cli(&binary_directory, "exit 0");
+
+        assert_eq!(
+            discover_claude_binary_from(Some(root.path()), Some("".as_ref()), &[], false),
+            Some(binary)
+        );
+    }
+
+    #[test]
+    fn gui_discovery_falls_back_to_standard_install_locations_before_path() {
+        let root = tempfile::tempdir().expect("temporary install roots");
+        let system_directory = root.path().join("opt/homebrew/bin");
+        let path_directory = root.path().join("login-shell/bin");
+        fs::create_dir_all(&system_directory).expect("standard binary directory");
+        fs::create_dir_all(&path_directory).expect("login-shell binary directory");
+        let system_binary = write_fake_cli(&system_directory, "exit 0");
+        let _path_binary = write_fake_cli(&path_directory, "exit 0");
+
+        assert_eq!(
+            discover_claude_binary_from(
+                None,
+                Some(path_directory.as_os_str()),
+                std::slice::from_ref(&system_binary),
+                false,
+            ),
+            Some(system_binary)
+        );
+    }
+
+    #[test]
+    fn gui_discovery_honors_explicit_disable_even_when_claude_is_installed() {
+        let root = tempfile::tempdir().expect("temporary install root");
+        let binary = write_fake_cli(root.path(), "exit 0");
+
+        assert_eq!(
+            discover_claude_binary_from(
+                None,
+                Some(root.path().as_os_str()),
+                std::slice::from_ref(&binary),
+                true,
+            ),
+            None
+        );
     }
 
     fn test_manager(binary: PathBuf, root: &TempDir, timeout: Duration) -> ClaudeProcessManager {

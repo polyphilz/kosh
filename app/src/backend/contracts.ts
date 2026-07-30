@@ -3,6 +3,7 @@ export interface RuntimeProbe {
   nowMs: number;
   requestId: string;
   startupSmokeCanary?: string | null;
+  startupSmokeCapture?: boolean;
 }
 
 export type SemanticRuntimePhase =

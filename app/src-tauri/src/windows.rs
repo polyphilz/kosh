@@ -9,6 +9,7 @@ use objc2_app_kit::{
 };
 use serde::Serialize;
 use tauri::{
+    image::Image,
     menu::{Menu, MenuBuilder},
     tray::TrayIconBuilder,
     utils::config::BackgroundThrottlingPolicy,
@@ -28,6 +29,7 @@ use crate::{
 const MAIN_LABEL: &str = "main";
 const QUICK_ADD_LABEL: &str = "quick-add";
 const TRAY_ID: &str = "kosh-tray";
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const QUICK_ADD_SHOWN_EVENT: &str = "kosh://quick-add-shown";
 const OPEN_SETTINGS_EVENT: &str = "kosh://open-settings";
 const SHORTCUT_SETTINGS_CHANGED_EVENT: &str = "kosh://shortcut-settings-changed";
@@ -298,11 +300,11 @@ fn tray_menu(app: &AppHandle, bindings: &[KeyboardBinding]) -> tauri::Result<Men
 
 fn install_tray(app: &App, bindings: &[KeyboardBinding]) -> tauri::Result<()> {
     let menu = tray_menu(app.handle(), bindings)?;
-    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+    TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .title("k")
         .tooltip("Kosh")
+        .icon(load_tray_icon()?)
         .icon_as_template(true)
         .on_menu_event(
             |app, event| match TrayAction::from_id(event.id().as_ref()) {
@@ -318,12 +320,18 @@ fn install_tray(app: &App, bindings: &[KeyboardBinding]) -> tauri::Result<()> {
                 Some(TrayAction::Quit) => request_quit(app),
                 None => {}
             },
-        );
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
-    tray.build(app)?;
+        )
+        .build(app)?;
     Ok(())
+}
+
+fn load_tray_icon() -> tauri::Result<Image<'static>> {
+    let icon = image::load_from_memory(TRAY_ICON_BYTES)
+        .map_err(|error| tauri::Error::InvalidIcon(std::io::Error::other(error)))?
+        .into_rgba8();
+    let width = icon.width();
+    let height = icon.height();
+    Ok(Image::new_owned(icon.into_raw(), width, height))
 }
 
 pub(crate) fn request_quit(app: &AppHandle) {
@@ -961,6 +969,19 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use super::*;
+
+    #[test]
+    fn tray_icon_is_a_transparent_monochrome_template() {
+        let icon = load_tray_icon().expect("tray icon should decode");
+        assert_eq!((icon.width(), icon.height()), (32, 32));
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 0));
+        assert!(icon.rgba().chunks_exact(4).any(|pixel| pixel[3] == 255));
+        assert!(icon
+            .rgba()
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 0)
+            .all(|pixel| pixel[..3] == [255, 255, 255]));
+    }
 
     fn bindings(quick_add: &str, main_window: &str) -> Vec<KeyboardBinding> {
         vec![

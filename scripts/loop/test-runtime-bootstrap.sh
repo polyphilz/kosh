@@ -85,8 +85,9 @@ jq -n \
   --argjson created "$created" \
   --arg passage "$passage_id" \
   '{
-    schemaVersion: 2,
+    schemaVersion: 4,
     headSha: $head,
+    buildHeadSha: $head,
     expectation: $expectation,
     dataDir: $data,
     processId: 123,
@@ -96,6 +97,7 @@ jq -n \
       {
         surface: "main",
         rendered: true,
+        captureCreated: $created,
         documentReadyState: "complete",
         rootChildCount: 1,
         frontendOrigin: "http://127.0.0.1:1420",
@@ -114,6 +116,7 @@ jq -n \
       {
         surface: "quick-add",
         rendered: true,
+        captureCreated: false,
         documentReadyState: "complete",
         rootChildCount: 1,
         frontendOrigin: "http://127.0.0.1:1420",

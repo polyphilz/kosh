@@ -137,6 +137,10 @@ cd app
 pnpm release:build
 ```
 
+See [docs/RELEASE.md](docs/RELEASE.md) for universal artifact verification,
+packaged-app acceptance, installation, rollback, and the notarization
+boundary.
+
 Repository policy and secret checks run from the repository root:
 
 ```bash

@@ -52,7 +52,9 @@ function AppShell() {
       <div className="app-shell">
         <aside className="app-sidebar">
           <Link aria-label="Kosh home" className="app-brand" to="/">
-            <span aria-hidden="true">K</span>
+            <span aria-hidden="true">
+              <img alt="" src="/icon.svg" />
+            </span>
             <strong>Kosh</strong>
           </Link>
           <nav aria-label="Primary">

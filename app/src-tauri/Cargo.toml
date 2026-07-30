@@ -5,10 +5,20 @@ description = "Capture loose knowledge and find the exact passage that matters"
 edition = "2021"
 rust-version = "1.97.0"
 default-run = "kosh"
+autobins = false
 
 [lib]
 name = "kosh_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "kosh"
+path = "src/main.rs"
+
+[[test]]
+name = "kosh-relevance"
+path = "tests/kosh_relevance_cli.rs"
+harness = false
 
 [features]
 test-support = ["tauri/test", "dep:tempfile"]

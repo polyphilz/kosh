@@ -49,6 +49,7 @@ fn main_window_invokes_runtime_probe_with_temporary_state() {
             now_ms: 1_785_201_600_000,
             request_id: "fixture-request-1".to_owned(),
             startup_smoke_canary: None,
+            startup_smoke_capture: false,
         }
     );
     assert!(!response.data_dir.contains("Application Support"));

@@ -1,3 +1,5 @@
+//! Non-harness Cargo test target used as Kosh's developer-only relevance CLI.
+
 use std::path::{Path, PathBuf};
 
 use kosh_lib::relevance::{
@@ -20,9 +22,27 @@ const DEFAULT_RESOURCE_DIR: &str = "src-tauri/resources";
 const DEFAULT_SCALE_OUTPUT: &str = ".data/relevance/scale-v1.json";
 const DEFAULT_LEXICAL_SCALE_OUTPUT: &str =
     ".data/relevance/reports/lexical-scale-v1.performance.json";
+const TEST_TARGET_CLI_MARKER: &str = "--kosh-relevance-cli";
 
 fn main() {
-    if let Err(error) = run(std::env::args().skip(1).collect()) {
+    let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if cfg!(test) {
+        if arguments.first().map(String::as_str) != Some(TEST_TARGET_CLI_MARKER) {
+            return;
+        }
+        arguments.remove(0);
+        let app_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri has an app parent");
+        if let Err(error) = std::env::set_current_dir(app_root) {
+            eprintln!(
+                "kosh-relevance: could not enter {}: {error}",
+                app_root.display()
+            );
+            std::process::exit(1);
+        }
+    }
+    if let Err(error) = run(arguments) {
         eprintln!("kosh-relevance: {error}");
         std::process::exit(1);
     }

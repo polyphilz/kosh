@@ -17,6 +17,7 @@ bash -n "${shell_scripts[@]}"
 scripts/check-secrets.sh
 scripts/test-secret-check.sh
 scripts/test-bundle-check.sh
+node app/scripts/test-release-source.mjs
 git diff --check
 git diff --cached --check
 if [[ -n "${KOSH_DIFF_BASE:-}" && ! "$KOSH_DIFF_BASE" =~ ^0+$ ]]; then

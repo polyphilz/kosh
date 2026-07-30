@@ -161,8 +161,9 @@ run_launch() {
     --arg data "$canonical_data" \
     '
       . as $launch
-      | .schemaVersion == 2
+      | .schemaVersion == 4
       and .headSha == $head
+      and .buildHeadSha == $head
       and .expectation == $expectation
       and .dataDir == $data
       and (.windows | sort) == ["main", "quick-add"]
@@ -171,6 +172,10 @@ run_launch() {
       and all(
         .webviews[];
         .rendered == true
+        and (
+          .captureCreated
+          == (.surface == "main" and $launch.canaryPreexisting == false)
+        )
         and .rootChildCount > 0
         and (.documentReadyState == "interactive" or .documentReadyState == "complete")
         and .frontendOrigin == "http://127.0.0.1:1420"
