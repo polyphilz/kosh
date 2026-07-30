@@ -1,5 +1,7 @@
 use std::{io, path::PathBuf};
 
+use crate::backup::domain::CheckpointErrorCode;
+
 #[derive(Debug, thiserror::Error)]
 pub enum DatabaseError {
     #[error("database I/O failed: {0}")]
@@ -53,6 +55,18 @@ pub enum DatabaseError {
 
     #[error("off-site backup configuration changed before this operation")]
     StaleOffsiteBackupConfig,
+
+    #[error("invalid off-site checkpoint: {0}")]
+    InvalidOffsiteCheckpoint(String),
+
+    #[error("off-site checkpoint changed before this operation")]
+    StaleOffsiteCheckpoint,
+
+    #[error("off-site checkpoint media is not completely uploaded")]
+    OffsiteCheckpointMediaIncomplete,
+
+    #[error("off-site checkpoint writer fence failed: {0:?}")]
+    OffsiteCheckpointFence(CheckpointErrorCode),
 
     #[error(
         "off-site backup set {backup_set_id} cannot be reused until its queued credential cleanup completes"

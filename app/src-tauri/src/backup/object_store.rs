@@ -696,6 +696,14 @@ pub(crate) mod fake {
                 .clone()
         }
 
+        pub(crate) fn clear_operations(&self) {
+            self.state
+                .lock()
+                .expect("fake object store")
+                .operations
+                .clear();
+        }
+
         fn validate_key(&self, key: &R2ObjectKey) -> Result<(), ObjectStoreError> {
             self.keyspace
                 .validate_returned_key(key.as_str())

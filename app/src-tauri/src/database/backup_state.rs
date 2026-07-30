@@ -69,6 +69,13 @@ pub(super) fn load_enabled(connection: &Connection) -> Result<Option<OffsiteBack
     Ok(load(connection)?.filter(|config| config.enabled))
 }
 
+pub(super) fn is_current_enabled(
+    connection: &Connection,
+    expected: &OffsiteBackupConfig,
+) -> Result<bool> {
+    Ok(load_enabled(connection)?.as_ref() == Some(expected))
+}
+
 pub(super) fn save(
     connection: &mut Connection,
     input: SaveOffsiteBackupConfigInput,

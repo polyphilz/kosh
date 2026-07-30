@@ -56,6 +56,17 @@ pub(crate) struct MediaBackupCoordinator {
     completed: Option<Mutex<Receiver<()>>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct MediaBackupWakeHandle {
+    control: Arc<CoordinatorControl>,
+}
+
+impl MediaBackupWakeHandle {
+    pub(crate) fn wake(&self) {
+        wake_control(&self.control);
+    }
+}
+
 impl MediaBackupCoordinator {
     pub(crate) fn start(
         client: DatabaseClient,
@@ -86,14 +97,23 @@ impl MediaBackupCoordinator {
     }
 
     pub(crate) fn wake(&self) {
-        let mut state = self
-            .control
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.generation = state.generation.wrapping_add(1);
-        self.control.changed.notify_one();
+        wake_control(&self.control);
     }
+
+    pub(crate) fn wake_handle(&self) -> MediaBackupWakeHandle {
+        MediaBackupWakeHandle {
+            control: Arc::clone(&self.control),
+        }
+    }
+}
+
+fn wake_control(control: &CoordinatorControl) {
+    let mut state = control
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.generation = state.generation.wrapping_add(1);
+    control.changed.notify_one();
 }
 
 impl Drop for MediaBackupCoordinator {

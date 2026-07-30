@@ -43,6 +43,8 @@ fn select_data_dir(
 fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        backup::checkpoint::checkpoint_backup_status,
+        backup::checkpoint::backup_now,
         claude::claude_setup_status,
         claude::claude_cli_defaults,
         claude::start_research_process,
@@ -118,6 +120,8 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
     // logic is covered by the platform unit tests in windows.rs.
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        backup::checkpoint::checkpoint_backup_status,
+        backup::checkpoint::backup_now,
         claude::claude_setup_status,
         claude::claude_cli_defaults,
         claude::start_research_process,

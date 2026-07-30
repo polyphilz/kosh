@@ -8,7 +8,10 @@ use std::sync::{
 use rusqlite::{params, Connection, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
-use crate::backup::domain::BackupSetId;
+use crate::backup::{
+    domain::{BackupSetId, CheckpointErrorCode, CheckpointId},
+    litestream::LitestreamTxid,
+};
 
 use super::{
     backup_media::{
@@ -30,6 +33,10 @@ use super::{
         PdfExtractionJob, PdfPageExtraction, PdfRecord, PdfStatusRecord,
     },
     migrations::MigrationHeads,
+    offsite_checkpoint::{
+        LocalCheckpointSync, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
+        PreparedOffsiteCheckpoint,
+    },
     passages::CitationResolution,
     research_runs::{
         AppendResearchEventWrite, CreateResearchRunWrite, ListResearchRunsInput, ResearchRunPage,
@@ -109,6 +116,10 @@ pub(super) enum WriterMessage {
         claim: OffsiteMediaUploadClaim,
         reply: SyncSender<Result<bool>>,
     },
+    AuthorizeOffsiteCheckpointRemoteOperation {
+        config: OffsiteBackupConfig,
+        reply: SyncSender<Result<bool>>,
+    },
     CompleteOffsiteMediaUpload {
         claim: OffsiteMediaUploadClaim,
         remote_version: String,
@@ -124,6 +135,47 @@ pub(super) enum WriterMessage {
     },
     OffsiteMediaUploadProgress {
         reply: SyncSender<Result<OffsiteMediaUploadProgress>>,
+    },
+    RetryFailedOffsiteMediaUploads {
+        now_ms: i64,
+        reply: SyncSender<Result<u64>>,
+    },
+    RequeueUploadedOffsiteMedia {
+        backup_set_id: BackupSetId,
+        sha256: crate::backup::domain::ContentSha256,
+        now_ms: i64,
+        reply: SyncSender<Result<bool>>,
+    },
+    PrepareOffsiteCheckpoint {
+        input: PrepareOffsiteCheckpointInput,
+        local_sync: Arc<dyn LocalCheckpointSync>,
+        reply: SyncSender<Result<PreparedOffsiteCheckpoint>>,
+    },
+    MarkOffsiteCheckpointFenced {
+        checkpoint_id: CheckpointId,
+        txid: LitestreamTxid,
+        reply: SyncSender<Result<()>>,
+    },
+    MarkOffsiteCheckpointReplicated {
+        checkpoint_id: CheckpointId,
+        reply: SyncSender<Result<()>>,
+    },
+    MarkOffsiteCheckpointPublished {
+        checkpoint_id: CheckpointId,
+        manifest_object_key: String,
+        reply: SyncSender<Result<()>>,
+    },
+    MarkOffsiteCheckpointFailed {
+        checkpoint_id: CheckpointId,
+        error_code: CheckpointErrorCode,
+        reply: SyncSender<Result<()>>,
+    },
+    FailIncompleteOffsiteCheckpoints {
+        error_code: CheckpointErrorCode,
+        reply: SyncSender<Result<u64>>,
+    },
+    LoadOffsiteCheckpointScheduleState {
+        reply: SyncSender<Result<OffsiteCheckpointScheduleState>>,
     },
     FullIntegrityCheck {
         reply: SyncSender<Result<()>>,
@@ -481,6 +533,31 @@ impl DatabaseClient {
         Ok(Some(operation()))
     }
 
+    pub(crate) fn with_current_offsite_checkpoint<T>(
+        &self,
+        config: &OffsiteBackupConfig,
+        operation: impl FnOnce() -> T,
+    ) -> Result<Option<T>> {
+        let _fence = self
+            .offsite_media_fence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::AuthorizeOffsiteCheckpointRemoteOperation {
+                config: config.clone(),
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        if !receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)??
+        {
+            return Ok(None);
+        }
+        Ok(Some(operation()))
+    }
+
     fn authorize_offsite_media_remote_write(
         &self,
         claim: &OffsiteMediaUploadClaim,
@@ -607,6 +684,149 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::OffsiteMediaUploadProgress { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn retry_failed_offsite_media_uploads(&self, now_ms: i64) -> Result<u64> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RetryFailedOffsiteMediaUploads { now_ms, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn requeue_uploaded_offsite_media(
+        &self,
+        backup_set_id: BackupSetId,
+        sha256: crate::backup::domain::ContentSha256,
+        now_ms: i64,
+    ) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RequeueUploadedOffsiteMedia {
+                backup_set_id,
+                sha256,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn prepare_offsite_checkpoint(
+        &self,
+        input: PrepareOffsiteCheckpointInput,
+        local_sync: Arc<dyn LocalCheckpointSync>,
+    ) -> Result<PreparedOffsiteCheckpoint> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::PrepareOffsiteCheckpoint {
+                input,
+                local_sync,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn mark_offsite_checkpoint_fenced(
+        &self,
+        checkpoint_id: CheckpointId,
+        txid: LitestreamTxid,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MarkOffsiteCheckpointFenced {
+                checkpoint_id,
+                txid,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn mark_offsite_checkpoint_replicated(
+        &self,
+        checkpoint_id: CheckpointId,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MarkOffsiteCheckpointReplicated {
+                checkpoint_id,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn mark_offsite_checkpoint_published(
+        &self,
+        checkpoint_id: CheckpointId,
+        manifest_object_key: String,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MarkOffsiteCheckpointPublished {
+                checkpoint_id,
+                manifest_object_key,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn mark_offsite_checkpoint_failed(
+        &self,
+        checkpoint_id: CheckpointId,
+        error_code: CheckpointErrorCode,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::MarkOffsiteCheckpointFailed {
+                checkpoint_id,
+                error_code,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn fail_incomplete_offsite_checkpoints(
+        &self,
+        error_code: CheckpointErrorCode,
+    ) -> Result<u64> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::FailIncompleteOffsiteCheckpoints { error_code, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_offsite_checkpoint_schedule_state(
+        &self,
+    ) -> Result<OffsiteCheckpointScheduleState> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadOffsiteCheckpointScheduleState { reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
