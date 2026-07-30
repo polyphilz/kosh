@@ -126,13 +126,26 @@ impl RuntimeState {
         resource_dir: Option<PathBuf>,
     ) -> crate::database::Result<Self> {
         let database = Database::initialize(DatabasePaths::new(&data_dir))?;
+        let media_limits = MediaLimits::default().validate()?;
+        let startup_now_ms = SystemClock.now_ms();
+        if let Err(error) = database
+            .client()
+            .interrupt_active_research_runs(startup_now_ms)
+        {
+            log::warn!("startup research interruption recovery could not complete: {error}");
+        }
+        if let Err(error) = database
+            .client()
+            .schedule_media_lifecycle_recovery(startup_now_ms, media_limits)
+        {
+            log::warn!("startup media lifecycle recovery could not complete: {error}");
+        }
         let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
         let image_ocr = start_optional_image_ocr(database.client());
         let pdf_extraction = start_optional_pdf_extraction(database.client());
         let media_backup = start_optional_media_backup(database.client(), database.paths().clone());
-        let media_limits = MediaLimits::default().validate()?;
         let state = Self {
             claude_processes: ClaudeProcessManager::production(&data_dir),
             data_dir,
@@ -151,20 +164,6 @@ impl RuntimeState {
             file_drop_consumers: Mutex::new(HashSet::new()),
             maintenance_gate: Arc::new(Mutex::new(())),
         };
-        if let Err(error) = state
-            .database
-            .client()
-            .interrupt_active_research_runs(state.clock.now_ms())
-        {
-            log::warn!("startup research interruption recovery could not complete: {error}");
-        }
-        if let Err(error) = state
-            .database
-            .client()
-            .schedule_media_lifecycle_recovery(state.clock.now_ms(), state.media_limits)
-        {
-            log::warn!("startup media lifecycle recovery could not be scheduled: {error}");
-        }
         if let Err(error) =
             crate::media::recover_staging_directory(&state.media_staging_directory())
         {

@@ -803,6 +803,73 @@ mod tests {
     }
 
     #[test]
+    fn retention_removal_waits_until_an_in_flight_remote_upload_finishes() {
+        let library = TestLibrary::new(b"retention-fenced media");
+        let client = library.database.client();
+        let claim = library.claim(100, 45);
+        let attachment_id = id(2);
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let store = Arc::new(BlockingStore {
+            inner: FakeObjectStore::new(library.keyspace.clone()),
+            started: started_sender,
+            release: Mutex::new(release_receiver),
+        });
+        let upload_client = client.clone();
+        let upload_paths = library.paths.clone();
+        let upload_store = Arc::clone(&store);
+        let upload = thread::spawn(move || {
+            process_claim(
+                &upload_client,
+                &upload_paths,
+                upload_store.as_ref(),
+                claim,
+                &|| 200,
+            )
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("upload reached network");
+
+        let recovery_client = client.clone();
+        let (recovered_sender, recovered_receiver) = mpsc::sync_channel(1);
+        let recovery = thread::spawn(move || {
+            let result = recovery_client
+                .schedule_media_lifecycle_recovery(100_000_000, MediaLimits::default());
+            recovered_sender
+                .send(result)
+                .expect("report lifecycle recovery");
+        });
+        assert!(
+            recovered_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "retention removal must wait for an in-flight remote operation"
+        );
+        assert!(
+            client
+                .diagnostics()
+                .expect("writer remains responsive")
+                .main_foreign_keys
+        );
+
+        release_sender.send(()).expect("release upload");
+        assert_eq!(
+            upload.join().expect("upload worker"),
+            MediaUploadDisposition::Uploaded
+        );
+        recovered_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("lifecycle recovery completed after upload")
+            .expect("recover expired media");
+        recovery.join().expect("recovery worker");
+        assert!(matches!(
+            client.load_media_payload(attachment_id, 100_000_000, None, 64),
+            Err(crate::database::DatabaseError::NotFound { .. })
+        ));
+    }
+
+    #[test]
     fn coordinator_shutdown_detaches_an_uninterruptible_worker_after_a_bounded_grace() {
         let control = Arc::new(CoordinatorControl::default());
         let (release_sender, release_receiver) = mpsc::sync_channel(1);

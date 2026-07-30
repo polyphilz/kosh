@@ -25,15 +25,18 @@ and completion transactions. A separate supervised thread:
    metadata, object-format version, and remote version;
 5. records `UPLOADED` only while the exact lease is still current.
 
-Configuration saves and remote media operations share a process-local fence.
-The worker revalidates its exact lease, enabled backup set, destination, and
-current retained-reference predicate while holding that fence before PUT. An
-orphaned running claim is deleted so a later reference can enqueue it afresh.
-Therefore a disable, retarget, or final-reference removal either finishes first
-and prevents the remote operation, or waits until an already started operation
-has finished. Shutdown signals the worker, waits only a bounded grace period,
-and detaches an uninterruptible HTTP request rather than stalling application
-exit through the network timeout.
+Configuration saves, retention-removing database work, and remote media
+operations share a process-local fence. The worker revalidates its exact lease,
+enabled backup set, destination, and current retained-reference predicate while
+holding that fence before PUT. An orphaned running claim is deleted so a later
+reference can enqueue it afresh. Therefore a disable, retarget, or
+final-reference removal either finishes first and prevents the remote operation,
+or waits until an already started PUT and verification have finished. Startup
+media lifecycle recovery completes before the upload coordinator is
+constructed, so expired draft media cannot race an initial upload claim.
+Shutdown signals the worker, waits only a bounded grace period, and detaches an
+uninterruptible HTTP request rather than stalling application exit through the
+network timeout.
 
 Network, authentication, rate-limit, and temporary local-read failures use a
 bounded exponential retry. Missing or corrupt local content and conflicting
@@ -57,6 +60,8 @@ The native suite proves:
 - disabling before a remote write fences the stale lease without touching R2;
 - final-reference removal cancels the running row before remote write;
 - disabling during a remote write waits for that operation's fence;
+- lifecycle retention removal waits for an in-flight remote write while the
+  database writer remains responsive;
 - an uninterruptible worker cannot extend shutdown beyond the grace period;
 - a deliberately blocked object-store upload leaves the authored database
   writer responsive.

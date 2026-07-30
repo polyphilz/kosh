@@ -690,19 +690,29 @@ fn writer_loop(
                 now_ms,
                 limits,
                 cursor,
+                reply,
             } => match media::recover_media_lifecycle_batch(
                 &mut main, &mut media, now_ms, limits, cursor,
             ) {
                 Ok(Some(cursor)) => {
-                    let _ = sender.send(WriterMessage::RecoverMediaLifecycleBatch {
+                    if let Err(error) = sender.send(WriterMessage::RecoverMediaLifecycleBatch {
                         now_ms,
                         limits,
                         cursor: Some(cursor),
-                    });
+                        reply,
+                    }) {
+                        let WriterMessage::RecoverMediaLifecycleBatch { reply, .. } = error.0
+                        else {
+                            unreachable!("failed message retained its variant");
+                        };
+                        let _ = reply.send(Err(DatabaseError::WriterUnavailable));
+                    }
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    let _ = reply.send(Ok(()));
+                }
                 Err(error) => {
-                    log::warn!("background media lifecycle recovery could not complete: {error}");
+                    let _ = reply.send(Err(error));
                 }
             },
             WriterMessage::CreateTidbit { write, reply } => {

@@ -273,6 +273,7 @@ pub(super) enum WriterMessage {
         now_ms: i64,
         limits: MediaLimits,
         cursor: Option<Vec<u8>>,
+        reply: SyncSender<Result<()>>,
     },
     CreateTidbit {
         write: CreateTidbitWrite,
@@ -885,6 +886,10 @@ impl DatabaseClient {
         now_ms: i64,
         limits: MediaLimits,
     ) -> Result<(Option<SafetySnapshotReport>, MediaMaintenanceReport)> {
+        let _fence = self
+            .offsite_media_fence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::MaintainMediaWithSafetySnapshot {
@@ -917,13 +922,22 @@ impl DatabaseClient {
         now_ms: i64,
         limits: MediaLimits,
     ) -> Result<()> {
+        let _fence = self
+            .offsite_media_fence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::RecoverMediaLifecycleBatch {
                 now_ms,
                 limits,
                 cursor: None,
+                reply,
             })
-            .map_err(|_| DatabaseError::WriterUnavailable)
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
     pub fn full_integrity_check(&self) -> Result<()> {
@@ -1239,6 +1253,10 @@ impl DatabaseClient {
     }
 
     pub(crate) fn purge_tidbit(&self, input: PurgeTidbitInput, now_ms: i64) -> Result<bool> {
+        let _fence = self
+            .offsite_media_fence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::PurgeTidbit {
