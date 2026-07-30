@@ -115,24 +115,32 @@ enum SupervisorSignal {
 pub(crate) struct LitestreamCheckpointHandle {
     shutdown: Arc<AtomicBool>,
     status: Arc<Mutex<RelationalBackupStatus>>,
-    control: Arc<Mutex<Option<Arc<dyn CheckpointControl>>>>,
+    control: Arc<Mutex<Option<ActiveCheckpointControl>>>,
+}
+
+#[derive(Clone)]
+struct ActiveCheckpointControl {
+    config: OffsiteBackupConfig,
+    control: Arc<dyn CheckpointControl>,
+}
+
+#[derive(Clone)]
+pub(crate) struct BoundLitestreamCheckpointHandle {
+    handle: LitestreamCheckpointHandle,
+    config: OffsiteBackupConfig,
 }
 
 impl LitestreamCheckpointHandle {
-    pub(crate) fn sync_remote(&self) -> Result<SyncResult, CheckpointErrorCode> {
-        self.request_sync(false, CHECKPOINT_REMOTE_SYNC_TIMEOUT)
-    }
-
-    pub(crate) fn sync_local_with_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<LitestreamTxid, CheckpointErrorCode> {
-        self.request_sync(true, timeout.min(CHECKPOINT_LOCAL_SYNC_TIMEOUT))
-            .map(|sync| sync.txid)
+    pub(crate) fn bind(&self, config: &OffsiteBackupConfig) -> BoundLitestreamCheckpointHandle {
+        BoundLitestreamCheckpointHandle {
+            handle: self.clone(),
+            config: config.clone(),
+        }
     }
 
     fn request_sync(
         &self,
+        config: &OffsiteBackupConfig,
         local_only: bool,
         timeout: Duration,
     ) -> Result<SyncResult, CheckpointErrorCode> {
@@ -154,7 +162,11 @@ impl LitestreamCheckpointHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
             .ok_or(CheckpointErrorCode::LitestreamUnavailable)?;
-        let expected_control = Arc::clone(&control);
+        if control.config != *config {
+            return Err(CheckpointErrorCode::LitestreamUnavailable);
+        }
+        let expected_control = Arc::clone(&control.control);
+        let operation_control = Arc::clone(&control.control);
         let (reply, receiver) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name(if local_only {
@@ -164,9 +176,9 @@ impl LitestreamCheckpointHandle {
             })
             .spawn(move || {
                 let result = if local_only {
-                    control.sync_local(operation_timeout)
+                    operation_control.sync_local(operation_timeout)
                 } else {
-                    control.sync_remote(operation_timeout)
+                    operation_control.sync_remote(operation_timeout)
                 }
                 .map_err(|failure| checkpoint_error(failure.code));
                 let _ = reply.send(result);
@@ -183,22 +195,45 @@ impl LitestreamCheckpointHandle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, &expected_control));
-        if control_is_current {
-            let mut status = lock_status(&self.status);
-            status.latest_local_txid = Some(result.txid.to_string());
-            if !local_only {
-                status.phase = RelationalBackupPhase::Running;
-                status.latest_remote_txid = result.replica_txid.map(|txid| txid.to_string());
-                status.last_remote_confirmed_at_ms = system_now_ms();
-                status.last_error_code = None;
-            }
+            .is_some_and(|current| {
+                current.config == *config && Arc::ptr_eq(&current.control, &expected_control)
+            });
+        if !control_is_current {
+            return Err(CheckpointErrorCode::LitestreamUnavailable);
+        }
+        let mut status = lock_status(&self.status);
+        status.latest_local_txid = Some(result.txid.to_string());
+        if !local_only {
+            status.phase = RelationalBackupPhase::Running;
+            status.latest_remote_txid = result.replica_txid.map(|txid| txid.to_string());
+            status.last_remote_confirmed_at_ms = system_now_ms();
+            status.last_error_code = None;
         }
         Ok(result)
     }
 }
 
-impl LocalCheckpointSync for LitestreamCheckpointHandle {
+impl BoundLitestreamCheckpointHandle {
+    pub(crate) fn sync_remote(&self) -> Result<SyncResult, CheckpointErrorCode> {
+        self.handle
+            .request_sync(&self.config, false, CHECKPOINT_REMOTE_SYNC_TIMEOUT)
+    }
+
+    pub(crate) fn sync_local_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<LitestreamTxid, CheckpointErrorCode> {
+        self.handle
+            .request_sync(
+                &self.config,
+                true,
+                timeout.min(CHECKPOINT_LOCAL_SYNC_TIMEOUT),
+            )
+            .map(|sync| sync.txid)
+    }
+}
+
+impl LocalCheckpointSync for BoundLitestreamCheckpointHandle {
     fn sync_local(&self) -> Result<LitestreamTxid, CheckpointErrorCode> {
         self.sync_local_with_timeout(CHECKPOINT_LOCAL_SYNC_TIMEOUT)
     }
@@ -264,7 +299,7 @@ pub(crate) struct LitestreamRuntimeService {
     shutdown: Arc<AtomicBool>,
     start_cancellation: Arc<StartCancellation>,
     status: Arc<Mutex<RelationalBackupStatus>>,
-    checkpoint_control: Arc<Mutex<Option<Arc<dyn CheckpointControl>>>>,
+    checkpoint_control: Arc<Mutex<Option<ActiveCheckpointControl>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -490,7 +525,7 @@ struct SupervisorShared {
     shutdown: Arc<AtomicBool>,
     start_cancellation: Arc<StartCancellation>,
     status: Arc<Mutex<RelationalBackupStatus>>,
-    checkpoint_control: Arc<Mutex<Option<Arc<dyn CheckpointControl>>>>,
+    checkpoint_control: Arc<Mutex<Option<ActiveCheckpointControl>>>,
 }
 
 fn supervisor_worker(
@@ -645,10 +680,13 @@ fn supervisor_worker(
             }
             match start_result {
                 Ok(started) => {
+                    let control = ActiveCheckpointControl {
+                        config: config.clone(),
+                        control: started.checkpoint_control(),
+                    };
                     *checkpoint_control
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                        Some(started.checkpoint_control());
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(control);
                     daemon = Some(started);
                     next_remote_status = Instant::now();
                 }
@@ -736,7 +774,7 @@ fn update_failure_status(
 
 fn shutdown_daemon(
     daemon: &mut Option<Box<dyn ManagedLitestream>>,
-    checkpoint_control: &Mutex<Option<Arc<dyn CheckpointControl>>>,
+    checkpoint_control: &Mutex<Option<ActiveCheckpointControl>>,
 ) {
     checkpoint_control
         .lock()
@@ -2474,17 +2512,32 @@ mod tests {
     #[test]
     fn checkpoint_handle_uses_only_the_current_daemon_control_and_closes_on_shutdown() {
         let (_root, database) = configured_database(true);
+        let config = database
+            .client()
+            .load_enabled_offsite_backup_config()
+            .expect("load config")
+            .expect("enabled config");
         let factory = FakeRuntimeFactory::new([StartPlan::Daemon {
             exited: Arc::new(AtomicBool::new(false)),
             sync: Ok(remote_sync()),
         }]);
         let service =
             LitestreamRuntimeService::start_with_parts(database.client(), factory, schedule());
-        let handle = service.checkpoint_handle();
+        let unbound_handle = service.checkpoint_handle();
+        let handle = unbound_handle.bind(&config);
         wait_until(Duration::from_secs(1), || {
             service.status().phase == RelationalBackupPhase::Running
         });
 
+        let mut mismatched_config = config.clone();
+        mismatched_config.revision += 1;
+        assert_eq!(
+            unbound_handle
+                .bind(&mismatched_config)
+                .sync_remote()
+                .expect_err("mismatched daemon lineage"),
+            CheckpointErrorCode::LitestreamUnavailable
+        );
         assert_eq!(
             handle
                 .sync_local_with_timeout(Duration::from_millis(1_500))
@@ -2520,11 +2573,21 @@ mod tests {
             }
         }
 
+        let (_root, database) = configured_database(true);
+        let config = database
+            .client()
+            .load_enabled_offsite_backup_config()
+            .expect("load config")
+            .expect("enabled config");
         let handle = LitestreamCheckpointHandle {
             shutdown: Arc::new(AtomicBool::new(false)),
             status: Arc::new(Mutex::new(RelationalBackupStatus::default())),
-            control: Arc::new(Mutex::new(Some(Arc::new(SlowControl)))),
-        };
+            control: Arc::new(Mutex::new(Some(ActiveCheckpointControl {
+                config: config.clone(),
+                control: Arc::new(SlowControl),
+            }))),
+        }
+        .bind(&config);
         assert_eq!(
             handle
                 .sync_local_with_timeout(Duration::from_millis(20))

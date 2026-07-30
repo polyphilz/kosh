@@ -65,6 +65,12 @@ impl Default for CheckpointBackupStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CheckpointWorkRevision {
+    config_revision: i64,
+    content_revision: u64,
+}
+
 enum CoordinatorSignal {
     BackupNow(mpsc::SyncSender<Result<(), CheckpointErrorCode>>),
     Shutdown,
@@ -218,7 +224,7 @@ fn run_scheduler(
     let writer_identity = MacOsInstallationWriterIdentity::new(data_root);
     let mut first_dirty: Option<Instant> = None;
     let mut last_change: Option<Instant> = None;
-    let mut observed_revision: Option<u64> = None;
+    let mut observed_revision: Option<CheckpointWorkRevision> = None;
     let mut retry_not_before = Instant::now();
 
     loop {
@@ -255,6 +261,10 @@ fn run_scheduler(
             }
         };
         update_schedule_status(&status, &schedule_state);
+        let work_revision = CheckpointWorkRevision {
+            config_revision: config.revision,
+            content_revision: schedule_state.content_revision,
+        };
         let already_published = schedule_state
             .last_published
             .as_ref()
@@ -267,17 +277,19 @@ fn run_scheduler(
         if already_published && manual_reply.is_none() {
             first_dirty = None;
             last_change = None;
-            observed_revision = Some(schedule_state.content_revision);
+            observed_revision = Some(work_revision);
             lock_status(&status).phase = CheckpointBackupPhase::Idle;
             continue;
         }
 
         let now = Instant::now();
-        if observed_revision != Some(schedule_state.content_revision) {
-            observed_revision = Some(schedule_state.content_revision);
-            first_dirty.get_or_insert(now);
-            last_change = Some(now);
-        }
+        observe_checkpoint_work(
+            &mut observed_revision,
+            &mut first_dirty,
+            &mut last_change,
+            work_revision,
+            now,
+        );
         let automatic_due = automatic_checkpoint_due(first_dirty, last_change, now);
         if manual_reply.is_none() && !automatic_due {
             lock_status(&status).phase = CheckpointBackupPhase::Idle;
@@ -372,6 +384,7 @@ fn create_checkpoint(
     let keyspace = config.target.keyspace(&config.backup_set_id);
     let store = R2ObjectStore::new(config.target.clone(), keyspace.clone(), &credentials)
         .map_err(|error| map_store_error(error.code))?;
+    let litestream = litestream.bind(config);
     let writer_id = writer_identity.load().map_err(map_writer_identity_error)?;
     with_current_remote(database, config, || {
         claim_remote_owner_cancellable(
@@ -494,6 +507,20 @@ fn automatic_checkpoint_due(
 ) -> bool {
     last_change.is_some_and(|changed| now.duration_since(changed) >= QUIET_DEBOUNCE)
         || first_dirty.is_some_and(|dirty| now.duration_since(dirty) >= MAX_DIRTY_DELAY)
+}
+
+fn observe_checkpoint_work(
+    observed: &mut Option<CheckpointWorkRevision>,
+    first_dirty: &mut Option<Instant>,
+    last_change: &mut Option<Instant>,
+    current: CheckpointWorkRevision,
+    now: Instant,
+) {
+    if *observed != Some(current) {
+        *observed = Some(current);
+        first_dirty.get_or_insert(now);
+        *last_change = Some(now);
+    }
 }
 
 fn replica_covers(
@@ -933,6 +960,40 @@ mod tests {
             Some(start + Duration::from_secs(299)),
             start + MAX_DIRTY_DELAY
         ));
+    }
+
+    #[test]
+    fn scheduler_rearms_when_only_the_backup_configuration_revision_changes() {
+        let start = Instant::now();
+        let mut observed = None;
+        let mut first_dirty = None;
+        let mut last_change = None;
+        observe_checkpoint_work(
+            &mut observed,
+            &mut first_dirty,
+            &mut last_change,
+            CheckpointWorkRevision {
+                config_revision: 1,
+                content_revision: 7,
+            },
+            start,
+        );
+        first_dirty = None;
+        last_change = None;
+
+        let changed_at = start + Duration::from_secs(1);
+        observe_checkpoint_work(
+            &mut observed,
+            &mut first_dirty,
+            &mut last_change,
+            CheckpointWorkRevision {
+                config_revision: 2,
+                content_revision: 7,
+            },
+            changed_at,
+        );
+        assert_eq!(first_dirty, Some(changed_at));
+        assert_eq!(last_change, Some(changed_at));
     }
 
     #[test]

@@ -15,8 +15,10 @@ Kosh publishes a checkpoint only after all of these ordered facts hold:
    requires every retained source and preview hash to be `UPLOADED`, and
    commits a `PREPARED` row;
 2. the writer stays occupied while a bounded local-only Litestream control
-   request returns the exact TXID containing that row, preventing a later
-   transaction from slipping through the fence;
+   request bound to the daemon's exact configuration revision, target,
+   backup-set lineage, and replica epoch returns the exact TXID containing that
+   row, preventing either a later transaction or a stale daemon generation from
+   slipping through the fence;
 3. a bounded remote Litestream sync reports a replica TXID greater than or
    equal to that fenced TXID;
 4. Kosh heads every captured immutable media hash and verifies byte length,
@@ -47,11 +49,12 @@ last successfully published checkpoint.
 The background coordinator remains inert when backup is disabled. A changed
 content revision is checkpointed after 60 seconds without another mutation,
 or after five minutes of continuous mutation. Failed automatic attempts wait
-at least 30 seconds before retrying. The backend `backup_now` command bypasses
-the debounce, releases permanently failed media rows into the retry queue,
-wakes the media worker, and returns a bounded typed result. Relational,
-media-upload, and complete-checkpoint status remain separate and contain no
-credentials or raw remote errors.
+at least 30 seconds before retrying. A configuration revision change re-arms
+the same schedule even when authored content is unchanged. The backend
+`backup_now` command bypasses the debounce, releases permanently failed media
+rows into the retry queue, wakes the media worker, and returns a bounded typed
+result. Relational, media-upload, and complete-checkpoint status remain
+separate and contain no credentials or raw remote errors.
 
 The Litestream checkpoint handle references only the supervisor's current
 daemon generation. Reload, crash, disable, and shutdown clear that control
@@ -77,6 +80,10 @@ The native suite proves:
 - all media HEAD operations precede the immutable manifest PUT and exact GET;
 - backup configuration changes wait for an in-flight remote operation, revoke
   subsequent operations, and prevent a stale revision from becoming published;
+- local and remote checkpoint syncs reject a Litestream daemon from any other
+  configuration revision or lineage;
+- replacing a backup set does not reinterpret historical checkpoint facts
+  through the new set's upload queue, while still scheduling a new checkpoint;
 - identical manifest replay is idempotent while different bytes fail closed;
 - missing media and manifest readback failures never publish;
 - checkpoint controls close with their daemon generation and enforce the

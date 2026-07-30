@@ -58,7 +58,6 @@ pub(crate) struct PublishedOffsiteCheckpoint {
     pub(crate) kosh_version: String,
     pub(crate) main_migration_head: u32,
     pub(crate) media_migration_head: u32,
-    pub(crate) referenced_media: Vec<CheckpointMediaReference>,
     pub(crate) referenced_hash_count: u64,
     pub(crate) referenced_total_bytes: u64,
     pub(crate) referenced_hash_set_sha256: ContentSha256,
@@ -326,30 +325,14 @@ pub(super) fn schedule_state(connection: &Connection) -> Result<OffsiteCheckpoin
                 manifest_object_key,
                 created_at_ms,
             )| {
-                let backup_set_id = BackupSetId::parse(backup_set_id).map_err(invalid_domain)?;
                 let checkpoint_revision =
                     non_negative_u64(checkpoint_revision, "content revision")?;
                 let hash_count = non_negative_u64(hash_count, "media reference count")?;
                 let total_bytes = non_negative_u64(total_bytes, "media byte total")?;
                 let hash_set = parse_sha256(hash_set)?;
-                let referenced_media = if checkpoint_revision == content_revision {
-                    let references = load_references(connection, &backup_set_id, false)?;
-                    if u64::try_from(references.len()).ok() != Some(hash_count)
-                        || references.iter().map(|item| item.byte_length).sum::<u64>()
-                            != total_bytes
-                        || hash_reference_set(&references) != hash_set
-                    {
-                        return Err(invalid(
-                            "published checkpoint media facts do not match current references",
-                        ));
-                    }
-                    references
-                } else {
-                    Vec::new()
-                };
-                Ok(PublishedOffsiteCheckpoint {
+                Ok::<PublishedOffsiteCheckpoint, DatabaseError>(PublishedOffsiteCheckpoint {
                     checkpoint_id: CheckpointId::parse(checkpoint_id).map_err(invalid_domain)?,
-                    backup_set_id,
+                    backup_set_id: BackupSetId::parse(backup_set_id).map_err(invalid_domain)?,
                     replica_epoch_id: ReplicaEpochId::parse(replica_epoch_id)
                         .map_err(invalid_domain)?,
                     config_revision,
@@ -357,7 +340,6 @@ pub(super) fn schedule_state(connection: &Connection) -> Result<OffsiteCheckpoin
                     kosh_version,
                     main_migration_head: positive_u32(main_head, "main migration head")?,
                     media_migration_head: positive_u32(media_head, "media migration head")?,
-                    referenced_media,
                     referenced_hash_count: hash_count,
                     referenced_total_bytes: total_bytes,
                     referenced_hash_set_sha256: hash_set,

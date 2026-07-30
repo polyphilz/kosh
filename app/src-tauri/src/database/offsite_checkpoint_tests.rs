@@ -1,4 +1,5 @@
 use std::{
+    io::Cursor,
     path::PathBuf,
     sync::{
         mpsc::{self, Receiver},
@@ -21,8 +22,12 @@ use crate::backup::{
 
 use super::{
     backup_state::SaveOffsiteBackupConfigInput, settings::SetShortcutSettingsInput, Database,
-    DatabaseError, DatabasePaths, LocalCheckpointSync, OffsiteBackupConfig,
-    PrepareOffsiteCheckpointInput,
+    DatabaseError, DatabasePaths, LocalCheckpointSync, MediaLimits, OffsiteBackupConfig,
+    PrepareOffsiteCheckpointInput, SaveDraftInput,
+};
+use super::{
+    drafts::SaveDraftWrite,
+    media::{IngestAttachmentMetadata, StagedAttachment},
 };
 
 struct ImmediateSync;
@@ -389,4 +394,74 @@ fn publication_requires_the_original_configuration_revision_to_remain_enabled() 
         client.mark_offsite_checkpoint_published(checkpoint_id, "kosh/v1/test/revoked.json".into()),
         Err(DatabaseError::StaleOffsiteCheckpoint)
     ));
+}
+
+#[test]
+fn retired_upload_rows_do_not_invalidate_historical_checkpoint_facts() {
+    let (root, database, config) = enabled_database();
+    let client = database.client();
+    let draft_id = "019f547b-6200-7000-8000-000000009001";
+    client
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: String::new(),
+                sources: Vec::new(),
+            },
+            now_ms: 2,
+            draft_id: draft_id.into(),
+            media_limits: MediaLimits::default(),
+        })
+        .expect("save draft");
+    let staging = root.path().join("staging");
+    let staged = StagedAttachment::from_reader(
+        Cursor::new(b"historical checkpoint media"),
+        &staging,
+        "019f547b-6200-7000-8000-000000009002",
+        MediaLimits::default().max_attachment_bytes,
+    )
+    .expect("stage attachment");
+    client
+        .ingest_attachment(staged.write(IngestAttachmentMetadata {
+            attachment_id: "019f547b-6200-7000-8000-000000009003".into(),
+            ingest_lease_id: "019f547b-6200-7000-8000-000000009004".into(),
+            draft_id: draft_id.into(),
+            display_filename: "history.bin".into(),
+            media_type: "application/octet-stream".into(),
+            now_ms: 3,
+            limits: MediaLimits::default(),
+        }))
+        .expect("ingest attachment");
+    let upload = client
+        .claim_next_offsite_media_upload(4, "019f547b-6200-7000-8000-000000009005".into())
+        .expect("claim upload")
+        .expect("pending upload");
+    assert!(client
+        .complete_offsite_media_upload(upload, "\"remote-version\"".into(), 5)
+        .expect("complete upload"));
+    let published = publish(&database, &config, 6);
+
+    client
+        .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+            expected_revision: config.revision,
+            backup_set_id: BackupSetId::new(),
+            replica_epoch_id: ReplicaEpochId::new(),
+            enabled: true,
+            target: config.target,
+            now_ms: 7,
+        })
+        .expect("replace backup set");
+
+    assert_eq!(
+        client
+            .load_offsite_checkpoint_schedule_state()
+            .expect("historical checkpoint remains readable")
+            .last_published
+            .expect("published checkpoint")
+            .checkpoint_id,
+        published
+    );
 }
