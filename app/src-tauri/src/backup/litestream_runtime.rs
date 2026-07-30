@@ -620,7 +620,12 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
         })?;
         let binary =
             VerifiedLitestreamBinary::resolve(resource_dir).map_err(map_litestream_start_error)?;
-        sweep_stale_runtime(&ownership, &runtime, binary.sha256(), &self.database_path)
+        sweep_stale_runtime(
+            &ownership,
+            &runtime,
+            binary.trusted_cleanup_sha256s(),
+            &self.database_path,
+        )
     }
 
     fn start(
@@ -640,7 +645,12 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
             LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
         runtime.prepare().map_err(map_litestream_start_error)?;
         let ownership = acquire_runtime_ownership(&runtime)?;
-        sweep_stale_runtime(&ownership, &runtime, binary.sha256(), &self.database_path)?;
+        sweep_stale_runtime(
+            &ownership,
+            &runtime,
+            binary.trusted_cleanup_sha256s(),
+            &self.database_path,
+        )?;
 
         let credentials = self
             .credentials
@@ -1189,7 +1199,7 @@ fn read_pid_record(
 fn sweep_stale_runtime(
     _ownership: &LitestreamRuntimeOwnership,
     runtime: &LitestreamRuntimePaths,
-    expected_binary_sha256: &str,
+    trusted_binary_sha256s: &[String],
     expected_database_path: &Path,
 ) -> Result<(), RuntimeFailure> {
     let record = read_pid_record(runtime)
@@ -1209,7 +1219,7 @@ fn sweep_stale_runtime(
     };
     let expected_database = utf8_path(expected_database_path)
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false))?;
-    if record.executable_sha256 != expected_binary_sha256
+    if !trusted_binary_sha256s.contains(&record.executable_sha256)
         || record.config != runtime.config().to_string_lossy()
         || record.socket != runtime.socket().to_string_lossy()
         || record.database != expected_database
@@ -2243,7 +2253,7 @@ mod tests {
         );
 
         let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
-        sweep_stale_runtime(&ownership, &runtime, &sha256_hex(b"binary"), &database)
+        sweep_stale_runtime(&ownership, &runtime, &[sha256_hex(b"binary")], &database)
             .expect("sweep dead owned runtime");
         assert!(!runtime.pid().exists());
     }
@@ -2501,7 +2511,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stale_daemon_is_reaped_after_its_verified_binary_relocates() {
+    fn stale_daemon_is_reaped_after_its_verified_binary_upgrades_and_relocates() {
         use std::os::unix::{fs::PermissionsExt, process::CommandExt};
 
         let root = tempfile::tempdir().expect("temporary relocated app root");
@@ -2571,7 +2581,7 @@ mod tests {
             sweep_stale_runtime(
                 &ownership,
                 &runtime,
-                &sha256_hex(b"different binary"),
+                &[sha256_hex(b"different binary")],
                 &database,
             ),
             Err(RuntimeFailure::new(
@@ -2581,8 +2591,13 @@ mod tests {
             "a different pinned binary must not authorize process termination"
         );
         assert!(process_exists(pid));
-        sweep_stale_runtime(&ownership, &runtime, &sha256_hex(script), &database)
-            .expect("reap relocated pinned daemon");
+        sweep_stale_runtime(
+            &ownership,
+            &runtime,
+            &[sha256_hex(b"new binary"), sha256_hex(script)],
+            &database,
+        )
+        .expect("reap relocated previously pinned daemon");
 
         assert!(!runtime.pid().exists());
         reaped_rx
@@ -2605,7 +2620,7 @@ mod tests {
             sweep_stale_runtime(
                 &ownership,
                 &runtime,
-                &sha256_hex(b"binary"),
+                &[sha256_hex(b"binary")],
                 &root.path().join("kosh.sqlite3"),
             ),
             Err(RuntimeFailure::new(
@@ -2632,7 +2647,7 @@ mod tests {
             sweep_stale_runtime(
                 &ownership,
                 &runtime,
-                &sha256_hex(b"binary"),
+                &[sha256_hex(b"binary")],
                 &root.path().join("kosh.sqlite3"),
             ),
             Err(RuntimeFailure::new(

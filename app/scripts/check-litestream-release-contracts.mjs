@@ -31,6 +31,11 @@ assertEqual(pin.target.architectures, ["arm64", "x86_64"], "Litestream architect
 assertEqual(pin.target.minimumSystemVersion, "14.0", "packaged minimum macOS");
 assertEqual(pin.binary.bundlePath, "bin/litestream", "Litestream bundle path");
 assertEqual(
+  pin.binary.trustedCleanupSha256s,
+  ["c535829126d7bb8f3e8c2e7a4f9e3507c63dad1ed91815824aeabf9a5217760b"],
+  "append-only trusted Litestream cleanup pins",
+);
+assertEqual(
   pin.binary.codeSignatureIdentifier,
   undefined,
   "signature identifier must be scoped to the universal pin",

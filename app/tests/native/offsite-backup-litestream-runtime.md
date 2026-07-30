@@ -73,7 +73,10 @@ deleted. Failed stale-ownership inspection remains visible and retries with
 capped backoff even while backup is disabled; `OFF` is reported only after
 ownership is resolved. The runtime-generation lock prevents a replacement
 Kosh instance from publishing ownership until both exiting-generation
-artifacts are gone.
+artifacts are gone. Cleanup accepts only digests in the embedded, bounded,
+append-only trusted-cleanup registry. Each release retains every prior
+Litestream pin in that registry, so an upgraded or relocated app can reap its
+genuine old daemon without trusting a digest supplied only by the PID record.
 
 ## Executable evidence
 
@@ -100,8 +103,9 @@ The focused native suite proves:
   are gone, then permits a replacement daemon to publish its own artifacts;
 - cleanup retains the PID ownership record when socket removal fails and
   removes it only after a later successful retry;
-- a matching pinned binary digest authorizes cleanup after the app bundle
-  relocates, while a mismatched digest fails closed without killing the child;
+- a current or previously trusted pinned binary digest authorizes cleanup after
+  the app upgrades or relocates, while a digest outside the embedded registry
+  fails closed without killing the child;
 - the first writer conditionally claims R2, the same installation reclaims
   idempotently or advances its epoch with an ETag guard, and a second
   installation using copied configuration and R2 keys is rejected before

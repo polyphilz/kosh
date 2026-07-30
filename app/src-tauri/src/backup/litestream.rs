@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     fmt,
     fs::{self, File, OpenOptions},
@@ -25,6 +26,7 @@ const MAX_CONTROL_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESTORE_FILES: usize = 100_000;
 const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
+const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(crate) fn configure_credentials_environment(
@@ -103,6 +105,7 @@ struct SourceManifest {
 struct BinaryManifest {
     bundle_path: String,
     universal: BinaryPin,
+    trusted_cleanup_sha256s: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -149,6 +152,7 @@ struct StagedBinary {
 pub struct VerifiedLitestreamBinary {
     path: PathBuf,
     sha256: String,
+    trusted_cleanup_sha256s: Vec<String>,
 }
 
 impl VerifiedLitestreamBinary {
@@ -160,6 +164,11 @@ impl VerifiedLitestreamBinary {
     #[must_use]
     pub fn sha256(&self) -> &str {
         &self.sha256
+    }
+
+    #[must_use]
+    pub fn trusted_cleanup_sha256s(&self) -> &[String] {
+        &self.trusted_cleanup_sha256s
     }
 
     pub fn resolve(resource_dir: &Path) -> Result<Self, LitestreamError> {
@@ -182,6 +191,7 @@ impl VerifiedLitestreamBinary {
         Ok(Self {
             path,
             sha256: manifest.binary.universal.sha256,
+            trusted_cleanup_sha256s: manifest.binary.trusted_cleanup_sha256s,
         })
     }
 
@@ -193,6 +203,7 @@ impl VerifiedLitestreamBinary {
         Ok(Self {
             path: path.to_owned(),
             sha256: manifest.binary.universal.sha256,
+            trusted_cleanup_sha256s: manifest.binary.trusted_cleanup_sha256s,
         })
     }
 }
@@ -203,6 +214,8 @@ fn embedded_manifest() -> Result<SourceManifest, LitestreamError> {
 
 fn validate_protocol_manifest(manifest: &SourceManifest) -> Result<(), LitestreamError> {
     let universal = &manifest.binary.universal;
+    let trusted_cleanup_sha256s = &manifest.binary.trusted_cleanup_sha256s;
+    let unique_cleanup_sha256s = trusted_cleanup_sha256s.iter().collect::<BTreeSet<_>>();
     if manifest.component != "litestream"
         || !manifest.verification.exact_txid_fence_passed
         || !manifest
@@ -222,6 +235,16 @@ fn validate_protocol_manifest(manifest: &SourceManifest) -> Result<(), Litestrea
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || universal.size == 0
         || universal.code_signature_identifier != "com.rohan.kosh.litestream"
+        || trusted_cleanup_sha256s.is_empty()
+        || trusted_cleanup_sha256s.len() > MAX_TRUSTED_CLEANUP_PINS
+        || unique_cleanup_sha256s.len() != trusted_cleanup_sha256s.len()
+        || !trusted_cleanup_sha256s.contains(&universal.sha256)
+        || trusted_cleanup_sha256s.iter().any(|sha256| {
+            sha256.len() != 64
+                || !sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
     {
         return Err(LitestreamError::UnsafeProtocolPin);
     }
@@ -1349,6 +1372,41 @@ mod tests {
     fn embedded_manifest_records_the_verified_protocol() {
         let manifest = embedded_manifest().expect("embedded manifest");
         validate_protocol_manifest(&manifest).expect("safe protocol manifest");
+    }
+
+    #[test]
+    fn cleanup_pin_registry_accepts_prior_releases_and_rejects_unsafe_sets() {
+        let manifest = embedded_manifest().expect("embedded manifest");
+        let current_sha256 = manifest.binary.universal.sha256.clone();
+        assert_eq!(
+            manifest.binary.trusted_cleanup_sha256s,
+            vec![current_sha256.clone()],
+            "the first release starts the append-only cleanup registry"
+        );
+
+        let mut upgraded = manifest.clone();
+        upgraded
+            .binary
+            .trusted_cleanup_sha256s
+            .insert(0, "0".repeat(64));
+        validate_protocol_manifest(&upgraded).expect("prior and current pins");
+
+        let mut missing_current = manifest.clone();
+        missing_current.binary.trusted_cleanup_sha256s = vec!["0".repeat(64)];
+        assert!(matches!(
+            validate_protocol_manifest(&missing_current),
+            Err(LitestreamError::UnsafeProtocolPin)
+        ));
+
+        let mut duplicate = manifest.clone();
+        duplicate
+            .binary
+            .trusted_cleanup_sha256s
+            .push(current_sha256);
+        assert!(matches!(
+            validate_protocol_manifest(&duplicate),
+            Err(LitestreamError::UnsafeProtocolPin)
+        ));
     }
 
     #[test]
