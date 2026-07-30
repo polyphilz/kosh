@@ -331,25 +331,38 @@ impl LitestreamRuntimePaths {
     }
 
     pub fn prepare(&self) -> Result<(), LitestreamError> {
-        fs::create_dir_all(&self.directory).map_err(LitestreamError::PrepareRuntime)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.directory, fs::Permissions::from_mode(0o700))
-                .map_err(LitestreamError::PrepareRuntime)?;
-        }
+        let run_directory = self
+            .directory
+            .parent()
+            .ok_or_else(|| {
+                LitestreamError::PrepareRuntime(std::io::Error::other(
+                    "Litestream runtime has no run directory",
+                ))
+            })?
+            .to_owned();
+        let data_root = run_directory.parent().ok_or_else(|| {
+            LitestreamError::PrepareRuntime(std::io::Error::other(
+                "Litestream runtime has no data root",
+            ))
+        })?;
+        fs::create_dir_all(data_root).map_err(LitestreamError::PrepareRuntime)?;
+        prepare_private_runtime_directory(&run_directory)
+            .and_then(|()| prepare_private_runtime_directory(&self.directory))
+            .map_err(LitestreamError::PrepareRuntime)?;
         Ok(())
     }
 
     pub fn write_config(&self, config: &str) -> Result<(), LitestreamError> {
         self.prepare()?;
+        reject_symlink_or_non_file(&self.config).map_err(LitestreamError::WriteConfig)?;
         let temporary = self.directory.join("ls.yml.tmp");
+        remove_regular_temporary(&temporary).map_err(LitestreamError::WriteConfig)?;
         let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
+        options.create_new(true).write(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
         let mut file = options
             .open(&temporary)
@@ -360,11 +373,58 @@ impl LitestreamRuntimePaths {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+            file.set_permissions(fs::Permissions::from_mode(0o600))
                 .map_err(LitestreamError::WriteConfig)?;
         }
         fs::rename(&temporary, &self.config).map_err(LitestreamError::WriteConfig)?;
+        File::open(&self.directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(LitestreamError::WriteConfig)?;
         Ok(())
+    }
+}
+
+fn prepare_private_runtime_directory(path: &Path) -> std::io::Result<()> {
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::other(
+            "Litestream runtime directory is not a real directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn reject_symlink_or_non_file(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => Ok(()),
+        Ok(_) => Err(std::io::Error::other(
+            "Litestream runtime file is not a regular file",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_regular_temporary(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+            fs::remove_file(path)
+        }
+        Ok(_) => Err(std::io::Error::other(
+            "Litestream temporary file is not a regular file",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -901,7 +961,7 @@ impl<E: CommandExecutor> LitestreamControl for CommandLitestreamControl<E> {
 #[cfg(test)]
 mod tests {
     use std::{
-        os::unix::fs::PermissionsExt,
+        os::unix::fs::{symlink, PermissionsExt},
         sync::{Arc, Mutex},
     };
 
@@ -1146,6 +1206,37 @@ mod tests {
             LitestreamRuntimePaths::new(&too_long),
             Err(LitestreamError::ControlSocketPathTooLong)
         ));
+    }
+
+    #[test]
+    fn config_writes_reject_symlinked_runtime_paths_without_touching_targets() {
+        let directory = tempfile::tempdir().expect("data root");
+        let runtime = LitestreamRuntimePaths::new(directory.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        let target = directory.path().join("must-not-change");
+        fs::write(&target, b"retained").expect("symlink target");
+        symlink(&target, runtime.directory().join("ls.yml.tmp")).expect("temporary symlink");
+
+        assert!(matches!(
+            runtime.write_config("unsafe: false\n"),
+            Err(LitestreamError::WriteConfig(_))
+        ));
+        assert_eq!(fs::read(&target).expect("unchanged target"), b"retained");
+        assert!(fs::symlink_metadata(runtime.directory().join("ls.yml.tmp"))
+            .expect("rejected symlink")
+            .file_type()
+            .is_symlink());
+
+        fs::remove_file(runtime.directory().join("ls.yml.tmp")).expect("remove test symlink");
+        fs::remove_dir_all(directory.path().join("run")).expect("remove runtime");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).expect("outside directory");
+        symlink(&outside, directory.path().join("run")).expect("run-directory symlink");
+        assert!(matches!(
+            runtime.prepare(),
+            Err(LitestreamError::PrepareRuntime(_))
+        ));
+        assert!(!outside.join("backup").exists());
     }
 
     #[test]

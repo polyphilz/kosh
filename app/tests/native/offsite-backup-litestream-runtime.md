@@ -11,9 +11,10 @@ or contact R2.
 For an enabled configuration the supervisor:
 
 1. verifies the bundled universal Litestream bytes and release manifest;
-2. creates `run/backup` with mode `0700`;
-3. atomically writes a mode-`0600` fixed-protocol configuration containing
-   environment-variable references rather than credential values;
+2. creates real, non-symlinked `run/backup` directories with mode `0700`;
+3. atomically writes a mode-`0600` fixed-protocol configuration through a
+   create-new, no-follow temporary file containing environment-variable
+   references rather than credential values;
 4. loads the active backup-set credential from macOS Keychain into zeroizing
    process memory;
 5. launches Kosh's inert Litestream activation helper with an otherwise empty
@@ -74,6 +75,10 @@ The focused native suite proves:
   parent-pipe EOF without executing Litestream;
 - disabled configuration preserves and retries stale-sweep failures until
   recovery;
+- unreadable runtime residue fails closed and remains on the stale-sweep retry
+  path;
+- config and PID-record atomic writes reject symlinked temporary files without
+  touching their targets;
 - application exit persists the Claude terminal event and closes the sole
   SQLite writer before the final Litestream sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;

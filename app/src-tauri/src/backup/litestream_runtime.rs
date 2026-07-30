@@ -596,9 +596,7 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
     fn sweep_stale(&self) -> Result<(), RuntimeFailure> {
         let runtime =
             LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
-        if fs::symlink_metadata(runtime.pid()).is_err()
-            && fs::symlink_metadata(runtime.socket()).is_err()
-        {
+        if !stale_runtime_residue_exists(&runtime)? {
             return Ok(());
         }
         let resource_dir = self.resource_dir.as_deref().ok_or_else(|| {
@@ -655,6 +653,22 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
         )?;
         Ok(Box::new(daemon))
     }
+}
+
+fn stale_runtime_residue_exists(runtime: &LitestreamRuntimePaths) -> Result<bool, RuntimeFailure> {
+    for path in [runtime.pid(), runtime.socket()] {
+        match fs::symlink_metadata(path) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(RuntimeFailure::new(
+                    RelationalBackupErrorCode::ControlUnavailable,
+                    true,
+                ));
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn map_credential_start_error(error: CredentialError) -> RuntimeFailure {
@@ -1023,13 +1037,17 @@ fn sweep_stale_runtime(
     let record = read_pid_record(runtime)
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, false))?;
     let Some(record) = record else {
-        if runtime.socket().exists() {
-            return Err(RuntimeFailure::new(
+        return match fs::symlink_metadata(runtime.socket()) {
+            Ok(_) => Err(RuntimeFailure::new(
                 RelationalBackupErrorCode::ControlUnavailable,
                 false,
-            ));
-        }
-        return Ok(());
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                true,
+            )),
+        };
     };
     let expected_binary = utf8_path(expected_binary)
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false))?;
@@ -1220,12 +1238,14 @@ fn remove_socket_if_present(runtime: &LitestreamRuntimePaths) {
 
 fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let temporary = path.with_extension("tmp");
+    reject_symlink_or_non_file(path)?;
+    remove_regular_temporary(&temporary)?;
     let mut options = fs::OpenOptions::new();
-    options.create(true).truncate(true).write(true);
+    options.create_new(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     let mut file = options.open(&temporary)?;
     use std::io::Write;
@@ -1242,6 +1262,30 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .parent()
         .ok_or_else(|| std::io::Error::other("private file has no parent directory"))?;
     fs::File::open(parent)?.sync_all()
+}
+
+fn reject_symlink_or_non_file(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => Ok(()),
+        Ok(_) => Err(std::io::Error::other(
+            "private runtime file is not a regular file",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_regular_temporary(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+            fs::remove_file(path)
+        }
+        Ok(_) => Err(std::io::Error::other(
+            "private runtime temporary is not a regular file",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn utf8_path(path: &Path) -> std::io::Result<String> {
@@ -1868,6 +1912,67 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn unreadable_stale_runtime_is_retryable_instead_of_reported_absent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        fs::set_permissions(runtime.directory(), fs::Permissions::from_mode(0o000))
+            .expect("make runtime unreadable");
+
+        let result = stale_runtime_residue_exists(&runtime);
+
+        fs::set_permissions(runtime.directory(), fs::Permissions::from_mode(0o700))
+            .expect("restore runtime permissions");
+        assert_eq!(
+            result,
+            Err(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                true,
+            ))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_record_writes_reject_symlinked_temporaries_without_touching_targets() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        runtime.write_config("safe config").expect("write config");
+        let binary = root.path().join("litestream");
+        let database = root.path().join("kosh.sqlite3");
+        fs::write(&binary, b"binary").expect("binary fixture");
+        fs::write(&database, b"database").expect("database fixture");
+        let target = root.path().join("must-not-change");
+        fs::write(&target, b"retained").expect("symlink target");
+        let temporary = runtime.pid().with_extension("tmp");
+        symlink(&target, &temporary).expect("PID temporary symlink");
+
+        assert!(write_pid_record(
+            &runtime,
+            u32::MAX,
+            &binary,
+            &database,
+            &LaunchIdentity {
+                backup_set_id: BackupSetId::new().to_string(),
+                replica_epoch_id: ReplicaEpochId::new().to_string(),
+                config_sha256: sha256_hex(b"safe config"),
+            },
+        )
+        .is_err());
+        assert_eq!(fs::read(&target).expect("unchanged target"), b"retained");
+        assert!(fs::symlink_metadata(&temporary)
+            .expect("rejected symlink")
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn stale_ownership_matching_reads_untruncated_command_lines() {
         use std::os::unix::process::CommandExt;
 
@@ -1934,5 +2039,33 @@ mod tests {
             ))
         );
         assert!(runtime.socket().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_unowned_socket_symlinks_also_fail_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        symlink(root.path().join("missing-target"), runtime.socket())
+            .expect("dangling socket symlink");
+
+        assert_eq!(
+            sweep_stale_runtime(
+                &runtime,
+                &root.path().join("litestream"),
+                &root.path().join("kosh.sqlite3"),
+            ),
+            Err(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                false,
+            ))
+        );
+        assert!(fs::symlink_metadata(runtime.socket())
+            .expect("socket symlink retained")
+            .file_type()
+            .is_symlink());
     }
 }
