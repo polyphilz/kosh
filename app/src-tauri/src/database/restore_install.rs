@@ -35,7 +35,7 @@ pub(crate) struct RestoreInstallReport {
     pub(crate) safety_snapshot_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InstallControl {
     format_version: u32,
@@ -61,7 +61,8 @@ pub(super) fn recover_interrupted(paths: &DatabasePaths) -> Result<()> {
         return Ok(());
     }
     let control = read_control(&journal)?;
-    if receipt_matches(paths, &control)? {
+    let receipt = read_optional_control(&paths.root.join(RECEIPT_FILENAME))?;
+    if receipt.as_ref() == Some(&control) && live_pair_matches(paths, &control)? {
         remove_owned_transaction(&transaction)?;
         return Ok(());
     }
@@ -93,7 +94,7 @@ pub(crate) fn install(
     recover_interrupted(paths)?;
 
     if let Some(receipt) = read_optional_control(&paths.root.join(RECEIPT_FILENAME))? {
-        if receipt.checkpoint_id == checkpoint_id && receipt_matches(paths, &receipt)? {
+        if receipt.checkpoint_id == checkpoint_id && live_pair_matches(paths, &receipt)? {
             return Ok(RestoreInstallReport {
                 checkpoint_id,
                 outcome: RestoreInstallOutcome::AlreadyInstalled,
@@ -214,8 +215,7 @@ fn install_transaction(
 ) -> Result<()> {
     remove_sqlite_sidecars(paths)?;
     if control.had_existing_pair {
-        rename_regular(&paths.main, &transaction.join("old-main.sqlite3"))?;
-        rename_regular(&paths.media, &transaction.join("old-media.sqlite3"))?;
+        backup_existing_pair(paths, transaction)?;
     }
     fs::rename(transaction.join("new-main.sqlite3"), &paths.main)?;
     fs::rename(transaction.join("new-media.sqlite3"), &paths.media)?;
@@ -227,6 +227,26 @@ fn install_transaction(
         return Err(invalid("installed restore bytes changed during validation"));
     }
     Ok(())
+}
+
+fn backup_existing_pair(paths: &DatabasePaths, transaction: &Path) -> Result<()> {
+    copy_regular_synced(&paths.main, &transaction.join("old-main.sqlite3.tmp"))?;
+    rename_regular(
+        &transaction.join("old-main.sqlite3.tmp"),
+        &transaction.join("old-main.sqlite3"),
+    )?;
+    sync_directory(transaction)?;
+
+    copy_regular_synced(&paths.media, &transaction.join("old-media.sqlite3.tmp"))?;
+    rename_regular(
+        &transaction.join("old-media.sqlite3.tmp"),
+        &transaction.join("old-media.sqlite3"),
+    )?;
+    sync_directory(transaction)?;
+
+    remove_regular_if_present(&paths.main)?;
+    remove_regular_if_present(&paths.media)?;
+    sync_directory(&paths.root)
 }
 
 fn finish_install(
@@ -264,8 +284,8 @@ fn remove_receipt_artifacts(receipt: &Path) -> Result<()> {
 fn rollback(paths: &DatabasePaths, transaction: &Path, had_existing_pair: bool) -> Result<()> {
     remove_sqlite_sidecars(paths)?;
     if had_existing_pair {
-        restore_old_if_moved(&transaction.join("old-main.sqlite3"), &paths.main)?;
-        restore_old_if_moved(&transaction.join("old-media.sqlite3"), &paths.media)?;
+        restore_old_if_backed_up(&transaction.join("old-main.sqlite3"), &paths.main)?;
+        restore_old_if_backed_up(&transaction.join("old-media.sqlite3"), &paths.media)?;
     } else {
         remove_regular_if_present(&paths.main)?;
         remove_regular_if_present(&paths.media)?;
@@ -274,12 +294,11 @@ fn rollback(paths: &DatabasePaths, transaction: &Path, had_existing_pair: bool) 
     remove_owned_transaction(transaction)
 }
 
-fn restore_old_if_moved(old: &Path, live: &Path) -> Result<()> {
+fn restore_old_if_backed_up(old: &Path, live: &Path) -> Result<()> {
     match fs::symlink_metadata(old) {
         Ok(metadata) if metadata.file_type().is_file() => {
             remove_regular_if_present(live)?;
-            fs::rename(old, live)?;
-            Ok(())
+            copy_regular_synced(old, live)
         }
         Ok(_) => Err(invalid("restore rollback file is not regular")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -294,7 +313,7 @@ fn restore_old_if_moved(old: &Path, live: &Path) -> Result<()> {
     }
 }
 
-fn receipt_matches(paths: &DatabasePaths, control: &InstallControl) -> Result<bool> {
+fn live_pair_matches(paths: &DatabasePaths, control: &InstallControl) -> Result<bool> {
     if control.format_version != FORMAT_VERSION
         || connection::inspect_file(&paths.main)? != FileState::Existing
         || connection::inspect_file(&paths.media)? != FileState::Existing
@@ -460,7 +479,9 @@ fn remove_owned_transaction(path: &Path) -> Result<()> {
             "new-main.sqlite3",
             "new-media.sqlite3",
             "old-main.sqlite3",
+            "old-main.sqlite3.tmp",
             "old-media.sqlite3",
+            "old-media.sqlite3.tmp",
         ];
         if !entry.file_type()?.is_file()
             || !name.to_str().is_some_and(|name| allowed.contains(&name))
@@ -551,6 +572,47 @@ mod tests {
         write_bytes(&paths.main, b"new main");
 
         recover_interrupted(&paths).expect("rollback recovery");
+
+        assert_eq!(fs::read(&paths.main).expect("main"), b"original main");
+        assert_eq!(fs::read(&paths.media).expect("media"), b"original media");
+        assert!(!transaction.exists());
+    }
+
+    #[test]
+    fn recovery_rolls_back_a_complete_installed_pair_without_a_receipt() {
+        let root = tempfile::tempdir().expect("restore root");
+        let paths = DatabasePaths::new(root.path());
+        let transaction = root.path().join(TRANSACTION_DIRECTORY);
+        fs::create_dir(&transaction).expect("transaction");
+        let checkpoint_id = CheckpointId::new();
+        let control = control(checkpoint_id, true, b"new main", b"new media");
+        write_control(&transaction.join(JOURNAL_FILENAME), &control).expect("journal");
+        write_bytes(&transaction.join("old-main.sqlite3"), b"original main");
+        write_bytes(&transaction.join("old-media.sqlite3"), b"original media");
+        write_bytes(&paths.main, b"new main");
+        write_bytes(&paths.media, b"new media");
+
+        recover_interrupted(&paths).expect("unreceipted rollback");
+
+        assert_eq!(fs::read(&paths.main).expect("main"), b"original main");
+        assert_eq!(fs::read(&paths.media).expect("media"), b"original media");
+        assert!(!transaction.exists());
+    }
+
+    #[test]
+    fn recovery_during_original_backup_keeps_the_live_pair() {
+        let root = tempfile::tempdir().expect("restore root");
+        let paths = DatabasePaths::new(root.path());
+        let transaction = root.path().join(TRANSACTION_DIRECTORY);
+        fs::create_dir(&transaction).expect("transaction");
+        let checkpoint_id = CheckpointId::new();
+        let control = control(checkpoint_id, true, b"new main", b"new media");
+        write_control(&transaction.join(JOURNAL_FILENAME), &control).expect("journal");
+        write_bytes(&transaction.join("old-main.sqlite3.tmp"), b"partial backup");
+        write_bytes(&paths.main, b"original main");
+        write_bytes(&paths.media, b"original media");
+
+        recover_interrupted(&paths).expect("backup recovery");
 
         assert_eq!(fs::read(&paths.main).expect("main"), b"original main");
         assert_eq!(fs::read(&paths.media).expect("media"), b"original media");
