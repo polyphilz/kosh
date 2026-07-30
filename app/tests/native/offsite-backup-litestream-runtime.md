@@ -48,7 +48,9 @@ its graceful final remote sync for at most 30 seconds. Kosh allows a bounded
 35-second process window, then kills and reaps the still-owned group. The PID
 record and socket are removed only after their ownership checks pass. A stale
 record is never used to kill an unrelated process, and an unowned socket is
-never deleted.
+never deleted. Failed stale-ownership inspection remains visible and retries
+with capped backoff even while backup is disabled; `OFF` is reported only
+after ownership is resolved.
 
 ## Executable evidence
 
@@ -63,6 +65,8 @@ The focused native suite proves:
 - the activation token is emitted only after the durable ownership record;
 - the actual Kosh executable remains inert before activation and exits on
   parent-pipe EOF without executing Litestream;
+- disabled configuration preserves and retries stale-sweep failures until
+  recovery;
 - disabling and service shutdown invoke exactly one graceful child shutdown;
 - credential errors map to bounded redacted status;
 - PID records are private and an owned dead runtime is swept; and

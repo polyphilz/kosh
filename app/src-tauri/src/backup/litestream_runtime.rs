@@ -368,15 +368,10 @@ fn supervisor_worker(
     let mut next_start = Instant::now();
     let mut next_config_refresh = Instant::now();
     let mut next_remote_status = Instant::now();
+    let mut stale_sweep_pending = true;
+    let mut stale_sweep_failures = 0_u32;
+    let mut next_stale_sweep = Instant::now();
     let mut force_reload = true;
-
-    if let Err(failure) = factory.sweep_stale() {
-        update_failure_status(&status, failure, restart_count);
-        log::warn!(
-            "could not safely sweep a stale Litestream runtime: {:?}",
-            failure.code
-        );
-    }
 
     loop {
         let signal = match receiver.recv_timeout(schedule.supervisor_poll_interval) {
@@ -400,6 +395,27 @@ fn supervisor_worker(
         }
 
         let now = Instant::now();
+        if stale_sweep_pending {
+            if now < next_stale_sweep {
+                continue;
+            }
+            match factory.sweep_stale() {
+                Ok(()) => {
+                    stale_sweep_pending = false;
+                    stale_sweep_failures = 0;
+                }
+                Err(failure) => {
+                    stale_sweep_failures = stale_sweep_failures.saturating_add(1);
+                    next_stale_sweep = now + schedule.restart_policy.delay(stale_sweep_failures);
+                    update_failure_status(&status, failure, stale_sweep_failures);
+                    log::warn!(
+                        "could not safely sweep a stale Litestream runtime: {:?}",
+                        failure.code
+                    );
+                    continue;
+                }
+            }
+        }
         if force_reload || now >= next_config_refresh {
             match database.load_enabled_offsite_backup_config() {
                 Ok(config) => {
@@ -1270,28 +1286,39 @@ mod tests {
 
     struct FakeRuntimeFactory {
         plans: Mutex<VecDeque<StartPlan>>,
+        sweep_plans: Mutex<VecDeque<Result<(), RuntimeFailure>>>,
         starts: AtomicUsize,
         shutdowns: Arc<AtomicUsize>,
         sweeps: AtomicUsize,
-        sweep_failure: Option<RuntimeFailure>,
     }
 
     impl FakeRuntimeFactory {
         fn new(plans: impl IntoIterator<Item = StartPlan>) -> Arc<Self> {
             Arc::new(Self {
                 plans: Mutex::new(plans.into_iter().collect()),
+                sweep_plans: Mutex::new(VecDeque::new()),
                 starts: AtomicUsize::new(0),
                 shutdowns: Arc::new(AtomicUsize::new(0)),
                 sweeps: AtomicUsize::new(0),
-                sweep_failure: None,
             })
+        }
+
+        fn queue_sweeps(&self, plans: impl IntoIterator<Item = Result<(), RuntimeFailure>>) {
+            self.sweep_plans
+                .lock()
+                .expect("fake sweep plans")
+                .extend(plans);
         }
     }
 
     impl RuntimeFactory for FakeRuntimeFactory {
         fn sweep_stale(&self) -> Result<(), RuntimeFailure> {
             self.sweeps.fetch_add(1, Ordering::SeqCst);
-            self.sweep_failure.map_or(Ok(()), Err)
+            self.sweep_plans
+                .lock()
+                .expect("fake sweep plans")
+                .pop_front()
+                .unwrap_or(Ok(()))
         }
 
         fn start(
@@ -1411,6 +1438,47 @@ mod tests {
         assert_eq!(factory.starts.load(Ordering::SeqCst), 0);
         assert_eq!(service.status(), RelationalBackupStatus::default());
         assert!(database.client().diagnostics().is_ok());
+    }
+
+    #[test]
+    fn disabled_configuration_retries_and_reports_stale_sweep_failure_until_recovery() {
+        let (_root, database) = configured_database(false);
+        let factory = FakeRuntimeFactory::new([]);
+        factory.queue_sweeps([
+            Err(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                false,
+            )),
+            Ok(()),
+        ]);
+        let service = LitestreamRuntimeService::start_with_parts(
+            database.client(),
+            factory.clone(),
+            WorkerSchedule {
+                restart_policy: RestartPolicy {
+                    base: Duration::from_millis(50),
+                    maximum: Duration::from_millis(50),
+                },
+                ..schedule()
+            },
+        );
+        wait_until(Duration::from_secs(1), || {
+            service.status().phase == RelationalBackupPhase::Blocked
+        });
+
+        assert_eq!(factory.sweeps.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            service.status().last_error_code,
+            Some(RelationalBackupErrorCode::ControlUnavailable)
+        );
+        assert_eq!(factory.starts.load(Ordering::SeqCst), 0);
+        assert!(database.client().diagnostics().is_ok());
+
+        wait_until(Duration::from_secs(1), || {
+            factory.sweeps.load(Ordering::SeqCst) == 2
+                && service.status().phase == RelationalBackupPhase::Off
+        });
+        assert_eq!(factory.starts.load(Ordering::SeqCst), 0);
     }
 
     #[test]
