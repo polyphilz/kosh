@@ -46,7 +46,7 @@ const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 const STALE_KILL_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const OWNER_CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const PID_RECORD_FORMAT_VERSION: u32 = 1;
+const PID_RECORD_FORMAT_VERSION: u32 = 2;
 const MAX_PID_RECORD_BYTES: u64 = 16 * 1024;
 const LITESTREAM_LAUNCHER_ARG: &str = "--kosh-litestream-launcher";
 const LITESTREAM_ACTIVATION_TOKEN: &[u8] = b"kosh-litestream-activate-v1\n";
@@ -620,7 +620,7 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
         })?;
         let binary =
             VerifiedLitestreamBinary::resolve(resource_dir).map_err(map_litestream_start_error)?;
-        sweep_stale_runtime(&ownership, &runtime, binary.path(), &self.database_path)
+        sweep_stale_runtime(&ownership, &runtime, binary.sha256(), &self.database_path)
     }
 
     fn start(
@@ -640,7 +640,7 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
             LitestreamRuntimePaths::new(&self.data_root).map_err(map_litestream_start_error)?;
         runtime.prepare().map_err(map_litestream_start_error)?;
         let ownership = acquire_runtime_ownership(&runtime)?;
-        sweep_stale_runtime(&ownership, &runtime, binary.path(), &self.database_path)?;
+        sweep_stale_runtime(&ownership, &runtime, binary.sha256(), &self.database_path)?;
 
         let credentials = self
             .credentials
@@ -687,6 +687,7 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
             config.backup_set_id.as_str().to_owned(),
             config.replica_epoch_id.as_str().to_owned(),
             config_sha256,
+            binary.sha256().to_owned(),
             credentials,
             &shutdown,
         )?;
@@ -897,6 +898,7 @@ impl SystemManagedLitestream {
         backup_set_id: String,
         replica_epoch_id: String,
         config_sha256: String,
+        executable_sha256: String,
         credentials: super::credentials::R2Credentials,
         shutdown: &AtomicBool,
     ) -> Result<Self, RuntimeFailure> {
@@ -926,6 +928,7 @@ impl SystemManagedLitestream {
             backup_set_id,
             replica_epoch_id,
             config_sha256,
+            executable_sha256,
         };
         let activation = child
             .stdin
@@ -1093,6 +1096,7 @@ struct LitestreamPidRecord {
     format_version: u32,
     pid: u32,
     executable: String,
+    executable_sha256: String,
     config: String,
     socket: String,
     database: String,
@@ -1105,6 +1109,7 @@ struct LaunchIdentity {
     backup_set_id: String,
     replica_epoch_id: String,
     config_sha256: String,
+    executable_sha256: String,
 }
 
 fn write_pid_record_then_activate(
@@ -1131,6 +1136,7 @@ fn write_pid_record(
         format_version: PID_RECORD_FORMAT_VERSION,
         pid,
         executable: utf8_path(binary)?,
+        executable_sha256: identity.executable_sha256.clone(),
         config: utf8_path(runtime.config())?,
         socket: utf8_path(runtime.socket())?,
         database: utf8_path(database_path)?,
@@ -1171,7 +1177,10 @@ fn read_pid_record(
     let bytes = fs::read(runtime.pid())?;
     let record: LitestreamPidRecord =
         serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
-    if record.format_version != PID_RECORD_FORMAT_VERSION {
+    if record.format_version != PID_RECORD_FORMAT_VERSION
+        || !is_canonical_sha256(&record.executable_sha256)
+        || !is_canonical_sha256(&record.config_sha256)
+    {
         return Err(std::io::Error::other("unsupported Litestream PID record"));
     }
     Ok(Some(record))
@@ -1180,7 +1189,7 @@ fn read_pid_record(
 fn sweep_stale_runtime(
     _ownership: &LitestreamRuntimeOwnership,
     runtime: &LitestreamRuntimePaths,
-    expected_binary: &Path,
+    expected_binary_sha256: &str,
     expected_database_path: &Path,
 ) -> Result<(), RuntimeFailure> {
     let record = read_pid_record(runtime)
@@ -1198,11 +1207,9 @@ fn sweep_stale_runtime(
             )),
         };
     };
-    let expected_binary = utf8_path(expected_binary)
-        .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false))?;
     let expected_database = utf8_path(expected_database_path)
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false))?;
-    if record.executable != expected_binary
+    if record.executable_sha256 != expected_binary_sha256
         || record.config != runtime.config().to_string_lossy()
         || record.socket != runtime.socket().to_string_lossy()
         || record.database != expected_database
@@ -1509,6 +1516,13 @@ fn utf8_path(path: &Path) -> std::io::Result<String> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn is_canonical_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -2165,6 +2179,7 @@ mod tests {
             backup_set_id: BackupSetId::new().to_string(),
             replica_epoch_id: ReplicaEpochId::new().to_string(),
             config_sha256: sha256_hex(b"safe config"),
+            executable_sha256: sha256_hex(b"binary"),
         };
         let mut activation = OwnershipProbe {
             runtime: &runtime,
@@ -2214,6 +2229,7 @@ mod tests {
                 backup_set_id: BackupSetId::new().to_string(),
                 replica_epoch_id: ReplicaEpochId::new().to_string(),
                 config_sha256: sha256_hex(b"safe config"),
+                executable_sha256: sha256_hex(b"binary"),
             },
         )
         .expect("PID record");
@@ -2227,7 +2243,7 @@ mod tests {
         );
 
         let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
-        sweep_stale_runtime(&ownership, &runtime, &binary, &database)
+        sweep_stale_runtime(&ownership, &runtime, &sha256_hex(b"binary"), &database)
             .expect("sweep dead owned runtime");
         assert!(!runtime.pid().exists());
     }
@@ -2249,6 +2265,7 @@ mod tests {
             backup_set_id: BackupSetId::new().to_string(),
             replica_epoch_id: ReplicaEpochId::new().to_string(),
             config_sha256: sha256_hex(b"safe config"),
+            executable_sha256: sha256_hex(b"binary"),
         };
         let exiting_pid = u32::MAX - 1;
         let replacement_pid = u32::MAX;
@@ -2330,6 +2347,7 @@ mod tests {
                 backup_set_id: BackupSetId::new().to_string(),
                 replica_epoch_id: ReplicaEpochId::new().to_string(),
                 config_sha256: sha256_hex(b"safe config"),
+                executable_sha256: sha256_hex(b"binary"),
             },
         )
         .expect("PID record");
@@ -2420,6 +2438,7 @@ mod tests {
                 backup_set_id: BackupSetId::new().to_string(),
                 replica_epoch_id: ReplicaEpochId::new().to_string(),
                 config_sha256: sha256_hex(b"safe config"),
+                executable_sha256: sha256_hex(b"binary"),
             },
         )
         .is_err());
@@ -2456,6 +2475,7 @@ mod tests {
             format_version: PID_RECORD_FORMAT_VERSION,
             pid: child.id(),
             executable: "/bin/sh".into(),
+            executable_sha256: sha256_hex(b"/bin/sh fixture"),
             config: config.to_string_lossy().into_owned(),
             socket: long_directory
                 .join("ls.sock")
@@ -2479,6 +2499,88 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn stale_daemon_is_reaped_after_its_verified_binary_relocates() {
+        use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+
+        let root = tempfile::tempdir().expect("temporary relocated app root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        runtime.write_config("safe config").expect("write config");
+        let old_app = root.path().join("Downloads").join("Kosh.app");
+        let old_binary = old_app.join("Contents/Resources/bin/litestream");
+        fs::create_dir_all(old_binary.parent().expect("old binary parent"))
+            .expect("old bundle resources");
+        let script = b"#!/bin/sh\nwhile :; do /bin/sleep 1; done\n";
+        fs::write(&old_binary, script).expect("old Litestream fixture");
+        fs::set_permissions(&old_binary, fs::Permissions::from_mode(0o700))
+            .expect("executable Litestream fixture");
+        let database = root.path().join("kosh.sqlite3");
+        fs::write(&database, b"database").expect("database fixture");
+        let mut command = Command::new(&old_binary);
+        command
+            .arg("replicate")
+            .arg("-config")
+            .arg(runtime.config())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let child = command.spawn().expect("orphaned Litestream fixture");
+        let pid = child.id();
+        write_pid_record(
+            &runtime,
+            pid,
+            &old_binary,
+            &database,
+            &LaunchIdentity {
+                backup_set_id: BackupSetId::new().to_string(),
+                replica_epoch_id: ReplicaEpochId::new().to_string(),
+                config_sha256: sha256_hex(b"safe config"),
+                executable_sha256: sha256_hex(script),
+            },
+        )
+        .expect("PID record");
+        let (reaped_tx, reaped_rx) = mpsc::sync_channel(1);
+        let waiter = thread::spawn(move || {
+            reaped_tx
+                .send(child.wait_with_output().map(|output| output.status))
+                .expect("reaped status receiver");
+        });
+
+        let new_app = root.path().join("Applications").join("Kosh.app");
+        fs::create_dir_all(new_app.parent().expect("new app parent"))
+            .expect("Applications directory");
+        fs::rename(&old_app, &new_app).expect("relocate app bundle");
+        let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
+
+        assert_eq!(
+            sweep_stale_runtime(
+                &ownership,
+                &runtime,
+                &sha256_hex(b"different binary"),
+                &database,
+            ),
+            Err(RuntimeFailure::new(
+                RelationalBackupErrorCode::ControlUnavailable,
+                false,
+            )),
+            "a different pinned binary must not authorize process termination"
+        );
+        assert!(process_exists(pid));
+        sweep_stale_runtime(&ownership, &runtime, &sha256_hex(script), &database)
+            .expect("reap relocated pinned daemon");
+
+        assert!(!runtime.pid().exists());
+        let status = reaped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reaped child status")
+            .expect("wait for child");
+        waiter.join().expect("child waiter");
+        assert!(status.code().is_none());
+    }
+
     #[test]
     fn unowned_socket_is_never_deleted_during_stale_sweep() {
         let root = tempfile::tempdir().expect("temporary runtime root");
@@ -2491,7 +2593,7 @@ mod tests {
             sweep_stale_runtime(
                 &ownership,
                 &runtime,
-                &root.path().join("litestream"),
+                &sha256_hex(b"binary"),
                 &root.path().join("kosh.sqlite3"),
             ),
             Err(RuntimeFailure::new(
@@ -2518,7 +2620,7 @@ mod tests {
             sweep_stale_runtime(
                 &ownership,
                 &runtime,
-                &root.path().join("litestream"),
+                &sha256_hex(b"binary"),
                 &root.path().join("kosh.sqlite3"),
             ),
             Err(RuntimeFailure::new(

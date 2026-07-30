@@ -148,12 +148,18 @@ struct StagedBinary {
 #[derive(Clone, Debug)]
 pub struct VerifiedLitestreamBinary {
     path: PathBuf,
+    sha256: String,
 }
 
 impl VerifiedLitestreamBinary {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[must_use]
+    pub fn sha256(&self) -> &str {
+        &self.sha256
     }
 
     pub fn resolve(resource_dir: &Path) -> Result<Self, LitestreamError> {
@@ -173,7 +179,10 @@ impl VerifiedLitestreamBinary {
             resource_dir.join(&manifest.binary.bundle_path)
         };
         verify_binary(&path, &manifest.binary.universal)?;
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            sha256: manifest.binary.universal.sha256,
+        })
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -183,6 +192,7 @@ impl VerifiedLitestreamBinary {
         verify_binary(path, &manifest.binary.universal)?;
         Ok(Self {
             path: path.to_owned(),
+            sha256: manifest.binary.universal.sha256,
         })
     }
 }

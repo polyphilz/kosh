@@ -24,14 +24,16 @@ For an enabled configuration the supervisor:
    references rather than credential values;
 7. launches Kosh's inert Litestream activation helper with an otherwise empty
    environment and a dedicated process group;
-8. durably writes a bounded private PID record binding the exact executable,
-   database, config, socket, backup set, replica epoch, and config digest;
+8. durably writes a bounded private PID record binding the exact command
+   executable, the pinned binary digest, database, config, socket, backup set,
+   replica epoch, and config digest;
 9. only then activates the helper through its private inherited pipe, which
    atomically replaces itself with `litestream replicate`; parent death before
    activation closes the pipe and leaves no replicating orphan;
 10. retains an exclusive, non-inherited runtime-generation lock from stale
     cleanup through daemon cleanup;
-11. accepts readiness only from a Unix socket with mode `0600`; and
+11. accepts readiness only from a Unix socket with mode `0600`, while allowing
+    shutdown to cancel the readiness wait immediately; and
 12. confirms the canonical local and remote TXID through a bounded control
     command.
 
@@ -63,14 +65,15 @@ for its final remote sync. On disable, retarget, application exit, or
 supervisor drop, Kosh sends SIGTERM to the owned process group. The pinned
 Litestream configuration then performs its graceful final remote sync for at
 most 30 seconds. Kosh allows a bounded
-35-second process window, then kills and reaps the still-owned group. The PID
-record and socket are removed only after their ownership checks pass. A stale
-record is never used to kill an unrelated process, and an unowned socket is
-never deleted. Failed stale-ownership inspection remains visible and retries
-with capped backoff even while backup is disabled; `OFF` is reported only
-after ownership is resolved. The runtime-generation lock prevents a replacement
-Kosh instance from publishing ownership between removal of the exiting
-generation's PID record and socket.
+35-second process window, then kills and reaps the still-owned group. The
+socket is removed before its PID ownership record, so a failed unlink or crash
+leaves enough durable ownership for the next sweep to recover. A stale record
+is never used to kill an unrelated process, and an unowned socket is never
+deleted. Failed stale-ownership inspection remains visible and retries with
+capped backoff even while backup is disabled; `OFF` is reported only after
+ownership is resolved. The runtime-generation lock prevents a replacement
+Kosh instance from publishing ownership until both exiting-generation
+artifacts are gone.
 
 ## Executable evidence
 
@@ -95,6 +98,10 @@ The focused native suite proves:
   touching their targets;
 - runtime ownership keeps cleanup serialized until both generation artifacts
   are gone, then permits a replacement daemon to publish its own artifacts;
+- cleanup retains the PID ownership record when socket removal fails and
+  removes it only after a later successful retry;
+- a matching pinned binary digest authorizes cleanup after the app bundle
+  relocates, while a mismatched digest fails closed without killing the child;
 - the first writer conditionally claims R2, the same installation reclaims
   idempotently or advances its epoch with an ETag guard, and a second
   installation using copied configuration and R2 keys is rejected before
@@ -104,6 +111,8 @@ The focused native suite proves:
   distinct domain-separated identities;
 - shutdown interrupts a stalled remote-owner start operation without waiting
   for the R2 request timeout;
+- shutdown interrupts control-socket readiness and reaps the child without
+  waiting for the startup timeout;
 - application exit persists the Claude terminal event and closes the sole
   SQLite writer before the final Litestream sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;
