@@ -48,6 +48,7 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const OWNER_CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PID_RECORD_FORMAT_VERSION: u32 = 2;
 const MAX_PID_RECORD_BYTES: u64 = 16 * 1024;
+const MAX_LITESTREAM_CONFIG_BYTES: u64 = 64 * 1024;
 const LITESTREAM_LAUNCHER_ARG: &str = "--kosh-litestream-launcher";
 const LITESTREAM_ACTIVATION_TOKEN: &[u8] = b"kosh-litestream-activate-v1\n";
 const LITESTREAM_LAUNCHER_USAGE_EXIT: i32 = 64;
@@ -1329,7 +1330,7 @@ fn sweep_stale_runtime(
             false,
         ));
     }
-    let config = fs::read(runtime.config())
+    let config = read_private_bounded_config(runtime.config())
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, false))?;
     if sha256_hex(&config) != record.config_sha256 {
         return Err(RuntimeFailure::new(
@@ -1361,6 +1362,61 @@ fn sweep_stale_runtime(
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true))?;
     remove_pid_record_if_owned(runtime, record.pid);
     Ok(())
+}
+
+fn read_private_bounded_config(path: &Path) -> std::io::Result<Vec<u8>> {
+    let path_metadata = fs::symlink_metadata(path)?;
+    if path_metadata.file_type().is_symlink()
+        || !path_metadata.is_file()
+        || path_metadata.len() > MAX_LITESTREAM_CONFIG_BYTES
+    {
+        return Err(std::io::Error::other(
+            "invalid Litestream runtime configuration",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(std::io::Error::other(
+                "Litestream runtime configuration is not private",
+            ));
+        }
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_LITESTREAM_CONFIG_BYTES {
+        return Err(std::io::Error::other(
+            "invalid Litestream runtime configuration",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(std::io::Error::other(
+                "Litestream runtime configuration is not private",
+            ));
+        }
+    }
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_LITESTREAM_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LITESTREAM_CONFIG_BYTES {
+        return Err(std::io::Error::other(
+            "Litestream runtime configuration is oversized",
+        ));
+    }
+    Ok(bytes)
 }
 
 struct LitestreamRuntimeOwnership {
@@ -2566,6 +2622,50 @@ mod tests {
         waiter.join().expect("previous child waiter");
         assert!(!runtime.pid().exists());
         assert!(!process_exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_config_reads_reject_special_symlinked_and_oversized_files_without_opening_them() {
+        use std::{
+            ffi::CString,
+            os::unix::{
+                ffi::OsStrExt,
+                fs::{symlink, PermissionsExt},
+            },
+        };
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.write_config("safe config").expect("write config");
+        assert_eq!(
+            read_private_bounded_config(runtime.config()).expect("private bounded config"),
+            b"safe config"
+        );
+
+        fs::write(
+            runtime.config(),
+            vec![b'x'; MAX_LITESTREAM_CONFIG_BYTES as usize + 1],
+        )
+        .expect("oversized regular file");
+        fs::set_permissions(runtime.config(), fs::Permissions::from_mode(0o600))
+            .expect("private oversized file");
+        assert!(read_private_bounded_config(runtime.config()).is_err());
+
+        fs::remove_file(runtime.config()).expect("remove oversized config");
+        symlink("/dev/null", runtime.config()).expect("symlink to device");
+        assert!(read_private_bounded_config(runtime.config()).is_err());
+
+        fs::remove_file(runtime.config()).expect("remove symlink");
+        let fifo = CString::new(runtime.config().as_os_str().as_bytes()).expect("FIFO path");
+        // SAFETY: `fifo` is a live, NUL-terminated path and `mkfifo` does not
+        // retain its pointer after returning.
+        let result = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        assert_eq!(result, 0, "create FIFO fixture");
+        assert!(
+            read_private_bounded_config(runtime.config()).is_err(),
+            "the FIFO must be rejected from metadata before any blocking open"
+        );
     }
 
     #[cfg(unix)]
