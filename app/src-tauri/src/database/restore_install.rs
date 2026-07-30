@@ -159,8 +159,16 @@ pub(crate) fn validate_pair(paths: &DatabasePaths) -> Result<()> {
     let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)?;
     let mut media =
         connection::open_writer(&paths.media, DatabaseKind::Media, FileState::Existing)?;
-    let main_status = migrations::inspect_main(&mut main)?;
-    let media_status = migrations::inspect_media(&mut media)?;
+    let mut main_status = migrations::inspect_main(&mut main)?;
+    let mut media_status = migrations::inspect_media(&mut media)?;
+    if media_status.pending {
+        migrations::run_media(&mut media)?;
+        media_status = migrations::inspect_media(&mut media)?;
+    }
+    if main_status.pending {
+        migrations::run_main(&mut main)?;
+        main_status = migrations::inspect_main(&mut main)?;
+    }
     let expected = migrations::expected_heads();
     if main_status.pending
         || media_status.pending
@@ -450,6 +458,8 @@ fn invalid(reason: &str) -> DatabaseError {
 
 #[cfg(test)]
 mod tests {
+    use refinery::Target;
+
     use super::*;
 
     fn write_bytes(path: &Path, bytes: &[u8]) {
@@ -528,5 +538,56 @@ mod tests {
         assert_eq!(fs::read(&paths.main).expect("main"), b"new main");
         assert_eq!(fs::read(&paths.media).expect("media"), b"new media");
         assert!(!transaction.exists());
+    }
+
+    #[test]
+    fn staged_pairs_from_the_previous_schema_are_migrated_before_validation() {
+        let root = tempfile::tempdir().expect("restore root");
+        let paths = DatabasePaths::new(root.path());
+        let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Fresh)
+            .expect("main writer");
+        main.pragma_update(None, "foreign_keys", "OFF")
+            .expect("disable foreign keys");
+        migrations::main_runner()
+            .set_target(Target::Version(20))
+            .run(&mut main)
+            .expect("previous main schema");
+        main.pragma_update(None, "foreign_keys", "ON")
+            .expect("restore foreign keys");
+        let mut media =
+            connection::open_writer(&paths.media, DatabaseKind::Media, FileState::Fresh)
+                .expect("media writer");
+        migrations::media_runner()
+            .set_target(Target::Version(1))
+            .run(&mut media)
+            .expect("previous media schema");
+        drop(main);
+        drop(media);
+
+        validate_pair(&paths).expect("compatible pending migrations");
+
+        let main =
+            connection::open_read_only(&paths.main, DatabaseKind::Main).expect("migrated main");
+        let media =
+            connection::open_read_only(&paths.media, DatabaseKind::Media).expect("migrated media");
+        assert_eq!(
+            main.query_row(
+                "SELECT max(version) FROM refinery_schema_history",
+                [],
+                |row| row.get::<_, i32>(0),
+            )
+            .expect("main head"),
+            21
+        );
+        assert_eq!(
+            media
+                .query_row(
+                    "SELECT max(version) FROM refinery_schema_history",
+                    [],
+                    |row| row.get::<_, i32>(0),
+                )
+                .expect("media head"),
+            2
+        );
     }
 }

@@ -28,7 +28,7 @@ use super::{
 
 const MAX_DISCOVERED_CHECKPOINTS: usize = 10_000;
 const MAX_LIST_PAGES: usize = 100;
-const MAX_REFERENCED_MEDIA: u64 = 100_000;
+const MEDIA_RESTORE_PAGE_SIZE: u32 = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RemoteCheckpoint {
@@ -328,7 +328,6 @@ fn rebuild_media(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(crate::database::DatabaseError::from)?;
-    let references = load_referenced_media(&main)?;
     let mut media = create_empty_restore_media_database(&paths.media)?;
     let transaction = media
         .transaction()
@@ -336,35 +335,51 @@ fn rebuild_media(
     let mut count = 0_u64;
     let mut total_bytes = 0_u64;
     let mut digest = Sha256::new();
-    for reference in references {
-        let key = keyspace.media(reference.sha256);
-        let result = store.get(&key)?;
-        if result.metadata.byte_length != reference.byte_length
-            || result.metadata.byte_length != result.bytes.len() as u64
-            || result.metadata.content_type != Some(ObjectContentType::Binary)
-            || result.metadata.kosh_sha256 != Some(reference.sha256)
-            || result.metadata.object_format_version != Some(OBJECT_FORMAT_VERSION)
-            || ContentSha256::from_bytes(Sha256::digest(&result.bytes).into()) != reference.sha256
+    let mut cursor = None;
+    loop {
+        let references = load_referenced_media_page(&main, cursor, MEDIA_RESTORE_PAGE_SIZE)?;
+        if references.is_empty() {
+            break;
+        }
+        if cursor.is_some_and(|previous| references[0].sha256.as_bytes() <= previous.as_bytes())
+            || references
+                .windows(2)
+                .any(|pair| pair[0].sha256.as_bytes() >= pair[1].sha256.as_bytes())
         {
             return Err(RestoreError::MediaMismatch);
         }
-        transaction
-            .execute(
-                "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
-                 VALUES(?1, ?2, ?3, 0)",
-                params![
-                    reference.sha256.as_bytes().as_slice(),
-                    result.bytes,
-                    i64::try_from(reference.byte_length)
-                        .map_err(|_| RestoreError::MediaMismatch)?,
-                ],
-            )
-            .map_err(crate::database::DatabaseError::from)?;
-        count = count.checked_add(1).ok_or(RestoreError::MediaMismatch)?;
-        total_bytes = total_bytes
-            .checked_add(reference.byte_length)
-            .ok_or(RestoreError::MediaMismatch)?;
-        digest.update(reference.sha256.as_bytes());
+        for reference in &references {
+            let key = keyspace.media(reference.sha256);
+            let result = store.get(&key)?;
+            if result.metadata.byte_length != reference.byte_length
+                || result.metadata.byte_length != result.bytes.len() as u64
+                || result.metadata.content_type != Some(ObjectContentType::Binary)
+                || result.metadata.kosh_sha256 != Some(reference.sha256)
+                || result.metadata.object_format_version != Some(OBJECT_FORMAT_VERSION)
+                || ContentSha256::from_bytes(Sha256::digest(&result.bytes).into())
+                    != reference.sha256
+            {
+                return Err(RestoreError::MediaMismatch);
+            }
+            transaction
+                .execute(
+                    "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
+                     VALUES(?1, ?2, ?3, 0)",
+                    params![
+                        reference.sha256.as_bytes().as_slice(),
+                        result.bytes,
+                        i64::try_from(reference.byte_length)
+                            .map_err(|_| RestoreError::MediaMismatch)?,
+                    ],
+                )
+                .map_err(crate::database::DatabaseError::from)?;
+            count = count.checked_add(1).ok_or(RestoreError::MediaMismatch)?;
+            total_bytes = total_bytes
+                .checked_add(reference.byte_length)
+                .ok_or(RestoreError::MediaMismatch)?;
+            digest.update(reference.sha256.as_bytes());
+        }
+        cursor = references.last().map(|reference| reference.sha256);
     }
     transaction
         .commit()
@@ -386,7 +401,11 @@ struct MediaReference {
     byte_length: u64,
 }
 
-fn load_referenced_media(main: &Connection) -> Result<Vec<MediaReference>, RestoreError> {
+fn load_referenced_media_page(
+    main: &Connection,
+    after_sha256: Option<ContentSha256>,
+    limit: u32,
+) -> Result<Vec<MediaReference>, RestoreError> {
     let mut statement = main
         .prepare(
             "WITH referenced(sha256, byte_length) AS (
@@ -417,12 +436,15 @@ fn load_referenced_media(main: &Connection) -> Result<Vec<MediaReference>, Resto
              )
              SELECT sha256, min(byte_length), max(byte_length)
              FROM referenced
+             WHERE (?1 IS NULL OR sha256 > ?1)
              GROUP BY sha256
-             ORDER BY sha256",
+             ORDER BY sha256
+             LIMIT ?2",
         )
         .map_err(crate::database::DatabaseError::from)?;
+    let cursor = after_sha256.map(|value| value.as_bytes().to_vec());
     let rows = statement
-        .query_map([], |row| {
+        .query_map(params![cursor, i64::from(limit)], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, i64>(1)?,
@@ -434,9 +456,6 @@ fn load_referenced_media(main: &Connection) -> Result<Vec<MediaReference>, Resto
     for row in rows {
         let (sha256, minimum, maximum) = row.map_err(crate::database::DatabaseError::from)?;
         if minimum <= 0 || minimum != maximum {
-            return Err(RestoreError::MediaMismatch);
-        }
-        if references.len() as u64 >= MAX_REFERENCED_MEDIA {
             return Err(RestoreError::MediaMismatch);
         }
         let bytes: [u8; 32] = sha256.try_into().map_err(|_| RestoreError::MediaMismatch)?;
@@ -875,5 +894,48 @@ mod tests {
             .join(snapshot_id)
             .join("manifest.json")
             .is_file());
+    }
+
+    #[test]
+    fn media_reference_loading_pages_without_a_restore_only_total_limit() {
+        let main = rusqlite::Connection::open_in_memory().expect("reference fixture");
+        main.execute_batch(
+            "CREATE TABLE attachment(
+                id TEXT PRIMARY KEY,
+                sha256 BLOB NOT NULL,
+                byte_length INTEGER NOT NULL,
+                deleted_at INTEGER
+             );
+             CREATE TABLE tidbit_revision_attachment(attachment_id TEXT NOT NULL);
+             CREATE TABLE research_run_attachment(attachment_id TEXT NOT NULL);
+             CREATE TABLE attachment_image(
+                attachment_id TEXT NOT NULL,
+                preview_sha256 BLOB NOT NULL,
+                preview_byte_length INTEGER NOT NULL
+             );",
+        )
+        .expect("reference schema");
+        for ordinal in 0_u32..257 {
+            let mut sha256 = [0_u8; 32];
+            sha256[28..].copy_from_slice(&ordinal.to_be_bytes());
+            main.execute(
+                "INSERT INTO attachment(id, sha256, byte_length, deleted_at)
+                 VALUES(?1, ?2, 1, NULL)",
+                params![format!("attachment-{ordinal}"), sha256.as_slice()],
+            )
+            .expect("reference");
+        }
+
+        let first =
+            load_referenced_media_page(&main, None, MEDIA_RESTORE_PAGE_SIZE).expect("first page");
+        assert_eq!(first.len(), 256);
+        let second = load_referenced_media_page(
+            &main,
+            first.last().map(|reference| reference.sha256),
+            MEDIA_RESTORE_PAGE_SIZE,
+        )
+        .expect("second page");
+        assert_eq!(second.len(), 1);
+        assert!(second[0].sha256.as_bytes() > first[255].sha256.as_bytes());
     }
 }
