@@ -31,12 +31,12 @@ jq -e \
     and .scope == "local"
     and .result == "pass"
     and .headSha == $head
-    and .fresh.seed.schemaVersion == 2
+    and .fresh.seed.schemaVersion == 3
     and .fresh.seed.headSha == $head
     and .fresh.seed.expectation == "absent"
     and .fresh.seed.canaryPreexisting == false
     and .fresh.seed.canaryCreated == true
-    and .fresh.restart.schemaVersion == 2
+    and .fresh.restart.schemaVersion == 3
     and .fresh.restart.headSha == $head
     and .fresh.restart.expectation == "present"
     and .fresh.restart.canaryPreexisting == true
@@ -45,7 +45,7 @@ jq -e \
     and .fresh.seed.canary.tidbitId == .fresh.restart.canary.tidbitId
     and .fresh.seed.canary.revisionId == .fresh.restart.canary.revisionId
     and .fresh.seed.canary.passageId == .fresh.restart.canary.passageId
-    and .persistent.receipt.schemaVersion == 2
+    and .persistent.receipt.schemaVersion == 3
     and .persistent.receipt.headSha == $head
     and .persistent.expectation == "present"
     and .persistent.receipt.expectation == "present"
@@ -63,6 +63,10 @@ jq -e \
       and all(
         $launch.webviews[];
         .rendered == true
+        and (
+          .captureCreated
+          == (.surface == "main" and $launch.canaryPreexisting == false)
+        )
         and .rootChildCount > 0
         and (.documentReadyState == "interactive" or .documentReadyState == "complete")
         and .frontendOrigin == "http://127.0.0.1:1420"

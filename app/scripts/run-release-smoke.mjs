@@ -7,6 +7,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
 } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -23,35 +24,47 @@ mkdirSync(smokeRoot, { recursive: true });
 const ownedRoot = mkdtempSync(join(smokeRoot, "packaged-"));
 const home = join(ownedRoot, "home");
 const temporary = join(ownedRoot, "tmp");
+const headSha = run("git", ["-C", appRoot, "rev-parse", "HEAD"]);
 mkdirSync(home);
 mkdirSync(temporary);
 
 assertRegularExecutable(executable, "packaged Kosh executable");
+assert(/^[0-9a-f]{40}$/u.test(headSha), "release smoke requires an exact Git HEAD");
 
 let active;
 try {
-  const first = await launch("fresh");
+  const freshReceiptPath = join(ownedRoot, "fresh-receipt.json");
+  const first = await launch("fresh", "absent", freshReceiptPath);
   active = first.child;
-  const mainDatabase = await waitForDatabase(first.child, "kosh.sqlite3", 30_000);
-  const dataDirectory = resolve(mainDatabase, "..");
-  const mediaDatabase = join(dataDirectory, "media.sqlite3");
-  await waitForPath(first.child, mediaDatabase, 10_000);
-  verifyDatabasePair(mainDatabase, mediaDatabase);
-  await stop(first.child, first.logDescriptor);
+  const freshReceipt = await finishLaunch(first, freshReceiptPath);
   active = undefined;
+  verifyReceipt(freshReceipt, "absent", true);
 
-  const firstMainCount = sqlite(mainDatabase, "SELECT count(*) FROM tidbit;");
-  const second = await launch("restart");
-  active = second.child;
-  await waitForAlive(second.child, 2_000);
-  verifyDatabasePair(mainDatabase, mediaDatabase);
-  assertEqual(
-    sqlite(mainDatabase, "SELECT count(*) FROM tidbit;"),
-    firstMainCount,
-    "restart tidbit count",
+  const dataDirectory = realpathSync(freshReceipt.dataDir);
+  assert(
+    dataDirectory.startsWith(`${realpathSync(home)}${sep}`),
+    "packaged smoke escaped its isolated home",
   );
-  await stop(second.child, second.logDescriptor);
+  const mainDatabase = join(dataDirectory, "kosh.sqlite3");
+  const mediaDatabase = join(dataDirectory, "media.sqlite3");
+  verifyDatabasePair(mainDatabase, mediaDatabase);
+  assertEqual(sqlite(mainDatabase, "SELECT count(*) FROM tidbit;"), "1", "fresh canary count");
+  assertEqual(
+    sqlite(mainDatabase, "SELECT normalized_url FROM source WHERE normalized_url IS NOT NULL;"),
+    freshReceipt.canary.sourceUrl,
+    "fresh canary source URL",
+  );
+
+  const restartReceiptPath = join(ownedRoot, "restart-receipt.json");
+  const second = await launch("restart", "present", restartReceiptPath);
+  active = second.child;
+  const restartReceipt = await finishLaunch(second, restartReceiptPath);
   active = undefined;
+  verifyReceipt(restartReceipt, "present", false);
+  verifyDatabasePair(mainDatabase, mediaDatabase);
+  assertEqual(sqlite(mainDatabase, "SELECT count(*) FROM tidbit;"), "1", "restart canary count");
+  assertEqual(restartReceipt.dataDir, freshReceipt.dataDir, "restart data directory");
+  assertEqual(restartReceipt.canary, freshReceipt.canary, "restart canary identity");
 
   const combinedLog = ["fresh", "restart"]
     .map((name) => readFileSync(join(ownedRoot, `${name}.log`), "utf8"))
@@ -66,7 +79,7 @@ try {
   );
 
   console.info(
-    `Packaged runtime smoke passed: fresh launch and restart used ${dataDirectory}, current migrations and WAL were healthy, capture storage initialized without Claude or a semantic model.`,
+    `Packaged runtime smoke passed: the release React roots captured a cited canary through IPC, resolved it through exact search on both surfaces, and preserved its identity across restart in ${dataDirectory} without Claude or a semantic model.`,
   );
 } finally {
   if (active) {
@@ -80,7 +93,7 @@ try {
   rmSync(ownedRoot, { recursive: true });
 }
 
-async function launch(label) {
+async function launch(label, expectation, receiptPath) {
   const logPath = join(ownedRoot, `${label}.log`);
   const logDescriptor = openSync(logPath, "a");
   const environment = {
@@ -96,10 +109,15 @@ async function launch(label) {
     "KOSH_STARTUP_SMOKE_RECEIPT",
     "KOSH_STARTUP_SMOKE_HEAD",
     "KOSH_STARTUP_SMOKE_EXPECT",
+    "KOSH_CLAUDE_DISABLED",
     "CLAUDE_CONFIG_DIR",
   ]) {
     delete environment[name];
   }
+  environment.KOSH_STARTUP_SMOKE_RECEIPT = receiptPath;
+  environment.KOSH_STARTUP_SMOKE_HEAD = headSha;
+  environment.KOSH_STARTUP_SMOKE_EXPECT = expectation;
+  environment.KOSH_CLAUDE_DISABLED = "1";
   const child = spawn(executable, [], {
     env: environment,
     stdio: ["ignore", logDescriptor, logDescriptor],
@@ -108,33 +126,83 @@ async function launch(label) {
   return { child, logDescriptor };
 }
 
-async function waitForDatabase(child, filename, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    assertAlive(child);
-    const candidate = findFile(home, filename);
-    if (candidate) return candidate;
-    await delay(100);
+async function finishLaunch(launchRecord, receiptPath) {
+  try {
+    await waitForPath(launchRecord.child, receiptPath, 45_000);
+    const exited = await Promise.race([
+      launchRecord.child.exitCode !== null || launchRecord.child.signalCode !== null
+        ? Promise.resolve(true)
+        : new Promise((resolveExit) => launchRecord.child.once("close", () => resolveExit(true))),
+      delay(5_000).then(() => false),
+    ]);
+    assert(exited, "packaged Kosh did not exit after writing its smoke receipt");
+    assertEqual(launchRecord.child.exitCode, 0, "packaged smoke exit code");
+    return JSON.parse(readFileSync(receiptPath, "utf8"));
+  } finally {
+    closeSync(launchRecord.logDescriptor);
   }
-  throw new Error(`packaged Kosh did not create ${filename} within ${timeoutMs}ms`);
 }
 
 async function waitForPath(child, path, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    assertAlive(child);
     if (existsSync(path)) return;
+    assertAlive(child);
     await delay(100);
   }
   throw new Error(`packaged Kosh did not create ${path} within ${timeoutMs}ms`);
 }
 
-async function waitForAlive(child, durationMs) {
-  const deadline = Date.now() + durationMs;
-  while (Date.now() < deadline) {
-    assertAlive(child);
-    await delay(100);
+function verifyReceipt(receipt, expectation, captureExpected) {
+  assertEqual(receipt.schemaVersion, 3, "smoke receipt schema");
+  assertEqual(receipt.headSha, headSha, "smoke receipt head");
+  assertEqual(receipt.expectation, expectation, "smoke expectation");
+  assertEqual([...receipt.windows].sort(), ["main", "quick-add"], "packaged smoke windows");
+  assertEqual(
+    receipt.webviews.map(({ surface }) => surface).sort(),
+    ["main", "quick-add"],
+    "packaged smoke webviews",
+  );
+  for (const webview of receipt.webviews) {
+    assert(webview.rendered && webview.rootChildCount > 0, `${webview.surface} React root`);
+    assertEqual(webview.frontendOrigin, "tauri://localhost", `${webview.surface} origin`);
+    assertEqual(webview.probeDataDir, receipt.dataDir, `${webview.surface} IPC data directory`);
+    assert(
+      typeof webview.probeRequestId === "string" && webview.probeRequestId.length > 0,
+      `${webview.surface} IPC request ID`,
+    );
+    assertEqual(
+      webview.captureCreated,
+      captureExpected && webview.surface === "main",
+      `${webview.surface} capture evidence`,
+    );
+    assertEqual(webview.canary.executionMode, "EXACT", `${webview.surface} search mode`);
+    assertEqual(webview.canary.citationState, "CURRENT", `${webview.surface} citation state`);
+    assertEqual(webview.canary.resultCount, 1, `${webview.surface} canary result count`);
+    assertEqual(webview.canary.passageId, receipt.canary.passageId, `${webview.surface} passage`);
+    assertEqual(
+      webview.canary.resolvedPassageId,
+      receipt.canary.passageId,
+      `${webview.surface} resolved passage`,
+    );
+    assertEqual(
+      webview.canary.revisionId,
+      receipt.canary.revisionId,
+      `${webview.surface} revision`,
+    );
+    assertEqual(
+      webview.canary.sourceUrl,
+      receipt.canary.sourceUrl,
+      `${webview.surface} source URL`,
+    );
   }
+  assertEqual(receipt.canaryPreexisting, !captureExpected, "preexisting canary state");
+  assertEqual(receipt.canaryCreated, captureExpected, "created canary state");
+  assertEqual(
+    receipt.canary.sourceUrl,
+    "https://example.invalid/kosh-progressive-operability",
+    "canary source URL",
+  );
 }
 
 function verifyDatabasePair(main, media) {
@@ -160,21 +228,6 @@ function verifyDatabasePair(main, media) {
   assertEqual(sqlite(media, "PRAGMA integrity_check;"), "ok", "media integrity");
 }
 
-async function stop(child, logDescriptor) {
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGTERM");
-  }
-  const exited = await Promise.race([
-    new Promise((resolveExit) => child.once("close", () => resolveExit(true))),
-    delay(5_000).then(() => false),
-  ]);
-  if (!exited) {
-    child.kill("SIGKILL");
-    await new Promise((resolveExit) => child.once("close", resolveExit));
-  }
-  closeSync(logDescriptor);
-}
-
 function sqlite(database, statement) {
   const result = spawnSync("sqlite3", ["-batch", database, statement], {
     encoding: "utf8",
@@ -188,18 +241,15 @@ function sqlite(database, statement) {
   return result.stdout.trim();
 }
 
-function findFile(directory, filename, depth = 0) {
-  if (depth > 8 || !existsSync(directory)) return undefined;
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isFile() && entry.name === filename) return path;
-    if (entry.isDirectory()) {
-      const match = findFile(path, filename, depth + 1);
-      if (match) return match;
-    }
+function run(command, arguments_) {
+  const result = spawnSync(command, arguments_, { encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    process.stderr.write(result.stdout);
+    process.stderr.write(result.stderr);
+    process.exit(result.status ?? 1);
   }
-  return undefined;
+  return result.stdout.trim();
 }
 
 function assertRegularExecutable(path, label) {
@@ -221,8 +271,10 @@ function delay(milliseconds) {
 }
 
 function assertEqual(actual, expected, label) {
-  if (actual !== expected) {
-    throw new Error(`Unexpected ${label}: ${actual}; expected ${expected}`);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      `Unexpected ${label}: ${JSON.stringify(actual)}; expected ${JSON.stringify(expected)}`,
+    );
   }
 }
 

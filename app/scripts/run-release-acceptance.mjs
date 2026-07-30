@@ -72,13 +72,24 @@ function prepareClean(values) {
 
 function launch(values) {
   assert(
-    values.length >= 1 && values.length <= 2,
-    "launch accepts a profile name and optional Kosh.app path",
+    values.length >= 1 && values.length <= 3,
+    "launch accepts a profile name, optional Kosh.app path, and optional --without-claude",
   );
   const profile = existingProfile(values[0]);
-  const app = packagedApp(values[1]);
+  let appArgument;
+  let claudeMode = "auto";
+  for (const value of values.slice(1)) {
+    if (value === "--without-claude") {
+      assert(claudeMode === "auto", "--without-claude may be provided only once");
+      claudeMode = "disabled";
+    } else {
+      assert(appArgument === undefined, "launch accepts only one Kosh.app path");
+      appArgument = value;
+    }
+  }
+  const app = packagedApp(appArgument);
   assertStopped(profile);
-  installClaudeShim(profile);
+  if (claudeMode === "auto") installClaudeShim(profile);
 
   const log = join(profile.root, "packaged-app.log");
   const environment = {
@@ -94,10 +105,12 @@ function launch(values) {
     "KOSH_STARTUP_SMOKE_RECEIPT",
     "KOSH_STARTUP_SMOKE_HEAD",
     "KOSH_STARTUP_SMOKE_EXPECT",
+    "KOSH_CLAUDE_DISABLED",
     "CLAUDE_CONFIG_DIR",
   ]) {
     delete environment[name];
   }
+  if (claudeMode === "disabled") environment.KOSH_CLAUDE_DISABLED = "1";
   const descriptor = openSync(log, "a");
   const child = spawn(app.executable, [], {
     detached: true,
@@ -116,6 +129,7 @@ function launch(values) {
     home: profile.home,
     dataDirectory: profile.data,
     guiPath: environment.PATH,
+    claudeMode,
     claudeShim: existsSync(join(profile.home, ".local/bin/claude")),
   });
   console.info(
@@ -128,6 +142,9 @@ function checkCore(values) {
   const profile = existingProfile(values[0]);
   assertStopped(profile);
   verifyDatabasePair(profile);
+  const launchRecord = readJson(join(profile.root, "launch.json"));
+  assertEqual(launchRecord.claudeMode, "disabled", "clean-core Claude mode");
+  assertEqual(launchRecord.claudeShim, false, "clean-core Claude shim");
   assert(
     numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL") >= 1,
     "create at least one active tidbit before checking core acceptance",
@@ -561,7 +578,7 @@ function assert(condition, message) {
 function printUsage() {
   console.info(`Usage:
   pnpm release:acceptance prepare-clean <profile>
-  pnpm release:acceptance launch <profile> [Kosh.app]
+  pnpm release:acceptance launch <profile> [Kosh.app] [--without-claude]
   pnpm release:acceptance check-core <profile>
   pnpm release:acceptance check-journeys <profile>
   pnpm release:acceptance checkpoint-restart <profile>

@@ -98,9 +98,11 @@ app/src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app
 ```
 
 `release:smoke` starts that exact bundle twice with a temporary isolated home
-and Finder-like minimal `PATH`. It proves fresh database creation, current
-migrations, WAL/integrity, restart compatibility, and fully usable local
-storage without Claude or a semantic model.
+and Finder-like minimal `PATH`. The packaged React root creates a URL-bearing
+canary through normal capture IPC, both packaged surfaces resolve its exact
+search citation, and the second launch proves the same cited revision survives.
+The lane also checks current migrations, WAL/integrity, and operation without
+Claude or a semantic model.
 
 ## 3. Run release acceptance
 
@@ -167,7 +169,9 @@ GUI apps do not inherit a login shell's `PATH`. Kosh probes
 `~/.local/bin/claude`, `~/.claude/local/claude`,
 `/opt/homebrew/bin/claude`, and `/usr/local/bin/claude` before inherited
 `PATH`. The packaged acceptance launcher supplies a minimal path and exposes
-an existing CLI through the first home-local location.
+an existing CLI through the first home-local location. Its
+`--without-claude` mode sets an explicit discovery disable and is mandatory for
+the clean-core lane.
 
 ## Rollback and recovery boundary
 

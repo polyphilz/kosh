@@ -2028,6 +2028,7 @@ fn discover_claude_binary() -> Option<PathBuf> {
             PathBuf::from("/opt/homebrew/bin/claude"),
             PathBuf::from("/usr/local/bin/claude"),
         ],
+        std::env::var_os("KOSH_CLAUDE_DISABLED").is_some_and(|value| value == "1"),
     )
 }
 
@@ -2035,7 +2036,11 @@ fn discover_claude_binary_from(
     home: Option<&Path>,
     path: Option<&std::ffi::OsStr>,
     system_candidates: &[PathBuf],
+    explicitly_disabled: bool,
 ) -> Option<PathBuf> {
+    if explicitly_disabled {
+        return None;
+    }
     let mut candidates = Vec::new();
     if let Some(home) = home {
         candidates.push(home.join(".local/bin/claude"));
@@ -2174,7 +2179,7 @@ mod tests {
         let binary = write_fake_cli(&binary_directory, "exit 0");
 
         assert_eq!(
-            discover_claude_binary_from(Some(root.path()), Some("".as_ref()), &[]),
+            discover_claude_binary_from(Some(root.path()), Some("".as_ref()), &[], false),
             Some(binary)
         );
     }
@@ -2194,8 +2199,25 @@ mod tests {
                 None,
                 Some(path_directory.as_os_str()),
                 std::slice::from_ref(&system_binary),
+                false,
             ),
             Some(system_binary)
+        );
+    }
+
+    #[test]
+    fn gui_discovery_honors_explicit_disable_even_when_claude_is_installed() {
+        let root = tempfile::tempdir().expect("temporary install root");
+        let binary = write_fake_cli(root.path(), "exit 0");
+
+        assert_eq!(
+            discover_claude_binary_from(
+                None,
+                Some(root.path().as_os_str()),
+                std::slice::from_ref(&binary),
+                true,
+            ),
+            None
         );
     }
 

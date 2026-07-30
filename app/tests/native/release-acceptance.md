@@ -22,11 +22,13 @@ Use unique names in place of the examples.
 
 ```sh
 pnpm release:acceptance prepare-clean clean-YYYYMMDD
-pnpm release:acceptance launch clean-YYYYMMDD
+pnpm release:acceptance launch clean-YYYYMMDD --without-claude
 ```
 
-The launcher uses an isolated home and GUI-like `/usr/bin:/bin` path. Before
-preparing semantic search or invoking Research:
+The launcher uses an isolated home and GUI-like `/usr/bin:/bin` path. The
+explicit flag also disables standard-location discovery, so an installed host
+Claude cannot leak into the core lane. Before preparing semantic search or
+invoking Research:
 
 1. Confirm the resident launch shows only the white Kosh mark in the menu bar.
 2. Open the main window from the menu and the configured global shortcut.

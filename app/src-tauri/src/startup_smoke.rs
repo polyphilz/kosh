@@ -3,7 +3,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -13,9 +16,8 @@ use tauri::{App, AppHandle, Listener, Manager};
 
 use crate::{
     database::{
-        tidbits::CreateTidbitWrite, CitationState, DatabaseClient, DatabaseDiagnostics,
-        LexicalSearchMode, SearchExecutionMode, SearchPassagesInput, SemanticSearchReadiness,
-        SourceDraft, TidbitDraft,
+        CitationState, DatabaseClient, DatabaseDiagnostics, LexicalSearchMode, SearchExecutionMode,
+        SearchPassagesInput, SemanticSearchReadiness,
     },
     runtime::RuntimeState,
 };
@@ -25,11 +27,13 @@ const HEAD_ENV: &str = "KOSH_STARTUP_SMOKE_HEAD";
 const EXPECT_ENV: &str = "KOSH_STARTUP_SMOKE_EXPECT";
 const READY_EVENT: &str = "kosh://startup-smoke-ready";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
-const FRONTEND_ORIGIN: &str = "http://127.0.0.1:1420";
+const DEVELOPMENT_FRONTEND_ORIGIN: &str = "http://127.0.0.1:1420";
+const RELEASE_FRONTEND_ORIGIN: &str = "tauri://localhost";
 const CANARY: &str = "koshstartupcanaryv1";
 const CANARY_TITLE: &str = "Kosh progressive startup canary";
 const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
 const REQUIRED_SURFACES: [&str; 2] = ["main", "quick-add"];
+static CAPTURE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +69,7 @@ struct WebviewCanaryEvidence {
 struct WebviewReady {
     surface: String,
     rendered: bool,
+    capture_created: bool,
     document_ready_state: String,
     root_child_count: u32,
     frontend_origin: String,
@@ -100,14 +105,17 @@ struct StartupSmokeRequest {
 #[derive(Debug)]
 struct PreparedCanary {
     preexisting: bool,
-    created: bool,
-    evidence: CanaryEvidence,
+    evidence: Option<CanaryEvidence>,
 }
 
 pub(crate) fn canary_query_if_requested() -> Option<String> {
     std::env::var_os(RECEIPT_ENV)
         .filter(|value| !value.is_empty())
         .map(|_| CANARY.to_owned())
+}
+
+pub(crate) fn capture_requested_if_requested() -> bool {
+    canary_query_if_requested().is_some() && CAPTURE_REQUESTED.load(Ordering::SeqCst)
 }
 
 pub(crate) fn run_if_requested(app: &App) -> io::Result<bool> {
@@ -174,9 +182,28 @@ fn complete_startup_smoke(
     let client = state.database_client();
     let live_evidence = find_canary(&client)?
         .ok_or_else(|| invalid("the startup smoke canary disappeared during frontend startup"))?;
-    if live_evidence != prepared.evidence {
+    if prepared
+        .evidence
+        .as_ref()
+        .is_some_and(|evidence| evidence != &live_evidence)
+    {
         return Err(invalid(
             "the startup smoke canary changed during frontend startup",
+        ));
+    }
+    let capture_surfaces = webviews
+        .iter()
+        .filter(|ready| ready.capture_created)
+        .map(|ready| ready.surface.as_str())
+        .collect::<Vec<_>>();
+    if prepared.preexisting && !capture_surfaces.is_empty() {
+        return Err(invalid(
+            "a webview recreated the preexisting startup smoke canary",
+        ));
+    }
+    if !prepared.preexisting && capture_surfaces != ["main"] {
+        return Err(invalid(
+            "the main webview did not create the fresh startup canary through capture IPC",
         ));
     }
 
@@ -230,10 +257,10 @@ fn complete_startup_smoke(
         if canary.execution_mode != "EXACT"
             || canary.citation_state != "CURRENT"
             || canary.result_count != 1
-            || canary.passage_id != prepared.evidence.passage_id
-            || canary.resolved_passage_id != prepared.evidence.passage_id
-            || canary.revision_id != prepared.evidence.revision_id
-            || canary.source_url != prepared.evidence.source_url
+            || canary.passage_id != live_evidence.passage_id
+            || canary.resolved_passage_id != live_evidence.passage_id
+            || canary.revision_id != live_evidence.revision_id
+            || canary.source_url != live_evidence.source_url
         {
             return Err(invalid(format!(
                 "the {} webview search or citation IPC evidence did not resolve the startup canary",
@@ -249,7 +276,7 @@ fn complete_startup_smoke(
     write_receipt(
         &request.receipt_path,
         &StartupSmokeReceipt {
-            schema_version: 2,
+            schema_version: 3,
             head_sha: request.head_sha,
             expectation: request.expectation,
             data_dir: data_dir_text,
@@ -259,8 +286,8 @@ fn complete_startup_smoke(
             webviews,
             diagnostics,
             canary_preexisting: prepared.preexisting,
-            canary_created: prepared.created,
-            canary: prepared.evidence,
+            canary_created: !prepared.preexisting,
+            canary: live_evidence,
         },
     )
 }
@@ -282,51 +309,15 @@ fn prepare_canary(app: &AppHandle, expectation: CanaryExpectation) -> io::Result
         (CanaryExpectation::Ensure, _) | (_, false) | (_, true) => {}
     }
 
-    let created = if existing.is_none()
+    let capture_requested = existing.is_none()
         && matches!(
             expectation,
             CanaryExpectation::Absent | CanaryExpectation::Ensure
-        ) {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| invalid(format!("the system clock is invalid: {error}")))?
-            .as_millis()
-            .try_into()
-            .map_err(|_| invalid("the startup smoke timestamp exceeds SQLite's range"))?;
-        let tidbit = client
-            .create_tidbit(CreateTidbitWrite {
-                input: TidbitDraft {
-                    title: Some(CANARY_TITLE.into()),
-                    body_markdown: CANARY.into(),
-                    sources: vec![SourceDraft {
-                        label: Some("Kosh startup smoke".into()),
-                        url: Some(CANARY_SOURCE_URL.into()),
-                    }],
-                },
-                now_ms,
-                tidbit_id: uuid::Uuid::now_v7().to_string(),
-                revision_id: uuid::Uuid::now_v7().to_string(),
-                source_ids: vec![uuid::Uuid::now_v7().to_string()],
-            })
-            .map_err(database_error)?;
-        Some((tidbit.id, tidbit.current_revision_id))
-    } else {
-        None
-    };
-
-    let evidence = find_canary(&client)?
-        .ok_or_else(|| invalid("the startup smoke canary was not searchable after setup"))?;
-    if let Some((tidbit_id, revision_id)) = &created {
-        if evidence.tidbit_id != *tidbit_id || evidence.revision_id != *revision_id {
-            return Err(invalid(
-                "the startup smoke citation did not resolve to the created revision",
-            ));
-        }
-    }
+        );
+    CAPTURE_REQUESTED.store(capture_requested, Ordering::SeqCst);
     Ok(PreparedCanary {
         preexisting: existing.is_some(),
-        created: created.is_some(),
-        evidence,
+        evidence: existing,
     })
 }
 
@@ -371,7 +362,7 @@ fn wait_for_webviews(receiver: &mpsc::Receiver<String>) -> io::Result<Vec<Webvie
                 ready.surface, ready.document_ready_state
             )));
         }
-        if ready.frontend_origin != FRONTEND_ORIGIN {
+        if !valid_frontend_origin(&ready.frontend_origin) {
             return Err(invalid(format!(
                 "the {} webview loaded from unexpected frontend origin {}",
                 ready.surface, ready.frontend_origin
@@ -398,6 +389,14 @@ fn wait_for_webviews(receiver: &mpsc::Receiver<String>) -> io::Result<Vec<Webvie
         ));
     }
     Ok(ready_by_surface.into_values().collect())
+}
+
+fn valid_frontend_origin(origin: &str) -> bool {
+    if cfg!(debug_assertions) {
+        origin == DEVELOPMENT_FRONTEND_ORIGIN
+    } else {
+        origin == RELEASE_FRONTEND_ORIGIN
+    }
 }
 
 fn readiness_timeout(ready: &HashMap<String, WebviewReady>) -> io::Error {

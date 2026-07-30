@@ -34,7 +34,7 @@ launch_receipt() {
     --argjson preexisting "$preexisting" \
     --argjson created "$created" \
     '{
-      schemaVersion: 2,
+      schemaVersion: 3,
       headSha: $head,
       expectation: $expectation,
       dataDir: $data,
@@ -45,6 +45,7 @@ launch_receipt() {
         {
           surface: "main",
           rendered: true,
+          captureCreated: $created,
           documentReadyState: "complete",
           rootChildCount: 1,
           frontendOrigin: "http://127.0.0.1:1420",
@@ -63,6 +64,7 @@ launch_receipt() {
         {
           surface: "quick-add",
           rendered: true,
+          captureCreated: false,
           documentReadyState: "complete",
           rootChildCount: 1,
           frontendOrigin: "http://127.0.0.1:1420",
