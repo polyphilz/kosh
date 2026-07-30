@@ -1240,7 +1240,7 @@ pub(crate) trait RelationalRestoreEngine: Send + Sync {
     reason = "constructed by the Settings restore IPC in chunk 29g"
 )]
 pub(crate) struct CommandLitestreamRestore<'a> {
-    binary: &'a Path,
+    binary: &'a ImmutableLitestreamBinary,
     config: &'a Path,
     credentials: &'a R2Credentials,
     timeout: Duration,
@@ -1252,7 +1252,7 @@ pub(crate) struct CommandLitestreamRestore<'a> {
 )]
 impl<'a> CommandLitestreamRestore<'a> {
     pub(crate) fn new(
-        binary: &'a Path,
+        binary: &'a ImmutableLitestreamBinary,
         config: &'a Path,
         credentials: &'a R2Credentials,
         timeout: Duration,
@@ -1285,6 +1285,7 @@ impl<'a> CommandLitestreamRestore<'a> {
             txid,
             dry_run,
         );
+        self.binary.reverify_before_spawn()?;
         execute_credentialed_command(
             self.binary,
             &arguments,
@@ -1375,13 +1376,13 @@ fn restore_arguments(
 
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 fn execute_credentialed_command(
-    binary: &Path,
+    binary: &ImmutableLitestreamBinary,
     arguments: &[OsString],
     credentials: &R2Credentials,
     timeout: Duration,
     output_limit: usize,
 ) -> Result<Vec<u8>, LitestreamError> {
-    let mut command = Command::new(binary);
+    let mut command = Command::new(binary.path());
     command
         .args(arguments)
         .env_clear()
@@ -1394,6 +1395,14 @@ fn execute_credentialed_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     let mut child = command.spawn().map_err(LitestreamError::Execute)?;
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = binary.verify_running_process(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    }
     let mut stdin = child.stdin.take().ok_or_else(|| {
         LitestreamError::Execute(std::io::Error::other(
             "Litestream restore credential pipe is unavailable",
@@ -1721,6 +1730,63 @@ mod tests {
 
     use super::*;
 
+    fn staged_restore_test_binary(root: &Path, bytes: &[u8]) -> ImmutableLitestreamBinary {
+        let source_path = root.join("source-litestream");
+        fs::write(&source_path, bytes).expect("restore test binary");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o700))
+            .expect("restore test binary permissions");
+        let pin = BinaryPin {
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            size: bytes.len() as u64,
+            code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
+        };
+        let verified = VerifiedLitestreamBinary {
+            path: source_path.clone(),
+            sha256: pin.sha256.clone(),
+            size: pin.size,
+            code_signature_cdhash: restore_test_process_cdhash(),
+            file: verify_binary(&source_path, &pin).expect("verified restore test binary"),
+        };
+        let runtime =
+            LitestreamRuntimePaths::new(&root.join("runtime")).expect("restore test runtime");
+        verified
+            .stage_immutable(&runtime)
+            .expect("immutable restore test binary")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn restore_test_process_cdhash() -> String {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read ignored"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("signed shell process");
+        let cdhash = running_process_cdhash(child.id()).expect("shell process CDHash");
+        child.kill().expect("terminate shell process");
+        child.wait().expect("reap shell process");
+        cdhash
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn restore_test_process_cdhash() -> String {
+        "0".repeat(40)
+    }
+
+    fn thaw_restore_test_binary(binary: &ImmutableLitestreamBinary) {
+        let directory_path = binary.path().parent().expect("immutable directory");
+        let directory = File::open(directory_path).expect("immutable directory descriptor");
+        clear_user_immutable(&directory).expect("thaw immutable directory");
+        fs::set_permissions(directory_path, fs::Permissions::from_mode(0o700))
+            .expect("thawed directory permissions");
+        let file = File::open(binary.path()).expect("immutable binary descriptor");
+        clear_user_immutable(&file).expect("thaw immutable binary");
+        fs::set_permissions(binary.path(), fs::Permissions::from_mode(0o700))
+            .expect("thawed binary permissions");
+    }
+
     #[derive(Clone, Debug)]
     struct FakeExecutor {
         calls: Arc<Mutex<Vec<CommandSpec>>>,
@@ -1917,10 +1983,9 @@ mod tests {
     #[test]
     fn offline_restore_supplies_credentials_only_through_stdin_and_checks_exact_results() {
         let root = tempfile::tempdir().expect("restore command root");
-        let binary = root.path().join("litestream");
-        fs::write(
-            &binary,
-            r#"#!/bin/sh
+        let binary = staged_restore_test_binary(
+            root.path(),
+            br#"#!/bin/sh
 set -eu
 test "${AWS_SHARED_CREDENTIALS_FILE:-}" = "/dev/fd/0"
 test "${AWS_EC2_METADATA_DISABLED:-}" = "true"
@@ -1954,10 +2019,7 @@ else
   printf '{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_check":"full"}' "$target" "$txid"
 fi
 "#,
-        )
-        .expect("fake Litestream");
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
-            .expect("fake Litestream permissions");
+        );
         let config = root.path().join("ls.yml");
         fs::write(&config, "not inspected by fake").expect("config");
         let source = root.path().join("kosh.sqlite3");
@@ -1981,6 +2043,45 @@ fi
             .expect("credentialed restore");
         assert_eq!(result.txid, txid);
         assert_eq!(fs::read(target).expect("restore bytes"), b"restored");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove immutable restore test binary");
+    }
+
+    #[test]
+    fn offline_restore_reverifies_the_immutable_binary_before_credentials_are_sent() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let binary =
+            staged_restore_test_binary(root.path(), b"#!/bin/sh\ncat >/dev/null\nexit 0\n");
+        let marker = root.path().join("replacement-was-launched");
+        let config = root.path().join("ls.yml");
+        fs::write(&config, "restore test config").expect("config");
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let target = root.path().join("restored.sqlite3");
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine =
+            CommandLitestreamRestore::new(&binary, &config, &credentials, Duration::from_secs(5));
+
+        thaw_restore_test_binary(&binary);
+        fs::write(
+            binary.path(),
+            format!("#!/bin/sh\n: > '{}'\n", marker.display()),
+        )
+        .expect("replace staged binary");
+        assert!(matches!(
+            engine.preview(&source, &target, LitestreamTxid::from_local(42)),
+            Err(LitestreamError::BinarySizeMismatch
+                | LitestreamError::BinaryChecksumMismatch
+                | LitestreamError::InvalidStagedBinary)
+        ));
+        assert!(!marker.exists(), "replacement process must never launch");
+
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove modified restore test binary");
     }
 
     #[test]
