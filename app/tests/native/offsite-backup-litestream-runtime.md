@@ -61,6 +61,8 @@ The focused native suite proves:
   TXIDs;
 - crashed children restart with capped backoff while database diagnostics
   remain responsive;
+- children that exit before opening the control socket remain transient and
+  enter the same capped restart policy;
 - transient failures recover and structural failures do not spin;
 - the activation token is emitted only after the durable ownership record;
 - the actual Kosh executable remains inert before activation and exits on

@@ -873,7 +873,7 @@ fn wait_for_control_socket(
             Ok(Some(_)) => {
                 return Err(RuntimeFailure::new(
                     RelationalBackupErrorCode::LaunchFailed,
-                    false,
+                    true,
                 ));
             }
             Ok(None) => {}
@@ -1688,6 +1688,24 @@ mod tests {
         assert_eq!(policy.delay(2), Duration::from_secs(2));
         assert_eq!(policy.delay(3), Duration::from_secs(4));
         assert_eq!(policy.delay(100), Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_exit_during_startup_is_retryable() {
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        let mut child = Command::new("/usr/bin/true")
+            .spawn()
+            .expect("short-lived child");
+
+        let failure = wait_for_control_socket(&mut child, &runtime).expect_err("startup must fail");
+
+        assert_eq!(
+            failure,
+            RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true)
+        );
     }
 
     #[test]
