@@ -28,6 +28,7 @@ const MAIN_TABLES: &[&str] = &[
     "media_ingest_lease",
     "media_blob_reap_candidate",
     "offsite_backup_checkpoint",
+    "offsite_backup_checkpoint_media",
     "offsite_backup_config",
     "offsite_backup_content_clock",
     "offsite_credential_cleanup",

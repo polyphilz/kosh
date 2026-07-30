@@ -3,10 +3,13 @@
 Main migration V20 adds a durable content clock and an append-only checkpoint
 state machine. V21 persists each checkpoint's exact media snapshot so even a
 large library can be validated with bounded keyset pages instead of being
-materialized in process memory. Every recoverable main-database mutation
-advances the clock in the same SQLite transaction. Backup configuration and
-checkpoint bookkeeping are excluded, so publishing a checkpoint cannot
-recursively schedule another one.
+materialized in process memory, requires that STRICT table during startup
+schema validation, and transactionally reclaims its child rows when the
+checkpoint becomes `PUBLISHED` or `FAILED`. The checkpoint header retains its
+aggregate evidence without checkpoint-by-media growth. Every recoverable
+main-database mutation advances the clock in the same SQLite transaction.
+Backup configuration and checkpoint bookkeeping are excluded, so publishing
+a checkpoint cannot recursively schedule another one.
 
 ## Publication contract
 
@@ -79,7 +82,10 @@ The native suite proves:
 - authored mutations advance the content clock while checkpoint bookkeeping
   does not;
 - media references persist with the PREPARED row and keyset-page as 8/8/3 for
-  a 19-object snapshot, with oversized page requests rejected;
+  a 19-object snapshot, with oversized page requests rejected and child rows
+  reclaimed on terminal transitions while aggregate evidence remains;
+- startup rejects a migrated database whose required V21 STRICT snapshot table
+  is absent;
 - startup classifies incomplete attempts as failed;
 - quiet-time and maximum-delay scheduling boundaries are exact;
 - a missing, behind, equal, and ahead replica TXID have the expected result;

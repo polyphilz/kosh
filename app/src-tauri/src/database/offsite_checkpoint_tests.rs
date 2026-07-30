@@ -354,9 +354,33 @@ fn checkpoint_media_snapshot_is_persisted_and_read_in_bounded_keyset_pages() {
         .windows(2)
         .all(|pair| pair[0].sha256.as_bytes() < pair[1].sha256.as_bytes()));
     assert!(matches!(
-        client.load_offsite_checkpoint_media_page(checkpoint_id, None, 257),
+        client.load_offsite_checkpoint_media_page(checkpoint_id.clone(), None, 257),
         Err(DatabaseError::InvalidOffsiteCheckpoint(_))
     ));
+    client
+        .mark_offsite_checkpoint_failed(
+            checkpoint_id.clone(),
+            CheckpointErrorCode::WorkerUnavailable,
+        )
+        .expect("fail checkpoint");
+    assert!(client
+        .load_offsite_checkpoint_media_page(checkpoint_id.clone(), None, 8)
+        .expect("load reclaimed page")
+        .is_empty());
+    assert_eq!(
+        database
+            .open_main_read_only()
+            .expect("read checkpoint header")
+            .query_row(
+                "SELECT referenced_hash_count
+                 FROM offsite_backup_checkpoint
+                 WHERE checkpoint_id = ?1",
+                [checkpoint_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("retained aggregate evidence"),
+        19
+    );
 }
 
 #[test]
@@ -536,6 +560,10 @@ fn retired_upload_rows_do_not_invalidate_historical_checkpoint_facts() {
         .complete_offsite_media_upload(upload, "\"remote-version\"".into(), 5)
         .expect("complete upload"));
     let published = publish(&database, &config, 6);
+    assert!(client
+        .load_offsite_checkpoint_media_page(published.clone(), None, 8)
+        .expect("published snapshot is reclaimed")
+        .is_empty());
 
     client
         .save_offsite_backup_config(SaveOffsiteBackupConfigInput {

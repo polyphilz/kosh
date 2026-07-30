@@ -205,7 +205,8 @@ pub(super) fn mark_published(
     if manifest_object_key.is_empty() || manifest_object_key.len() > 1_024 {
         return Err(invalid("checkpoint manifest key is invalid"));
     }
-    let changed = connection.execute(
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let changed = transaction.execute(
         "UPDATE offsite_backup_checkpoint
          SET phase = ?1,
              manifest_object_key = ?2,
@@ -232,7 +233,10 @@ pub(super) fn mark_published(
             CheckpointPhase::Replicated.as_db_str(),
         ],
     )?;
-    exactly_one(changed)
+    exactly_one(changed)?;
+    delete_captured_references(&transaction, checkpoint_id)?;
+    transaction.commit()?;
+    Ok(())
 }
 
 pub(super) fn mark_failed(
@@ -240,7 +244,8 @@ pub(super) fn mark_failed(
     checkpoint_id: &CheckpointId,
     error_code: CheckpointErrorCode,
 ) -> Result<()> {
-    let changed = connection.execute(
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let changed = transaction.execute(
         "UPDATE offsite_backup_checkpoint
          SET phase = ?1, last_error_code = ?2, updated_at = max(updated_at, ?3)
          WHERE checkpoint_id = ?4 AND phase IN (?5, ?6, ?7)",
@@ -254,14 +259,18 @@ pub(super) fn mark_failed(
             CheckpointPhase::Replicated.as_db_str(),
         ],
     )?;
-    exactly_one(changed)
+    exactly_one(changed)?;
+    delete_captured_references(&transaction, checkpoint_id)?;
+    transaction.commit()?;
+    Ok(())
 }
 
 pub(super) fn fail_incomplete(
     connection: &mut Connection,
     error_code: CheckpointErrorCode,
 ) -> Result<u64> {
-    let changed = connection.execute(
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let changed = transaction.execute(
         "UPDATE offsite_backup_checkpoint
          SET phase = ?1, last_error_code = ?2, updated_at = max(updated_at, ?3)
          WHERE phase IN (?4, ?5, ?6)",
@@ -274,6 +283,16 @@ pub(super) fn fail_incomplete(
             CheckpointPhase::Replicated.as_db_str(),
         ],
     )?;
+    transaction.execute(
+        "DELETE FROM offsite_backup_checkpoint_media
+         WHERE checkpoint_id IN (
+             SELECT checkpoint_id
+             FROM offsite_backup_checkpoint
+             WHERE phase = ?1
+         )",
+        [CheckpointPhase::Failed.as_db_str()],
+    )?;
+    transaction.commit()?;
     Ok(changed as u64)
 }
 
@@ -543,6 +562,15 @@ fn summarize_captured_references(
         total_bytes,
         ContentSha256::from_bytes(digest.finalize().into()),
     ))
+}
+
+fn delete_captured_references(connection: &Connection, checkpoint_id: &CheckpointId) -> Result<()> {
+    connection.execute(
+        "DELETE FROM offsite_backup_checkpoint_media
+         WHERE checkpoint_id = ?1",
+        [checkpoint_id.as_str()],
+    )?;
+    Ok(())
 }
 
 pub(super) fn load_media_page(

@@ -924,6 +924,24 @@ fn corrupt_application_id_is_rejected_before_migration() {
 }
 
 #[test]
+fn missing_required_checkpoint_media_table_is_rejected_at_startup() {
+    let pair = TestPair::new();
+    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+
+    let connection = Connection::open(&pair.paths.main).expect("main database");
+    connection
+        .execute("DROP TABLE offsite_backup_checkpoint_media", [])
+        .expect("drop required checkpoint table");
+    drop(connection);
+
+    let error = Database::initialize(pair.paths.clone()).expect_err("missing required table");
+    assert!(matches!(
+        error,
+        DatabaseError::Validation { kind: "main", .. }
+    ));
+}
+
+#[test]
 fn divergent_migration_checksum_is_rejected() {
     let pair = TestPair::new();
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
