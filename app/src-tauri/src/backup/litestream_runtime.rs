@@ -1068,6 +1068,7 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
     match error {
         LitestreamError::PrepareRuntime(_)
         | LitestreamError::WriteConfig(_)
+        | LitestreamError::StageRestoreConfig(_)
         | LitestreamError::Execute(_) => {
             RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true)
         }
@@ -1075,6 +1076,7 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
             RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, true)
         }
         LitestreamError::InvalidConfigField(_)
+        | LitestreamError::InvalidRestoreConfig
         | LitestreamError::RelativeDatabasePath
         | LitestreamError::NonUtf8RuntimePath
         | LitestreamError::ControlSocketPathTooLong => {

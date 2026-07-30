@@ -27,6 +27,7 @@ pub(crate) const AWS_SHARED_CREDENTIALS_FILE_FD: &str = "/dev/fd/0";
 pub(crate) const AWS_EC2_METADATA_DISABLED_ENV: &str = "AWS_EC2_METADATA_DISABLED";
 const REQUIRED_L0_RETENTION: &str = "720h";
 const MAX_CONTROL_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_RESTORE_CONFIG_BYTES: usize = 64 * 1024;
 const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESTORE_FILES: usize = 100_000;
 const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
@@ -80,6 +81,10 @@ pub enum LitestreamError {
     StageBinary(#[source] std::io::Error),
     #[error("the immutable Litestream launch copy is invalid")]
     InvalidStagedBinary,
+    #[error("the immutable Litestream restore configuration could not be staged")]
+    StageRestoreConfig(#[source] std::io::Error),
+    #[error("the immutable Litestream restore configuration is invalid")]
+    InvalidRestoreConfig,
     #[error("the running Litestream process does not match the pinned code signature")]
     ProcessCodeSignatureMismatch,
     #[error("the running Litestream process identity could not be inspected")]
@@ -193,6 +198,18 @@ pub struct ImmutableLitestreamBinary {
     sha256: String,
     size: u64,
     code_signature_cdhash: String,
+}
+
+#[derive(Clone, Debug)]
+#[allow(
+    dead_code,
+    reason = "replica binding is read by the chunk 29g production restore adapter"
+)]
+struct ImmutableLitestreamRestoreConfig {
+    path: PathBuf,
+    sha256: String,
+    size: u64,
+    replica_path: R2ObjectKey,
 }
 
 impl VerifiedLitestreamBinary {
@@ -310,6 +327,149 @@ impl ImmutableLitestreamBinary {
         }
         Ok(())
     }
+}
+
+impl ImmutableLitestreamRestoreConfig {
+    fn reverify_before_spawn(&self) -> Result<(), LitestreamError> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or(LitestreamError::InvalidRestoreConfig)?;
+        if validate_immutable_directory(parent).is_err() {
+            return Err(LitestreamError::InvalidRestoreConfig);
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let mut file = options
+            .open(&self.path)
+            .map_err(LitestreamError::StageRestoreConfig)?;
+        let metadata = file
+            .metadata()
+            .map_err(LitestreamError::StageRestoreConfig)?;
+        if !metadata.is_file() || metadata.len() != self.size {
+            return Err(LitestreamError::InvalidRestoreConfig);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o777 != 0o400 {
+                return Err(LitestreamError::InvalidRestoreConfig);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt;
+            if metadata.st_flags() & libc::UF_IMMUTABLE == 0 {
+                return Err(LitestreamError::InvalidRestoreConfig);
+            }
+        }
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file)
+            .take(MAX_RESTORE_CONFIG_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(LitestreamError::StageRestoreConfig)?;
+        if bytes.len() as u64 != self.size || format!("{:x}", Sha256::digest(&bytes)) != self.sha256
+        {
+            return Err(LitestreamError::InvalidRestoreConfig);
+        }
+        Ok(())
+    }
+}
+
+fn stage_immutable_restore_config(
+    runtime: &LitestreamRuntimePaths,
+    rendered: &str,
+    replica_path: &R2ObjectKey,
+) -> Result<ImmutableLitestreamRestoreConfig, LitestreamError> {
+    if rendered.is_empty() || rendered.len() > MAX_RESTORE_CONFIG_BYTES {
+        return Err(LitestreamError::InvalidRestoreConfig);
+    }
+    runtime.prepare()?;
+    let bytes = rendered.as_bytes();
+    let sha256 = format!("{:x}", Sha256::digest(bytes));
+    let size = bytes.len() as u64;
+    let stage_root = runtime.directory().join("restore-configs");
+    prepare_private_runtime_directory(&stage_root).map_err(LitestreamError::StageRestoreConfig)?;
+    let final_directory = stage_root.join(&sha256);
+    let final_path = final_directory.join("ls.yml");
+    let config = ImmutableLitestreamRestoreConfig {
+        path: final_path.clone(),
+        sha256: sha256.clone(),
+        size,
+        replica_path: replica_path.clone(),
+    };
+    match fs::symlink_metadata(&final_directory) {
+        Ok(_) => match config.reverify_before_spawn() {
+            Ok(()) => return Ok(config),
+            Err(_) => remove_partial_restore_config(&final_directory)
+                .map_err(LitestreamError::StageRestoreConfig)?,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(LitestreamError::StageRestoreConfig(error)),
+    }
+
+    let temporary_directory = stage_root.join(format!(".{sha256}.tmp"));
+    remove_partial_restore_config(&temporary_directory)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    fs::create_dir(&temporary_directory).map_err(LitestreamError::StageRestoreConfig)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temporary_directory, fs::Permissions::from_mode(0o700))
+            .map_err(LitestreamError::StageRestoreConfig)?;
+    }
+    let temporary_path = temporary_directory.join("ls.yml");
+    let mut options = OpenOptions::new();
+    options.create_new(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o400)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let mut file = options
+        .open(&temporary_path)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o400))
+            .map_err(LitestreamError::StageRestoreConfig)?;
+    }
+    drop(file);
+    File::open(&temporary_directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    fs::rename(&temporary_directory, &final_directory)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let staged = File::open(&final_path).map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&staged).map_err(LitestreamError::StageRestoreConfig)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&final_directory, fs::Permissions::from_mode(0o500))
+            .map_err(LitestreamError::StageRestoreConfig)?;
+    }
+    let directory =
+        open_directory_no_follow(&final_directory).map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&directory).map_err(LitestreamError::StageRestoreConfig)?;
+    directory
+        .sync_all()
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    File::open(&stage_root)
+        .and_then(|root| root.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    config.reverify_before_spawn()?;
+    Ok(config)
 }
 
 fn embedded_manifest() -> Result<SourceManifest, LitestreamError> {
@@ -719,6 +879,14 @@ fn set_user_immutable(_file: &File) -> std::io::Result<()> {
 }
 
 fn remove_partial_stage(path: &Path) -> std::io::Result<()> {
+    remove_partial_stage_entry(path, "litestream")
+}
+
+fn remove_partial_restore_config(path: &Path) -> std::io::Result<()> {
+    remove_partial_stage_entry(path, "ls.yml")
+}
+
+fn remove_partial_stage_entry(path: &Path, expected_filename: &str) -> std::io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -740,7 +908,7 @@ fn remove_partial_stage(path: &Path) -> std::io::Result<()> {
     if entries.len() > 1
         || entries
             .first()
-            .is_some_and(|entry| entry.file_name() != "litestream")
+            .is_some_and(|entry| entry.file_name() != expected_filename)
     {
         return Err(std::io::Error::other(
             "Litestream staging temporary has unexpected contents",
@@ -1246,8 +1414,7 @@ pub(crate) trait RelationalRestoreEngine: Send + Sync {
 )]
 pub(crate) struct CommandLitestreamRestore<'a> {
     binary: &'a ImmutableLitestreamBinary,
-    config: PathBuf,
-    replica_path: R2ObjectKey,
+    config: ImmutableLitestreamRestoreConfig,
     credentials: &'a R2Credentials,
     timeout: Duration,
 }
@@ -1275,11 +1442,10 @@ impl<'a> CommandLitestreamRestore<'a> {
             endpoint: &endpoint,
         }
         .render()?;
-        runtime.write_config(&rendered)?;
+        let config = stage_immutable_restore_config(runtime, &rendered, replica_path)?;
         Ok(Self {
             binary,
-            config: runtime.config().to_owned(),
-            replica_path: replica_path.clone(),
+            config,
             credentials,
             timeout,
         })
@@ -1299,13 +1465,14 @@ impl<'a> CommandLitestreamRestore<'a> {
             return Err(LitestreamError::RestoreDestinationExists);
         }
         let arguments = restore_arguments(
-            &self.config,
+            &self.config.path,
             source_database_path,
             target_path,
             txid,
             dry_run,
         );
         self.binary.reverify_before_spawn()?;
+        self.config.reverify_before_spawn()?;
         execute_credentialed_command(
             self.binary,
             &arguments,
@@ -1322,7 +1489,7 @@ impl<'a> CommandLitestreamRestore<'a> {
 
 impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
     fn replica_path(&self) -> &str {
-        self.replica_path.as_str()
+        self.config.replica_path.as_str()
     }
 
     fn preview(
@@ -2082,6 +2249,14 @@ fi
         )
         .expect("bound restore engine");
         let txid = LitestreamTxid::from_local(42);
+        assert_ne!(engine.config.path, runtime.config());
+        runtime
+            .write_config("wrong shared restore config")
+            .expect("rewrite shared runtime config");
+        assert!(
+            fs::write(&engine.config.path, "wrong private restore config").is_err(),
+            "private restore config must be immutable"
+        );
 
         let plan = engine
             .preview(&source, &target, txid)
@@ -2092,6 +2267,14 @@ fi
             .expect("credentialed restore");
         assert_eq!(result.txid, txid);
         assert_eq!(fs::read(target).expect("restore bytes"), b"restored");
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
         remove_partial_stage(binary.path().parent().expect("immutable directory"))
             .expect("remove immutable restore test binary");
     }
@@ -2138,6 +2321,14 @@ fi
         ));
         assert!(!marker.exists(), "replacement process must never launch");
 
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
         remove_partial_stage(binary.path().parent().expect("immutable directory"))
             .expect("remove modified restore test binary");
     }
