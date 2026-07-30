@@ -394,6 +394,19 @@ fn writer_loop(
                     &mut main, &media, input, local_sync,
                 ));
             }
+            WriterMessage::LoadOffsiteCheckpointMediaPage {
+                checkpoint_id,
+                after_sha256,
+                limit,
+                reply,
+            } => {
+                let _ = reply.send(offsite_checkpoint::load_media_page(
+                    &main,
+                    &checkpoint_id,
+                    after_sha256,
+                    limit,
+                ));
+            }
             WriterMessage::MarkOffsiteCheckpointFenced {
                 checkpoint_id,
                 txid,

@@ -1,19 +1,22 @@
 # Complete off-site checkpoint protocol
 
 Main migration V20 adds a durable content clock and an append-only checkpoint
-state machine. Every recoverable main-database mutation advances the clock in
-the same SQLite transaction. Backup configuration and checkpoint bookkeeping
-are excluded, so publishing a checkpoint cannot recursively schedule another
-one.
+state machine. V21 persists each checkpoint's exact media snapshot so even a
+large library can be validated with bounded keyset pages instead of being
+materialized in process memory. Every recoverable main-database mutation
+advances the clock in the same SQLite transaction. Backup configuration and
+checkpoint bookkeeping are excluded, so publishing a checkpoint cannot
+recursively schedule another one.
 
 ## Publication contract
 
 Kosh publishes a checkpoint only after all of these ordered facts hold:
 
 1. the sole SQLite writer opens an immediate transaction, revalidates the
-   enabled backup lineage, captures the content revision and migration heads,
-   requires every retained source and preview hash to be `UPLOADED`, and
-   commits a `PREPARED` row;
+   enabled backup lineage, captures the content revision, migration heads, and
+   deduplicated retained source/preview hashes in relational storage, requires
+   every captured hash to be `UPLOADED`, and commits the snapshot with its
+   `PREPARED` row;
 2. the writer stays occupied while a bounded local-only Litestream control
    request bound to the daemon's exact configuration revision, target,
    backup-set lineage, and replica epoch returns the exact TXID containing that
@@ -21,9 +24,10 @@ Kosh publishes a checkpoint only after all of these ordered facts hold:
    slipping through the fence;
 3. a bounded remote Litestream sync reports a replica TXID greater than or
    equal to that fenced TXID;
-4. Kosh heads every captured immutable media hash and verifies byte length,
-   binary content type, SHA-256 metadata, and object-format version in bounded
-   parallel batches;
+4. Kosh keyset-pages the persisted snapshot, heads every captured immutable
+   media hash, and verifies byte length, binary content type, SHA-256 metadata,
+   object-format version, total count/bytes, and the ordered set digest in
+   bounded parallel batches;
 5. only then does Kosh create the versioned JSON manifest with `If-None-Match:
 *`, read back the exact bytes in a separately authorized operation, strictly
    decode them, derive the same
@@ -74,6 +78,8 @@ The native suite proves:
   publication sequence is correct even if the wall clock moves backwards;
 - authored mutations advance the content clock while checkpoint bookkeeping
   does not;
+- media references persist with the PREPARED row and keyset-page as 8/8/3 for
+  a 19-object snapshot, with oversized page requests rejected;
 - startup classifies incomplete attempts as failed;
 - quiet-time and maximum-delay scheduling boundaries are exact;
 - a missing, behind, equal, and ahead replica TXID have the expected result;

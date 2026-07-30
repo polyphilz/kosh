@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 use crate::database::{
@@ -19,8 +20,8 @@ use super::{
     credentials::{CredentialError, CredentialStore, MacOsKeychainCredentialStore},
     domain::{
         CheckpointBackupPhase, CheckpointErrorCode, CheckpointId, CheckpointManifestInput,
-        CheckpointManifestV1, PublishedCheckpointEvidence, R2ObjectKey, UtcTimestamp,
-        OBJECT_FORMAT_VERSION,
+        CheckpointManifestV1, ContentSha256, PublishedCheckpointEvidence, R2ObjectKey,
+        UtcTimestamp, OBJECT_FORMAT_VERSION,
     },
     litestream_runtime::LitestreamCheckpointHandle,
     media_reconciler::MediaBackupWakeHandle,
@@ -464,7 +465,7 @@ fn create_checkpoint(
             litestream_path: keyspace.litestream(&prepared.replica_epoch_id),
             txid: prepared.litestream_txid.to_string(),
             media_migration_head: prepared.media_migration_head,
-            referenced_hash_count: prepared.referenced_media.len() as u64,
+            referenced_hash_count: prepared.referenced_hash_count,
             referenced_total_bytes: prepared.referenced_total_bytes,
             referenced_hash_set_sha256: prepared.referenced_hash_set_sha256,
         })
@@ -538,51 +539,121 @@ fn validate_remote_media(
     prepared: &PreparedOffsiteCheckpoint,
     shutdown: &AtomicBool,
 ) -> Result<(), CheckpointErrorCode> {
-    for batch in prepared.referenced_media.chunks(MEDIA_HEAD_BATCH_SIZE) {
-        ensure_running(shutdown)?;
-        let metadata = with_current_remote(database, config, || {
-            thread::scope(|scope| {
-                let requests = batch
-                    .iter()
-                    .map(|reference| {
-                        let key = keyspace.media(reference.sha256);
-                        scope.spawn(move || {
-                            store
-                                .head(&key)
-                                .map_err(|error| map_media_store_error(error.code))
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                requests
-                    .into_iter()
-                    .map(|request| {
-                        request
-                            .join()
-                            .map_err(|_| CheckpointErrorCode::WorkerUnavailable)?
-                    })
-                    .collect::<Result<Vec<_>, _>>()
+    validate_remote_media_with_loader(
+        prepared,
+        shutdown,
+        |after_sha256| {
+            database
+                .load_offsite_checkpoint_media_page(
+                    prepared.checkpoint_id.clone(),
+                    after_sha256,
+                    MEDIA_HEAD_BATCH_SIZE as u32,
+                )
+                .map_err(|error| map_database_error(&error))
+        },
+        |batch| {
+            with_current_remote(database, config, || {
+                head_remote_media_batch(store, keyspace, batch)
             })
-        })?;
+        },
+        |reference| {
+            let _ = database.requeue_uploaded_offsite_media(
+                config.backup_set_id.clone(),
+                reference.sha256,
+                system_now_ms(),
+            );
+        },
+    )
+}
+
+fn validate_remote_media_with_loader(
+    prepared: &PreparedOffsiteCheckpoint,
+    shutdown: &AtomicBool,
+    mut load_page: impl FnMut(
+        Option<crate::backup::domain::ContentSha256>,
+    ) -> Result<Vec<CheckpointMediaReference>, CheckpointErrorCode>,
+    mut head_batch: impl FnMut(
+        &[CheckpointMediaReference],
+    ) -> Result<Vec<Option<ObjectMetadata>>, CheckpointErrorCode>,
+    mut requeue: impl FnMut(&CheckpointMediaReference),
+) -> Result<(), CheckpointErrorCode> {
+    let mut cursor = None;
+    let mut count = 0_u64;
+    let mut total_bytes = 0_u64;
+    let mut digest = Sha256::new();
+    loop {
+        let batch = load_page(cursor)?;
+        if batch.is_empty() {
+            break;
+        }
+        if batch.len() > MEDIA_HEAD_BATCH_SIZE
+            || cursor.is_some_and(|previous| batch[0].sha256.as_bytes() <= previous.as_bytes())
+            || batch
+                .windows(2)
+                .any(|pair| pair[0].sha256.as_bytes() >= pair[1].sha256.as_bytes())
+        {
+            return Err(CheckpointErrorCode::MalformedManifest);
+        }
+        ensure_running(shutdown)?;
+        let metadata = head_batch(&batch)?;
+        if metadata.len() != batch.len() {
+            return Err(CheckpointErrorCode::MalformedManifest);
+        }
         for (reference, metadata) in batch.iter().zip(metadata) {
+            count = count
+                .checked_add(1)
+                .ok_or(CheckpointErrorCode::MalformedManifest)?;
+            total_bytes = total_bytes
+                .checked_add(reference.byte_length)
+                .ok_or(CheckpointErrorCode::MalformedManifest)?;
+            digest.update(reference.sha256.as_bytes());
             let Some(metadata) = metadata else {
-                let _ = database.requeue_uploaded_offsite_media(
-                    config.backup_set_id.clone(),
-                    reference.sha256,
-                    system_now_ms(),
-                );
+                requeue(reference);
                 return Err(CheckpointErrorCode::RemoteMediaMissing);
             };
             if !media_metadata_matches(&metadata, reference) {
-                let _ = database.requeue_uploaded_offsite_media(
-                    config.backup_set_id.clone(),
-                    reference.sha256,
-                    system_now_ms(),
-                );
+                requeue(reference);
                 return Err(CheckpointErrorCode::RemoteMediaCorrupt);
             }
         }
+        cursor = batch.last().map(|reference| reference.sha256);
+    }
+    if count != prepared.referenced_hash_count
+        || total_bytes != prepared.referenced_total_bytes
+        || ContentSha256::from_bytes(digest.finalize().into())
+            != prepared.referenced_hash_set_sha256
+    {
+        return Err(CheckpointErrorCode::MalformedManifest);
     }
     Ok(())
+}
+
+fn head_remote_media_batch(
+    store: &dyn ObjectStore,
+    keyspace: &super::domain::R2Keyspace,
+    batch: &[CheckpointMediaReference],
+) -> Result<Vec<Option<ObjectMetadata>>, CheckpointErrorCode> {
+    thread::scope(|scope| {
+        let requests = batch
+            .iter()
+            .map(|reference| {
+                let key = keyspace.media(reference.sha256);
+                scope.spawn(move || {
+                    store
+                        .head(&key)
+                        .map_err(|error| map_media_store_error(error.code))
+                })
+            })
+            .collect::<Vec<_>>();
+        requests
+            .into_iter()
+            .map(|request| {
+                request
+                    .join()
+                    .map_err(|_| CheckpointErrorCode::WorkerUnavailable)?
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })
 }
 
 fn media_metadata_matches(metadata: &ObjectMetadata, reference: &CheckpointMediaReference) -> bool {
@@ -648,7 +719,7 @@ fn publish_manifest(
         kosh_version: &prepared.kosh_version,
         main_migration_head: prepared.main_migration_head,
         media_migration_head: prepared.media_migration_head,
-        referenced_hash_count: prepared.referenced_media.len() as u64,
+        referenced_hash_count: prepared.referenced_hash_count,
         referenced_total_bytes: prepared.referenced_total_bytes,
         referenced_hash_set_sha256: prepared.referenced_hash_set_sha256,
         litestream_txid: &prepared.litestream_txid.to_string(),
@@ -895,6 +966,7 @@ mod tests {
         replica_epoch_id: ReplicaEpochId,
         references: Vec<CheckpointMediaReference>,
     ) -> PreparedOffsiteCheckpoint {
+        let referenced_hash_count = references.len() as u64;
         let referenced_total_bytes = references.iter().map(|item| item.byte_length).sum();
         let mut digest = Sha256::new();
         for reference in &references {
@@ -908,9 +980,9 @@ mod tests {
             kosh_version: "test".into(),
             config_revision: 1,
             content_revision: 9,
-            main_migration_head: 20,
+            main_migration_head: 21,
             media_migration_head: 2,
-            referenced_media: references,
+            referenced_hash_count,
             referenced_total_bytes,
             referenced_hash_set_sha256: ContentSha256::from_bytes(digest.finalize().into()),
             litestream_txid: LitestreamTxid::from_local(42),
@@ -932,7 +1004,7 @@ mod tests {
             litestream_path: keyspace.litestream(&prepared.replica_epoch_id),
             txid: prepared.litestream_txid.to_string(),
             media_migration_head: prepared.media_migration_head,
-            referenced_hash_count: prepared.referenced_media.len() as u64,
+            referenced_hash_count: prepared.referenced_hash_count,
             referenced_total_bytes: prepared.referenced_total_bytes,
             referenced_hash_set_sha256: prepared.referenced_hash_set_sha256,
         })
@@ -940,6 +1012,28 @@ mod tests {
         let key = manifest.object_key(keyspace).expect("manifest key");
         let bytes = manifest.to_json().expect("manifest JSON");
         (manifest, key, bytes)
+    }
+
+    fn validate_from_references(
+        store: &dyn ObjectStore,
+        keyspace: &super::super::domain::R2Keyspace,
+        prepared: &PreparedOffsiteCheckpoint,
+        references: &[CheckpointMediaReference],
+        shutdown: &AtomicBool,
+    ) -> Result<(), CheckpointErrorCode> {
+        let mut offset = 0;
+        validate_remote_media_with_loader(
+            prepared,
+            shutdown,
+            |_| {
+                let end = (offset + MEDIA_HEAD_BATCH_SIZE).min(references.len());
+                let page = references[offset..end].to_vec();
+                offset = end;
+                Ok(page)
+            },
+            |batch| head_remote_media_batch(store, keyspace, batch),
+            |_| {},
+        )
     }
 
     #[test]
@@ -1017,7 +1111,7 @@ mod tests {
         );
         let keyspace = target.keyspace(&backup_set_id);
         let store = FakeObjectStore::new(keyspace.clone());
-        let references = (0_u8..9)
+        let mut references: Vec<CheckpointMediaReference> = (0_u8..9)
             .map(|index| {
                 let bytes = format!("checkpoint media {index}").into_bytes();
                 let sha256 = ContentSha256::from_bytes(Sha256::digest(&bytes).into());
@@ -1033,11 +1127,16 @@ mod tests {
                 }
             })
             .collect();
+        references.sort_by(|left, right| left.sha256.as_bytes().cmp(right.sha256.as_bytes()));
         store.clear_operations();
-        let prepared = prepared(backup_set_id.clone(), replica_epoch_id.clone(), references);
+        let prepared = prepared(
+            backup_set_id.clone(),
+            replica_epoch_id.clone(),
+            references.clone(),
+        );
         let client = database.client();
         let shutdown = AtomicBool::new(false);
-        validate_remote_media(&client, &config, &store, &keyspace, &prepared, &shutdown)
+        validate_from_references(&store, &keyspace, &prepared, &references, &shutdown)
             .expect("validate media");
         let (manifest, key, bytes) = manifest(&keyspace, &prepared);
         let publication = ManifestPublicationContext {
@@ -1101,32 +1200,22 @@ mod tests {
         let backup_set_id = BackupSetId::new();
         let replica_epoch_id = ReplicaEpochId::new();
         let target = target();
-        let (_root, database, config) = enabled_database(
+        let (_root, _database, _config) = enabled_database(
             backup_set_id.clone(),
             replica_epoch_id.clone(),
             target.clone(),
         );
         let keyspace = target.keyspace(&backup_set_id);
         let store = FakeObjectStore::new(keyspace.clone());
-        let prepared = prepared(
-            backup_set_id.clone(),
-            replica_epoch_id,
-            vec![CheckpointMediaReference {
-                sha256: ContentSha256::from_bytes([0xab; 32]),
-                byte_length: 10,
-            }],
-        );
+        let references = vec![CheckpointMediaReference {
+            sha256: ContentSha256::from_bytes([0xab; 32]),
+            byte_length: 10,
+        }];
+        let prepared = prepared(backup_set_id.clone(), replica_epoch_id, references.clone());
         let shutdown = AtomicBool::new(false);
         assert_eq!(
-            validate_remote_media(
-                &database.client(),
-                &config,
-                &store,
-                &keyspace,
-                &prepared,
-                &shutdown,
-            )
-            .expect_err("missing media"),
+            validate_from_references(&store, &keyspace, &prepared, &references, &shutdown,)
+                .expect_err("missing media"),
             CheckpointErrorCode::RemoteMediaMissing
         );
         assert_eq!(store.operations(), [ObjectOperation::Head]);

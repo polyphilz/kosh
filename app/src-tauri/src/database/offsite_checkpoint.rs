@@ -42,7 +42,7 @@ pub(crate) struct PreparedOffsiteCheckpoint {
     pub(crate) content_revision: u64,
     pub(crate) main_migration_head: u32,
     pub(crate) media_migration_head: u32,
-    pub(crate) referenced_media: Vec<CheckpointMediaReference>,
+    pub(crate) referenced_hash_count: u64,
     pub(crate) referenced_total_bytes: u64,
     pub(crate) referenced_hash_set_sha256: ContentSha256,
     pub(crate) litestream_txid: LitestreamTxid,
@@ -92,15 +92,6 @@ pub(super) fn prepare_and_fence(
 
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let config_revision = load_active_config_revision(&transaction, &input)?;
-    let referenced_media = load_references(&transaction, &input.backup_set_id, true)?;
-    let referenced_total_bytes = referenced_media
-        .iter()
-        .try_fold(0_u64, |total, reference| {
-            total
-                .checked_add(reference.byte_length)
-                .ok_or_else(|| invalid("referenced media byte total overflowed"))
-        })?;
-    let referenced_hash_set_sha256 = hash_reference_set(&referenced_media);
     let content_revision = load_content_revision(&transaction)?;
     let heads = migrations::expected_heads();
     let main_migration_head = positive_head(heads.main, "main")?;
@@ -131,15 +122,29 @@ pub(super) fn prepare_and_fence(
             input.kosh_version,
             main_migration_head,
             media_migration_head,
-            stored_i64(
-                u64::try_from(referenced_media.len())
-                    .map_err(|_| invalid("too many media references"))?,
-                "media reference count"
-            )?,
-            stored_i64(referenced_total_bytes, "media byte total")?,
-            referenced_hash_set_sha256.as_bytes().as_slice(),
+            0_i64,
+            0_i64,
+            [0_u8; 32].as_slice(),
         ],
     )?;
+    capture_references(&transaction, &input.checkpoint_id, &input.backup_set_id)?;
+    let (referenced_hash_count, referenced_total_bytes, referenced_hash_set_sha256) =
+        summarize_captured_references(&transaction, &input.checkpoint_id)?;
+    let changed = transaction.execute(
+        "UPDATE offsite_backup_checkpoint
+         SET referenced_hash_count = ?1,
+             referenced_total_bytes = ?2,
+             referenced_hash_set_sha256 = ?3
+         WHERE checkpoint_id = ?4 AND phase = ?5",
+        params![
+            stored_i64(referenced_hash_count, "media reference count")?,
+            stored_i64(referenced_total_bytes, "media byte total")?,
+            referenced_hash_set_sha256.as_bytes().as_slice(),
+            input.checkpoint_id.as_str(),
+            CheckpointPhase::Prepared.as_db_str(),
+        ],
+    )?;
+    exactly_one(changed)?;
     transaction.commit()?;
 
     // The single writer remains inside this message until Litestream has
@@ -158,7 +163,7 @@ pub(super) fn prepare_and_fence(
         content_revision,
         main_migration_head,
         media_migration_head,
-        referenced_media,
+        referenced_hash_count,
         referenced_total_bytes,
         referenced_hash_set_sha256,
         litestream_txid,
@@ -402,13 +407,60 @@ fn load_active_config_revision(
         .ok_or_else(|| invalid("checkpoint target is not the active enabled backup"))
 }
 
-fn load_references(
-    connection: &Connection,
+fn capture_references(
+    transaction: &Transaction<'_>,
+    checkpoint_id: &CheckpointId,
     backup_set_id: &BackupSetId,
-    require_uploaded: bool,
-) -> Result<Vec<CheckpointMediaReference>> {
-    let mut statement = connection.prepare(
-        "WITH referenced(sha256, byte_length) AS (
+) -> Result<()> {
+    let conflict = transaction
+        .query_row(
+            "WITH referenced(sha256, byte_length) AS (
+                SELECT attachment.sha256, attachment.byte_length
+                FROM attachment
+                WHERE attachment.deleted_at IS NULL
+                   OR EXISTS (
+                        SELECT 1 FROM tidbit_revision_attachment
+                        WHERE attachment_id = attachment.id
+                   )
+                   OR EXISTS (
+                        SELECT 1 FROM research_run_attachment
+                        WHERE attachment_id = attachment.id
+                   )
+                UNION ALL
+                SELECT image.preview_sha256, image.preview_byte_length
+                FROM attachment_image AS image
+                JOIN attachment ON attachment.id = image.attachment_id
+                WHERE attachment.deleted_at IS NULL
+                   OR EXISTS (
+                        SELECT 1 FROM tidbit_revision_attachment
+                        WHERE attachment_id = attachment.id
+                   )
+                   OR EXISTS (
+                        SELECT 1 FROM research_run_attachment
+                        WHERE attachment_id = attachment.id
+                   )
+             )
+             SELECT 1
+             FROM referenced
+             GROUP BY sha256
+             HAVING min(byte_length) <> max(byte_length)
+             LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if conflict {
+        return Err(invalid(
+            "one referenced media hash has conflicting byte lengths",
+        ));
+    }
+
+    transaction.execute(
+        "INSERT INTO offsite_backup_checkpoint_media (
+            checkpoint_id, sha256, byte_length
+         )
+         WITH referenced(sha256, byte_length) AS (
             SELECT attachment.sha256, attachment.byte_length
             FROM attachment
             WHERE attachment.deleted_at IS NULL
@@ -420,7 +472,7 @@ fn load_references(
                     SELECT 1 FROM research_run_attachment
                     WHERE attachment_id = attachment.id
                )
-            UNION
+            UNION ALL
             SELECT image.preview_sha256, image.preview_byte_length
             FROM attachment_image AS image
             JOIN attachment ON attachment.id = image.attachment_id
@@ -434,46 +486,97 @@ fn load_references(
                     WHERE attachment_id = attachment.id
                )
          )
-         SELECT referenced.sha256, referenced.byte_length, upload.state
+         SELECT ?1, sha256, min(byte_length)
          FROM referenced
-         LEFT JOIN offsite_media_upload AS upload
-           ON upload.backup_set_id = ?1
-          AND upload.sha256 = referenced.sha256
-         ORDER BY referenced.sha256",
+         GROUP BY sha256",
+        [checkpoint_id.as_str()],
     )?;
-    let mut rows = statement.query([backup_set_id.as_str()])?;
-    let mut references: Vec<CheckpointMediaReference> = Vec::new();
-    while let Some(row) = rows.next()? {
-        let state = row.get::<_, Option<String>>(2)?;
-        if state.is_none() || (require_uploaded && state.as_deref() != Some("UPLOADED")) {
-            return Err(DatabaseError::OffsiteCheckpointMediaIncomplete);
-        }
-        let reference = CheckpointMediaReference {
-            sha256: parse_sha256(row.get(0)?)?,
-            byte_length: positive_u64(row.get(1)?, "referenced media byte length")?,
-        };
-        if let Some(previous) = references
-            .last()
-            .filter(|previous| previous.sha256 == reference.sha256)
-        {
-            if previous.byte_length != reference.byte_length {
-                return Err(invalid(
-                    "one referenced media hash has conflicting byte lengths",
-                ));
-            }
-            continue;
-        }
-        references.push(reference);
+
+    let incomplete = transaction
+        .query_row(
+            "SELECT 1
+             FROM offsite_backup_checkpoint_media AS media
+             LEFT JOIN offsite_media_upload AS upload
+               ON upload.backup_set_id = ?1
+              AND upload.sha256 = media.sha256
+             WHERE media.checkpoint_id = ?2
+               AND (upload.state IS NULL OR upload.state <> 'UPLOADED')
+             LIMIT 1",
+            params![backup_set_id.as_str(), checkpoint_id.as_str()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if incomplete {
+        return Err(DatabaseError::OffsiteCheckpointMediaIncomplete);
     }
-    Ok(references)
+    Ok(())
 }
 
-fn hash_reference_set(references: &[CheckpointMediaReference]) -> ContentSha256 {
+fn summarize_captured_references(
+    connection: &Connection,
+    checkpoint_id: &CheckpointId,
+) -> Result<(u64, u64, ContentSha256)> {
+    let mut statement = connection.prepare(
+        "SELECT sha256, byte_length
+         FROM offsite_backup_checkpoint_media
+         WHERE checkpoint_id = ?1
+         ORDER BY sha256",
+    )?;
+    let mut rows = statement.query([checkpoint_id.as_str()])?;
+    let mut count = 0_u64;
+    let mut total_bytes = 0_u64;
     let mut digest = Sha256::new();
-    for reference in references {
-        digest.update(reference.sha256.as_bytes());
+    while let Some(row) = rows.next()? {
+        let sha256 = parse_sha256(row.get(0)?)?;
+        let byte_length = positive_u64(row.get(1)?, "referenced media byte length")?;
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| invalid("too many media references"))?;
+        total_bytes = total_bytes
+            .checked_add(byte_length)
+            .ok_or_else(|| invalid("referenced media byte total overflowed"))?;
+        digest.update(sha256.as_bytes());
     }
-    ContentSha256::from_bytes(digest.finalize().into())
+    Ok((
+        count,
+        total_bytes,
+        ContentSha256::from_bytes(digest.finalize().into()),
+    ))
+}
+
+pub(super) fn load_media_page(
+    connection: &Connection,
+    checkpoint_id: &CheckpointId,
+    after_sha256: Option<ContentSha256>,
+    limit: u32,
+) -> Result<Vec<CheckpointMediaReference>> {
+    if limit == 0 || limit > 256 {
+        return Err(invalid("checkpoint media page limit is invalid"));
+    }
+    let mut statement = connection.prepare(
+        "SELECT sha256, byte_length
+         FROM offsite_backup_checkpoint_media
+         WHERE checkpoint_id = ?1
+           AND (?2 IS NULL OR sha256 > ?2)
+         ORDER BY sha256
+         LIMIT ?3",
+    )?;
+    let cursor = after_sha256.map(|value| value.as_bytes().to_vec());
+    let references = statement
+        .query_map(
+            params![checkpoint_id.as_str(), cursor, i64::from(limit)],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
+        )?
+        .map(|row| {
+            let (sha256, byte_length) = row?;
+            Ok(CheckpointMediaReference {
+                sha256: parse_sha256(sha256)?,
+                byte_length: positive_u64(byte_length, "referenced media byte length")?,
+            })
+        })
+        .collect();
+    references
 }
 
 fn parse_sha256(value: Vec<u8>) -> Result<ContentSha256> {

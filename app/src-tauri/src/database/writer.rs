@@ -34,8 +34,8 @@ use super::{
     },
     migrations::MigrationHeads,
     offsite_checkpoint::{
-        LocalCheckpointSync, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
-        PreparedOffsiteCheckpoint,
+        CheckpointMediaReference, LocalCheckpointSync, OffsiteCheckpointScheduleState,
+        PrepareOffsiteCheckpointInput, PreparedOffsiteCheckpoint,
     },
     passages::CitationResolution,
     research_runs::{
@@ -150,6 +150,12 @@ pub(super) enum WriterMessage {
         input: PrepareOffsiteCheckpointInput,
         local_sync: Arc<dyn LocalCheckpointSync>,
         reply: SyncSender<Result<PreparedOffsiteCheckpoint>>,
+    },
+    LoadOffsiteCheckpointMediaPage {
+        checkpoint_id: CheckpointId,
+        after_sha256: Option<crate::backup::domain::ContentSha256>,
+        limit: u32,
+        reply: SyncSender<Result<Vec<CheckpointMediaReference>>>,
     },
     MarkOffsiteCheckpointFenced {
         checkpoint_id: CheckpointId,
@@ -730,6 +736,26 @@ impl DatabaseClient {
             .send(WriterMessage::PrepareOffsiteCheckpoint {
                 input,
                 local_sync,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_offsite_checkpoint_media_page(
+        &self,
+        checkpoint_id: CheckpointId,
+        after_sha256: Option<crate::backup::domain::ContentSha256>,
+        limit: u32,
+    ) -> Result<Vec<CheckpointMediaReference>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadOffsiteCheckpointMediaPage {
+                checkpoint_id,
+                after_sha256,
+                limit,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;

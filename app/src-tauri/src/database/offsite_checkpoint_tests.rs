@@ -267,6 +267,99 @@ fn authored_mutations_advance_content_clock_but_checkpoint_bookkeeping_does_not(
 }
 
 #[test]
+fn checkpoint_media_snapshot_is_persisted_and_read_in_bounded_keyset_pages() {
+    let (root, database, config) = enabled_database();
+    let client = database.client();
+    let draft_id = "019f547b-6200-7000-8000-000000008001";
+    client
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: None,
+                body_markdown: String::new(),
+                sources: Vec::new(),
+            },
+            now_ms: 2,
+            draft_id: draft_id.into(),
+            media_limits: MediaLimits::default(),
+        })
+        .expect("save draft");
+
+    let staging = root.path().join("staging");
+    for index in 0_u64..19 {
+        let staging_id = format!("019f547b-6200-7000-8000-{:012x}", 0x100 + index);
+        let staged = StagedAttachment::from_reader(
+            Cursor::new(format!("paged checkpoint media {index}").into_bytes()),
+            &staging,
+            &staging_id,
+            MediaLimits::default().max_attachment_bytes,
+        )
+        .expect("stage attachment");
+        client
+            .ingest_attachment(staged.write(IngestAttachmentMetadata {
+                attachment_id: format!("019f547b-6200-7000-8000-{:012x}", 0x200 + index),
+                ingest_lease_id: format!("019f547b-6200-7000-8000-{:012x}", 0x300 + index),
+                draft_id: draft_id.into(),
+                display_filename: format!("page-{index}.bin"),
+                media_type: "application/octet-stream".into(),
+                now_ms: 3 + index as i64,
+                limits: MediaLimits::default(),
+            }))
+            .expect("ingest attachment");
+        let upload = client
+            .claim_next_offsite_media_upload(
+                100 + index as i64,
+                format!("019f547b-6200-7000-8000-{:012x}", 0x400 + index),
+            )
+            .expect("claim upload")
+            .expect("pending upload");
+        assert!(client
+            .complete_offsite_media_upload(
+                upload,
+                format!("\"remote-version-{index}\""),
+                200 + index as i64,
+            )
+            .expect("complete upload"));
+    }
+
+    let checkpoint_id = CheckpointId::new();
+    let prepared = client
+        .prepare_offsite_checkpoint(
+            input(checkpoint_id.clone(), &config, 500),
+            Arc::new(ImmediateSync),
+        )
+        .expect("prepare checkpoint");
+    assert_eq!(prepared.referenced_hash_count, 19);
+
+    let mut cursor = None;
+    let mut page_sizes = Vec::new();
+    let mut captured = Vec::new();
+    loop {
+        let page = client
+            .load_offsite_checkpoint_media_page(checkpoint_id.clone(), cursor, 8)
+            .expect("load media page");
+        if page.is_empty() {
+            break;
+        }
+        assert!(page.len() <= 8);
+        page_sizes.push(page.len());
+        cursor = page.last().map(|reference| reference.sha256);
+        captured.extend(page);
+    }
+    assert_eq!(captured.len(), 19);
+    assert_eq!(page_sizes, [8, 8, 3]);
+    assert!(captured
+        .windows(2)
+        .all(|pair| pair[0].sha256.as_bytes() < pair[1].sha256.as_bytes()));
+    assert!(matches!(
+        client.load_offsite_checkpoint_media_page(checkpoint_id, None, 257),
+        Err(DatabaseError::InvalidOffsiteCheckpoint(_))
+    ));
+}
+
+#[test]
 fn startup_reclassifies_interrupted_checkpoint_attempts_as_failed() {
     let (_root, database, config) = enabled_database();
     let checkpoint_id = CheckpointId::new();
