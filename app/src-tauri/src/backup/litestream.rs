@@ -395,6 +395,10 @@ fn stage_immutable_restore_config(
     let size = bytes.len() as u64;
     let stage_root = runtime.directory().join("restore-configs");
     prepare_private_runtime_directory(&stage_root).map_err(LitestreamError::StageRestoreConfig)?;
+    let _stage_lock = lock_restore_config_stage(&stage_root, &sha256)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    remove_stale_restore_config_temporaries(&stage_root, &sha256)
+        .map_err(LitestreamError::StageRestoreConfig)?;
     let final_directory = stage_root.join(&sha256);
     let final_path = final_directory.join("ls.yml");
     let config = ImmutableLitestreamRestoreConfig {
@@ -413,9 +417,7 @@ fn stage_immutable_restore_config(
         Err(error) => return Err(LitestreamError::StageRestoreConfig(error)),
     }
 
-    let temporary_directory = stage_root.join(format!(".{sha256}.tmp"));
-    remove_partial_restore_config(&temporary_directory)
-        .map_err(LitestreamError::StageRestoreConfig)?;
+    let temporary_directory = stage_root.join(format!(".{sha256}.{}.tmp", uuid::Uuid::now_v7()));
     fs::create_dir(&temporary_directory).map_err(LitestreamError::StageRestoreConfig)?;
     #[cfg(unix)]
     {
@@ -470,6 +472,53 @@ fn stage_immutable_restore_config(
         .map_err(LitestreamError::StageRestoreConfig)?;
     config.reverify_before_spawn()?;
     Ok(config)
+}
+
+fn lock_restore_config_stage(stage_root: &Path, sha256: &str) -> std::io::Result<File> {
+    let lock_path = stage_root.join(format!(".{sha256}.lock"));
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let lock = options.open(lock_path)?;
+    if !lock.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "Litestream restore config lock is not regular",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        lock.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn remove_stale_restore_config_temporaries(stage_root: &Path, sha256: &str) -> std::io::Result<()> {
+    let prefix = format!(".{sha256}.");
+    for entry in fs::read_dir(stage_root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(unique) = name
+            .strip_prefix(&prefix)
+            .and_then(|name| name.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(unique).is_ok() {
+            remove_partial_restore_config(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn embedded_manifest() -> Result<SourceManifest, LitestreamError> {
@@ -1916,7 +1965,7 @@ impl<E: CommandExecutor> LitestreamControl for CommandLitestreamControl<E> {
 mod tests {
     use std::{
         os::unix::fs::{symlink, PermissionsExt},
-        sync::{Arc, Mutex},
+        sync::{Arc, Barrier, Mutex},
     };
 
     use super::*;
@@ -2185,6 +2234,72 @@ mod tests {
             ]
             .map(OsString::from)
         );
+    }
+
+    #[test]
+    fn concurrent_restore_config_staging_converges_on_one_immutable_directory() {
+        const BUILDERS: usize = 4;
+
+        let root = tempfile::tempdir().expect("restore config root");
+        let rendered = "dbs:\n  - path: /tmp/kosh.sqlite3\n".to_owned();
+        let (_, replica_path) = restore_test_target();
+        let barrier = Arc::new(Barrier::new(BUILDERS + 1));
+        let configs = thread::scope(|scope| {
+            let builders = (0..BUILDERS)
+                .map(|_| {
+                    let data_root = root.path().to_owned();
+                    let rendered = rendered.clone();
+                    let replica_path = replica_path.clone();
+                    let barrier = Arc::clone(&barrier);
+                    scope.spawn(move || {
+                        let runtime = LitestreamRuntimePaths::new(&data_root)
+                            .expect("concurrent restore runtime");
+                        barrier.wait();
+                        stage_immutable_restore_config(&runtime, &rendered, &replica_path)
+                            .expect("converged immutable restore config")
+                    })
+                })
+                .collect::<Vec<_>>();
+            barrier.wait();
+            builders
+                .into_iter()
+                .map(|builder| builder.join().expect("restore config builder"))
+                .collect::<Vec<_>>()
+        });
+
+        for config in &configs {
+            assert_eq!(config.path, configs[0].path);
+            assert_eq!(config.sha256, configs[0].sha256);
+            assert_eq!(config.size, configs[0].size);
+            config.reverify_before_spawn().expect("immutable config");
+        }
+        let stage_root = configs[0]
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .expect("restore config stage root");
+        let entries = fs::read_dir(stage_root)
+            .expect("restore config entries")
+            .map(|entry| entry.expect("restore config entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|name| name.to_str() == Some(configs[0].sha256.as_str()))
+                .count(),
+            1
+        );
+        assert!(!entries
+            .iter()
+            .any(|name| { name.to_str().is_some_and(|name| name.ends_with(".tmp")) }));
+
+        remove_partial_restore_config(
+            configs[0]
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore config");
     }
 
     #[test]

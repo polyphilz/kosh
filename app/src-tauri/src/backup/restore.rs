@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::database::{
@@ -257,6 +257,7 @@ pub(crate) fn stage_checkpoint(
         {
             return Err(RestoreError::Manifest);
         }
+        validate_checkpoint_evidence(&paths.main, checkpoint)?;
         let (restored_media_count, restored_media_bytes) =
             rebuild_media(store, keyspace, checkpoint, &paths)?;
         validate_restored_pair(&paths)?;
@@ -338,6 +339,94 @@ fn validate_plan(
             .iter()
             .any(|file| file.min_txid <= txid && file.max_txid >= txid)
     {
+        return Err(RestoreError::Manifest);
+    }
+    Ok(())
+}
+
+fn validate_checkpoint_evidence(
+    main_path: &Path,
+    checkpoint: &RemoteCheckpoint,
+) -> Result<(), RestoreError> {
+    let connection = Connection::open_with_flags(
+        main_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(crate::database::DatabaseError::from)?;
+    let content_revision = connection
+        .query_row(
+            "SELECT revision
+             FROM offsite_backup_content_clock
+             WHERE singleton_id = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(crate::database::DatabaseError::from)?;
+    let evidence = connection
+        .query_row(
+            "SELECT backup_set_id, replica_epoch_id, content_revision, created_at,
+                    kosh_version, main_migration_head, media_migration_head,
+                    referenced_hash_count, referenced_total_bytes,
+                    referenced_hash_set_sha256
+             FROM offsite_backup_checkpoint
+             WHERE checkpoint_id = ?1
+               AND phase = 'PREPARED'
+               AND litestream_txid IS NULL
+               AND manifest_object_key IS NULL
+               AND publication_sequence IS NULL
+               AND last_error_code IS NULL",
+            [checkpoint.checkpoint_id().as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Vec<u8>>(9)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(crate::database::DatabaseError::from)?;
+    let Some((
+        backup_set_id,
+        replica_epoch_id,
+        checkpoint_content_revision,
+        created_at_ms,
+        kosh_version,
+        main_migration_head,
+        media_migration_head,
+        referenced_hash_count,
+        referenced_total_bytes,
+        referenced_hash_set_sha256,
+    )) = evidence
+    else {
+        return Err(RestoreError::Manifest);
+    };
+    let matches = u64::try_from(content_revision) == Ok(checkpoint.content_revision())
+        && backup_set_id == checkpoint.manifest.backup_set_id().as_str()
+        && replica_epoch_id == checkpoint.replica_epoch_id().as_str()
+        && u64::try_from(checkpoint_content_revision) == Ok(checkpoint.content_revision())
+        && created_at_ms >= 0
+        && i128::from(created_at_ms).checked_mul(1_000_000)
+            == Some(checkpoint.created_at_unix_nanos)
+        && kosh_version == checkpoint.kosh_version()
+        && u32::try_from(main_migration_head) == Ok(checkpoint.manifest.main_migration_head())
+        && u32::try_from(media_migration_head) == Ok(checkpoint.manifest.media_migration_head())
+        && u64::try_from(referenced_hash_count) == Ok(checkpoint.referenced_hash_count())
+        && u64::try_from(referenced_total_bytes) == Ok(checkpoint.referenced_total_bytes())
+        && referenced_hash_set_sha256
+            == checkpoint
+                .manifest
+                .referenced_hash_set_sha256()
+                .as_bytes()
+                .as_slice();
+    if !matches {
         return Err(RestoreError::Manifest);
     }
     Ok(())
@@ -571,8 +660,8 @@ mod tests {
         },
         database::{
             drafts::SaveDraftWrite, tidbits::CreateTidbitWrite, AttachmentIngestInput, Database,
-            LexicalSearchMode, MediaLimits, SaveDraftInput, SearchPassagesInput, SourceDraft,
-            TidbitDraft,
+            LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput, SaveDraftInput,
+            SaveOffsiteBackupConfigInput, SearchPassagesInput, SourceDraft, TidbitDraft,
         },
     };
 
@@ -652,6 +741,25 @@ mod tests {
             let source_paths = DatabasePaths::new(source_root.path());
             let database =
                 Database::initialize(source_paths.clone()).expect("source database pair");
+            let target = R2Target {
+                account_id: R2AccountId::parse("0123456789abcdef0123456789abcdef")
+                    .expect("account"),
+                jurisdiction: R2Jurisdiction::Default,
+                bucket: R2BucketName::parse("kosh-restore-test").expect("bucket"),
+            };
+            let backup_set_id = BackupSetId::new();
+            let epoch = ReplicaEpochId::new();
+            database
+                .client()
+                .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                    expected_revision: 0,
+                    backup_set_id: backup_set_id.clone(),
+                    replica_epoch_id: epoch.clone(),
+                    enabled: true,
+                    target: target.clone(),
+                    now_ms: 1,
+                })
+                .expect("enable source backup");
             database
                 .client()
                 .create_tidbit(CreateTidbitWrite {
@@ -698,16 +806,35 @@ mod tests {
                     Cursor::new(media_bytes.clone()),
                 )
                 .expect("source attachment");
+            let upload = database
+                .client()
+                .claim_next_offsite_media_upload(13, "019f547b-6200-7000-8000-00000000f005".into())
+                .expect("claim source media upload")
+                .expect("pending source media upload");
+            assert!(database
+                .client()
+                .complete_offsite_media_upload(upload, "\"remote-version\"".into(), 14)
+                .expect("complete source media upload"));
+            let checkpoint_id = CheckpointId::new();
+            let created_at =
+                UtcTimestamp::parse("2026-07-30T19:00:00Z").expect("checkpoint timestamp");
+            let created_at_ms = i64::try_from(
+                created_at.unix_timestamp_nanos().expect("checkpoint epoch") / 1_000_000,
+            )
+            .expect("millisecond timestamp");
+            let prepared = database
+                .client()
+                .prepare_offsite_checkpoint(PrepareOffsiteCheckpointInput {
+                    checkpoint_id: checkpoint_id.clone(),
+                    backup_set_id: backup_set_id.clone(),
+                    replica_epoch_id: epoch.clone(),
+                    created_at_ms,
+                    kosh_version: env!("CARGO_PKG_VERSION").into(),
+                })
+                .expect("prepare source checkpoint");
             database.shutdown().expect("close source");
 
             let main = rusqlite::Connection::open(&source_paths.main).expect("source main");
-            let main_head: u32 = main
-                .query_row(
-                    "SELECT max(version) FROM refinery_schema_history",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("main head");
             let sha256_bytes: Vec<u8> = main
                 .query_row(
                     "SELECT sha256 FROM attachment WHERE id = ?1",
@@ -718,24 +845,8 @@ mod tests {
             let sha256 = ContentSha256::from_bytes(
                 sha256_bytes.try_into().expect("32-byte attachment hash"),
             );
-            let media = rusqlite::Connection::open(&source_paths.media).expect("source media");
-            let media_head: u32 = media
-                .query_row(
-                    "SELECT max(version) FROM refinery_schema_history",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("media head");
             drop(main);
-            drop(media);
 
-            let target = R2Target {
-                account_id: R2AccountId::parse("0123456789abcdef0123456789abcdef")
-                    .expect("account"),
-                jurisdiction: R2Jurisdiction::Default,
-                bucket: R2BucketName::parse("kosh-restore-test").expect("bucket"),
-            };
-            let backup_set_id = BackupSetId::new();
             let keyspace = target.keyspace(&backup_set_id);
             let store = FakeObjectStore::new(keyspace.clone());
             store
@@ -744,7 +855,6 @@ mod tests {
                         .expect("verified media"),
                 )
                 .expect("remote media");
-            let epoch = ReplicaEpochId::new();
             claim_remote_owner(
                 &store,
                 &keyspace,
@@ -753,24 +863,21 @@ mod tests {
                 &BackupWriterId::new(),
             )
             .expect("remote owner");
-            let checkpoint_id = CheckpointId::new();
             let txid = LitestreamTxid::from_local(42);
             let manifest = CheckpointManifestV1::new(CheckpointManifestInput {
-                backup_set_id: backup_set_id.clone(),
-                replica_epoch_id: epoch.clone(),
-                checkpoint_id,
-                created_at: UtcTimestamp::parse("2026-07-30T19:00:00Z").expect("timestamp"),
-                kosh_version: env!("CARGO_PKG_VERSION").into(),
-                content_revision: 2,
-                main_migration_head: main_head,
+                backup_set_id: prepared.backup_set_id,
+                replica_epoch_id: prepared.replica_epoch_id,
+                checkpoint_id: prepared.checkpoint_id,
+                created_at,
+                kosh_version: prepared.kosh_version,
+                content_revision: prepared.content_revision,
+                main_migration_head: prepared.main_migration_head,
                 litestream_path: keyspace.litestream(&epoch),
                 txid: txid.to_string(),
-                media_migration_head: media_head,
-                referenced_hash_count: 1,
-                referenced_total_bytes: media_bytes.len() as u64,
-                referenced_hash_set_sha256: ContentSha256::from_bytes(
-                    Sha256::digest(sha256.as_bytes()).into(),
-                ),
+                media_migration_head: prepared.media_migration_head,
+                referenced_hash_count: prepared.referenced_hash_count,
+                referenced_total_bytes: prepared.referenced_total_bytes,
+                referenced_hash_set_sha256: prepared.referenced_hash_set_sha256,
             })
             .expect("checkpoint manifest");
             let key = manifest.object_key(&keyspace).expect("manifest key");
@@ -800,6 +907,37 @@ mod tests {
                 store,
                 checkpoint,
                 engine,
+            }
+        }
+
+        fn checkpoint_with_evidence(
+            &self,
+            checkpoint_id: CheckpointId,
+            content_revision: u64,
+        ) -> RemoteCheckpoint {
+            let original = &self.checkpoint.manifest;
+            let manifest = CheckpointManifestV1::new(CheckpointManifestInput {
+                backup_set_id: original.backup_set_id().clone(),
+                replica_epoch_id: original.replica_epoch_id().clone(),
+                checkpoint_id,
+                created_at: original.created_at().clone(),
+                kosh_version: original.kosh_version().into(),
+                content_revision,
+                main_migration_head: original.main_migration_head(),
+                litestream_path: self.keyspace.litestream(original.replica_epoch_id()),
+                txid: original.txid().into(),
+                media_migration_head: original.media_migration_head(),
+                referenced_hash_count: original.referenced_hash_count(),
+                referenced_total_bytes: original.referenced_total_bytes(),
+                referenced_hash_set_sha256: original.referenced_hash_set_sha256(),
+            })
+            .expect("modified checkpoint manifest");
+            RemoteCheckpoint {
+                created_at_unix_nanos: manifest
+                    .created_at()
+                    .unix_timestamp_nanos()
+                    .expect("manifest timestamp"),
+                manifest,
             }
         }
     }
@@ -864,6 +1002,38 @@ mod tests {
             ),
             Err(RestoreError::Manifest)
         ));
+    }
+
+    #[test]
+    fn staging_rejects_manifest_evidence_not_bound_to_the_restored_txid() {
+        let fixture = Fixture::new();
+        let cases = [
+            fixture.checkpoint_with_evidence(
+                CheckpointId::new(),
+                fixture.checkpoint.content_revision(),
+            ),
+            fixture.checkpoint_with_evidence(
+                fixture.checkpoint.checkpoint_id().clone(),
+                fixture.checkpoint.content_revision() + 1,
+            ),
+        ];
+        let staging_parent = tempfile::tempdir().expect("staging parent");
+
+        for (ordinal, checkpoint) in cases.iter().enumerate() {
+            let staging_root = staging_parent.path().join(format!("mismatch-{ordinal}"));
+            assert!(matches!(
+                stage_checkpoint(
+                    &fixture.store,
+                    &fixture.keyspace,
+                    checkpoint,
+                    &fixture.engine,
+                    &fixture.source_paths.main,
+                    &staging_root,
+                ),
+                Err(RestoreError::Manifest)
+            ));
+            assert!(!staging_root.exists());
+        }
     }
 
     #[test]
