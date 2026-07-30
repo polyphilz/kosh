@@ -3,7 +3,7 @@
 use std::{fmt, str::FromStr};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-use uuid::Uuid;
+use uuid::{Uuid, Variant};
 
 pub(crate) const OBJECT_FORMAT_VERSION: u32 = 1;
 pub(crate) const FIXED_R2_PREFIX: &str = "kosh/v1/backup-sets";
@@ -79,7 +79,10 @@ macro_rules! uuid_v7_id {
                 let value = value.into();
                 let parsed =
                     Uuid::parse_str(&value).map_err(|_| BackupDomainError::InvalidField($field))?;
-                if parsed.get_version_num() != 7 || parsed.hyphenated().to_string() != value {
+                if parsed.get_version_num() != 7
+                    || parsed.get_variant() != Variant::RFC4122
+                    || parsed.hyphenated().to_string() != value
+                {
                     return Err(BackupDomainError::InvalidField($field));
                 }
                 Ok(Self(value))
@@ -440,5 +443,19 @@ mod tests {
         );
         assert!(BackupSetId::parse("550e8400-e29b-41d4-a716-446655440000").is_err());
         assert!(ReplicaEpochId::parse("not-an-id").is_err());
+    }
+
+    #[test]
+    fn identifiers_reject_every_non_rfc_uuid_variant() {
+        let canonical = BackupSetId::new().to_string();
+        for &variant_nibble in b"07cdef" {
+            let mut bytes = canonical.as_bytes().to_vec();
+            bytes[19] = variant_nibble;
+            let invalid = String::from_utf8(bytes).expect("ASCII UUID");
+
+            assert!(BackupSetId::parse(invalid.clone()).is_err());
+            assert!(ReplicaEpochId::parse(invalid.clone()).is_err());
+            assert!(ProbeRunId::parse(invalid).is_err());
+        }
     }
 }
