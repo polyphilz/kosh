@@ -1062,7 +1062,7 @@ fn sweep_stale_runtime(
 
 fn process_matches_record(record: &LitestreamPidRecord) -> bool {
     let Ok(output) = Command::new("ps")
-        .args(["-p", &record.pid.to_string(), "-o", "command="])
+        .args(["-ww", "-p", &record.pid.to_string(), "-o", "command="])
         .output()
     else {
         return false;
@@ -1778,6 +1778,55 @@ mod tests {
 
         sweep_stale_runtime(&runtime, &binary, &database).expect("sweep dead owned runtime");
         assert!(!runtime.pid().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_ownership_matching_reads_untruncated_command_lines() {
+        use std::os::unix::process::CommandExt;
+
+        let root = tempfile::tempdir().expect("temporary long command root");
+        let long_directory = root.path().join("x".repeat(180));
+        fs::create_dir(&long_directory).expect("long command directory");
+        let config = long_directory.join("ls.yml");
+        let mut child = Command::new("/bin/sh");
+        child
+            .arg("-c")
+            .arg("while :; do /bin/sleep 1; done")
+            .arg("/bin/sh")
+            .arg("replicate")
+            .arg("-config")
+            .arg(&config)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut child = child.spawn().expect("long-command child");
+        let record = LitestreamPidRecord {
+            format_version: PID_RECORD_FORMAT_VERSION,
+            pid: child.id(),
+            executable: "/bin/sh".into(),
+            config: config.to_string_lossy().into_owned(),
+            socket: long_directory
+                .join("ls.sock")
+                .to_string_lossy()
+                .into_owned(),
+            database: long_directory
+                .join("kosh.sqlite3")
+                .to_string_lossy()
+                .into_owned(),
+            backup_set_id: BackupSetId::new().to_string(),
+            replica_epoch_id: ReplicaEpochId::new().to_string(),
+            config_sha256: sha256_hex(b"safe config"),
+        };
+
+        let matched = process_matches_record(&record);
+        terminate_process_group(&mut child, Duration::from_millis(100));
+
+        assert!(
+            matched,
+            "wide process inspection must preserve the final config argument"
+        );
     }
 
     #[test]
