@@ -1,7 +1,9 @@
 #![cfg_attr(feature = "test-support", allow(dead_code))]
 
 use std::{
+    fs,
     io::Read,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::OnceLock,
     thread,
@@ -22,8 +24,20 @@ pub(crate) trait WriterIdentityProvider: Send + Sync {
     fn load(&self) -> Result<BackupWriterId, WriterIdentityError>;
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct MacOsHardwareWriterIdentity;
+#[derive(Debug)]
+pub(crate) struct MacOsInstallationWriterIdentity {
+    data_root: PathBuf,
+    identity: OnceLock<BackupWriterId>,
+}
+
+impl MacOsInstallationWriterIdentity {
+    pub(crate) fn new(data_root: PathBuf) -> Self {
+        Self {
+            data_root,
+            identity: OnceLock::new(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum WriterIdentityError {
@@ -34,17 +48,18 @@ pub(crate) enum WriterIdentityError {
 }
 
 #[cfg(target_os = "macos")]
-static DEVICE_WRITER_IDENTITY: OnceLock<BackupWriterId> = OnceLock::new();
+static PLATFORM_UUID: OnceLock<String> = OnceLock::new();
 
 #[cfg(target_os = "macos")]
-impl WriterIdentityProvider for MacOsHardwareWriterIdentity {
+impl WriterIdentityProvider for MacOsInstallationWriterIdentity {
     fn load(&self) -> Result<BackupWriterId, WriterIdentityError> {
-        if let Some(identity) = DEVICE_WRITER_IDENTITY.get() {
+        if let Some(identity) = self.identity.get() {
             return Ok(identity.clone());
         }
-        let loaded = load_macos_hardware_writer_identity()?;
-        let _ = DEVICE_WRITER_IDENTITY.set(loaded);
-        Ok(DEVICE_WRITER_IDENTITY
+        let loaded = load_macos_installation_writer_identity(&self.data_root)?;
+        let _ = self.identity.set(loaded);
+        Ok(self
+            .identity
             .get()
             .expect("writer identity was initialized")
             .clone())
@@ -52,14 +67,45 @@ impl WriterIdentityProvider for MacOsHardwareWriterIdentity {
 }
 
 #[cfg(not(target_os = "macos"))]
-impl WriterIdentityProvider for MacOsHardwareWriterIdentity {
+impl WriterIdentityProvider for MacOsInstallationWriterIdentity {
     fn load(&self) -> Result<BackupWriterId, WriterIdentityError> {
         Err(WriterIdentityError::Unavailable)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn load_macos_hardware_writer_identity() -> Result<BackupWriterId, WriterIdentityError> {
+fn load_macos_installation_writer_identity(
+    data_root: &Path,
+) -> Result<BackupWriterId, WriterIdentityError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::metadata(data_root).map_err(|_| WriterIdentityError::Unavailable)?;
+    if !metadata.is_dir() {
+        return Err(WriterIdentityError::Invalid);
+    }
+    let platform_uuid = load_platform_uuid()?;
+    Ok(derive_scoped_writer_identity(
+        platform_uuid.as_bytes(),
+        metadata.dev(),
+        metadata.ino(),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn load_platform_uuid() -> Result<String, WriterIdentityError> {
+    if let Some(platform_uuid) = PLATFORM_UUID.get() {
+        return Ok(platform_uuid.clone());
+    }
+    let loaded = read_platform_uuid()?;
+    let _ = PLATFORM_UUID.set(loaded);
+    Ok(PLATFORM_UUID
+        .get()
+        .expect("platform UUID was initialized")
+        .clone())
+}
+
+#[cfg(target_os = "macos")]
+fn read_platform_uuid() -> Result<String, WriterIdentityError> {
     let mut child = Command::new(IOREG_PATH)
         .args([
             "-rd1",
@@ -100,10 +146,20 @@ fn load_macos_hardware_writer_identity() -> Result<BackupWriterId, WriterIdentit
     if output.len() > MAX_IOREG_OUTPUT_BYTES {
         return Err(WriterIdentityError::Unavailable);
     }
-    let platform_uuid = parse_platform_uuid_output(&output)?;
-    Ok(BackupWriterId::derive_from_device_identifier(
-        platform_uuid.as_bytes(),
-    ))
+    parse_platform_uuid_output(&output)
+}
+
+fn derive_scoped_writer_identity(
+    platform_uuid: &[u8],
+    filesystem_device: u64,
+    directory_inode: u64,
+) -> BackupWriterId {
+    let mut material = Vec::with_capacity(platform_uuid.len() + 17);
+    material.extend_from_slice(platform_uuid);
+    material.push(0);
+    material.extend_from_slice(&filesystem_device.to_be_bytes());
+    material.extend_from_slice(&directory_inode.to_be_bytes());
+    BackupWriterId::derive_from_device_identifier(&material)
 }
 
 fn parse_platform_uuid_output(output: &[u8]) -> Result<String, WriterIdentityError> {
@@ -166,25 +222,40 @@ mod tests {
     }
 
     #[test]
-    fn hardware_binding_is_stable_on_one_device_and_distinct_across_devices() {
-        let first = BackupWriterId::derive_from_device_identifier(FIRST_PLATFORM_UUID.as_bytes());
+    fn installation_binding_is_stable_and_distinguishes_devices_and_profiles() {
+        let first = derive_scoped_writer_identity(FIRST_PLATFORM_UUID.as_bytes(), 7, 11);
         assert_eq!(
-            BackupWriterId::derive_from_device_identifier(FIRST_PLATFORM_UUID.as_bytes()),
+            derive_scoped_writer_identity(FIRST_PLATFORM_UUID.as_bytes(), 7, 11),
             first
         );
         assert_ne!(
-            BackupWriterId::derive_from_device_identifier(SECOND_PLATFORM_UUID.as_bytes()),
+            derive_scoped_writer_identity(SECOND_PLATFORM_UUID.as_bytes(), 7, 11),
+            first
+        );
+        assert_ne!(
+            derive_scoped_writer_identity(FIRST_PLATFORM_UUID.as_bytes(), 7, 12),
+            first
+        );
+        assert_ne!(
+            derive_scoped_writer_identity(FIRST_PLATFORM_UUID.as_bytes(), 8, 11),
             first
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn live_macos_hardware_identity_is_available_without_keychain_or_ui() {
-        let identity =
-            load_macos_hardware_writer_identity().expect("macOS hardware writer identity");
+    fn copied_profile_gets_a_distinct_live_identity_without_keychain_or_ui() {
+        let first = tempfile::tempdir().expect("first profile");
+        let second = tempfile::tempdir().expect("second profile");
+        let identity = load_macos_installation_writer_identity(first.path())
+            .expect("first installation writer identity");
         assert_eq!(
             BackupWriterId::parse(identity.as_str()).expect("canonical writer identity"),
+            identity
+        );
+        assert_ne!(
+            load_macos_installation_writer_identity(second.path())
+                .expect("second installation writer identity"),
             identity
         );
     }

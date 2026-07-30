@@ -29,14 +29,16 @@ identity. Legacy payloads that embedded one are verified, upgraded, and stripped
 under the same rollback protocol.
 
 The non-secret writer identity is instead a domain-separated SHA-256 digest of
-macOS's hardware-provided `IOPlatformUUID`. Kosh reads that property from the
-fixed `/usr/sbin/ioreg` binary with an empty environment, bounded output, and
-strict canonical parsing. It is never accepted from the settings form, remains
-stable across credential updates, and comes from the destination hardware
-rather than migrated user data. Restoring or copying the R2 credential payload
-onto another Mac therefore yields a different writer identity and cannot
-impersonate the remote owner. This also works in unsigned development builds
-without a Keychain prompt or application window.
+macOS's hardware-provided `IOPlatformUUID` plus the profile data directory's
+filesystem device and inode. Kosh reads the hardware property from the fixed
+`/usr/sbin/ioreg` binary with an empty environment, bounded output, and strict
+canonical parsing; it reads the profile identity from directory metadata, not
+from a copyable file. The identity is never accepted from the settings form,
+remains stable across credential updates and directory renames, and changes
+when a profile is copied or restored into a new directory—even on the same Mac.
+Migrating to another Mac also changes the hardware component. A copied profile
+therefore cannot impersonate the remote owner. This works in unsigned
+development builds without a Keychain prompt or application window.
 
 ## Network and namespace contract
 

@@ -26,7 +26,9 @@ use super::{
     },
     object_store::{ObjectStoreErrorCode, R2ObjectStore},
     owner::{claim_remote_owner_cancellable, RemoteOwnerError},
-    writer_identity::{MacOsHardwareWriterIdentity, WriterIdentityError, WriterIdentityProvider},
+    writer_identity::{
+        MacOsInstallationWriterIdentity, WriterIdentityError, WriterIdentityProvider,
+    },
 };
 
 const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -186,6 +188,7 @@ impl LitestreamRuntimeService {
         database_path: PathBuf,
         resource_dir: Option<PathBuf>,
     ) -> Self {
+        let writer_identity = MacOsInstallationWriterIdentity::new(data_root.clone());
         Self::start_with_parts(
             database,
             Arc::new(SystemRuntimeFactory {
@@ -193,7 +196,7 @@ impl LitestreamRuntimeService {
                 database_path,
                 resource_dir,
                 credentials: MacOsKeychainCredentialStore,
-                writer_identity: MacOsHardwareWriterIdentity,
+                writer_identity,
             }),
             WorkerSchedule::production(),
         )

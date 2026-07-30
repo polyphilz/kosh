@@ -15,7 +15,8 @@ For an enabled configuration the supervisor:
 3. loads the active backup-set credential from macOS Keychain into zeroizing
    process memory;
 4. derives a domain-separated writer identity from macOS's hardware-provided
-   `IOPlatformUUID`, which is not part of migrated user data;
+   `IOPlatformUUID` and the profile directory's filesystem identity, neither of
+   which can be carried into a copied profile directory;
 5. conditionally claims and reads back the fixed R2 owner object with that
    device-local writer identity before any replication process exists;
 6. atomically writes a mode-`0600` fixed-protocol configuration through a
@@ -99,7 +100,8 @@ The focused native suite proves:
   installation using copied configuration and R2 keys is rejected before
   launch;
 - credential migrations strip embedded writer IDs, hardware identity parsing
-  is strict, and a fresh device gets a different domain-separated identity;
+  is strict, and copied profiles on either the same or a different device get
+  distinct domain-separated identities;
 - shutdown interrupts a stalled remote-owner start operation without waiting
   for the R2 request timeout;
 - application exit persists the Claude terminal event and closes the sole
