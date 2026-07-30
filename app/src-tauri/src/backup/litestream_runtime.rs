@@ -688,6 +688,7 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
             config.replica_epoch_id.as_str().to_owned(),
             config_sha256,
             credentials,
+            &shutdown,
         )?;
         Ok(Box::new(daemon))
     }
@@ -897,6 +898,7 @@ impl SystemManagedLitestream {
         replica_epoch_id: String,
         config_sha256: String,
         credentials: super::credentials::R2Credentials,
+        shutdown: &AtomicBool,
     ) -> Result<Self, RuntimeFailure> {
         let launcher = std::env::current_exe()
             .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
@@ -953,7 +955,7 @@ impl SystemManagedLitestream {
             ));
         }
         child.stdin.take();
-        if let Err(failure) = wait_for_control_socket(&mut child, &runtime) {
+        if let Err(failure) = wait_for_control_socket(&mut child, &runtime, shutdown) {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
             cleanup_owned_runtime(&ownership, &runtime, pid, true);
             return Err(failure);
@@ -1022,9 +1024,13 @@ impl Drop for SystemManagedLitestream {
 fn wait_for_control_socket(
     child: &mut Child,
     runtime: &LitestreamRuntimePaths,
+    shutdown: &AtomicBool,
 ) -> Result<(), RuntimeFailure> {
     let deadline = Instant::now() + DAEMON_STARTUP_TIMEOUT;
     while Instant::now() < deadline {
+        if shutdown.load(Ordering::Acquire) {
+            return Err(cancelled_start());
+        }
         match child.try_wait() {
             Ok(Some(_)) => {
                 return Err(RuntimeFailure::new(
@@ -1993,13 +1999,47 @@ mod tests {
         let mut child = Command::new("/usr/bin/true")
             .spawn()
             .expect("short-lived child");
+        let shutdown = AtomicBool::new(false);
 
-        let failure = wait_for_control_socket(&mut child, &runtime).expect_err("startup must fail");
+        let failure = wait_for_control_socket(&mut child, &runtime, &shutdown)
+            .expect_err("startup must fail");
 
         assert_eq!(
             failure,
             RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_readiness_is_interruptible_during_shutdown() {
+        use std::os::unix::process::CommandExt;
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30").process_group(0);
+        let mut child = command.spawn().expect("stalled launcher child");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let worker_shutdown = Arc::clone(&shutdown);
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(75));
+            worker_shutdown.store(true, Ordering::Release);
+        });
+
+        let quit_started = Instant::now();
+        let failure = wait_for_control_socket(&mut child, &runtime, &shutdown)
+            .expect_err("shutdown must interrupt socket readiness");
+        terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
+        canceller.join().expect("shutdown signal");
+
+        assert_eq!(failure, cancelled_start());
+        assert!(
+            quit_started.elapsed() < Duration::from_millis(500),
+            "shutdown waited for the socket startup timeout"
+        );
+        assert!(child.try_wait().expect("child status").is_some());
     }
 
     #[test]
