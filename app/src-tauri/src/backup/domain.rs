@@ -281,6 +281,11 @@ impl R2Keyspace {
         self.fixed_key(&format!("media/v1/sha256/{}/{}.blob", &hex[..2], hex))
     }
 
+    pub(crate) fn is_media_key(&self, key: &R2ObjectKey) -> bool {
+        key.as_str()
+            .starts_with(&format!("{}/media/v1/sha256/", self.root))
+    }
+
     pub(crate) fn litestream(&self, epoch: &ReplicaEpochId) -> R2ObjectKey {
         self.fixed_key(&format!("litestream/v1/{}/kosh.sqlite3", epoch.as_str()))
     }

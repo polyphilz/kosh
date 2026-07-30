@@ -13,6 +13,7 @@ use reqwest::{
     StatusCode,
 };
 use rusty_s3::{actions::ListObjectsV2, Bucket, Credentials, S3Action, UrlStyle};
+use sha2::{Digest, Sha256};
 
 use super::{
     credentials::R2Credentials,
@@ -112,6 +113,55 @@ pub(crate) struct PutObjectRequest {
     pub(crate) condition: PutCondition,
 }
 
+#[derive(Debug)]
+pub(crate) struct PutMediaRequest {
+    key: R2ObjectKey,
+    bytes: Vec<u8>,
+    expected_sha256: ContentSha256,
+}
+
+impl PutMediaRequest {
+    pub(crate) fn new(
+        keyspace: &R2Keyspace,
+        expected_sha256: ContentSha256,
+        bytes: Vec<u8>,
+    ) -> Result<Self, ObjectStoreError> {
+        if bytes.len() > MAX_OBJECT_BYTES {
+            return Err(ObjectStoreError::new(ObjectStoreErrorCode::ObjectTooLarge));
+        }
+        if ContentSha256::from_bytes(Sha256::digest(&bytes).into()) != expected_sha256 {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorCode::ContentHashMismatch,
+            ));
+        }
+        Ok(Self {
+            key: keyspace.media(expected_sha256),
+            bytes,
+            expected_sha256,
+        })
+    }
+
+    fn into_object_request(
+        self,
+        keyspace: &R2Keyspace,
+    ) -> Result<PutObjectRequest, ObjectStoreError> {
+        if self.key != keyspace.media(self.expected_sha256)
+            || ContentSha256::from_bytes(Sha256::digest(&self.bytes).into()) != self.expected_sha256
+        {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorCode::ContentHashMismatch,
+            ));
+        }
+        Ok(PutObjectRequest {
+            key: self.key,
+            bytes: self.bytes,
+            content_type: ObjectContentType::Binary,
+            kosh_sha256: Some(self.expected_sha256),
+            condition: PutCondition::IfAbsent,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ListedObject {
     pub(crate) key: R2ObjectKey,
@@ -172,6 +222,7 @@ pub(crate) trait ObjectStore: Send + Sync {
     fn head(&self, key: &R2ObjectKey) -> Result<Option<ObjectMetadata>, ObjectStoreError>;
     fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError>;
     fn put(&self, request: PutObjectRequest) -> Result<PutObjectOutcome, ObjectStoreError>;
+    fn put_media(&self, request: PutMediaRequest) -> Result<PutObjectOutcome, ObjectStoreError>;
     fn list(
         &self,
         prefix: &R2ListPrefix,
@@ -261,36 +312,11 @@ impl R2ObjectStore {
             }
         })
     }
-}
 
-impl ObjectStore for R2ObjectStore {
-    fn head(&self, key: &R2ObjectKey) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
-        self.validate_key(key)?;
-        let credentials = self.credentials.clone();
-        let action = self.bucket.head_object(Some(&credentials), key.as_str());
-        let response = self.send(self.client.head(action.sign(SIGNED_URL_LIFETIME)))?;
-        if response.status() == StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        ensure_success(response.status())?;
-        Ok(Some(parse_metadata(response.headers())?))
-    }
-
-    fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError> {
-        self.validate_key(key)?;
-        let credentials = self.credentials.clone();
-        let action = self.bucket.get_object(Some(&credentials), key.as_str());
-        let response = self.send(self.client.get(action.sign(SIGNED_URL_LIFETIME)))?;
-        ensure_success(response.status())?;
-        let metadata = parse_metadata(response.headers())?;
-        let bytes = read_bounded(response, MAX_OBJECT_BYTES)?;
-        if bytes.len() as u64 != metadata.byte_length {
-            return Err(invalid_response());
-        }
-        Ok(GetObjectResult { metadata, bytes })
-    }
-
-    fn put(&self, request: PutObjectRequest) -> Result<PutObjectOutcome, ObjectStoreError> {
+    fn put_validated(
+        &self,
+        request: PutObjectRequest,
+    ) -> Result<PutObjectOutcome, ObjectStoreError> {
         self.validate_key(&request.key)?;
         if request.bytes.len() > MAX_OBJECT_BYTES {
             return Err(ObjectStoreError::new(ObjectStoreErrorCode::ObjectTooLarge));
@@ -347,6 +373,47 @@ impl ObjectStore for R2ObjectStore {
         ensure_success(response.status())?;
         parse_version(response.headers())?;
         Ok(PutObjectOutcome::Stored)
+    }
+}
+
+impl ObjectStore for R2ObjectStore {
+    fn head(&self, key: &R2ObjectKey) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
+        self.validate_key(key)?;
+        let credentials = self.credentials.clone();
+        let action = self.bucket.head_object(Some(&credentials), key.as_str());
+        let response = self.send(self.client.head(action.sign(SIGNED_URL_LIFETIME)))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        ensure_success(response.status())?;
+        Ok(Some(parse_metadata(response.headers())?))
+    }
+
+    fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError> {
+        self.validate_key(key)?;
+        let credentials = self.credentials.clone();
+        let action = self.bucket.get_object(Some(&credentials), key.as_str());
+        let response = self.send(self.client.get(action.sign(SIGNED_URL_LIFETIME)))?;
+        ensure_success(response.status())?;
+        let metadata = parse_metadata(response.headers())?;
+        let bytes = read_bounded(response, MAX_OBJECT_BYTES)?;
+        if bytes.len() as u64 != metadata.byte_length {
+            return Err(invalid_response());
+        }
+        Ok(GetObjectResult { metadata, bytes })
+    }
+
+    fn put(&self, request: PutObjectRequest) -> Result<PutObjectOutcome, ObjectStoreError> {
+        if self.keyspace.is_media_key(&request.key) {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorCode::MediaWriteRequiresVerifiedCreate,
+            ));
+        }
+        self.put_validated(request)
+    }
+
+    fn put_media(&self, request: PutMediaRequest) -> Result<PutObjectOutcome, ObjectStoreError> {
+        self.put_validated(request.into_object_request(&self.keyspace)?)
     }
 
     fn list(
@@ -506,6 +573,8 @@ pub(crate) enum ObjectStoreErrorCode {
     InvalidConfiguration,
     KeyOutsidePrefix,
     DeletionNotAuthorized,
+    MediaWriteRequiresVerifiedCreate,
+    ContentHashMismatch,
     Network,
     Timeout,
     AuthenticationRejected,
@@ -538,8 +607,6 @@ pub(crate) mod fake {
         collections::{BTreeMap, VecDeque},
         sync::Mutex,
     };
-
-    use sha2::{Digest, Sha256};
 
     use super::*;
 
@@ -617,34 +684,11 @@ pub(crate) mod fake {
             }
             Ok(())
         }
-    }
 
-    impl ObjectStore for FakeObjectStore {
-        fn head(&self, key: &R2ObjectKey) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
-            self.validate_key(key)?;
-            let mut state = self.state.lock().expect("fake object store");
-            Self::begin(&mut state, ObjectOperation::Head)?;
-            Ok(state
-                .objects
-                .get(key.as_str())
-                .map(|object| object.metadata.clone()))
-        }
-
-        fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError> {
-            self.validate_key(key)?;
-            let mut state = self.state.lock().expect("fake object store");
-            Self::begin(&mut state, ObjectOperation::Get)?;
-            let object = state
-                .objects
-                .get(key.as_str())
-                .ok_or_else(|| ObjectStoreError::new(ObjectStoreErrorCode::NotFound))?;
-            Ok(GetObjectResult {
-                metadata: object.metadata.clone(),
-                bytes: object.bytes.clone(),
-            })
-        }
-
-        fn put(&self, request: PutObjectRequest) -> Result<PutObjectOutcome, ObjectStoreError> {
+        fn put_validated(
+            &self,
+            request: PutObjectRequest,
+        ) -> Result<PutObjectOutcome, ObjectStoreError> {
             self.validate_key(&request.key)?;
             let mut state = self.state.lock().expect("fake object store");
             Self::begin(&mut state, ObjectOperation::Put)?;
@@ -678,6 +722,48 @@ pub(crate) mod fake {
                 },
             );
             Ok(PutObjectOutcome::Stored)
+        }
+    }
+
+    impl ObjectStore for FakeObjectStore {
+        fn head(&self, key: &R2ObjectKey) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
+            self.validate_key(key)?;
+            let mut state = self.state.lock().expect("fake object store");
+            Self::begin(&mut state, ObjectOperation::Head)?;
+            Ok(state
+                .objects
+                .get(key.as_str())
+                .map(|object| object.metadata.clone()))
+        }
+
+        fn get(&self, key: &R2ObjectKey) -> Result<GetObjectResult, ObjectStoreError> {
+            self.validate_key(key)?;
+            let mut state = self.state.lock().expect("fake object store");
+            Self::begin(&mut state, ObjectOperation::Get)?;
+            let object = state
+                .objects
+                .get(key.as_str())
+                .ok_or_else(|| ObjectStoreError::new(ObjectStoreErrorCode::NotFound))?;
+            Ok(GetObjectResult {
+                metadata: object.metadata.clone(),
+                bytes: object.bytes.clone(),
+            })
+        }
+
+        fn put(&self, request: PutObjectRequest) -> Result<PutObjectOutcome, ObjectStoreError> {
+            if self.keyspace.is_media_key(&request.key) {
+                return Err(ObjectStoreError::new(
+                    ObjectStoreErrorCode::MediaWriteRequiresVerifiedCreate,
+                ));
+            }
+            self.put_validated(request)
+        }
+
+        fn put_media(
+            &self,
+            request: PutMediaRequest,
+        ) -> Result<PutObjectOutcome, ObjectStoreError> {
+            self.put_validated(request.into_object_request(&self.keyspace)?)
         }
 
         fn list(
@@ -802,6 +888,63 @@ mod tests {
             assert_eq!(error.code, ObjectStoreErrorCode::DeletionNotAuthorized);
         }
         assert!(store.operations().is_empty());
+    }
+
+    #[test]
+    fn media_uploads_are_hash_verified_create_only_and_not_generic_writes() {
+        let keyspace = target().keyspace(&BackupSetId::new());
+        let store = FakeObjectStore::new(keyspace.clone());
+        let payload = b"immutable media bytes".to_vec();
+        let digest = ContentSha256::from_bytes(Sha256::digest(&payload).into());
+        assert_eq!(
+            PutMediaRequest::new(
+                &keyspace,
+                ContentSha256::from_bytes([0xab; 32]),
+                payload.clone(),
+            )
+            .expect_err("mismatched media digest")
+            .code,
+            ObjectStoreErrorCode::ContentHashMismatch
+        );
+
+        assert_eq!(
+            store
+                .put_media(
+                    PutMediaRequest::new(&keyspace, digest, payload.clone())
+                        .expect("verified media request"),
+                )
+                .expect("first media put"),
+            PutObjectOutcome::Stored
+        );
+        let key = keyspace.media(digest);
+        let version = store
+            .head(&key)
+            .expect("media head")
+            .expect("stored media")
+            .version;
+        assert_eq!(
+            store
+                .put(PutObjectRequest {
+                    key: key.clone(),
+                    bytes: b"replacement".to_vec(),
+                    content_type: ObjectContentType::Binary,
+                    kosh_sha256: Some(digest),
+                    condition: PutCondition::IfMatch(version),
+                })
+                .expect_err("generic media replacement")
+                .code,
+            ObjectStoreErrorCode::MediaWriteRequiresVerifiedCreate
+        );
+        assert_eq!(
+            store
+                .put_media(
+                    PutMediaRequest::new(&keyspace, digest, payload.clone())
+                        .expect("verified duplicate request"),
+                )
+                .expect("duplicate media put"),
+            PutObjectOutcome::ConditionNotMet
+        );
+        assert_eq!(store.get(&key).expect("immutable media").bytes, payload);
     }
 
     #[test]
