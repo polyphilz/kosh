@@ -17,17 +17,19 @@ For an enabled configuration the supervisor:
    references rather than credential values;
 4. loads the active backup-set credential from macOS Keychain into zeroizing
    process memory;
-5. launches Kosh's inert Litestream activation helper with an otherwise empty
+5. conditionally claims and reads back the fixed R2 owner object with the
+   Keychain-local writer identity before any replication process exists;
+6. launches Kosh's inert Litestream activation helper with an otherwise empty
    environment and a dedicated process group;
-6. durably writes a bounded private PID record binding the exact executable,
+7. durably writes a bounded private PID record binding the exact executable,
    database, config, socket, backup set, replica epoch, and config digest;
-7. only then activates the helper through its private inherited pipe, which
+8. only then activates the helper through its private inherited pipe, which
    atomically replaces itself with `litestream replicate`; parent death before
    activation closes the pipe and leaves no replicating orphan;
-8. retains an exclusive, non-inherited runtime-generation lock from stale
+9. retains an exclusive, non-inherited runtime-generation lock from stale
    cleanup through daemon cleanup;
-9. accepts readiness only from a Unix socket with mode `0600`; and
-10. confirms the canonical local and remote TXID through a bounded control
+10. accepts readiness only from a Unix socket with mode `0600`; and
+11. confirms the canonical local and remote TXID through a bounded control
     command.
 
 Status contains only fixed phase/error enums, canonical 16-character TXIDs,
@@ -43,7 +45,9 @@ of the database writer. Transient launch, Keychain, process, and remote-sync
 failures use exponential backoff capped at five minutes. A structural binary,
 path, socket, PID-record, or configuration failure blocks only the current
 configuration revision. Capture, editing, and Exact search continue through
-all of these states.
+all of these states. A remote owner belonging to another Keychain-local writer
+identity blocks Litestream before launch; network failure while claiming or
+verifying the owner remains retryable.
 
 On application exit, Kosh first stops Claude and gives its monitor a bounded
 window to persist the terminal research event, then closes and joins the sole
@@ -85,6 +89,10 @@ The focused native suite proves:
   touching their targets;
 - runtime ownership keeps cleanup serialized until both generation artifacts
   are gone, then permits a replacement daemon to publish its own artifacts;
+- the first writer conditionally claims R2, the same installation reclaims
+  idempotently or advances its epoch with an ETag guard, and a second
+  installation using copied configuration and R2 keys is rejected before
+  launch;
 - application exit persists the Claude terminal event and closes the sole
   SQLite writer before the final Litestream sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;

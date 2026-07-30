@@ -24,6 +24,8 @@ use super::{
         LitestreamError, LitestreamRuntimePaths, SyncResult, SystemCommandExecutor,
         VerifiedLitestreamBinary,
     },
+    object_store::{ObjectStoreErrorCode, R2ObjectStore},
+    owner::{claim_remote_owner, RemoteOwnerError},
 };
 
 const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -146,6 +148,8 @@ pub(crate) enum RelationalBackupErrorCode {
     ControlUnavailable,
     ProcessExited,
     RemoteSyncFailed,
+    RemoteOwnerConflict,
+    RemoteOwnerInvalid,
     WorkerUnavailable,
 }
 
@@ -629,6 +633,16 @@ impl<C: CredentialStore> RuntimeFactory for SystemRuntimeFactory<C> {
             .load(&config.backup_set_id)
             .map_err(map_credential_start_error)?;
         let keyspace = config.target.keyspace(&config.backup_set_id);
+        let store = R2ObjectStore::new(config.target.clone(), keyspace.clone(), &credentials)
+            .map_err(|error| map_remote_owner_error(RemoteOwnerError::Store(error)))?;
+        claim_remote_owner(
+            &store,
+            &keyspace,
+            &config.backup_set_id,
+            &config.replica_epoch_id,
+            credentials.writer_id(),
+        )
+        .map_err(map_remote_owner_error)?;
         let replica_path = keyspace.litestream(&config.replica_epoch_id);
         let endpoint = config.target.endpoint();
         let rendered = LitestreamConfig {
@@ -687,6 +701,41 @@ fn map_credential_start_error(error: CredentialError) -> RuntimeFailure {
         | CredentialError::CorruptPayload => {
             RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false)
         }
+    }
+}
+
+fn map_remote_owner_error(error: RemoteOwnerError) -> RuntimeFailure {
+    match error {
+        RemoteOwnerError::Conflict => {
+            RuntimeFailure::new(RelationalBackupErrorCode::RemoteOwnerConflict, false)
+        }
+        RemoteOwnerError::Invalid => {
+            RuntimeFailure::new(RelationalBackupErrorCode::RemoteOwnerInvalid, false)
+        }
+        RemoteOwnerError::Store(error) => match error.code {
+            ObjectStoreErrorCode::InvalidConfiguration
+            | ObjectStoreErrorCode::KeyOutsidePrefix
+            | ObjectStoreErrorCode::DeletionNotAuthorized
+            | ObjectStoreErrorCode::MediaWriteRequiresVerifiedCreate
+            | ObjectStoreErrorCode::ContentHashMismatch
+            | ObjectStoreErrorCode::ObjectTooLarge => {
+                RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false)
+            }
+            ObjectStoreErrorCode::ResponseTooLarge | ObjectStoreErrorCode::InvalidResponse => {
+                RuntimeFailure::new(RelationalBackupErrorCode::RemoteOwnerInvalid, false)
+            }
+            ObjectStoreErrorCode::Network
+            | ObjectStoreErrorCode::Timeout
+            | ObjectStoreErrorCode::AuthenticationRejected
+            | ObjectStoreErrorCode::AuthorizationRejected
+            | ObjectStoreErrorCode::NotFound
+            | ObjectStoreErrorCode::Conflict
+            | ObjectStoreErrorCode::PreconditionFailed
+            | ObjectStoreErrorCode::RateLimited
+            | ObjectStoreErrorCode::ServiceUnavailable => {
+                RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, true)
+            }
+        },
     }
 }
 
@@ -1835,6 +1884,24 @@ mod tests {
         })
         .expect("bounded status");
         assert!(!json.contains(ACCOUNT_ID));
+    }
+
+    #[test]
+    fn remote_owner_failures_block_conflicts_and_retry_transport_outages() {
+        assert_eq!(
+            map_remote_owner_error(RemoteOwnerError::Conflict),
+            RuntimeFailure::new(RelationalBackupErrorCode::RemoteOwnerConflict, false)
+        );
+        assert_eq!(
+            map_remote_owner_error(RemoteOwnerError::Invalid),
+            RuntimeFailure::new(RelationalBackupErrorCode::RemoteOwnerInvalid, false)
+        );
+        assert_eq!(
+            map_remote_owner_error(RemoteOwnerError::Store(
+                crate::backup::object_store::ObjectStoreError::new(ObjectStoreErrorCode::Timeout,),
+            )),
+            RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, true)
+        );
     }
 
     #[test]

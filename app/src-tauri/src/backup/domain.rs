@@ -131,6 +131,7 @@ macro_rules! uuid_v7_id {
 uuid_v7_id!(BackupSetId, "backupSetId");
 uuid_v7_id!(ReplicaEpochId, "replicaEpochId");
 uuid_v7_id!(ProbeRunId, "probeRunId");
+uuid_v7_id!(BackupWriterId, "backupWriterId");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct R2AccountId(String);
@@ -447,6 +448,11 @@ mod tests {
         );
         assert!(BackupSetId::parse("550e8400-e29b-41d4-a716-446655440000").is_err());
         assert!(ReplicaEpochId::parse("not-an-id").is_err());
+        let writer = BackupWriterId::new();
+        assert_eq!(
+            BackupWriterId::parse(writer.as_str()).expect("writer round trip"),
+            writer
+        );
     }
 
     #[test]
@@ -459,7 +465,8 @@ mod tests {
 
             assert!(BackupSetId::parse(invalid.clone()).is_err());
             assert!(ReplicaEpochId::parse(invalid.clone()).is_err());
-            assert!(ProbeRunId::parse(invalid).is_err());
+            assert!(ProbeRunId::parse(invalid.clone()).is_err());
+            assert!(BackupWriterId::parse(invalid).is_err());
         }
     }
 }

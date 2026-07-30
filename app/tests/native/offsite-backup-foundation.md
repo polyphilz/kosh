@@ -24,7 +24,11 @@ R2 access and secret keys exist only in zeroizing process memory or a
 versioned payload in the macOS Keychain service
 `com.rohan.kosh.offsite-backup.r2`. Debug output is redacted. A Keychain save
 is read back and decoded before it succeeds; a mismatched readback removes the
-new item and fails.
+new item and fails. The payload also contains a generated, non-secret writer
+identity that is local to this Keychain installation, is never accepted from
+the settings form, and remains stable across credential updates. Legacy
+payloads are upgraded with one durable writer identity under the same verified
+rollback protocol.
 
 ## Network and namespace contract
 
@@ -40,7 +44,10 @@ kosh/v1/backup-sets/<canonical-backup-set-id>/
 Both the production and fake clients reject keys or list prefixes belonging
 to another backup set. Responses are bounded, redirects are disabled, HTTPS is
 mandatory, returned keys are revalidated, and conditional writes are
-supported.
+supported. Relational replication conditionally creates and reads back
+`owner/v1.json` before launch. A different local writer identity fails closed;
+the current owner may advance its replica epoch only through an ETag-guarded
+replacement.
 
 ## Probe contract
 
