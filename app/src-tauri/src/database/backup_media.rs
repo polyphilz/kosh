@@ -488,6 +488,47 @@ pub(super) fn progress(connection: &Connection) -> Result<OffsiteMediaUploadProg
     })
 }
 
+pub(super) fn retry_failed(connection: &Connection, now_ms: i64) -> Result<u64> {
+    validate_timestamp(now_ms)?;
+    let changed = connection.execute(
+        "UPDATE offsite_media_upload
+         SET state = 'RETRY_WAIT',
+             next_attempt_at = ?1,
+             lease_id = NULL,
+             started_at = NULL,
+             uploaded_at = NULL,
+             remote_version = NULL,
+             last_error_code = 'MANUAL_RETRY',
+             updated_at = max(updated_at, ?1)
+         WHERE state = 'FAILED'",
+        [now_ms],
+    )?;
+    Ok(changed as u64)
+}
+
+pub(super) fn requeue_uploaded(
+    connection: &Connection,
+    backup_set_id: &BackupSetId,
+    sha256: ContentSha256,
+    now_ms: i64,
+) -> Result<bool> {
+    validate_timestamp(now_ms)?;
+    let changed = connection.execute(
+        "UPDATE offsite_media_upload
+         SET state = 'RETRY_WAIT',
+             next_attempt_at = ?1,
+             lease_id = NULL,
+             started_at = NULL,
+             uploaded_at = NULL,
+             remote_version = NULL,
+             last_error_code = 'REMOTE_OBJECT_MISMATCH',
+             updated_at = max(updated_at, ?1)
+         WHERE backup_set_id = ?2 AND sha256 = ?3 AND state = 'UPLOADED'",
+        params![now_ms, backup_set_id.as_str(), sha256.as_bytes().as_slice()],
+    )?;
+    Ok(changed == 1)
+}
+
 fn seed_referenced(
     connection: &Connection,
     backup_set_id: &BackupSetId,

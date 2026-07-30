@@ -50,6 +50,7 @@ pub(crate) struct RuntimeState {
     passage_embedding_indexer: PassageEmbeddingIndexer,
     litestream_backup: crate::backup::litestream_runtime::LitestreamRuntimeService,
     media_backup: crate::backup::media_reconciler::MediaBackupCoordinator,
+    checkpoint_backup: crate::backup::checkpoint::CheckpointBackupCoordinator,
     database: Arc<Database>,
     embedding_runtime: Arc<EmbeddingRuntime>,
     clock: Arc<dyn Clock>,
@@ -153,12 +154,19 @@ impl RuntimeState {
         let image_ocr = start_optional_image_ocr(database.client());
         let pdf_extraction = start_optional_pdf_extraction(database.client());
         let media_backup = start_optional_media_backup(database.client(), database.paths().clone());
+        let checkpoint_backup = crate::backup::checkpoint::CheckpointBackupCoordinator::start(
+            database.client(),
+            data_dir.clone(),
+            litestream_backup.checkpoint_handle(),
+            media_backup.wake_handle(),
+        );
         let state = Self {
             claude_processes: ClaudeProcessManager::production(&data_dir),
             data_dir,
             passage_embedding_indexer,
             litestream_backup,
             media_backup,
+            checkpoint_backup,
             database: Arc::new(database),
             embedding_runtime,
             clock: Arc::new(SystemClock),
@@ -208,6 +216,7 @@ impl RuntimeState {
             litestream_backup:
                 crate::backup::litestream_runtime::LitestreamRuntimeService::disabled(),
             media_backup: crate::backup::media_reconciler::MediaBackupCoordinator::disabled(),
+            checkpoint_backup: crate::backup::checkpoint::CheckpointBackupCoordinator::disabled(),
             database: Arc::new(database),
             clock,
             ids,
@@ -245,8 +254,21 @@ impl RuntimeState {
         self.litestream_backup.status()
     }
 
+    pub(crate) fn checkpoint_backup_status(
+        &self,
+    ) -> crate::backup::checkpoint::CheckpointBackupStatus {
+        self.checkpoint_backup.status()
+    }
+
+    pub(crate) fn checkpoint_backup_handle(
+        &self,
+    ) -> crate::backup::checkpoint::CheckpointBackupHandle {
+        self.checkpoint_backup.handle()
+    }
+
     pub(crate) fn shutdown_for_exit(&self) {
         self.claude_processes.shutdown();
+        self.checkpoint_backup.shutdown();
         if let Err(error) = self.database.shutdown() {
             log::error!("could not quiesce the database writer before backup shutdown: {error}");
         }

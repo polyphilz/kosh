@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -24,9 +24,13 @@ const MAIN_TABLES: &[&str] = &[
     "draft_media_lease",
     "draft_source",
     "index_state",
+    "keyboard_binding",
     "media_ingest_lease",
     "media_blob_reap_candidate",
+    "offsite_backup_checkpoint",
+    "offsite_backup_checkpoint_media",
     "offsite_backup_config",
+    "offsite_backup_content_clock",
     "offsite_credential_cleanup",
     "offsite_media_upload",
     "passage",
@@ -44,6 +48,7 @@ const MAIN_TABLES: &[&str] = &[
     "research_run",
     "research_run_attachment",
     "research_run_event",
+    "shortcut_settings",
     "source",
     "tidbit",
     "tidbit_purge_authorization",
@@ -57,6 +62,8 @@ const MEDIA_TABLES: &[&str] = &[
     "media_blob_lease",
     "media_blob_reap_authorization",
 ];
+const CONTENT_CLOCK_MIGRATION: &str =
+    include_str!("migrations/main/V20__complete_offsite_checkpoints.sql");
 
 pub fn validate_migrated_pair(
     main: &mut Connection,
@@ -78,6 +85,7 @@ pub fn validate_migrated_pair(
         }),
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
+    validate_content_clock_triggers(main)?;
     recover_interrupted_derived_work(main)?;
     validate_optional_embedding_index(main);
     validate_foreign_keys(main, DatabaseKind::Main)?;
@@ -239,6 +247,109 @@ fn validate_strict_tables<'a>(
         }
     }
     Ok(())
+}
+
+fn validate_content_clock_triggers(connection: &Connection) -> Result<()> {
+    let expected = expected_content_clock_triggers()?;
+    let mut statement = connection.prepare(
+        "SELECT name, sql
+         FROM sqlite_schema
+         WHERE type = 'trigger'
+           AND (
+               name = 'offsite_backup_content_clock_prevent_delete'
+               OR name GLOB 'offsite_clock_*'
+           )
+         ORDER BY name",
+    )?;
+    let actual = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut actual = actual.into_iter().collect::<BTreeMap<_, _>>();
+    if actual.len() != expected.len() {
+        return invalid(
+            DatabaseKind::Main,
+            format!(
+                "content-clock trigger count is {}, expected {}",
+                actual.len(),
+                expected.len()
+            ),
+        );
+    }
+    for (name, expected_sql) in expected {
+        let Some(actual_sql) = actual.remove(&name).flatten() else {
+            return invalid(
+                DatabaseKind::Main,
+                format!("required content-clock trigger {name} is missing"),
+            );
+        };
+        if normalize_schema_sql(&actual_sql) != normalize_schema_sql(&expected_sql) {
+            return invalid(
+                DatabaseKind::Main,
+                format!("required content-clock trigger {name} has changed"),
+            );
+        }
+    }
+    if let Some((name, _)) = actual.into_iter().next() {
+        return invalid(
+            DatabaseKind::Main,
+            format!("unexpected content-clock trigger {name} is installed"),
+        );
+    }
+    Ok(())
+}
+
+fn expected_content_clock_triggers() -> Result<BTreeMap<String, String>> {
+    let mut expected = BTreeMap::new();
+    let mut current: Option<String> = None;
+    for line in CONTENT_CLOCK_MIGRATION.lines() {
+        let trimmed = line.trim();
+        if current.is_none()
+            && (trimmed.starts_with("CREATE TRIGGER offsite_clock_")
+                || trimmed
+                    .starts_with("CREATE TRIGGER offsite_backup_content_clock_prevent_delete"))
+        {
+            current = Some(trimmed.to_owned());
+        } else if let Some(sql) = current.as_mut() {
+            sql.push('\n');
+            sql.push_str(trimmed);
+        }
+        if trimmed.ends_with("END;") {
+            let Some(sql) = current.take() else {
+                continue;
+            };
+            let name = sql
+                .split_whitespace()
+                .nth(2)
+                .ok_or_else(|| DatabaseError::Validation {
+                    kind: "main",
+                    reason: "embedded content-clock trigger has no name".into(),
+                })?
+                .to_owned();
+            if expected.insert(name.clone(), sql).is_some() {
+                return invalid(
+                    DatabaseKind::Main,
+                    format!("embedded content-clock trigger {name} is duplicated"),
+                );
+            }
+        }
+    }
+    if current.is_some() || expected.is_empty() {
+        return invalid(
+            DatabaseKind::Main,
+            "embedded content-clock trigger definitions are incomplete".into(),
+        );
+    }
+    Ok(expected)
+}
+
+fn normalize_schema_sql(sql: &str) -> String {
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(';')
+        .to_owned()
 }
 
 fn recover_interrupted_derived_work(connection: &mut Connection) -> Result<()> {

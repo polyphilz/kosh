@@ -6,6 +6,7 @@
 //! replication runs only for an enabled configuration under the supervised
 //! Litestream runtime.
 
+pub(crate) mod checkpoint;
 pub(crate) mod credentials;
 pub(crate) mod domain;
 pub mod litestream;

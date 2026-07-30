@@ -8,6 +8,7 @@ mod error;
 mod maintenance;
 pub(crate) mod media;
 mod migrations;
+mod offsite_checkpoint;
 pub(crate) mod passages;
 mod paths;
 mod research_runs;
@@ -30,6 +31,8 @@ mod embedding_index_tests;
 mod maintenance_tests;
 #[cfg(test)]
 mod media_tests;
+#[cfg(test)]
+mod offsite_checkpoint_tests;
 #[cfg(test)]
 mod reliability_tests;
 #[cfg(test)]
@@ -65,6 +68,10 @@ pub use media::{
     GenericAttachmentRecord, GenericAttachmentStatusRecord, ImageOcrDiagnostics, ImageOcrRecovery,
     ImageOcrStatus, ImageRecord, ImageStatusRecord, MediaCleanupResult, MediaIntegrityReport,
     MediaLimits, MediaMaintenanceReport, PdfExtractionStatus, PdfRecord, PdfStatusRecord,
+};
+pub(crate) use offsite_checkpoint::{
+    CheckpointMediaReference, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
+    PreparedOffsiteCheckpoint,
 };
 pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
@@ -334,6 +341,9 @@ fn writer_loop(
             WriterMessage::AuthorizeOffsiteMediaRemoteWrite { claim, reply } => {
                 let _ = reply.send(backup_media::authorize_remote_write(&main, &claim));
             }
+            WriterMessage::AuthorizeOffsiteCheckpointRemoteOperation { config, reply } => {
+                let _ = reply.send(backup_state::is_current_enabled(&main, &config));
+            }
             WriterMessage::CompleteOffsiteMediaUpload {
                 claim,
                 remote_version,
@@ -358,6 +368,86 @@ fn writer_loop(
             }
             WriterMessage::OffsiteMediaUploadProgress { reply } => {
                 let _ = reply.send(backup_media::progress(&main));
+            }
+            WriterMessage::RetryFailedOffsiteMediaUploads { now_ms, reply } => {
+                let _ = reply.send(backup_media::retry_failed(&main, now_ms));
+            }
+            WriterMessage::RequeueUploadedOffsiteMedia {
+                backup_set_id,
+                sha256,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(backup_media::requeue_uploaded(
+                    &main,
+                    &backup_set_id,
+                    sha256,
+                    now_ms,
+                ));
+            }
+            WriterMessage::PrepareOffsiteCheckpoint { input, reply } => {
+                let _ = reply.send(offsite_checkpoint::prepare(&mut main, &media, input));
+            }
+            WriterMessage::LoadOffsiteCheckpointMediaPage {
+                checkpoint_id,
+                after_sha256,
+                limit,
+                reply,
+            } => {
+                let _ = reply.send(offsite_checkpoint::load_media_page(
+                    &main,
+                    &checkpoint_id,
+                    after_sha256,
+                    limit,
+                ));
+            }
+            WriterMessage::MarkOffsiteCheckpointFenced {
+                checkpoint_id,
+                txid,
+                reply,
+            } => {
+                let _ = reply.send(offsite_checkpoint::mark_fenced(
+                    &mut main,
+                    &checkpoint_id,
+                    txid,
+                ));
+            }
+            WriterMessage::MarkOffsiteCheckpointReplicated {
+                checkpoint_id,
+                reply,
+            } => {
+                let _ = reply.send(offsite_checkpoint::mark_replicated(
+                    &mut main,
+                    &checkpoint_id,
+                ));
+            }
+            WriterMessage::MarkOffsiteCheckpointPublished {
+                checkpoint_id,
+                manifest_object_key,
+                reply,
+            } => {
+                let _ = reply.send(offsite_checkpoint::mark_published(
+                    &mut main,
+                    &checkpoint_id,
+                    &manifest_object_key,
+                ));
+            }
+            WriterMessage::MarkOffsiteCheckpointFailed {
+                checkpoint_id,
+                error_code,
+                reply,
+            } => {
+                let _ = reply.send(offsite_checkpoint::mark_failed(
+                    &mut main,
+                    &checkpoint_id,
+                    error_code,
+                ));
+            }
+            WriterMessage::FailIncompleteOffsiteCheckpoints { error_code, reply } => {
+                let _ = reply.send(offsite_checkpoint::fail_incomplete(&mut main, error_code));
+            }
+            WriterMessage::LoadOffsiteCheckpointScheduleState { reply } => {
+                let _ = reply.send(offsite_checkpoint::schedule_state(&main));
             }
             WriterMessage::FullIntegrityCheck { reply } => {
                 let _ = reply.send(validation::full_integrity_check_pair(&main, &media));

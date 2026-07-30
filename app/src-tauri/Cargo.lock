@@ -2370,6 +2370,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "thiserror 2.0.19",
+ "time",
  "tiny_http",
  "unicode-normalization",
  "url",

@@ -1,8 +1,10 @@
 export const TauriCommand = {
   AcknowledgeQuit: "acknowledge_quit",
   AttachmentStatus: "attachment_status",
+  BackupNow: "backup_now",
   CancelResearchProcess: "cancel_research_process",
   CaptureClipboardImage: "capture_clipboard_image",
+  CheckpointBackupStatus: "checkpoint_backup_status",
   ClaudeCliDefaults: "claude_cli_defaults",
   ClaudeSetupStatus: "claude_setup_status",
   ClearDraft: "clear_draft",

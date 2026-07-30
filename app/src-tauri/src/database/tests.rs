@@ -924,6 +924,60 @@ fn corrupt_application_id_is_rejected_before_migration() {
 }
 
 #[test]
+fn missing_required_checkpoint_media_table_is_rejected_at_startup() {
+    let pair = TestPair::new();
+    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+
+    let connection = Connection::open(&pair.paths.main).expect("main database");
+    connection
+        .execute("DROP TABLE offsite_backup_checkpoint_media", [])
+        .expect("drop required checkpoint table");
+    drop(connection);
+
+    let error = Database::initialize(pair.paths.clone()).expect_err("missing required table");
+    assert!(matches!(
+        error,
+        DatabaseError::Validation { kind: "main", .. }
+    ));
+}
+
+#[test]
+fn missing_or_altered_content_clock_trigger_is_rejected_at_startup() {
+    for replacement in [
+        None,
+        Some(
+            "CREATE TRIGGER offsite_clock_tidbit_update
+             AFTER UPDATE ON tidbit
+             BEGIN
+                 SELECT 1;
+             END",
+        ),
+    ] {
+        let pair = TestPair::new();
+        drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+
+        let connection = Connection::open(&pair.paths.main).expect("main database");
+        connection
+            .execute("DROP TRIGGER offsite_clock_tidbit_update", [])
+            .expect("drop content-clock trigger");
+        if let Some(replacement) = replacement {
+            connection
+                .execute_batch(replacement)
+                .expect("install altered content-clock trigger");
+        }
+        drop(connection);
+
+        let error =
+            Database::initialize(pair.paths.clone()).expect_err("damaged trigger definition");
+        assert!(matches!(
+            error,
+            DatabaseError::Validation { kind: "main", .. }
+        ));
+        assert!(error.to_string().contains("content-clock trigger"));
+    }
+}
+
+#[test]
 fn divergent_migration_checksum_is_rejected() {
     let pair = TestPair::new();
     drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
