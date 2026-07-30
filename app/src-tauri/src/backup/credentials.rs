@@ -175,22 +175,83 @@ fn save_verified(
     backup_set_id: &BackupSetId,
     credentials: &R2Credentials,
 ) -> Result<(), CredentialError> {
+    let previous = match backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str()) {
+        Ok(payload) => Some(Zeroizing::new(payload)),
+        Err(CredentialError::Missing) => None,
+        Err(error) => return Err(error),
+    };
     let payload = credentials.encode()?;
-    backend.save(KEYCHAIN_SERVICE, backup_set_id.as_str(), payload.as_slice())?;
+    if let Err(error) = backend.save(KEYCHAIN_SERVICE, backup_set_id.as_str(), payload.as_slice()) {
+        return rollback_and_return(
+            backend,
+            backup_set_id,
+            previous.as_ref().map(|payload| payload.as_slice()),
+            error,
+        );
+    }
     let verified = match backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str()) {
         Ok(payload) => Zeroizing::new(payload),
         Err(error) => {
-            let _ = backend.remove(KEYCHAIN_SERVICE, backup_set_id.as_str());
-            return Err(error);
+            return rollback_and_return(
+                backend,
+                backup_set_id,
+                previous.as_ref().map(|payload| payload.as_slice()),
+                error,
+            );
         }
     };
     if verified.as_slice() != payload.as_slice() {
-        let _ = backend.remove(KEYCHAIN_SERVICE, backup_set_id.as_str());
-        return Err(CredentialError::Unavailable);
+        return rollback_and_return(
+            backend,
+            backup_set_id,
+            previous.as_ref().map(|payload| payload.as_slice()),
+            CredentialError::Unavailable,
+        );
     }
     if let Err(error) = R2Credentials::decode(verified.as_slice()) {
-        let _ = backend.remove(KEYCHAIN_SERVICE, backup_set_id.as_str());
-        return Err(error);
+        return rollback_and_return(
+            backend,
+            backup_set_id,
+            previous.as_ref().map(|payload| payload.as_slice()),
+            error,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn rollback_and_return(
+    backend: &impl KeychainBackend,
+    backup_set_id: &BackupSetId,
+    previous: Option<&[u8]>,
+    original_error: CredentialError,
+) -> Result<(), CredentialError> {
+    restore_previous(backend, backup_set_id, previous).map_err(|_| CredentialError::Unavailable)?;
+    Err(original_error)
+}
+
+#[cfg(target_os = "macos")]
+fn restore_previous(
+    backend: &impl KeychainBackend,
+    backup_set_id: &BackupSetId,
+    previous: Option<&[u8]>,
+) -> Result<(), CredentialError> {
+    let account = backup_set_id.as_str();
+    match previous {
+        Some(previous) => {
+            backend.save(KEYCHAIN_SERVICE, account, previous)?;
+            let restored = Zeroizing::new(backend.load(KEYCHAIN_SERVICE, account)?);
+            if restored.as_slice() != previous {
+                return Err(CredentialError::Unavailable);
+            }
+        }
+        None => {
+            backend.remove(KEYCHAIN_SERVICE, account)?;
+            match backend.load(KEYCHAIN_SERVICE, account) {
+                Err(CredentialError::Missing) => {}
+                Ok(_) | Err(_) => return Err(CredentialError::Unavailable),
+            }
+        }
     }
     Ok(())
 }
@@ -307,7 +368,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn save_is_verified_and_a_failed_verification_removes_the_new_item() {
+    fn save_is_verified_and_failed_verification_rolls_back_keychain_state() {
         let backend = FakeKeychainBackend::default();
         let backup_set_id = BackupSetId::new();
         let credentials = R2Credentials::new(ACCESS_KEY, SECRET_KEY).expect("credentials");
@@ -315,19 +376,39 @@ mod tests {
         assert!(backend.contains(KEYCHAIN_SERVICE, backup_set_id.as_str()));
 
         let broken = FakeKeychainBackend::default();
-        broken.corrupt_reads();
+        broken.corrupt_verification_after_next_save();
         assert!(matches!(
             save_verified(&broken, &backup_set_id, &credentials),
             Err(CredentialError::Unavailable)
         ));
         assert!(!broken.contains(KEYCHAIN_SERVICE, backup_set_id.as_str()));
+
+        let replacement = R2Credentials::new(
+            "fedcba9876543210fedcba9876543210",
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        )
+        .expect("replacement");
+        backend.corrupt_verification_after_next_save();
+        assert!(matches!(
+            save_verified(&backend, &backup_set_id, &replacement),
+            Err(CredentialError::Unavailable)
+        ));
+        let restored = R2Credentials::decode(
+            &backend
+                .entry(KEYCHAIN_SERVICE, backup_set_id.as_str())
+                .expect("restored previous payload"),
+        )
+        .expect("restored credentials");
+        assert_eq!(restored.access_key_id(), ACCESS_KEY);
+        assert_eq!(restored.secret_access_key(), SECRET_KEY);
     }
 
     #[cfg(target_os = "macos")]
     #[derive(Default)]
     struct FakeKeychainBackend {
         entries: Mutex<HashMap<(String, String), Vec<u8>>>,
-        corrupt_reads: Mutex<bool>,
+        corrupt_next_read: Mutex<bool>,
+        corrupt_after_next_save: Mutex<bool>,
     }
 
     #[cfg(target_os = "macos")]
@@ -343,9 +424,15 @@ mod tests {
                 .contains_key(&(service.to_owned(), account.to_owned()))
         }
 
-        fn corrupt_reads(&self) {
+        fn entry(&self, service: &str, account: &str) -> Option<Vec<u8>> {
+            self.entries()
+                .get(&(service.to_owned(), account.to_owned()))
+                .cloned()
+        }
+
+        fn corrupt_verification_after_next_save(&self) {
             *self
-                .corrupt_reads
+                .corrupt_after_next_save
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
         }
@@ -359,11 +446,12 @@ mod tests {
                 .get(&(service.to_owned(), account.to_owned()))
                 .cloned()
                 .ok_or(CredentialError::Missing)?;
-            if *self
-                .corrupt_reads
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-            {
+            if std::mem::take(
+                &mut *self
+                    .corrupt_next_read
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            ) {
                 payload.push(0);
             }
             Ok(payload)
@@ -377,6 +465,17 @@ mod tests {
         ) -> Result<(), CredentialError> {
             self.entries()
                 .insert((service.to_owned(), account.to_owned()), payload.to_vec());
+            if std::mem::take(
+                &mut *self
+                    .corrupt_after_next_save
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            ) {
+                *self
+                    .corrupt_next_read
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            }
             Ok(())
         }
 
