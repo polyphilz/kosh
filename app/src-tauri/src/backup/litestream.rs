@@ -152,6 +152,7 @@ struct StagedBinary {
 pub struct VerifiedLitestreamBinary {
     path: PathBuf,
     sha256: String,
+    size: u64,
 }
 
 impl VerifiedLitestreamBinary {
@@ -163,6 +164,11 @@ impl VerifiedLitestreamBinary {
     #[must_use]
     pub fn sha256(&self) -> &str {
         &self.sha256
+    }
+
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     pub fn trusted_cleanup_sha256s() -> Result<Vec<String>, LitestreamError> {
@@ -191,6 +197,7 @@ impl VerifiedLitestreamBinary {
         Ok(Self {
             path,
             sha256: manifest.binary.universal.sha256,
+            size: manifest.binary.universal.size,
         })
     }
 
@@ -202,7 +209,32 @@ impl VerifiedLitestreamBinary {
         Ok(Self {
             path: path.to_owned(),
             sha256: manifest.binary.universal.sha256,
+            size: manifest.binary.universal.size,
         })
+    }
+
+    pub(crate) fn reverify_for_launch(
+        path: &Path,
+        expected_size: u64,
+        expected_sha256: &str,
+    ) -> Result<(), LitestreamError> {
+        if expected_size == 0
+            || expected_size > 128 * 1024 * 1024
+            || expected_sha256.len() != 64
+            || !expected_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(LitestreamError::BinaryChecksumMismatch);
+        }
+        verify_binary(
+            path,
+            &BinaryPin {
+                sha256: expected_sha256.to_owned(),
+                size: expected_size,
+                code_signature_identifier: String::new(),
+            },
+        )
     }
 }
 
@@ -284,33 +316,61 @@ fn verify_release_manifest(
 }
 
 fn verify_binary(path: &Path, manifest: &BinaryPin) -> Result<(), LitestreamError> {
-    let symlink_metadata =
-        fs::symlink_metadata(path).map_err(|_| LitestreamError::MissingBinary(path.to_owned()))?;
-    if symlink_metadata.file_type().is_symlink() || !symlink_metadata.is_file() {
+    #[cfg(not(unix))]
+    {
+        let path_metadata = fs::symlink_metadata(path)
+            .map_err(|_| LitestreamError::MissingBinary(path.to_owned()))?;
+        if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+            return Err(LitestreamError::BinaryNotRegular);
+        }
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path).map_err(|error| {
+        if error.raw_os_error() == Some(libc::ELOOP) {
+            LitestreamError::BinaryNotRegular
+        } else {
+            LitestreamError::MissingBinary(path.to_owned())
+        }
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| LitestreamError::BinaryNotRegular)?;
+    if !metadata.is_file() {
         return Err(LitestreamError::BinaryNotRegular);
     }
-    if symlink_metadata.len() != manifest.size {
+    if metadata.len() != manifest.size {
         return Err(LitestreamError::BinarySizeMismatch);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if symlink_metadata.permissions().mode() & 0o111 == 0 {
+        if metadata.permissions().mode() & 0o111 == 0 {
             return Err(LitestreamError::BinaryNotExecutable);
         }
     }
 
-    let mut file = File::open(path).map_err(|_| LitestreamError::MissingBinary(path.to_owned()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    let mut bounded = (&mut file).take(manifest.size + 1);
     loop {
-        let read = file
+        let read = bounded
             .read(&mut buffer)
             .map_err(|_| LitestreamError::BinaryChecksumMismatch)?;
         if read == 0 {
             break;
         }
+        total = total.saturating_add(read as u64);
         hasher.update(&buffer[..read]);
+    }
+    if total != manifest.size {
+        return Err(LitestreamError::BinarySizeMismatch);
     }
     let actual = format!("{:x}", hasher.finalize());
     if actual != manifest.sha256 {

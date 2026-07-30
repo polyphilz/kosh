@@ -22,14 +22,17 @@ For an enabled configuration the supervisor:
 6. atomically writes a mode-`0600` fixed-protocol configuration through a
    create-new, no-follow temporary file containing environment-variable
    references rather than credential values;
-7. launches Kosh's inert Litestream activation helper with an otherwise empty
-   environment and a dedicated process group;
+7. launches Kosh's inert Litestream activation helper with the verified size
+   and digest, an otherwise empty environment, and a dedicated process group;
 8. durably writes a bounded private PID record binding the exact command
    executable, the pinned binary digest, database, config, socket, backup set,
    replica epoch, and config digest;
-9. only then activates the helper through its private inherited pipe, which
-   atomically replaces itself with `litestream replicate`; parent death before
-   activation closes the pipe and leaves no replicating orphan;
+9. only then activates the helper through its private inherited pipe; the
+   helper immediately reopens without following symlinks, revalidates the
+   descriptor's type, size, mode, and digest, and atomically replaces itself
+   with `litestream replicate`; replacing the bundle path fails closed, while
+   parent death before activation closes the pipe and leaves no replicating
+   orphan;
 10. retains an exclusive, non-inherited runtime-generation lock from stale
     cleanup through daemon cleanup;
 11. accepts readiness only from a Unix socket with mode `0600`, while allowing
@@ -106,6 +109,8 @@ The focused native suite proves:
 - the activation token is emitted only after the durable ownership record;
 - the actual Kosh executable remains inert before activation and exits on
   parent-pipe EOF without executing Litestream;
+- the actual launcher rejects an atomically replaced Litestream pathname
+  before activation and executes neither the old nor substituted bytes;
 - disabled configuration preserves and retries stale-sweep failures until
   recovery;
 - unreadable runtime residue fails closed and remains on the stale-sweep retry

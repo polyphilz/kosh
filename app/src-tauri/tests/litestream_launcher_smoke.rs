@@ -9,6 +9,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use sha2::{Digest, Sha256};
+
 const LAUNCHER_ARG: &str = "--kosh-litestream-launcher";
 const ACTIVATION_TOKEN: &[u8] = b"kosh-litestream-activate-v1\n";
 const ACCESS_KEY_ENV: &str = "KOSH_LITESTREAM_R2_ACCESS_KEY_ID";
@@ -33,9 +35,12 @@ fn fake_litestream(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn spawn_launcher(binary: &Path, config: &Path) -> Child {
+    let bytes = fs::read(binary).expect("fake Litestream bytes");
     Command::new(env!("CARGO_BIN_EXE_kosh"))
         .arg(LAUNCHER_ARG)
         .arg(binary)
+        .arg(format!("{:x}", Sha256::digest(&bytes)))
+        .arg(bytes.len().to_string())
         .arg("replicate")
         .arg("-config")
         .arg(config)
@@ -100,5 +105,44 @@ fn actual_kosh_launcher_exits_on_parent_pipe_eof_without_exec() {
     assert!(
         !marker.exists(),
         "Litestream executed after pre-activation parent death"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn actual_kosh_launcher_rejects_a_path_swap_before_activation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("temporary launcher root");
+    let (binary, config, marker) = fake_litestream(root.path());
+    let mut child = spawn_launcher(&binary, &config);
+    let replacement = root.path().join("replacement-litestream");
+    let replacement_marker = root.path().join("replacement.started");
+    fs::write(
+        &replacement,
+        format!(
+            "#!/bin/sh\nprintf substituted > '{}'\n",
+            replacement_marker.display()
+        ),
+    )
+    .expect("replacement Litestream");
+    fs::set_permissions(&replacement, fs::Permissions::from_mode(0o700))
+        .expect("replacement permissions");
+    fs::rename(&replacement, &binary).expect("swap Litestream pathname");
+
+    let mut activation = child.stdin.take().expect("launcher activation pipe");
+    activation
+        .write_all(ACTIVATION_TOKEN)
+        .expect("activate verified Litestream");
+    drop(activation);
+
+    assert_eq!(wait_for_exit(&mut child).code(), Some(74));
+    assert!(
+        !marker.exists(),
+        "a replaced path cannot execute the formerly verified bytes"
+    );
+    assert!(
+        !replacement_marker.exists(),
+        "the substituted pathname must never execute"
     );
 }

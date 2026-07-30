@@ -62,6 +62,15 @@ pub(crate) fn run_launcher_if_requested() -> Option<i32> {
     if await_activation(&mut std::io::stdin()).is_err() {
         return Some(LITESTREAM_LAUNCHER_IO_EXIT);
     }
+    if VerifiedLitestreamBinary::reverify_for_launch(
+        &request.binary,
+        request.expected_size,
+        &request.expected_sha256,
+    )
+    .is_err()
+    {
+        return Some(LITESTREAM_LAUNCHER_IO_EXIT);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -85,6 +94,8 @@ pub(crate) fn run_launcher_if_requested() -> Option<i32> {
 
 struct LauncherRequest {
     binary: PathBuf,
+    expected_sha256: String,
+    expected_size: u64,
     config: PathBuf,
 }
 
@@ -98,6 +109,16 @@ fn parse_launcher_request(
         return None;
     }
     let Some(binary) = arguments.next().map(PathBuf::from) else {
+        return Some(Err(()));
+    };
+    let Some(expected_sha256) = arguments.next().and_then(|value| value.into_string().ok()) else {
+        return Some(Err(()));
+    };
+    let Some(expected_size) = arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
         return Some(Err(()));
     };
     let Some(replicate) = arguments.next() else {
@@ -117,7 +138,12 @@ fn parse_launcher_request(
     {
         return Some(Err(()));
     }
-    Some(Ok(LauncherRequest { binary, config }))
+    Some(Ok(LauncherRequest {
+        binary,
+        expected_sha256,
+        expected_size,
+        config,
+    }))
 }
 
 fn await_activation(reader: &mut impl Read) -> std::io::Result<()> {
@@ -782,14 +808,13 @@ impl<C: CredentialStore, I: WriterIdentityProvider> RuntimeFactory for SystemRun
             .map_err(map_litestream_start_error)?;
         let config_sha256 = sha256_hex(rendered.as_bytes());
         let daemon = SystemManagedLitestream::launch(
-            binary.path().to_owned(),
+            binary,
             runtime,
             ownership,
             self.database_path.clone(),
             config.backup_set_id.as_str().to_owned(),
             config.replica_epoch_id.as_str().to_owned(),
             config_sha256,
-            binary.sha256().to_owned(),
             credentials,
             &shutdown,
         )?;
@@ -993,23 +1018,25 @@ struct SystemManagedLitestream {
 impl SystemManagedLitestream {
     #[allow(clippy::too_many_arguments)]
     fn launch(
-        binary: PathBuf,
+        binary: VerifiedLitestreamBinary,
         runtime: LitestreamRuntimePaths,
         ownership: LitestreamRuntimeOwnership,
         database_path: PathBuf,
         backup_set_id: String,
         replica_epoch_id: String,
         config_sha256: String,
-        executable_sha256: String,
         credentials: super::credentials::R2Credentials,
         shutdown: &AtomicBool,
     ) -> Result<Self, RuntimeFailure> {
         let launcher = std::env::current_exe()
             .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
+        let binary_path = binary.path().to_owned();
         let mut command = Command::new(&launcher);
         command
             .arg(LITESTREAM_LAUNCHER_ARG)
-            .arg(&binary)
+            .arg(&binary_path)
+            .arg(binary.sha256())
+            .arg(binary.size().to_string())
             .arg("replicate")
             .arg("-config")
             .arg(runtime.config())
@@ -1030,7 +1057,7 @@ impl SystemManagedLitestream {
             backup_set_id,
             replica_epoch_id,
             config_sha256,
-            executable_sha256,
+            executable_sha256: binary.sha256().to_owned(),
         };
         let activation = child
             .stdin
@@ -1041,7 +1068,7 @@ impl SystemManagedLitestream {
                 write_pid_record_then_activate(
                     &runtime,
                     pid,
-                    &binary,
+                    &binary_path,
                     &database_path,
                     &identity,
                     activation,
@@ -1066,7 +1093,7 @@ impl SystemManagedLitestream {
             return Err(failure);
         }
         let control = CommandLitestreamControl::new(
-            binary,
+            binary_path,
             runtime.socket().to_owned(),
             CONTROL_REMOTE_TIMEOUT_SECONDS,
             SystemCommandExecutor,
@@ -2377,6 +2404,8 @@ mod tests {
             OsString::from("/Applications/Kosh.app/Contents/MacOS/kosh"),
             OsString::from(LITESTREAM_LAUNCHER_ARG),
             OsString::from("/Applications/Kosh.app/Contents/Resources/litestream"),
+            OsString::from(sha256_hex(b"binary")),
+            OsString::from("6"),
             OsString::from("replicate"),
             OsString::from("-config"),
             OsString::from("/tmp/kosh/run/backup/ls.yml"),
@@ -2387,12 +2416,16 @@ mod tests {
             request.binary,
             PathBuf::from("/Applications/Kosh.app/Contents/Resources/litestream")
         );
+        assert_eq!(request.expected_sha256, sha256_hex(b"binary"));
+        assert_eq!(request.expected_size, 6);
         assert_eq!(request.config, PathBuf::from("/tmp/kosh/run/backup/ls.yml"));
         assert!(matches!(
             parse_launcher_request([
                 OsString::from("/Applications/Kosh.app/Contents/MacOS/kosh"),
                 OsString::from(LITESTREAM_LAUNCHER_ARG),
                 OsString::from("relative-litestream"),
+                OsString::from(sha256_hex(b"binary")),
+                OsString::from("6"),
                 OsString::from("replicate"),
                 OsString::from("-config"),
                 OsString::from("/tmp/kosh/run/backup/ls.yml"),
