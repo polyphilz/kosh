@@ -91,7 +91,7 @@ echo "review-request reactions:"
   -H "Accept: application/vnd.github+json" \
   "repos/$repo/issues/comments/$request_id/reactions?per_page=100" |
   jq -r '.[][] | "\(.content) \(.user.login) \(.created_at)"'
-echo "PR reactions (informational; not merge evidence):"
+echo "PR reactions (post-request +1 is clean merge evidence):"
 "$gh_bin" api \
   --paginate \
   --slurp \

@@ -83,13 +83,15 @@ receipt. CI independently launches and restarts a fresh profile on macOS with
    Actions run records a transition to the current head on GitHub;
 4. one later clean-review signal from `chatgpt-codex-connector[bot]`, either:
    - a `+1` reaction on that exact review-request comment; or
+   - a `+1` reaction on the PR main message created after that request; or
    - a clean completion comment naming the exact current head SHA; and
 5. a mergeable GitHub state.
 
-The server-side workflow timestamp prevents author-controlled Git timestamps
-or clean evidence from an older revision from authorizing a newer revision. A
-PR-body reaction is informational only because GitHub does not bind it to a
-request or commit.
+The server-side workflow timestamp and post-request ordering prevent
+author-controlled Git timestamps or clean evidence from an older revision from
+authorizing a newer revision. Codex's documented no-findings path reacts to the
+PR main message rather than posting a review, so that reaction is accepted only
+when GitHub created it after the current-head review request.
 `scripts/loop/merge.sh` runs the gate, binds the merge atomically to that head
 SHA, rechecks that local source state did not change, and uses the repository's
 squash-only merge policy.
