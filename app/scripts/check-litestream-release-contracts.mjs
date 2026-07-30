@@ -45,6 +45,14 @@ assertEqual(
   "com.rohan.kosh.litestream",
   "Litestream signature identifier",
 );
+assertEqual(
+  pin.binary.universal.codeSignatureCdhashByArchitecture,
+  {
+    arm64: "71aba3c4b6ae015b5dde89c29ccfc5f45d0d1475",
+    x86_64: "e34d4df0221f1d31c52f68dd7b8db8e3bb4b3c89",
+  },
+  "Litestream per-architecture code-directory hashes",
+);
 assertEqual(pin.binary.universal.size, 77_508_256, "universal byte length");
 assertSha256(pin.binary.universal.sha256, "universal Litestream");
 assertEqual(pin.verification.requiredL0Retention, "720h", "exact-TXID retention");
@@ -133,8 +141,8 @@ for (const contract of [
   "l0-retention: 720h",
   "auto-recover: false",
   "verify-compaction: true",
-  "KOSH_LITESTREAM_R2_ACCESS_KEY_ID",
-  "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY",
+  "AWS_SHARED_CREDENTIALS_FILE",
+  "CS_OPS_CDHASH",
   "MAX_CONTROL_OUTPUT_BYTES",
   "ControlSocketPathTooLong",
 ]) {
@@ -170,6 +178,7 @@ for (const contract of [
   "official checksums",
   "lipo -create",
   "codesign --force --sign -",
+  "codeSignatureCdhashByArchitecture",
   "binary.universal.sha256",
 ]) {
   assert(stage.includes(contract), `Litestream staging omits ${contract}`);

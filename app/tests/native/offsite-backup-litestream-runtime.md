@@ -23,25 +23,25 @@ For an enabled configuration the supervisor:
 5. conditionally claims and reads back the fixed R2 owner object with that
    device-local writer identity before any replication process exists;
 6. atomically writes a mode-`0600` fixed-protocol configuration through a
-   create-new, no-follow temporary file containing environment-variable
-   references rather than credential values;
-7. launches Kosh's inert Litestream activation helper with the immutable-copy
-   path, verified size and digest, an otherwise empty environment, and a
-   dedicated process group;
-8. durably writes a bounded private PID record binding the exact command
+   create-new, no-follow temporary file containing no credential values or
+   credential environment-variable names;
+7. launches `litestream replicate` directly with an otherwise empty
+   environment, a dedicated process group, and one private inherited stream
+   named as its AWS shared-credentials file, but does not write credentials;
+8. asks the macOS kernel for the spawned image's `CS_OPS_CDHASH` and requires
+   the exact per-architecture code-directory hash pinned in the release
+   manifest, so a pathname replacement starts but can never receive secrets;
+9. durably writes a bounded private PID record binding the exact command
    executable, the pinned binary digest, database, config, socket, backup set,
    replica epoch, and config digest;
-9. only then activates the helper through its private inherited pipe; the
-   helper immediately reopens without following symlinks, revalidates the
-   descriptor's type, size, mode, digest, and immutable file/directory flags,
-   and atomically replaces itself with `litestream replicate`; replacing the
-   source bundle path cannot alter the immutable copy, while parent death
-   before activation closes the pipe and leaves no replicating orphan;
-10. retains an exclusive, non-inherited runtime-generation lock from stale
+10. only then writes the zeroizing Keychain values as a one-use AWS credential
+    profile through that inherited stream and closes it; parent death or any
+    identity/ownership failure produces EOF without exposing credentials;
+11. retains an exclusive, non-inherited runtime-generation lock from stale
     cleanup through daemon cleanup;
-11. accepts readiness only from a Unix socket with mode `0600`, while allowing
+12. accepts readiness only from a Unix socket with mode `0600`, while allowing
     shutdown to cancel the readiness wait immediately; and
-12. confirms the canonical local and remote TXID through a bounded control
+13. confirms the canonical local and remote TXID through a bounded control
     command.
 
 Status contains only fixed phase/error enums, canonical 16-character TXIDs,
@@ -110,14 +110,15 @@ The focused native suite proves:
 - children that exit before opening the control socket remain transient and
   enter the same capped restart policy;
 - transient failures recover and structural failures do not spin;
-- the activation token is emitted only after the durable ownership record;
-- the actual Kosh executable remains inert before activation and exits on
-  parent-pipe EOF without executing Litestream;
+- the one-use credential profile is emitted only after the durable ownership
+  record, while the child environment contains no raw credentials;
+- the macOS kernel code-directory hash binds the spawned image to the pinned
+  architecture and rejects a mismatched process before credential release;
+- the actual pinned universal Litestream starts headlessly with the inherited
+  one-use credential profile and private control socket;
 - the immutable launch stage is reusable, preserves the verified descriptor's
   bytes, safely replaces an interrupted partial stage, and rejects executable
-  and parent-directory pathname replacement before activation;
-- the actual launcher executes the immutable copy while an attempted pathname
-  replacement fails and substituted bytes never run;
+  and parent-directory pathname replacement;
 - disabled configuration preserves and retries stale-sweep failures until
   recovery;
 - unreadable runtime residue fails closed and remains on the stale-sweep retry
@@ -162,8 +163,6 @@ Run it from the repository root:
 ```sh
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
   --features test-support --lib litestream_runtime
-cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
-  --features test-support --test litestream_launcher_smoke
 ```
 
 The existing Litestream protocol gate independently proves exact-TXID control,

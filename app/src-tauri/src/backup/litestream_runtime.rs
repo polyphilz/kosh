@@ -1,7 +1,9 @@
 use std::{
-    ffi::{OsStr, OsString},
     fs,
     io::{Read, Write},
+    net::Shutdown,
+    os::fd::OwnedFd,
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -20,9 +22,9 @@ use crate::database::{DatabaseClient, OffsiteBackupConfig};
 use super::{
     credentials::{CredentialError, CredentialStore, MacOsKeychainCredentialStore},
     litestream::{
-        configure_credentials_environment, CommandLitestreamControl, ImmutableLitestreamBinary,
-        LitestreamConfig, LitestreamError, LitestreamRuntimePaths, SyncResult,
-        SystemCommandExecutor, VerifiedLitestreamBinary,
+        configure_credential_pipe_environment, write_aws_shared_credentials,
+        CommandLitestreamControl, ImmutableLitestreamBinary, LitestreamConfig, LitestreamError,
+        LitestreamRuntimePaths, SyncResult, SystemCommandExecutor, VerifiedLitestreamBinary,
     },
     object_store::{ObjectStoreErrorCode, R2ObjectStore},
     owner::{claim_remote_owner_cancellable, RemoteOwnerError},
@@ -49,111 +51,6 @@ const OWNER_CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PID_RECORD_FORMAT_VERSION: u32 = 2;
 const MAX_PID_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_LITESTREAM_CONFIG_BYTES: u64 = 64 * 1024;
-const LITESTREAM_LAUNCHER_ARG: &str = "--kosh-litestream-launcher";
-const LITESTREAM_ACTIVATION_TOKEN: &[u8] = b"kosh-litestream-activate-v1\n";
-const LITESTREAM_LAUNCHER_USAGE_EXIT: i32 = 64;
-const LITESTREAM_LAUNCHER_IO_EXIT: i32 = 74;
-
-pub(crate) fn run_launcher_if_requested() -> Option<i32> {
-    let request = match parse_launcher_request(std::env::args_os())? {
-        Ok(request) => request,
-        Err(()) => return Some(LITESTREAM_LAUNCHER_USAGE_EXIT),
-    };
-    if await_activation(&mut std::io::stdin()).is_err() {
-        return Some(LITESTREAM_LAUNCHER_IO_EXIT);
-    }
-    if ImmutableLitestreamBinary::reverify_for_launch(
-        &request.binary,
-        request.expected_size,
-        &request.expected_sha256,
-    )
-    .is_err()
-    {
-        return Some(LITESTREAM_LAUNCHER_IO_EXIT);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let error = Command::new(request.binary)
-            .arg("replicate")
-            .arg("-config")
-            .arg(request.config)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .exec();
-        let _ = error;
-        Some(LITESTREAM_LAUNCHER_IO_EXIT)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = request;
-        Some(LITESTREAM_LAUNCHER_IO_EXIT)
-    }
-}
-
-struct LauncherRequest {
-    binary: PathBuf,
-    expected_sha256: String,
-    expected_size: u64,
-    config: PathBuf,
-}
-
-fn parse_launcher_request(
-    arguments: impl IntoIterator<Item = OsString>,
-) -> Option<Result<LauncherRequest, ()>> {
-    let mut arguments = arguments.into_iter();
-    let _executable = arguments.next();
-    let operation = arguments.next()?;
-    if operation != OsStr::new(LITESTREAM_LAUNCHER_ARG) {
-        return None;
-    }
-    let Some(binary) = arguments.next().map(PathBuf::from) else {
-        return Some(Err(()));
-    };
-    let Some(expected_sha256) = arguments.next().and_then(|value| value.into_string().ok()) else {
-        return Some(Err(()));
-    };
-    let Some(expected_size) = arguments
-        .next()
-        .and_then(|value| value.into_string().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-    else {
-        return Some(Err(()));
-    };
-    let Some(replicate) = arguments.next() else {
-        return Some(Err(()));
-    };
-    let Some(config_flag) = arguments.next() else {
-        return Some(Err(()));
-    };
-    let Some(config) = arguments.next().map(PathBuf::from) else {
-        return Some(Err(()));
-    };
-    if arguments.next().is_some()
-        || replicate != OsStr::new("replicate")
-        || config_flag != OsStr::new("-config")
-        || !binary.is_absolute()
-        || !config.is_absolute()
-    {
-        return Some(Err(()));
-    }
-    Some(Ok(LauncherRequest {
-        binary,
-        expected_sha256,
-        expected_size,
-        config,
-    }))
-}
-
-fn await_activation(reader: &mut impl Read) -> std::io::Result<()> {
-    let mut activation = [0_u8; LITESTREAM_ACTIVATION_TOKEN.len()];
-    reader.read_exact(&mut activation)?;
-    if activation != LITESTREAM_ACTIVATION_TOKEN {
-        return Err(std::io::Error::other("invalid Litestream activation token"));
-    }
-    Ok(())
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -994,6 +891,8 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
         | LitestreamError::BinaryChecksumMismatch
         | LitestreamError::StageBinary(_)
         | LitestreamError::InvalidStagedBinary
+        | LitestreamError::ProcessCodeSignatureMismatch
+        | LitestreamError::ProcessIdentityUnavailable(_)
         | LitestreamError::UnsafeProtocolPin
         | LitestreamError::RestorePlanTooLarge => {
             RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
@@ -1033,22 +932,22 @@ impl SystemManagedLitestream {
         credentials: super::credentials::R2Credentials,
         shutdown: &AtomicBool,
     ) -> Result<Self, RuntimeFailure> {
-        let launcher = std::env::current_exe()
-            .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
+        binary
+            .reverify_before_spawn()
+            .map_err(map_litestream_start_error)?;
         let binary_path = binary.path().to_owned();
-        let mut command = Command::new(&launcher);
+        let (credential_reader, mut credential_writer) = UnixStream::pair()
+            .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
+        let credential_reader: OwnedFd = credential_reader.into();
+        let mut command = Command::new(&binary_path);
         command
-            .arg(LITESTREAM_LAUNCHER_ARG)
-            .arg(&binary_path)
-            .arg(binary.sha256())
-            .arg(binary.size().to_string())
             .arg("replicate")
             .arg("-config")
             .arg(runtime.config())
-            .stdin(Stdio::piped())
+            .stdin(Stdio::from(credential_reader))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        configure_credentials_environment(&mut command, &credentials);
+        configure_credential_pipe_environment(&mut command);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -1058,31 +957,28 @@ impl SystemManagedLitestream {
             .spawn()
             .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true))?;
         let pid = child.id();
+        if let Err(error) = binary.verify_running_process(pid) {
+            terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
+            cleanup_owned_runtime(&ownership, &runtime, pid, false);
+            return Err(map_litestream_start_error(error));
+        }
         let identity = LaunchIdentity {
             backup_set_id,
             replica_epoch_id,
             config_sha256,
             executable_sha256: binary.sha256().to_owned(),
         };
-        let activation = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| RuntimeFailure::new(RelationalBackupErrorCode::LaunchFailed, true));
-        if activation
-            .and_then(|activation| {
-                write_pid_record_then_activate(
-                    &runtime,
-                    pid,
-                    &binary_path,
-                    &database_path,
-                    &identity,
-                    activation,
-                )
-                .map_err(|_| {
-                    RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true)
-                })
-            })
-            .is_err()
+        if write_pid_record_then_release_credentials(
+            &runtime,
+            pid,
+            &binary_path,
+            &database_path,
+            &identity,
+            &mut credential_writer,
+            &credentials,
+        )
+        .and_then(|()| credential_writer.shutdown(Shutdown::Write))
+        .is_err()
         {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
             cleanup_owned_runtime(&ownership, &runtime, pid, false);
@@ -1091,7 +987,7 @@ impl SystemManagedLitestream {
                 true,
             ));
         }
-        child.stdin.take();
+        drop(credential_writer);
         if let Err(failure) = wait_for_control_socket(&mut child, &runtime, shutdown) {
             terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
             cleanup_owned_runtime(&ownership, &runtime, pid, true);
@@ -1254,17 +1150,17 @@ struct LaunchIdentity {
     executable_sha256: String,
 }
 
-fn write_pid_record_then_activate(
+fn write_pid_record_then_release_credentials(
     runtime: &LitestreamRuntimePaths,
     pid: u32,
     binary: &Path,
     database_path: &Path,
     identity: &LaunchIdentity,
-    activation: &mut impl Write,
+    credential_writer: &mut impl Write,
+    credentials: &super::credentials::R2Credentials,
 ) -> std::io::Result<()> {
     write_pid_record(runtime, pid, binary, database_path, identity)?;
-    activation.write_all(LITESTREAM_ACTIVATION_TOKEN)?;
-    activation.flush()
+    write_aws_shared_credentials(credential_writer, credentials)
 }
 
 fn write_pid_record(
@@ -2404,65 +2300,24 @@ mod tests {
     }
 
     #[test]
-    fn launcher_protocol_requires_exact_arguments_and_activation_token() {
-        let request = parse_launcher_request([
-            OsString::from("/Applications/Kosh.app/Contents/MacOS/kosh"),
-            OsString::from(LITESTREAM_LAUNCHER_ARG),
-            OsString::from("/Applications/Kosh.app/Contents/Resources/litestream"),
-            OsString::from(sha256_hex(b"binary")),
-            OsString::from("6"),
-            OsString::from("replicate"),
-            OsString::from("-config"),
-            OsString::from("/tmp/kosh/run/backup/ls.yml"),
-        ])
-        .expect("launcher operation")
-        .expect("launcher request");
-        assert_eq!(
-            request.binary,
-            PathBuf::from("/Applications/Kosh.app/Contents/Resources/litestream")
-        );
-        assert_eq!(request.expected_sha256, sha256_hex(b"binary"));
-        assert_eq!(request.expected_size, 6);
-        assert_eq!(request.config, PathBuf::from("/tmp/kosh/run/backup/ls.yml"));
-        assert!(matches!(
-            parse_launcher_request([
-                OsString::from("/Applications/Kosh.app/Contents/MacOS/kosh"),
-                OsString::from(LITESTREAM_LAUNCHER_ARG),
-                OsString::from("relative-litestream"),
-                OsString::from(sha256_hex(b"binary")),
-                OsString::from("6"),
-                OsString::from("replicate"),
-                OsString::from("-config"),
-                OsString::from("/tmp/kosh/run/backup/ls.yml"),
-            ]),
-            Some(Err(()))
-        ));
-        assert!(await_activation(&mut std::io::Cursor::new(LITESTREAM_ACTIVATION_TOKEN)).is_ok());
-        assert!(await_activation(&mut std::io::Cursor::new(b"truncated")).is_err());
-        assert!(
-            await_activation(&mut std::io::Cursor::new(b"kosh-litestream-activate-v2\n")).is_err()
-        );
-    }
-
-    #[test]
-    fn child_activation_is_emitted_only_after_durable_ownership_record() {
+    fn credentials_are_released_only_after_durable_ownership_record() {
         struct OwnershipProbe<'a> {
             runtime: &'a LitestreamRuntimePaths,
             expected_pid: u32,
-            activated: Vec<u8>,
+            released: Vec<u8>,
         }
 
         impl Write for OwnershipProbe<'_> {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 let record = read_pid_record(self.runtime)?.ok_or_else(|| {
-                    std::io::Error::other("activation preceded the ownership record")
+                    std::io::Error::other("credentials preceded the ownership record")
                 })?;
                 if record.pid != self.expected_pid {
                     return Err(std::io::Error::other(
-                        "activation observed the wrong ownership record",
+                        "credentials observed the wrong ownership record",
                     ));
                 }
-                self.activated.extend_from_slice(bytes);
+                self.released.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
 
@@ -2471,7 +2326,7 @@ mod tests {
             }
         }
 
-        let root = tempfile::tempdir().expect("temporary activation root");
+        let root = tempfile::tempdir().expect("temporary credential-gate root");
         let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
         runtime.prepare().expect("prepare runtime");
         runtime.write_config("safe config").expect("write config");
@@ -2485,23 +2340,35 @@ mod tests {
             config_sha256: sha256_hex(b"safe config"),
             executable_sha256: sha256_hex(b"binary"),
         };
-        let mut activation = OwnershipProbe {
+        let credentials = super::super::credentials::R2Credentials::new(
+            "0123456789abcdef0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .expect("credentials");
+        let mut credential_gate = OwnershipProbe {
             runtime: &runtime,
             expected_pid: u32::MAX,
-            activated: Vec::new(),
+            released: Vec::new(),
         };
 
-        write_pid_record_then_activate(
+        write_pid_record_then_release_credentials(
             &runtime,
             u32::MAX,
             &binary,
             &database,
             &identity,
-            &mut activation,
+            &mut credential_gate,
+            &credentials,
         )
-        .expect("durable ownership and activation");
+        .expect("durable ownership and credential release");
 
-        assert_eq!(activation.activated, LITESTREAM_ACTIVATION_TOKEN);
+        assert_eq!(
+            String::from_utf8(credential_gate.released).expect("credential profile"),
+            "[default]\n\
+             aws_access_key_id = 0123456789abcdef0123456789abcdef\n\
+             aws_secret_access_key = \
+             0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+        );
         assert_eq!(
             read_pid_record(&runtime)
                 .expect("PID record")
@@ -2509,6 +2376,106 @@ mod tests {
                 .config_sha256,
             identity.config_sha256
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn actual_litestream_starts_from_the_verified_image_and_credential_pipe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let staged_resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/release");
+        if !staged_resources.join("bin/litestream").is_file() {
+            return;
+        }
+        let root = tempfile::tempdir().expect("direct launch root");
+        let resource_dir = root.path().join("packaged-resources");
+        fs::create_dir_all(resource_dir.join("bin")).expect("packaged binary directory");
+        fs::create_dir_all(resource_dir.join("release")).expect("packaged manifest directory");
+        fs::hard_link(
+            staged_resources.join("bin/litestream"),
+            resource_dir.join("bin/litestream"),
+        )
+        .expect("packaged Litestream link");
+        let source_manifest_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/sidecars/litestream-v1.json");
+        let mut release_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(source_manifest_path).expect("source Litestream manifest"),
+        )
+        .expect("source Litestream JSON");
+        let universal = release_manifest["binary"]["universal"].clone();
+        release_manifest["stagedBinary"] = serde_json::json!({
+            "sha256": universal["sha256"],
+            "size": universal["size"],
+        });
+        release_manifest["verification"]["architectureChecks"] = serde_json::json!([]);
+        fs::write(
+            resource_dir.join("release/litestream.json"),
+            serde_json::to_vec(&release_manifest).expect("release Litestream JSON"),
+        )
+        .expect("packaged Litestream manifest");
+        let database_path = root.path().join("kosh.sqlite3");
+        let database =
+            rusqlite::Connection::open(&database_path).expect("Litestream SQLite fixture");
+        database
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE evidence (value TEXT NOT NULL);
+                 INSERT INTO evidence (value) VALUES ('credential-gated');",
+            )
+            .expect("Litestream SQLite contents");
+        drop(database);
+
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        let rendered = LitestreamConfig {
+            database_path: &database_path,
+            runtime: &runtime,
+            bucket: "kosh-credential-gate",
+            replica_path: "kosh/credential-gate/litestream",
+            endpoint: "https://127.0.0.1:1",
+        }
+        .render()
+        .expect("Litestream config");
+        runtime.write_config(&rendered).expect("write config");
+        let binary = VerifiedLitestreamBinary::resolve(&resource_dir)
+            .expect("verified Litestream")
+            .stage_immutable(&runtime)
+            .expect("immutable Litestream");
+        let immutable_path = binary.path().to_owned();
+        let ownership = acquire_runtime_ownership(&runtime).expect("runtime ownership");
+        let credentials = super::super::credentials::R2Credentials::new(
+            "0123456789abcdef0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .expect("credentials");
+        let shutdown = AtomicBool::new(false);
+        let mut daemon = SystemManagedLitestream::launch(
+            binary,
+            runtime.clone(),
+            ownership,
+            database_path,
+            BackupSetId::new().to_string(),
+            ReplicaEpochId::new().to_string(),
+            sha256_hex(rendered.as_bytes()),
+            credentials,
+            &shutdown,
+        )
+        .expect("credential-gated Litestream launch");
+
+        assert!(control_socket_is_private(runtime.socket()).expect("private control socket"));
+        daemon.shutdown();
+        assert!(!runtime.pid().exists());
+
+        let immutable_directory = immutable_path.parent().expect("immutable directory");
+        let directory = fs::File::open(immutable_directory).expect("immutable directory");
+        super::super::litestream::clear_user_immutable(&directory)
+            .expect("thaw immutable directory");
+        fs::set_permissions(immutable_directory, fs::Permissions::from_mode(0o700))
+            .expect("thaw directory permissions");
+        let file = fs::File::open(&immutable_path).expect("immutable binary");
+        super::super::litestream::clear_user_immutable(&file).expect("thaw immutable binary");
+        fs::set_permissions(immutable_path, fs::Permissions::from_mode(0o700))
+            .expect("thaw binary permissions");
     }
 
     #[cfg(unix)]

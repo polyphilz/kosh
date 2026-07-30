@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fmt,
     fs::{self, File, OpenOptions},
@@ -19,8 +19,9 @@ use super::credentials::R2Credentials;
 
 const EMBEDDED_MANIFEST: &str = include_str!("../../resources/sidecars/litestream-v1.json");
 const DEVELOPMENT_BINARY_OVERRIDE_ENV: &str = "KOSH_LITESTREAM_PATH";
-const ACCESS_KEY_ID_ENV: &str = "KOSH_LITESTREAM_R2_ACCESS_KEY_ID";
-const SECRET_ACCESS_KEY_ENV: &str = "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY";
+const AWS_SHARED_CREDENTIALS_FILE_ENV: &str = "AWS_SHARED_CREDENTIALS_FILE";
+const AWS_SHARED_CREDENTIALS_FILE_FD: &str = "/dev/fd/0";
+const AWS_EC2_METADATA_DISABLED_ENV: &str = "AWS_EC2_METADATA_DISABLED";
 const REQUIRED_L0_RETENTION: &str = "720h";
 const MAX_CONTROL_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -29,14 +30,26 @@ const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-pub(crate) fn configure_credentials_environment(
-    command: &mut Command,
-    credentials: &R2Credentials,
-) {
+pub(crate) fn configure_credential_pipe_environment(command: &mut Command) {
     command
         .env_clear()
-        .env(ACCESS_KEY_ID_ENV, credentials.access_key_id());
-    command.env(SECRET_ACCESS_KEY_ENV, credentials.secret_access_key());
+        .env(
+            AWS_SHARED_CREDENTIALS_FILE_ENV,
+            AWS_SHARED_CREDENTIALS_FILE_FD,
+        )
+        .env(AWS_EC2_METADATA_DISABLED_ENV, "true");
+}
+
+pub(crate) fn write_aws_shared_credentials(
+    writer: &mut impl Write,
+    credentials: &R2Credentials,
+) -> std::io::Result<()> {
+    writer.write_all(b"[default]\naws_access_key_id = ")?;
+    writer.write_all(credentials.access_key_id().as_bytes())?;
+    writer.write_all(b"\naws_secret_access_key = ")?;
+    writer.write_all(credentials.secret_access_key().as_bytes())?;
+    writer.write_all(b"\n")?;
+    writer.flush()
 }
 
 #[derive(Debug, Error)]
@@ -63,6 +76,10 @@ pub enum LitestreamError {
     StageBinary(#[source] std::io::Error),
     #[error("the immutable Litestream launch copy is invalid")]
     InvalidStagedBinary,
+    #[error("the running Litestream process does not match the pinned code signature")]
+    ProcessCodeSignatureMismatch,
+    #[error("the running Litestream process identity could not be inspected")]
+    ProcessIdentityUnavailable(#[source] std::io::Error),
     #[error("the Litestream manifest does not preserve exact TXIDs for 30 days")]
     UnsafeProtocolPin,
     #[error("the Litestream runtime path is not valid UTF-8")]
@@ -118,6 +135,7 @@ struct BinaryPin {
     sha256: String,
     size: u64,
     code_signature_identifier: String,
+    code_signature_cdhash_by_architecture: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -157,6 +175,7 @@ pub struct VerifiedLitestreamBinary {
     path: PathBuf,
     sha256: String,
     size: u64,
+    code_signature_cdhash: String,
     file: File,
 }
 
@@ -165,6 +184,7 @@ pub struct ImmutableLitestreamBinary {
     path: PathBuf,
     sha256: String,
     size: u64,
+    code_signature_cdhash: String,
 }
 
 impl VerifiedLitestreamBinary {
@@ -192,6 +212,7 @@ impl VerifiedLitestreamBinary {
     pub fn resolve(resource_dir: &Path) -> Result<Self, LitestreamError> {
         let manifest = embedded_manifest()?;
         validate_protocol_manifest(&manifest)?;
+        let code_signature_cdhash = current_code_signature_cdhash(&manifest.binary.universal)?;
 
         #[cfg(debug_assertions)]
         let development_override =
@@ -210,6 +231,7 @@ impl VerifiedLitestreamBinary {
             path,
             sha256: manifest.binary.universal.sha256,
             size: manifest.binary.universal.size,
+            code_signature_cdhash,
             file,
         })
     }
@@ -218,11 +240,13 @@ impl VerifiedLitestreamBinary {
     pub fn resolve_staged_for_test(path: &Path) -> Result<Self, LitestreamError> {
         let manifest = embedded_manifest()?;
         validate_protocol_manifest(&manifest)?;
+        let code_signature_cdhash = current_code_signature_cdhash(&manifest.binary.universal)?;
         let file = verify_binary(path, &manifest.binary.universal)?;
         Ok(Self {
             path: path.to_owned(),
             sha256: manifest.binary.universal.sha256,
             size: manifest.binary.universal.size,
+            code_signature_cdhash,
             file,
         })
     }
@@ -251,31 +275,31 @@ impl ImmutableLitestreamBinary {
         self.size
     }
 
-    pub(crate) fn reverify_for_launch(
-        path: &Path,
-        expected_size: u64,
-        expected_sha256: &str,
-    ) -> Result<(), LitestreamError> {
-        if expected_size == 0
-            || expected_size > 128 * 1024 * 1024
-            || expected_sha256.len() != 64
-            || !expected_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(LitestreamError::BinaryChecksumMismatch);
-        }
+    pub(crate) fn reverify_before_spawn(&self) -> Result<(), LitestreamError> {
         let file = verify_binary(
-            path,
+            &self.path,
             &BinaryPin {
-                sha256: expected_sha256.to_owned(),
-                size: expected_size,
+                sha256: self.sha256.clone(),
+                size: self.size,
                 code_signature_identifier: String::new(),
+                code_signature_cdhash_by_architecture: BTreeMap::new(),
             },
         )?;
         validate_immutable_file(&file)?;
-        let parent = path.parent().ok_or(LitestreamError::InvalidStagedBinary)?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or(LitestreamError::InvalidStagedBinary)?;
         validate_immutable_directory(parent)?;
+        Ok(())
+    }
+
+    pub(crate) fn verify_running_process(&self, pid: u32) -> Result<(), LitestreamError> {
+        let actual =
+            running_process_cdhash(pid).map_err(LitestreamError::ProcessIdentityUnavailable)?;
+        if actual != self.code_signature_cdhash {
+            return Err(LitestreamError::ProcessCodeSignatureMismatch);
+        }
         Ok(())
     }
 }
@@ -284,10 +308,28 @@ fn embedded_manifest() -> Result<SourceManifest, LitestreamError> {
     serde_json::from_str(EMBEDDED_MANIFEST).map_err(LitestreamError::InvalidEmbeddedManifest)
 }
 
+fn current_code_signature_cdhash(pin: &BinaryPin) -> Result<String, LitestreamError> {
+    let architecture = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x86_64",
+        _ => return Err(LitestreamError::UnsafeProtocolPin),
+    };
+    pin.code_signature_cdhash_by_architecture
+        .get(architecture)
+        .cloned()
+        .ok_or(LitestreamError::UnsafeProtocolPin)
+}
+
 fn validate_protocol_manifest(manifest: &SourceManifest) -> Result<(), LitestreamError> {
     let universal = &manifest.binary.universal;
     let trusted_cleanup_sha256s = &manifest.binary.trusted_cleanup_sha256s;
     let unique_cleanup_sha256s = trusted_cleanup_sha256s.iter().collect::<BTreeSet<_>>();
+    let expected_cdhash_architectures = BTreeSet::from(["arm64", "x86_64"]);
+    let actual_cdhash_architectures = universal
+        .code_signature_cdhash_by_architecture
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     if manifest.component != "litestream"
         || !manifest.verification.exact_txid_fence_passed
         || !manifest
@@ -307,6 +349,16 @@ fn validate_protocol_manifest(manifest: &SourceManifest) -> Result<(), Litestrea
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || universal.size == 0
         || universal.code_signature_identifier != "com.rohan.kosh.litestream"
+        || actual_cdhash_architectures != expected_cdhash_architectures
+        || universal
+            .code_signature_cdhash_by_architecture
+            .values()
+            .any(|cdhash| {
+                cdhash.len() != 40
+                    || !cdhash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
         || trusted_cleanup_sha256s.is_empty()
         || trusted_cleanup_sha256s.len() > MAX_TRUSTED_CLEANUP_PINS
         || unique_cleanup_sha256s.len() != trusted_cleanup_sha256s.len()
@@ -423,6 +475,39 @@ fn verify_binary(path: &Path, manifest: &BinaryPin) -> Result<File, LitestreamEr
     Ok(file)
 }
 
+#[cfg(target_os = "macos")]
+fn running_process_cdhash(pid: u32) -> std::io::Result<String> {
+    const CS_OPS_CDHASH: u32 = 5;
+    const CS_CDHASH_LEN: usize = 20;
+
+    unsafe extern "C" {
+        fn csops(
+            pid: libc::pid_t,
+            operations: u32,
+            user_address: *mut libc::c_void,
+            user_size: libc::size_t,
+        ) -> libc::c_int;
+    }
+
+    let pid = libc::pid_t::try_from(pid)
+        .map_err(|_| std::io::Error::other("Litestream PID is out of range"))?;
+    let mut cdhash = [0_u8; CS_CDHASH_LEN];
+    // SAFETY: `cdhash` is writable for exactly the byte count passed to `csops`.
+    let result = unsafe { csops(pid, CS_OPS_CDHASH, cdhash.as_mut_ptr().cast(), cdhash.len()) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(cdhash.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn running_process_cdhash(_pid: u32) -> std::io::Result<String> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "process code-signature inspection requires macOS",
+    ))
+}
+
 fn stage_immutable_binary(
     binary: &VerifiedLitestreamBinary,
     runtime: &LitestreamRuntimePaths,
@@ -439,6 +524,7 @@ fn stage_immutable_binary(
                     path: final_path,
                     sha256: binary.sha256.clone(),
                     size: binary.size,
+                    code_signature_cdhash: binary.code_signature_cdhash.clone(),
                 });
             }
             Err(_) => {
@@ -504,6 +590,7 @@ fn stage_immutable_binary(
             sha256: binary.sha256.clone(),
             size: binary.size,
             code_signature_identifier: String::new(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
         },
     )?;
     set_user_immutable(&staged).map_err(LitestreamError::StageBinary)?;
@@ -525,6 +612,7 @@ fn stage_immutable_binary(
         path: final_path,
         sha256: binary.sha256.clone(),
         size: binary.size,
+        code_signature_cdhash: binary.code_signature_cdhash.clone(),
     })
 }
 
@@ -542,6 +630,7 @@ fn validate_immutable_stage(
             sha256: binary.sha256.clone(),
             size: binary.size,
             code_signature_identifier: String::new(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
         },
     )?;
     validate_immutable_file(&staged)
@@ -673,7 +762,7 @@ fn remove_partial_stage(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn clear_user_immutable(file: &File) -> std::io::Result<()> {
+pub(crate) fn clear_user_immutable(file: &File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     // SAFETY: `file` owns a live descriptor and `fchflags` does not retain it.
     let result = unsafe { libc::fchflags(file.as_raw_fd(), 0) };
@@ -685,7 +774,7 @@ fn clear_user_immutable(file: &File) -> std::io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn clear_user_immutable(_file: &File) -> std::io::Result<()> {
+pub(crate) fn clear_user_immutable(_file: &File) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -910,8 +999,6 @@ dbs:
       path: {replica_path}
       endpoint: {endpoint}
       region: auto
-      access-key-id: ${{{ACCESS_KEY_ID_ENV}}}
-      secret-access-key: ${{{SECRET_ACCESS_KEY_ENV}}}
       force-path-style: false
       sync-interval: 5s
 "#
@@ -1415,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_environment_contains_only_the_two_zeroizing_credentials() {
+    fn daemon_environment_contains_only_nonsecret_credential_pipe_controls() {
         let credentials = R2Credentials::new(
             "0123456789abcdef0123456789abcdef",
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -1424,7 +1511,7 @@ mod tests {
         let mut command = Command::new("/app/bin/litestream");
         command.env("UNRELATED_SECRET", "must-not-survive");
 
-        configure_credentials_environment(&mut command, &credentials);
+        configure_credential_pipe_environment(&mut command);
 
         let environment = command
             .get_envs()
@@ -1438,15 +1525,23 @@ mod tests {
         assert_eq!(
             environment,
             [
+                (AWS_EC2_METADATA_DISABLED_ENV.into(), Some("true".into()),),
                 (
-                    ACCESS_KEY_ID_ENV.into(),
-                    Some(credentials.access_key_id().into()),
-                ),
-                (
-                    SECRET_ACCESS_KEY_ENV.into(),
-                    Some(credentials.secret_access_key().into()),
+                    AWS_SHARED_CREDENTIALS_FILE_ENV.into(),
+                    Some(AWS_SHARED_CREDENTIALS_FILE_FD.into()),
                 ),
             ]
+        );
+
+        let mut shared_credentials = Vec::new();
+        write_aws_shared_credentials(&mut shared_credentials, &credentials)
+            .expect("shared credentials");
+        assert_eq!(
+            String::from_utf8(shared_credentials).expect("UTF-8 credentials"),
+            "[default]\n\
+             aws_access_key_id = 0123456789abcdef0123456789abcdef\n\
+             aws_secret_access_key = \
+             0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
         );
     }
 
@@ -1537,11 +1632,11 @@ mod tests {
             "verify-compaction: true",
             "permissions: 0600",
             "snapshot:\n  interval: 6h\n  retention: 720h",
-            "${KOSH_LITESTREAM_R2_ACCESS_KEY_ID}",
-            "${KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY}",
         ] {
             assert!(config.contains(required), "missing {required}");
         }
+        assert!(!config.contains("access-key-id"));
+        assert!(!config.contains("secret-access-key"));
         assert!(!config.contains("secret-value"));
         assert!(!config.contains("access-key-value"));
     }
@@ -1850,6 +1945,7 @@ mod tests {
             sha256: format!("{:x}", Sha256::digest(bytes)),
             size: bytes.len() as u64,
             code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
         };
         verify_binary(&binary, &manifest).expect("matching binary");
 
@@ -1876,6 +1972,39 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn running_process_identity_is_bound_to_the_kernel_cdhash() {
+        let mut child = Command::new("/bin/sleep")
+            .arg("5")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("signed test process");
+        let actual = running_process_cdhash(child.id()).expect("running process CDHash");
+        assert_eq!(actual.len(), 40);
+        let matching = ImmutableLitestreamBinary {
+            path: PathBuf::from("/bin/sleep"),
+            sha256: "0".repeat(64),
+            size: 1,
+            code_signature_cdhash: actual,
+        };
+        matching
+            .verify_running_process(child.id())
+            .expect("matching kernel identity");
+        let mismatched = ImmutableLitestreamBinary {
+            code_signature_cdhash: "0".repeat(40),
+            ..matching
+        };
+        assert!(matches!(
+            mismatched.verify_running_process(child.id()),
+            Err(LitestreamError::ProcessCodeSignatureMismatch)
+        ));
+        child.kill().expect("terminate test process");
+        child.wait().expect("reap test process");
+    }
+
     #[cfg(unix)]
     #[test]
     fn immutable_launch_stage_reuses_verified_bytes_and_rejects_path_replacement() {
@@ -1889,11 +2018,13 @@ mod tests {
             sha256: format!("{:x}", Sha256::digest(bytes)),
             size: bytes.len() as u64,
             code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
         };
         let verified = VerifiedLitestreamBinary {
             path: source_path,
             sha256: pin.sha256.clone(),
             size: pin.size,
+            code_signature_cdhash: "0".repeat(40),
             file: verify_binary(&directory.path().join("source-litestream"), &pin)
                 .expect("verified source descriptor"),
         };
@@ -1910,12 +2041,9 @@ mod tests {
         let immutable = verified
             .stage_immutable(&runtime)
             .expect("recovered immutable launch stage");
-        ImmutableLitestreamBinary::reverify_for_launch(
-            immutable.path(),
-            immutable.size(),
-            immutable.sha256(),
-        )
-        .expect("immutable stage verification");
+        immutable
+            .reverify_before_spawn()
+            .expect("immutable stage verification");
         assert_eq!(
             verified
                 .stage_immutable(&runtime)
