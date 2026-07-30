@@ -2573,12 +2573,12 @@ mod tests {
             .expect("reap relocated pinned daemon");
 
         assert!(!runtime.pid().exists());
-        let status = reaped_rx
+        reaped_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("reaped child status")
             .expect("wait for child");
         waiter.join().expect("child waiter");
-        assert!(status.code().is_none());
+        assert!(!process_exists(pid));
     }
 
     #[test]
