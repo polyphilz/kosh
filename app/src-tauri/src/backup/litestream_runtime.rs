@@ -23,7 +23,7 @@ use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::database::{DatabaseClient, LocalCheckpointSync, OffsiteBackupConfig};
+use crate::database::{DatabaseClient, OffsiteBackupConfig};
 
 use super::{
     credentials::{CredentialError, CredentialStore, MacOsKeychainCredentialStore},
@@ -214,6 +214,10 @@ impl LitestreamCheckpointHandle {
 }
 
 impl BoundLitestreamCheckpointHandle {
+    pub(crate) fn sync_local(&self) -> Result<LitestreamTxid, CheckpointErrorCode> {
+        self.sync_local_with_timeout(CHECKPOINT_LOCAL_SYNC_TIMEOUT)
+    }
+
     pub(crate) fn sync_remote(&self) -> Result<SyncResult, CheckpointErrorCode> {
         self.handle
             .request_sync(&self.config, false, CHECKPOINT_REMOTE_SYNC_TIMEOUT)
@@ -230,12 +234,6 @@ impl BoundLitestreamCheckpointHandle {
                 timeout.min(CHECKPOINT_LOCAL_SYNC_TIMEOUT),
             )
             .map(|sync| sync.txid)
-    }
-}
-
-impl LocalCheckpointSync for BoundLitestreamCheckpointHandle {
-    fn sync_local(&self) -> Result<LitestreamTxid, CheckpointErrorCode> {
-        self.sync_local_with_timeout(CHECKPOINT_LOCAL_SYNC_TIMEOUT)
     }
 }
 

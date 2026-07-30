@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -45,7 +42,6 @@ pub(crate) struct PreparedOffsiteCheckpoint {
     pub(crate) referenced_hash_count: u64,
     pub(crate) referenced_total_bytes: u64,
     pub(crate) referenced_hash_set_sha256: ContentSha256,
-    pub(crate) litestream_txid: LitestreamTxid,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,15 +68,10 @@ pub(crate) struct OffsiteCheckpointScheduleState {
     pub(crate) last_published: Option<PublishedOffsiteCheckpoint>,
 }
 
-pub(crate) trait LocalCheckpointSync: Send + Sync {
-    fn sync_local(&self) -> std::result::Result<LitestreamTxid, CheckpointErrorCode>;
-}
-
-pub(super) fn prepare_and_fence(
+pub(super) fn prepare(
     main: &mut Connection,
     media: &Connection,
     input: PrepareOffsiteCheckpointInput,
-    local_sync: Arc<dyn LocalCheckpointSync>,
 ) -> Result<PreparedOffsiteCheckpoint> {
     if input.created_at_ms < 0
         || input.kosh_version.is_empty()
@@ -147,12 +138,6 @@ pub(super) fn prepare_and_fence(
     exactly_one(changed)?;
     transaction.commit()?;
 
-    // The single writer remains inside this message until Litestream has
-    // returned the TXID containing the committed PREPARED row. A later write
-    // therefore cannot slip between the relational fence and its TXID.
-    let litestream_txid = local_sync
-        .sync_local()
-        .map_err(DatabaseError::OffsiteCheckpointFence)?;
     Ok(PreparedOffsiteCheckpoint {
         checkpoint_id: input.checkpoint_id,
         backup_set_id: input.backup_set_id,
@@ -166,7 +151,6 @@ pub(super) fn prepare_and_fence(
         referenced_hash_count,
         referenced_total_bytes,
         referenced_hash_set_sha256,
-        litestream_txid,
     })
 }
 
@@ -175,13 +159,35 @@ pub(super) fn mark_fenced(
     checkpoint_id: &CheckpointId,
     txid: LitestreamTxid,
 ) -> Result<()> {
-    transition(
-        connection,
-        checkpoint_id,
-        CheckpointPhase::Prepared,
-        CheckpointPhase::Fenced,
-        Some(txid),
-    )
+    let changed = connection.execute(
+        "UPDATE offsite_backup_checkpoint
+         SET phase = ?1,
+             litestream_txid = ?2,
+             updated_at = max(updated_at, ?3)
+         WHERE checkpoint_id = ?4 AND phase = ?5
+           AND content_revision = (
+               SELECT revision
+               FROM offsite_backup_content_clock
+               WHERE singleton_id = 1
+           )
+           AND EXISTS (
+               SELECT 1
+               FROM offsite_backup_config AS config
+               WHERE config.singleton_id = 1
+                 AND config.enabled = 1
+                 AND config.revision = offsite_backup_checkpoint.config_revision
+                 AND config.backup_set_id = offsite_backup_checkpoint.backup_set_id
+                 AND config.replica_epoch_id = offsite_backup_checkpoint.replica_epoch_id
+           )",
+        params![
+            CheckpointPhase::Fenced.as_db_str(),
+            txid.to_string(),
+            now_millis()?,
+            checkpoint_id.as_str(),
+            CheckpointPhase::Prepared.as_db_str(),
+        ],
+    )?;
+    exactly_one(changed)
 }
 
 pub(super) fn mark_replicated(
@@ -193,7 +199,6 @@ pub(super) fn mark_replicated(
         checkpoint_id,
         CheckpointPhase::Fenced,
         CheckpointPhase::Replicated,
-        None,
     )
 }
 
@@ -387,17 +392,13 @@ fn transition(
     checkpoint_id: &CheckpointId,
     expected: CheckpointPhase,
     next: CheckpointPhase,
-    txid: Option<LitestreamTxid>,
 ) -> Result<()> {
     let changed = connection.execute(
         "UPDATE offsite_backup_checkpoint
-         SET phase = ?1,
-             litestream_txid = coalesce(?2, litestream_txid),
-             updated_at = max(updated_at, ?3)
-         WHERE checkpoint_id = ?4 AND phase = ?5",
+         SET phase = ?1, updated_at = max(updated_at, ?2)
+         WHERE checkpoint_id = ?3 AND phase = ?4",
         params![
             next.as_db_str(),
-            txid.map(|value| value.to_string()),
             now_millis()?,
             checkpoint_id.as_str(),
             expected.as_db_str(),

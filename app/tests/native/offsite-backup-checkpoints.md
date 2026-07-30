@@ -20,11 +20,12 @@ Kosh publishes a checkpoint only after all of these ordered facts hold:
    deduplicated retained source/preview hashes in relational storage, requires
    every captured hash to be `UPLOADED`, and commits the snapshot with its
    `PREPARED` row;
-2. the writer stays occupied while a bounded local-only Litestream control
-   request bound to the daemon's exact configuration revision, target,
-   backup-set lineage, and replica epoch returns the exact TXID containing that
-   row, preventing either a later transaction or a stale daemon generation from
-   slipping through the fence;
+2. the checkpoint worker performs the bounded local-only Litestream control
+   request, leaving the sole database writer available for capture; the control
+   remains bound to the daemon's exact configuration revision, target,
+   backup-set lineage, and replica epoch, and the writer accepts its returned
+   TXID only when the monotonic content revision and exact enabled lineage are
+   still unchanged, otherwise the attempt fails and retries from a new snapshot;
 3. a bounded remote Litestream sync reports a replica TXID greater than or
    equal to that fenced TXID;
 4. Kosh keyset-pages the persisted snapshot, heads every captured immutable
@@ -60,8 +61,11 @@ at least 30 seconds before retrying. A configuration revision change re-arms
 the same schedule even when authored content is unchanged. The backend
 `backup_now` command bypasses the debounce, releases permanently failed media
 rows into the retry queue, wakes the media worker, and returns a bounded typed
-result. Relational, media-upload, and complete-checkpoint status remain
-separate and contain no credentials or raw remote errors.
+result. Its timeout atomically cancels work that has not begun immutable
+publication; if publication already won that race, the caller waits for its
+bounded exact outcome instead of receiving a failure that could later publish.
+Relational, media-upload, and complete-checkpoint status remain separate and
+contain no credentials or raw remote errors.
 
 The Litestream checkpoint handle references only the supervisor's current
 daemon generation. Reload, crash, disable, and shutdown clear that control
@@ -75,8 +79,9 @@ wait for an R2 timeout.
 
 The native suite proves:
 
-- the PREPARED row is visible before local sync while every later writer
-  message remains blocked;
+- the PREPARED row is visible before local sync, the writer remains available
+  during a stalled sync, and any intervening authored write stales the TXID
+  fence before publication;
 - phase transitions are monotonic, failures preserve the last publication, and
   publication sequence is correct even if the wall clock moves backwards;
 - authored mutations advance the content clock while checkpoint bookkeeping
@@ -99,7 +104,9 @@ The native suite proves:
 - identical manifest replay is idempotent while different bytes fail closed;
 - missing media and manifest readback failures never publish;
 - checkpoint controls close with their daemon generation and enforce the
-  writer-fence deadline; and
+  writer-fence deadline;
+- manual timeout cancellation and immutable-publication commit are mutually
+  exclusive, so a returned timeout cannot later publish; and
 - a manual request round-trips through the worker without touching Keychain or
   the network when no backup target is enabled.
 

@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         mpsc::{self, Receiver},
-        Arc, Mutex,
+        Mutex,
     },
     thread,
     time::Duration,
@@ -22,29 +22,13 @@ use crate::backup::{
 
 use super::{
     backup_state::SaveOffsiteBackupConfigInput, settings::SetShortcutSettingsInput, Database,
-    DatabaseError, DatabasePaths, LocalCheckpointSync, MediaLimits, OffsiteBackupConfig,
-    PrepareOffsiteCheckpointInput, SaveDraftInput,
+    DatabaseError, DatabasePaths, MediaLimits, OffsiteBackupConfig, PrepareOffsiteCheckpointInput,
+    SaveDraftInput,
 };
 use super::{
     drafts::SaveDraftWrite,
     media::{IngestAttachmentMetadata, StagedAttachment},
 };
-
-struct ImmediateSync;
-
-impl LocalCheckpointSync for ImmediateSync {
-    fn sync_local(&self) -> Result<LitestreamTxid, CheckpointErrorCode> {
-        Ok(LitestreamTxid::from_local(42))
-    }
-}
-
-struct FailingSync;
-
-impl LocalCheckpointSync for FailingSync {
-    fn sync_local(&self) -> Result<LitestreamTxid, CheckpointErrorCode> {
-        Err(CheckpointErrorCode::FenceTimeout)
-    }
-}
 
 struct InspectingSync {
     main_path: PathBuf,
@@ -53,7 +37,7 @@ struct InspectingSync {
     release: Mutex<Receiver<()>>,
 }
 
-impl LocalCheckpointSync for InspectingSync {
+impl InspectingSync {
     fn sync_local(&self) -> Result<LitestreamTxid, CheckpointErrorCode> {
         let connection = Connection::open_with_flags(
             &self.main_path,
@@ -122,14 +106,12 @@ fn input(
 fn publish(database: &Database, config: &OffsiteBackupConfig, created_at_ms: i64) -> CheckpointId {
     let client = database.client();
     let checkpoint_id = CheckpointId::new();
-    let prepared = client
-        .prepare_offsite_checkpoint(
-            input(checkpoint_id.clone(), config, created_at_ms),
-            Arc::new(ImmediateSync),
-        )
+    let _prepared = client
+        .prepare_offsite_checkpoint(input(checkpoint_id.clone(), config, created_at_ms))
         .expect("prepare checkpoint");
+    let txid = LitestreamTxid::from_local(42);
     client
-        .mark_offsite_checkpoint_fenced(checkpoint_id.clone(), prepared.litestream_txid)
+        .mark_offsite_checkpoint_fenced(checkpoint_id.clone(), txid)
         .expect("mark fenced");
     client
         .mark_offsite_checkpoint_replicated(checkpoint_id.clone())
@@ -144,43 +126,62 @@ fn publish(database: &Database, config: &OffsiteBackupConfig, created_at_ms: i64
 }
 
 #[test]
-fn writer_fence_commits_prepared_row_then_blocks_later_messages_until_sync() {
+fn litestream_wait_leaves_the_writer_available_and_later_content_stales_the_fence() {
     let (_root, database, config) = enabled_database();
     let checkpoint_id = CheckpointId::new();
     let (entered_tx, entered_rx) = mpsc::sync_channel(1);
     let (release_tx, release_rx) = mpsc::sync_channel(1);
-    let sync = Arc::new(InspectingSync {
+    let sync = InspectingSync {
         main_path: database.paths().main.clone(),
         checkpoint_id: checkpoint_id.clone(),
         entered: entered_tx,
         release: Mutex::new(release_rx),
-    });
+    };
     let prepare_client = database.client();
     let prepare_config = config.clone();
+    let prepare_checkpoint_id = checkpoint_id.clone();
     let prepare = thread::spawn(move || {
-        prepare_client.prepare_offsite_checkpoint(input(checkpoint_id, &prepare_config, 2), sync)
+        let prepared = prepare_client
+            .prepare_offsite_checkpoint(input(prepare_checkpoint_id, &prepare_config, 2))
+            .expect("prepare checkpoint");
+        let txid = sync.sync_local().expect("local sync");
+        (prepared, txid)
     });
     entered_rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("writer entered local sync");
+        .expect("checkpoint worker entered local sync");
 
     let diagnostics_client = database.client();
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let diagnostics = thread::spawn(move || {
         let _ = done_tx.send(diagnostics_client.diagnostics());
     });
-    assert!(matches!(
-        done_rx.recv_timeout(Duration::from_millis(100)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
-
-    release_tx.send(()).expect("release fence");
-    prepare.join().expect("prepare thread").expect("checkpoint");
     done_rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("later writer message unblocked")
+        .expect("writer remains available during local sync")
         .expect("diagnostics");
     diagnostics.join().expect("diagnostics thread");
+
+    let shortcuts = database
+        .client()
+        .load_shortcut_settings()
+        .expect("load shortcuts");
+    database
+        .client()
+        .set_shortcut_settings(SetShortcutSettingsInput {
+            expected_revision: shortcuts.revision,
+            keyboard_bindings: shortcuts.keyboard_bindings,
+        })
+        .expect("write authored state during local sync");
+
+    release_tx.send(()).expect("release fence");
+    let (_prepared, txid) = prepare.join().expect("prepare thread");
+    assert!(matches!(
+        database
+            .client()
+            .mark_offsite_checkpoint_fenced(checkpoint_id, txid),
+        Err(DatabaseError::StaleOffsiteCheckpoint)
+    ));
 }
 
 #[test]
@@ -211,14 +212,10 @@ fn failed_fence_is_durable_without_replacing_the_last_published_checkpoint() {
     let (_root, database, config) = enabled_database();
     let published = publish(&database, &config, 1);
     let failed = CheckpointId::new();
-    assert!(matches!(
-        database
-            .client()
-            .prepare_offsite_checkpoint(input(failed.clone(), &config, 2), Arc::new(FailingSync),),
-        Err(DatabaseError::OffsiteCheckpointFence(
-            CheckpointErrorCode::FenceTimeout
-        ))
-    ));
+    database
+        .client()
+        .prepare_offsite_checkpoint(input(failed.clone(), &config, 2))
+        .expect("prepare failed fence");
     database
         .client()
         .mark_offsite_checkpoint_failed(failed, CheckpointErrorCode::FenceTimeout)
@@ -326,10 +323,7 @@ fn checkpoint_media_snapshot_is_persisted_and_read_in_bounded_keyset_pages() {
 
     let checkpoint_id = CheckpointId::new();
     let prepared = client
-        .prepare_offsite_checkpoint(
-            input(checkpoint_id.clone(), &config, 500),
-            Arc::new(ImmediateSync),
-        )
+        .prepare_offsite_checkpoint(input(checkpoint_id.clone(), &config, 500))
         .expect("prepare checkpoint");
     assert_eq!(prepared.referenced_hash_count, 19);
 
@@ -387,13 +381,10 @@ fn checkpoint_media_snapshot_is_persisted_and_read_in_bounded_keyset_pages() {
 fn startup_reclassifies_interrupted_checkpoint_attempts_as_failed() {
     let (_root, database, config) = enabled_database();
     let checkpoint_id = CheckpointId::new();
-    assert!(matches!(
-        database.client().prepare_offsite_checkpoint(
-            input(checkpoint_id.clone(), &config, 4),
-            Arc::new(FailingSync),
-        ),
-        Err(DatabaseError::OffsiteCheckpointFence(_))
-    ));
+    database
+        .client()
+        .prepare_offsite_checkpoint(input(checkpoint_id.clone(), &config, 4))
+        .expect("prepare interrupted checkpoint");
     assert_eq!(
         database
             .client()
@@ -484,14 +475,12 @@ fn publication_requires_the_original_configuration_revision_to_remain_enabled() 
     let (_root, database, config) = enabled_database();
     let client = database.client();
     let checkpoint_id = CheckpointId::new();
-    let prepared = client
-        .prepare_offsite_checkpoint(
-            input(checkpoint_id.clone(), &config, 7),
-            Arc::new(ImmediateSync),
-        )
+    let _prepared = client
+        .prepare_offsite_checkpoint(input(checkpoint_id.clone(), &config, 7))
         .expect("prepare");
+    let txid = LitestreamTxid::from_local(42);
     client
-        .mark_offsite_checkpoint_fenced(checkpoint_id.clone(), prepared.litestream_txid)
+        .mark_offsite_checkpoint_fenced(checkpoint_id.clone(), txid)
         .expect("fenced");
     client
         .mark_offsite_checkpoint_replicated(checkpoint_id.clone())

@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -43,6 +43,10 @@ const MANUAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const MEDIA_HEAD_BATCH_SIZE: usize = 8;
 const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_millis(250);
+const MANUAL_ACTIVE: u8 = 0;
+const MANUAL_CANCELLED: u8 = 1;
+const MANUAL_COMMITTING: u8 = 2;
+const MANUAL_COMPLETED: u8 = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,8 +76,68 @@ struct CheckpointWorkRevision {
     content_revision: u64,
 }
 
+struct ManualBackupControl {
+    state: AtomicU8,
+}
+
+impl ManualBackupControl {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(MANUAL_ACTIVE),
+        }
+    }
+
+    fn cancel_if_active(&self) -> bool {
+        self.state
+            .compare_exchange(
+                MANUAL_ACTIVE,
+                MANUAL_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.state.load(Ordering::Acquire) == MANUAL_CANCELLED
+    }
+
+    fn begin_commit(&self) -> bool {
+        self.state
+            .compare_exchange(
+                MANUAL_ACTIVE,
+                MANUAL_COMMITTING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn complete(&self) {
+        self.state.store(MANUAL_COMPLETED, Ordering::Release);
+    }
+}
+
+struct ManualBackupRequest {
+    reply: mpsc::SyncSender<Result<(), CheckpointErrorCode>>,
+    control: Arc<ManualBackupControl>,
+}
+
+impl ManualBackupRequest {
+    fn finish(self, result: Result<(), CheckpointErrorCode>) {
+        self.control.complete();
+        let _ = self.reply.send(result);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CheckpointCancellation<'a> {
+    shutdown: &'a AtomicBool,
+    manual: Option<&'a ManualBackupControl>,
+}
+
 enum CoordinatorSignal {
-    BackupNow(mpsc::SyncSender<Result<(), CheckpointErrorCode>>),
+    BackupNow(ManualBackupRequest),
     Shutdown,
 }
 
@@ -96,12 +160,25 @@ impl CheckpointBackupHandle {
             return Err(CheckpointErrorCode::WorkerUnavailable);
         }
         let (reply, receiver) = mpsc::sync_channel(1);
+        let control = Arc::new(ManualBackupControl::new());
         self.sender
-            .send(CoordinatorSignal::BackupNow(reply))
+            .send(CoordinatorSignal::BackupNow(ManualBackupRequest {
+                reply,
+                control: Arc::clone(&control),
+            }))
             .map_err(|_| CheckpointErrorCode::WorkerUnavailable)?;
-        receiver
-            .recv_timeout(MANUAL_TIMEOUT)
-            .map_err(|_| CheckpointErrorCode::WorkerUnavailable)?
+        match receiver.recv_timeout(MANUAL_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) if control.cancel_if_active() => {
+                Err(CheckpointErrorCode::WorkerUnavailable)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => receiver
+                .recv()
+                .map_err(|_| CheckpointErrorCode::WorkerUnavailable)?,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(CheckpointErrorCode::WorkerUnavailable)
+            }
+        }
     }
 }
 
@@ -237,8 +314,8 @@ fn run_scheduler(
         if matches!(signal, Some(CoordinatorSignal::Shutdown)) {
             break;
         }
-        let manual_reply = match signal {
-            Some(CoordinatorSignal::BackupNow(reply)) => Some(reply),
+        let manual_request = match signal {
+            Some(CoordinatorSignal::BackupNow(request)) => Some(request),
             Some(CoordinatorSignal::Shutdown) | None => None,
         };
 
@@ -246,8 +323,8 @@ fn run_scheduler(
             first_dirty = None;
             last_change = None;
             observed_revision = None;
-            if let Some(reply) = manual_reply {
-                let _ = reply.send(Err(CheckpointErrorCode::InvalidConfiguration));
+            if let Some(request) = manual_request {
+                request.finish(Err(CheckpointErrorCode::InvalidConfiguration));
             }
             continue;
         };
@@ -255,8 +332,8 @@ fn run_scheduler(
             Ok(state) => state,
             Err(error) => {
                 set_failure(&status, map_database_error(&error));
-                if let Some(reply) = manual_reply {
-                    let _ = reply.send(Err(map_database_error(&error)));
+                if let Some(request) = manual_request {
+                    request.finish(Err(map_database_error(&error)));
                 }
                 continue;
             }
@@ -275,7 +352,7 @@ fn run_scheduler(
                     && published.replica_epoch_id == config.replica_epoch_id
                     && published.content_revision == schedule_state.content_revision
             });
-        if already_published && manual_reply.is_none() {
+        if already_published && manual_request.is_none() {
             first_dirty = None;
             last_change = None;
             observed_revision = Some(work_revision);
@@ -292,15 +369,15 @@ fn run_scheduler(
             now,
         );
         let automatic_due = automatic_checkpoint_due(first_dirty, last_change, now);
-        if manual_reply.is_none() && !automatic_due {
+        if manual_request.is_none() && !automatic_due {
             lock_status(&status).phase = CheckpointBackupPhase::Idle;
             continue;
         }
-        if manual_reply.is_none() && now < retry_not_before {
+        if manual_request.is_none() && now < retry_not_before {
             continue;
         }
 
-        if manual_reply.is_some() {
+        if manual_request.is_some() {
             if let Ok(retried) = database.retry_failed_offsite_media_uploads(system_now_ms()) {
                 if retried > 0 {
                     media.wake();
@@ -314,7 +391,12 @@ fn run_scheduler(
             &media,
             &writer_identity,
             &status,
-            &shutdown,
+            CheckpointCancellation {
+                shutdown: &shutdown,
+                manual: manual_request
+                    .as_ref()
+                    .map(|request| request.control.as_ref()),
+            },
         );
         match result {
             Ok(()) => {
@@ -329,8 +411,8 @@ fn run_scheduler(
                 set_failure(&status, code);
             }
         }
-        if let Some(reply) = manual_reply {
-            let _ = reply.send(result);
+        if let Some(request) = manual_request {
+            request.finish(result);
         }
     }
     shutdown.store(true, Ordering::Release);
@@ -361,9 +443,11 @@ fn create_checkpoint(
     media: &MediaBackupWakeHandle,
     writer_identity: &impl WriterIdentityProvider,
     status: &Mutex<CheckpointBackupStatus>,
-    shutdown: &AtomicBool,
+    cancellation: CheckpointCancellation<'_>,
 ) -> Result<(), CheckpointErrorCode> {
-    ensure_running(shutdown)?;
+    let shutdown = cancellation.shutdown;
+    let manual = cancellation.manual;
+    ensure_running(shutdown, manual)?;
     let progress = database
         .offsite_media_upload_progress()
         .map_err(|error| map_database_error(&error))?;
@@ -398,35 +482,35 @@ fn create_checkpoint(
         )
         .map_err(map_owner_error)
     })?;
+    ensure_running(shutdown, manual)?;
 
     let created_at_ms = system_now_ms();
     let created_at = UtcTimestamp::from_unix_millis(created_at_ms)
         .map_err(|_| CheckpointErrorCode::MalformedManifest)?;
     let checkpoint_id = CheckpointId::new();
     lock_status(status).phase = CheckpointBackupPhase::Fencing;
-    let prepared = match database.prepare_offsite_checkpoint(
-        PrepareOffsiteCheckpointInput {
-            checkpoint_id: checkpoint_id.clone(),
-            backup_set_id: config.backup_set_id.clone(),
-            replica_epoch_id: config.replica_epoch_id.clone(),
-            created_at_ms,
-            kosh_version: env!("CARGO_PKG_VERSION").to_owned(),
-        },
-        Arc::new(litestream.clone()),
-    ) {
+    let prepared = match database.prepare_offsite_checkpoint(PrepareOffsiteCheckpointInput {
+        checkpoint_id: checkpoint_id.clone(),
+        backup_set_id: config.backup_set_id.clone(),
+        replica_epoch_id: config.replica_epoch_id.clone(),
+        created_at_ms,
+        kosh_version: env!("CARGO_PKG_VERSION").to_owned(),
+    }) {
         Ok(prepared) => prepared,
         Err(error) => {
             let code = map_database_error(&error);
-            if matches!(error, DatabaseError::OffsiteCheckpointFence(_)) {
-                let _ = database.mark_offsite_checkpoint_failed(checkpoint_id, code);
-            }
             return Err(code);
         }
     };
-    ensure_running(shutdown)
+    ensure_running(shutdown, manual)
         .or_else(|code| fail_checkpoint(database, checkpoint_id.clone(), code))?;
-    if let Err(error) =
-        database.mark_offsite_checkpoint_fenced(checkpoint_id.clone(), prepared.litestream_txid)
+    let fenced_txid = match litestream.sync_local() {
+        Ok(txid) => txid,
+        Err(code) => return fail_checkpoint(database, checkpoint_id, code),
+    };
+    ensure_running(shutdown, manual)
+        .or_else(|code| fail_checkpoint(database, checkpoint_id.clone(), code))?;
+    if let Err(error) = database.mark_offsite_checkpoint_fenced(checkpoint_id.clone(), fenced_txid)
     {
         return fail_checkpoint(database, checkpoint_id, map_database_error(&error));
     }
@@ -436,9 +520,9 @@ fn create_checkpoint(
         Ok(remote) => remote,
         Err(code) => return fail_checkpoint(database, checkpoint_id, code),
     };
-    ensure_running(shutdown)
+    ensure_running(shutdown, manual)
         .or_else(|code| fail_checkpoint(database, checkpoint_id.clone(), code))?;
-    if !replica_covers(remote.replica_txid, prepared.litestream_txid) {
+    if !replica_covers(remote.replica_txid, fenced_txid) {
         return fail_checkpoint(database, checkpoint_id, CheckpointErrorCode::ReplicaBehind);
     }
     if let Err(error) = database.mark_offsite_checkpoint_replicated(checkpoint_id.clone()) {
@@ -446,13 +530,20 @@ fn create_checkpoint(
     }
 
     lock_status(status).phase = CheckpointBackupPhase::Validating;
-    if let Err(code) =
-        validate_remote_media(database, config, &store, &keyspace, &prepared, shutdown)
-    {
+    if let Err(code) = validate_remote_media(
+        database, config, &store, &keyspace, &prepared, shutdown, manual,
+    ) {
         return fail_checkpoint(database, checkpoint_id, code);
     }
 
     lock_status(status).phase = CheckpointBackupPhase::Publishing;
+    if manual.is_some_and(|control| !control.begin_commit()) {
+        return fail_checkpoint(
+            database,
+            checkpoint_id,
+            CheckpointErrorCode::WorkerUnavailable,
+        );
+    }
     let publication = (|| {
         let manifest = CheckpointManifestV1::new(CheckpointManifestInput {
             backup_set_id: prepared.backup_set_id.clone(),
@@ -463,7 +554,7 @@ fn create_checkpoint(
             content_revision: prepared.content_revision,
             main_migration_head: prepared.main_migration_head,
             litestream_path: keyspace.litestream(&prepared.replica_epoch_id),
-            txid: prepared.litestream_txid.to_string(),
+            txid: fenced_txid.to_string(),
             media_migration_head: prepared.media_migration_head,
             referenced_hash_count: prepared.referenced_hash_count,
             referenced_total_bytes: prepared.referenced_total_bytes,
@@ -488,6 +579,7 @@ fn create_checkpoint(
             &bytes,
             &manifest,
             &prepared,
+            fenced_txid,
         )?;
         Ok::<_, CheckpointErrorCode>(key)
     })();
@@ -538,10 +630,12 @@ fn validate_remote_media(
     keyspace: &super::domain::R2Keyspace,
     prepared: &PreparedOffsiteCheckpoint,
     shutdown: &AtomicBool,
+    manual: Option<&ManualBackupControl>,
 ) -> Result<(), CheckpointErrorCode> {
     validate_remote_media_with_loader(
         prepared,
         shutdown,
+        manual,
         |after_sha256| {
             database
                 .load_offsite_checkpoint_media_page(
@@ -569,6 +663,7 @@ fn validate_remote_media(
 fn validate_remote_media_with_loader(
     prepared: &PreparedOffsiteCheckpoint,
     shutdown: &AtomicBool,
+    manual: Option<&ManualBackupControl>,
     mut load_page: impl FnMut(
         Option<crate::backup::domain::ContentSha256>,
     ) -> Result<Vec<CheckpointMediaReference>, CheckpointErrorCode>,
@@ -594,7 +689,7 @@ fn validate_remote_media_with_loader(
         {
             return Err(CheckpointErrorCode::MalformedManifest);
         }
-        ensure_running(shutdown)?;
+        ensure_running(shutdown, manual)?;
         let metadata = head_batch(&batch)?;
         if metadata.len() != batch.len() {
             return Err(CheckpointErrorCode::MalformedManifest);
@@ -677,9 +772,10 @@ fn publish_manifest(
     expected_bytes: &[u8],
     expected: &CheckpointManifestV1,
     prepared: &PreparedOffsiteCheckpoint,
+    litestream_txid: super::litestream::LitestreamTxid,
 ) -> Result<(), CheckpointErrorCode> {
     let outcome = with_current_remote(context.database, context.config, || {
-        ensure_running(context.shutdown)?;
+        ensure_running(context.shutdown, None)?;
         context
             .store
             .put(PutObjectRequest {
@@ -691,7 +787,7 @@ fn publish_manifest(
             })
             .map_err(|error| map_store_error(error.code))
     })?;
-    ensure_running(context.shutdown)?;
+    ensure_running(context.shutdown, None)?;
     let readback = with_current_remote(context.database, context.config, || {
         context
             .store
@@ -722,7 +818,7 @@ fn publish_manifest(
         referenced_hash_count: prepared.referenced_hash_count,
         referenced_total_bytes: prepared.referenced_total_bytes,
         referenced_hash_set_sha256: prepared.referenced_hash_set_sha256,
-        litestream_txid: &prepared.litestream_txid.to_string(),
+        litestream_txid: &litestream_txid.to_string(),
     };
     if decoded != *expected
         || decoded
@@ -736,8 +832,11 @@ fn publish_manifest(
     Ok(())
 }
 
-fn ensure_running(shutdown: &AtomicBool) -> Result<(), CheckpointErrorCode> {
-    if shutdown.load(Ordering::Acquire) {
+fn ensure_running(
+    shutdown: &AtomicBool,
+    manual: Option<&ManualBackupControl>,
+) -> Result<(), CheckpointErrorCode> {
+    if shutdown.load(Ordering::Acquire) || manual.is_some_and(ManualBackupControl::is_cancelled) {
         Err(CheckpointErrorCode::WorkerUnavailable)
     } else {
         Ok(())
@@ -796,7 +895,6 @@ fn set_failure(status: &Mutex<CheckpointBackupStatus>, code: CheckpointErrorCode
 
 fn map_database_error(error: &DatabaseError) -> CheckpointErrorCode {
     match error {
-        DatabaseError::OffsiteCheckpointFence(code) => *code,
         DatabaseError::OffsiteCheckpointMediaIncomplete => CheckpointErrorCode::LocalMediaMissing,
         DatabaseError::InvalidOffsiteBackupConfig(_)
         | DatabaseError::StaleOffsiteBackupConfig
@@ -985,7 +1083,6 @@ mod tests {
             referenced_hash_count,
             referenced_total_bytes,
             referenced_hash_set_sha256: ContentSha256::from_bytes(digest.finalize().into()),
-            litestream_txid: LitestreamTxid::from_local(42),
         }
     }
 
@@ -1002,7 +1099,7 @@ mod tests {
             content_revision: prepared.content_revision,
             main_migration_head: prepared.main_migration_head,
             litestream_path: keyspace.litestream(&prepared.replica_epoch_id),
-            txid: prepared.litestream_txid.to_string(),
+            txid: LitestreamTxid::from_local(42).to_string(),
             media_migration_head: prepared.media_migration_head,
             referenced_hash_count: prepared.referenced_hash_count,
             referenced_total_bytes: prepared.referenced_total_bytes,
@@ -1025,6 +1122,7 @@ mod tests {
         validate_remote_media_with_loader(
             prepared,
             shutdown,
+            None,
             |_| {
                 let end = (offset + MEDIA_HEAD_BATCH_SIZE).min(references.len());
                 let page = references[offset..end].to_vec();
@@ -1054,6 +1152,25 @@ mod tests {
             Some(start + Duration::from_secs(299)),
             start + MAX_DIRTY_DELAY
         ));
+    }
+
+    #[test]
+    fn manual_timeout_and_publication_commit_are_mutually_exclusive() {
+        let shutdown = AtomicBool::new(false);
+        let cancelled = ManualBackupControl::new();
+        assert!(cancelled.cancel_if_active());
+        assert!(!cancelled.begin_commit());
+        assert_eq!(
+            ensure_running(&shutdown, Some(&cancelled)),
+            Err(CheckpointErrorCode::WorkerUnavailable)
+        );
+
+        let committing = ManualBackupControl::new();
+        assert!(committing.begin_commit());
+        assert!(!committing.cancel_if_active());
+        assert_eq!(ensure_running(&shutdown, Some(&committing)), Ok(()));
+        committing.complete();
+        assert!(!committing.cancel_if_active());
     }
 
     #[test]
@@ -1146,8 +1263,15 @@ mod tests {
             keyspace: &keyspace,
             shutdown: &shutdown,
         };
-        publish_manifest(&publication, &key, &bytes, &manifest, &prepared)
-            .expect("publish manifest");
+        publish_manifest(
+            &publication,
+            &key,
+            &bytes,
+            &manifest,
+            &prepared,
+            LitestreamTxid::from_local(42),
+        )
+        .expect("publish manifest");
 
         let mut expected_operations = vec![ObjectOperation::Head; 9];
         expected_operations.extend([ObjectOperation::Put, ObjectOperation::Get]);
@@ -1178,10 +1302,24 @@ mod tests {
             shutdown: &shutdown,
         };
 
-        publish_manifest(&publication, &key, &bytes, &manifest, &prepared)
-            .expect("first publication");
-        publish_manifest(&publication, &key, &bytes, &manifest, &prepared)
-            .expect("identical replay");
+        publish_manifest(
+            &publication,
+            &key,
+            &bytes,
+            &manifest,
+            &prepared,
+            LitestreamTxid::from_local(42),
+        )
+        .expect("first publication");
+        publish_manifest(
+            &publication,
+            &key,
+            &bytes,
+            &manifest,
+            &prepared,
+            LitestreamTxid::from_local(42),
+        )
+        .expect("identical replay");
         assert_eq!(
             publish_manifest(
                 &publication,
@@ -1189,6 +1327,7 @@ mod tests {
                 b"{\"different\":true}",
                 &manifest,
                 &prepared,
+                LitestreamTxid::from_local(42),
             )
             .expect_err("conflicting immutable bytes"),
             CheckpointErrorCode::ImmutableObjectConflict
@@ -1246,8 +1385,15 @@ mod tests {
             shutdown: &shutdown,
         };
         assert_eq!(
-            publish_manifest(&publication, &key, &bytes, &manifest, &prepared,)
-                .expect_err("readback failure"),
+            publish_manifest(
+                &publication,
+                &key,
+                &bytes,
+                &manifest,
+                &prepared,
+                LitestreamTxid::from_local(42),
+            )
+            .expect_err("readback failure"),
             CheckpointErrorCode::Network
         );
     }

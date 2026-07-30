@@ -70,8 +70,8 @@ pub use media::{
     MediaLimits, MediaMaintenanceReport, PdfExtractionStatus, PdfRecord, PdfStatusRecord,
 };
 pub(crate) use offsite_checkpoint::{
-    CheckpointMediaReference, LocalCheckpointSync, OffsiteCheckpointScheduleState,
-    PrepareOffsiteCheckpointInput, PreparedOffsiteCheckpoint,
+    CheckpointMediaReference, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
+    PreparedOffsiteCheckpoint,
 };
 pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
@@ -385,14 +385,8 @@ fn writer_loop(
                     now_ms,
                 ));
             }
-            WriterMessage::PrepareOffsiteCheckpoint {
-                input,
-                local_sync,
-                reply,
-            } => {
-                let _ = reply.send(offsite_checkpoint::prepare_and_fence(
-                    &mut main, &media, input, local_sync,
-                ));
+            WriterMessage::PrepareOffsiteCheckpoint { input, reply } => {
+                let _ = reply.send(offsite_checkpoint::prepare(&mut main, &media, input));
             }
             WriterMessage::LoadOffsiteCheckpointMediaPage {
                 checkpoint_id,

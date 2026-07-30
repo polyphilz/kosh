@@ -34,8 +34,8 @@ use super::{
     },
     migrations::MigrationHeads,
     offsite_checkpoint::{
-        CheckpointMediaReference, LocalCheckpointSync, OffsiteCheckpointScheduleState,
-        PrepareOffsiteCheckpointInput, PreparedOffsiteCheckpoint,
+        CheckpointMediaReference, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
+        PreparedOffsiteCheckpoint,
     },
     passages::CitationResolution,
     research_runs::{
@@ -148,7 +148,6 @@ pub(super) enum WriterMessage {
     },
     PrepareOffsiteCheckpoint {
         input: PrepareOffsiteCheckpointInput,
-        local_sync: Arc<dyn LocalCheckpointSync>,
         reply: SyncSender<Result<PreparedOffsiteCheckpoint>>,
     },
     LoadOffsiteCheckpointMediaPage {
@@ -729,15 +728,10 @@ impl DatabaseClient {
     pub(crate) fn prepare_offsite_checkpoint(
         &self,
         input: PrepareOffsiteCheckpointInput,
-        local_sync: Arc<dyn LocalCheckpointSync>,
     ) -> Result<PreparedOffsiteCheckpoint> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::PrepareOffsiteCheckpoint {
-                input,
-                local_sync,
-                reply,
-            })
+            .send(WriterMessage::PrepareOffsiteCheckpoint { input, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
