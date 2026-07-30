@@ -161,8 +161,9 @@ run_launch() {
     --arg data "$canonical_data" \
     '
       . as $launch
-      | .schemaVersion == 3
+      | .schemaVersion == 4
       and .headSha == $head
+      and .buildHeadSha == $head
       and .expectation == $expectation
       and .dataDir == $data
       and (.windows | sort) == ["main", "quick-add"]

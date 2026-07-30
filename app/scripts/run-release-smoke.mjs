@@ -154,8 +154,9 @@ async function waitForPath(child, path, timeoutMs) {
 }
 
 function verifyReceipt(receipt, expectation, captureExpected) {
-  assertEqual(receipt.schemaVersion, 3, "smoke receipt schema");
-  assertEqual(receipt.headSha, headSha, "smoke receipt head");
+  assertEqual(receipt.schemaVersion, 4, "smoke receipt schema");
+  assertEqual(receipt.headSha, headSha, "requested smoke head");
+  assertEqual(receipt.buildHeadSha, headSha, "packaged executable build head");
   assertEqual(receipt.expectation, expectation, "smoke expectation");
   assertEqual([...receipt.windows].sort(), ["main", "quick-add"], "packaged smoke windows");
   assertEqual(

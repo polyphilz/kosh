@@ -34,8 +34,9 @@ launch_receipt() {
     --argjson preexisting "$preexisting" \
     --argjson created "$created" \
     '{
-      schemaVersion: 3,
+      schemaVersion: 4,
       headSha: $head,
+      buildHeadSha: $head,
       expectation: $expectation,
       dataDir: $data,
       processId: 123,

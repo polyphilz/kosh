@@ -31,13 +31,15 @@ jq -e \
     and .scope == "local"
     and .result == "pass"
     and .headSha == $head
-    and .fresh.seed.schemaVersion == 3
+    and .fresh.seed.schemaVersion == 4
     and .fresh.seed.headSha == $head
+    and .fresh.seed.buildHeadSha == $head
     and .fresh.seed.expectation == "absent"
     and .fresh.seed.canaryPreexisting == false
     and .fresh.seed.canaryCreated == true
-    and .fresh.restart.schemaVersion == 3
+    and .fresh.restart.schemaVersion == 4
     and .fresh.restart.headSha == $head
+    and .fresh.restart.buildHeadSha == $head
     and .fresh.restart.expectation == "present"
     and .fresh.restart.canaryPreexisting == true
     and .fresh.restart.canaryCreated == false
@@ -45,8 +47,9 @@ jq -e \
     and .fresh.seed.canary.tidbitId == .fresh.restart.canary.tidbitId
     and .fresh.seed.canary.revisionId == .fresh.restart.canary.revisionId
     and .fresh.seed.canary.passageId == .fresh.restart.canary.passageId
-    and .persistent.receipt.schemaVersion == 3
+    and .persistent.receipt.schemaVersion == 4
     and .persistent.receipt.headSha == $head
+    and .persistent.receipt.buildHeadSha == $head
     and .persistent.expectation == "present"
     and .persistent.receipt.expectation == "present"
     and .persistent.receipt.canaryPreexisting == true

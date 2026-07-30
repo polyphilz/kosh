@@ -33,6 +33,7 @@ const CANARY: &str = "koshstartupcanaryv1";
 const CANARY_TITLE: &str = "Kosh progressive startup canary";
 const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
 const REQUIRED_SURFACES: [&str; 2] = ["main", "quick-add"];
+const BUILD_GIT_SHA: &str = env!("KOSH_BUILD_GIT_SHA");
 static CAPTURE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -83,6 +84,7 @@ struct WebviewReady {
 struct StartupSmokeReceipt {
     schema_version: u32,
     head_sha: String,
+    build_head_sha: &'static str,
     expectation: CanaryExpectation,
     data_dir: String,
     process_id: u32,
@@ -276,8 +278,9 @@ fn complete_startup_smoke(
     write_receipt(
         &request.receipt_path,
         &StartupSmokeReceipt {
-            schema_version: 3,
+            schema_version: 4,
             head_sha: request.head_sha,
+            build_head_sha: BUILD_GIT_SHA,
             expectation: request.expectation,
             data_dir: data_dir_text,
             process_id: std::process::id(),

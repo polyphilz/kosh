@@ -85,8 +85,9 @@ jq -n \
   --argjson created "$created" \
   --arg passage "$passage_id" \
   '{
-    schemaVersion: 3,
+    schemaVersion: 4,
     headSha: $head,
+    buildHeadSha: $head,
     expectation: $expectation,
     dataDir: $data,
     processId: 123,

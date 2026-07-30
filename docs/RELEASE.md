@@ -101,8 +101,10 @@ app/src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app
 and Finder-like minimal `PATH`. The packaged React root creates a URL-bearing
 canary through normal capture IPC, both packaged surfaces resolve its exact
 search citation, and the second launch proves the same cited revision survives.
-The lane also checks current migrations, WAL/integrity, and operation without
-Claude or a semantic model.
+The native executable embeds its source commit, and the lane rejects a bundle
+whose embedded commit differs from the checkout under test. It also checks
+current migrations, WAL/integrity, and operation without Claude or a semantic
+model.
 
 ## 3. Run release acceptance
 
