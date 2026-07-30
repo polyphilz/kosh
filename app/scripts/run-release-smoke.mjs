@@ -14,6 +14,7 @@ import { join, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
 const appRoot = resolve(import.meta.dirname, "..");
+run(process.execPath, [join(appRoot, "scripts/check-release-source.mjs"), resolve(appRoot, "..")]);
 const appPath = resolve(
   process.argv[2] ??
     join(appRoot, "src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app"),
