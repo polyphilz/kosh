@@ -15,7 +15,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::credentials::R2Credentials;
+use super::{
+    credentials::R2Credentials,
+    domain::{R2ObjectKey, R2Target},
+};
 
 const EMBEDDED_MANIFEST: &str = include_str!("../../resources/sidecars/litestream-v1.json");
 const DEVELOPMENT_BINARY_OVERRIDE_ENV: &str = "KOSH_LITESTREAM_PATH";
@@ -24,11 +27,16 @@ pub(crate) const AWS_SHARED_CREDENTIALS_FILE_FD: &str = "/dev/fd/0";
 pub(crate) const AWS_EC2_METADATA_DISABLED_ENV: &str = "AWS_EC2_METADATA_DISABLED";
 const REQUIRED_L0_RETENTION: &str = "720h";
 const MAX_CONTROL_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_RESTORE_CONFIG_BYTES: usize = 64 * 1024;
 const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESTORE_FILES: usize = 100_000;
 const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+#[cfg(target_os = "macos")]
+const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
+#[cfg(target_os = "macos")]
+const PROCESS_IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 pub(crate) fn configure_credential_pipe_environment(command: &mut Command) {
@@ -77,6 +85,10 @@ pub enum LitestreamError {
     StageBinary(#[source] std::io::Error),
     #[error("the immutable Litestream launch copy is invalid")]
     InvalidStagedBinary,
+    #[error("the immutable Litestream restore configuration could not be staged")]
+    StageRestoreConfig(#[source] std::io::Error),
+    #[error("the immutable Litestream restore configuration is invalid")]
+    InvalidRestoreConfig,
     #[error("the running Litestream process does not match the pinned code signature")]
     ProcessCodeSignatureMismatch,
     #[error("the running Litestream process identity could not be inspected")]
@@ -109,6 +121,16 @@ pub enum LitestreamError {
     UnexpectedDatabasePath,
     #[error("Litestream returned too many restore files")]
     RestorePlanTooLarge,
+    #[error("Litestream restore response does not match the requested exact transaction")]
+    InvalidRestoreContract,
+    #[error("Litestream restore destination already exists")]
+    RestoreDestinationExists,
+    #[error("the private Litestream restore destination could not be prepared")]
+    PrepareRestoreDestination(#[source] std::io::Error),
+    #[error("Litestream did not produce a private regular restore file")]
+    InvalidRestoreDestination,
+    #[error("the verified Litestream restore could not be published")]
+    PublishRestoreDestination(#[source] std::io::Error),
     #[error("Litestream commands require an absolute database path")]
     RelativeDatabasePath,
 }
@@ -186,6 +208,18 @@ pub struct ImmutableLitestreamBinary {
     sha256: String,
     size: u64,
     code_signature_cdhash: String,
+}
+
+#[derive(Clone, Debug)]
+#[allow(
+    dead_code,
+    reason = "replica binding is read by the chunk 29g production restore adapter"
+)]
+struct ImmutableLitestreamRestoreConfig {
+    path: PathBuf,
+    sha256: String,
+    size: u64,
+    replica_path: R2ObjectKey,
 }
 
 impl VerifiedLitestreamBinary {
@@ -303,6 +337,198 @@ impl ImmutableLitestreamBinary {
         }
         Ok(())
     }
+}
+
+impl ImmutableLitestreamRestoreConfig {
+    fn reverify_before_spawn(&self) -> Result<(), LitestreamError> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or(LitestreamError::InvalidRestoreConfig)?;
+        if validate_immutable_directory(parent).is_err() {
+            return Err(LitestreamError::InvalidRestoreConfig);
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let mut file = options
+            .open(&self.path)
+            .map_err(LitestreamError::StageRestoreConfig)?;
+        let metadata = file
+            .metadata()
+            .map_err(LitestreamError::StageRestoreConfig)?;
+        if !metadata.is_file() || metadata.len() != self.size {
+            return Err(LitestreamError::InvalidRestoreConfig);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o777 != 0o400 {
+                return Err(LitestreamError::InvalidRestoreConfig);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt;
+            if metadata.st_flags() & libc::UF_IMMUTABLE == 0 {
+                return Err(LitestreamError::InvalidRestoreConfig);
+            }
+        }
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file)
+            .take(MAX_RESTORE_CONFIG_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(LitestreamError::StageRestoreConfig)?;
+        if bytes.len() as u64 != self.size || format!("{:x}", Sha256::digest(&bytes)) != self.sha256
+        {
+            return Err(LitestreamError::InvalidRestoreConfig);
+        }
+        Ok(())
+    }
+}
+
+fn stage_immutable_restore_config(
+    runtime: &LitestreamRuntimePaths,
+    rendered: &str,
+    replica_path: &R2ObjectKey,
+) -> Result<ImmutableLitestreamRestoreConfig, LitestreamError> {
+    if rendered.is_empty() || rendered.len() > MAX_RESTORE_CONFIG_BYTES {
+        return Err(LitestreamError::InvalidRestoreConfig);
+    }
+    runtime.prepare()?;
+    let bytes = rendered.as_bytes();
+    let sha256 = format!("{:x}", Sha256::digest(bytes));
+    let size = bytes.len() as u64;
+    let stage_root = runtime.directory().join("restore-configs");
+    prepare_private_runtime_directory(&stage_root).map_err(LitestreamError::StageRestoreConfig)?;
+    let _stage_lock = lock_restore_config_stage(&stage_root, &sha256)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    remove_stale_restore_config_temporaries(&stage_root, &sha256)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let final_directory = stage_root.join(&sha256);
+    let final_path = final_directory.join("ls.yml");
+    let config = ImmutableLitestreamRestoreConfig {
+        path: final_path.clone(),
+        sha256: sha256.clone(),
+        size,
+        replica_path: replica_path.clone(),
+    };
+    match fs::symlink_metadata(&final_directory) {
+        Ok(_) => match config.reverify_before_spawn() {
+            Ok(()) => return Ok(config),
+            Err(_) => remove_partial_restore_config(&final_directory)
+                .map_err(LitestreamError::StageRestoreConfig)?,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(LitestreamError::StageRestoreConfig(error)),
+    }
+
+    let temporary_directory = stage_root.join(format!(".{sha256}.{}.tmp", uuid::Uuid::now_v7()));
+    fs::create_dir(&temporary_directory).map_err(LitestreamError::StageRestoreConfig)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temporary_directory, fs::Permissions::from_mode(0o700))
+            .map_err(LitestreamError::StageRestoreConfig)?;
+    }
+    let temporary_path = temporary_directory.join("ls.yml");
+    let mut options = OpenOptions::new();
+    options.create_new(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o400)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let mut file = options
+        .open(&temporary_path)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o400))
+            .map_err(LitestreamError::StageRestoreConfig)?;
+    }
+    drop(file);
+    File::open(&temporary_directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    fs::rename(&temporary_directory, &final_directory)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let staged = File::open(&final_path).map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&staged).map_err(LitestreamError::StageRestoreConfig)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&final_directory, fs::Permissions::from_mode(0o500))
+            .map_err(LitestreamError::StageRestoreConfig)?;
+    }
+    let directory =
+        open_directory_no_follow(&final_directory).map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&directory).map_err(LitestreamError::StageRestoreConfig)?;
+    directory
+        .sync_all()
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    File::open(&stage_root)
+        .and_then(|root| root.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    config.reverify_before_spawn()?;
+    Ok(config)
+}
+
+fn lock_restore_config_stage(stage_root: &Path, sha256: &str) -> std::io::Result<File> {
+    let lock_path = stage_root.join(format!(".{sha256}.lock"));
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let lock = options.open(lock_path)?;
+    if !lock.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "Litestream restore config lock is not regular",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        lock.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn remove_stale_restore_config_temporaries(stage_root: &Path, sha256: &str) -> std::io::Result<()> {
+    let prefix = format!(".{sha256}.");
+    for entry in fs::read_dir(stage_root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(unique) = name
+            .strip_prefix(&prefix)
+            .and_then(|name| name.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(unique).is_ok() {
+            remove_partial_restore_config(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn embedded_manifest() -> Result<SourceManifest, LitestreamError> {
@@ -712,6 +938,14 @@ fn set_user_immutable(_file: &File) -> std::io::Result<()> {
 }
 
 fn remove_partial_stage(path: &Path) -> std::io::Result<()> {
+    remove_partial_stage_entry(path, "litestream")
+}
+
+fn remove_partial_restore_config(path: &Path) -> std::io::Result<()> {
+    remove_partial_stage_entry(path, "ls.yml")
+}
+
+fn remove_partial_stage_entry(path: &Path, expected_filename: &str) -> std::io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -733,7 +967,7 @@ fn remove_partial_stage(path: &Path) -> std::io::Result<()> {
     if entries.len() > 1
         || entries
             .first()
-            .is_some_and(|entry| entry.file_name() != "litestream")
+            .is_some_and(|entry| entry.file_name() != expected_filename)
     {
         return Err(std::io::Error::other(
             "Litestream staging temporary has unexpected contents",
@@ -1212,6 +1446,559 @@ pub fn parse_restore_result_json(bytes: &[u8]) -> Result<RestoreResult, Litestre
     })
 }
 
+pub(crate) trait RelationalRestoreEngine: Send + Sync {
+    fn replica_path(&self) -> &str;
+
+    fn preview(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestorePlan, LitestreamError>;
+
+    fn restore(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestoreResult, LitestreamError>;
+}
+
+/// Runs the pinned offline restore command with credentials supplied only
+/// through the child's inherited stdin descriptor. No credential value is
+/// written to arguments, environment values, configuration, or logs.
+#[allow(
+    dead_code,
+    reason = "constructed by the Settings restore IPC in chunk 29g"
+)]
+pub(crate) struct CommandLitestreamRestore<'a> {
+    binary: &'a ImmutableLitestreamBinary,
+    config: ImmutableLitestreamRestoreConfig,
+    credentials: &'a R2Credentials,
+    timeout: Duration,
+}
+
+#[allow(
+    dead_code,
+    reason = "constructed by the Settings restore IPC in chunk 29g"
+)]
+impl<'a> CommandLitestreamRestore<'a> {
+    pub(crate) fn new(
+        binary: &'a ImmutableLitestreamBinary,
+        runtime: &LitestreamRuntimePaths,
+        target: &R2Target,
+        replica_path: &R2ObjectKey,
+        source_database_path: &Path,
+        credentials: &'a R2Credentials,
+        timeout: Duration,
+    ) -> Result<Self, LitestreamError> {
+        let endpoint = target.endpoint();
+        let rendered = LitestreamConfig {
+            database_path: source_database_path,
+            runtime,
+            bucket: target.bucket.as_str(),
+            replica_path: replica_path.as_str(),
+            endpoint: &endpoint,
+        }
+        .render()?;
+        let config = stage_immutable_restore_config(runtime, &rendered, replica_path)?;
+        Ok(Self {
+            binary,
+            config,
+            credentials,
+            timeout,
+        })
+    }
+
+    fn execute(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        dry_run: bool,
+    ) -> Result<Vec<u8>, LitestreamError> {
+        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let arguments = restore_arguments(
+            &self.config.path,
+            source_database_path,
+            target_path,
+            txid,
+            dry_run,
+        );
+        self.binary.reverify_before_spawn()?;
+        self.config.reverify_before_spawn()?;
+        execute_credentialed_command(
+            self.binary,
+            &arguments,
+            self.credentials,
+            self.timeout,
+            if dry_run {
+                MAX_RESTORE_PLAN_OUTPUT_BYTES
+            } else {
+                MAX_CONTROL_OUTPUT_BYTES
+            },
+            if dry_run { None } else { target_path.parent() },
+        )
+    }
+}
+
+impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
+    fn replica_path(&self) -> &str {
+        self.config.replica_path.as_str()
+    }
+
+    fn preview(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestorePlan, LitestreamError> {
+        let bytes = self.execute(source_database_path, target_path, txid, true)?;
+        let plan = parse_restore_plan_json(&bytes)?;
+        if plan.source != source_database_path.to_string_lossy()
+            || plan.target_path != target_path
+            || plan.replica != ReplicaKind::S3
+            || plan.min_txid > txid
+            || plan.max_txid < txid
+            || plan.files.is_empty()
+            || !plan
+                .files
+                .iter()
+                .any(|file| file.min_txid <= txid && file.max_txid >= txid)
+        {
+            return Err(LitestreamError::InvalidRestoreContract);
+        }
+        Ok(plan)
+    }
+
+    fn restore(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestoreResult, LitestreamError> {
+        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let destination = ExclusiveRestoreDestination::prepare(target_path)?;
+        let bytes = self.execute(
+            source_database_path,
+            destination.private_path(),
+            txid,
+            false,
+        )?;
+        let mut result = parse_restore_result_json(&bytes)?;
+        if result.database_path != destination.private_path()
+            || result.replica != ReplicaKind::S3
+            || result.txid != txid
+            || result.integrity_check != IntegrityCheck::Full
+        {
+            return Err(LitestreamError::InvalidRestoreContract);
+        }
+        destination.publish()?;
+        result.database_path = target_path.to_owned();
+        Ok(result)
+    }
+}
+
+/// Owns a one-shot restore path and publishes it without ever handing the
+/// caller-selected destination to Litestream. `hard_link` creates the final
+/// directory entry atomically and fails for every existing node, including a
+/// dangling symlink, while the open no-follow descriptors bind validation to
+/// the exact inode Litestream produced.
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+struct ExclusiveRestoreDestination {
+    requested_path: PathBuf,
+    private_directory: PathBuf,
+    private_path: PathBuf,
+}
+
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+impl ExclusiveRestoreDestination {
+    fn prepare(requested_path: &Path) -> Result<Self, LitestreamError> {
+        match fs::symlink_metadata(requested_path) {
+            Ok(_) => return Err(LitestreamError::RestoreDestinationExists),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(LitestreamError::PrepareRestoreDestination(error)),
+        }
+        let parent = requested_path.parent().ok_or_else(|| {
+            LitestreamError::PrepareRestoreDestination(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "restore destination has no parent",
+            ))
+        })?;
+        let parent_metadata =
+            fs::symlink_metadata(parent).map_err(LitestreamError::PrepareRestoreDestination)?;
+        if !parent_metadata.file_type().is_dir() {
+            return Err(LitestreamError::InvalidRestoreDestination);
+        }
+
+        for _ in 0..8 {
+            let private_directory = parent.join(format!(
+                ".kosh-litestream-restore-{}.tmp",
+                uuid::Uuid::now_v7()
+            ));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&private_directory) {
+                Ok(()) => {
+                    let private_path = private_directory.join("database.sqlite3");
+                    return Ok(Self {
+                        requested_path: requested_path.to_owned(),
+                        private_directory,
+                        private_path,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(LitestreamError::PrepareRestoreDestination(error));
+                }
+            }
+        }
+        Err(LitestreamError::PrepareRestoreDestination(
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a unique private restore directory",
+            ),
+        ))
+    }
+
+    fn private_path(&self) -> &Path {
+        &self.private_path
+    }
+
+    fn publish(self) -> Result<(), LitestreamError> {
+        let private_file = open_restore_file_no_follow(&self.private_path)?;
+        let private_metadata = private_file
+            .metadata()
+            .map_err(LitestreamError::PublishRestoreDestination)?;
+        if !private_metadata.file_type().is_file() || private_metadata.len() == 0 {
+            return Err(LitestreamError::InvalidRestoreDestination);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if private_metadata.nlink() != 1 {
+                return Err(LitestreamError::InvalidRestoreDestination);
+            }
+        }
+        private_file
+            .sync_all()
+            .map_err(LitestreamError::PublishRestoreDestination)?;
+
+        match fs::hard_link(&self.private_path, &self.requested_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(LitestreamError::RestoreDestinationExists);
+            }
+            Err(error) => return Err(LitestreamError::PublishRestoreDestination(error)),
+        }
+
+        let publication = (|| {
+            let published_file = open_restore_file_no_follow(&self.requested_path)?;
+            let published_metadata = published_file
+                .metadata()
+                .map_err(LitestreamError::PublishRestoreDestination)?;
+            if !same_restore_file(&private_metadata, &published_metadata) {
+                return Err(LitestreamError::InvalidRestoreDestination);
+            }
+            sync_restore_parent(
+                self.requested_path
+                    .parent()
+                    .ok_or(LitestreamError::InvalidRestoreDestination)?,
+            )?;
+            fs::remove_file(&self.private_path)
+                .map_err(LitestreamError::PublishRestoreDestination)?;
+            fs::remove_dir(&self.private_directory)
+                .map_err(LitestreamError::PublishRestoreDestination)?;
+            sync_restore_parent(
+                self.requested_path
+                    .parent()
+                    .ok_or(LitestreamError::InvalidRestoreDestination)?,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = publication {
+            if let Ok(published_file) = open_restore_file_no_follow(&self.requested_path) {
+                if published_file
+                    .metadata()
+                    .is_ok_and(|metadata| same_restore_file(&private_metadata, &metadata))
+                {
+                    let _ = fs::remove_file(&self.requested_path);
+                }
+            }
+            if let Some(parent) = self.requested_path.parent() {
+                let _ = sync_restore_parent(parent);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ExclusiveRestoreDestination {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.private_path);
+        let _ = fs::remove_dir(&self.private_directory);
+    }
+}
+
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn open_restore_file_no_follow(path: &Path) -> Result<File, LitestreamError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    options
+        .open(path)
+        .map_err(LitestreamError::PublishRestoreDestination)
+}
+
+#[cfg(unix)]
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn same_restore_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    right.file_type().is_file() && left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn same_restore_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    right.file_type().is_file() && left.len() == right.len()
+}
+
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn sync_restore_parent(path: &Path) -> Result<(), LitestreamError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    options
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(LitestreamError::PublishRestoreDestination)
+}
+
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn restore_arguments(
+    config: &Path,
+    source_database_path: &Path,
+    target_path: &Path,
+    txid: LitestreamTxid,
+    dry_run: bool,
+) -> Vec<OsString> {
+    let mut arguments = vec![
+        OsString::from("restore"),
+        OsString::from("-config"),
+        config.as_os_str().to_owned(),
+        OsString::from("-txid"),
+        OsString::from(txid.to_string()),
+    ];
+    if dry_run {
+        arguments.push(OsString::from("-dry-run"));
+    }
+    arguments.push(OsString::from("-json"));
+    if !dry_run {
+        arguments.extend([OsString::from("-integrity-check"), OsString::from("full")]);
+    }
+    arguments.extend([
+        OsString::from("-o"),
+        target_path.as_os_str().to_owned(),
+        source_database_path.as_os_str().to_owned(),
+    ]);
+    arguments
+}
+
+#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
+fn execute_credentialed_command(
+    binary: &ImmutableLitestreamBinary,
+    arguments: &[OsString],
+    credentials: &R2Credentials,
+    timeout: Duration,
+    output_limit: usize,
+    restore_write_root: Option<&Path>,
+) -> Result<Vec<u8>, LitestreamError> {
+    let mut command = credentialed_restore_command(binary, arguments, restore_write_root)?;
+    command
+        .env_clear()
+        .env(
+            AWS_SHARED_CREDENTIALS_FILE_ENV,
+            AWS_SHARED_CREDENTIALS_FILE_FD,
+        )
+        .env(AWS_EC2_METADATA_DISABLED_ENV, "true")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(LitestreamError::Execute)?;
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = verify_spawned_restore_process(binary, &mut child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    }
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        LitestreamError::Execute(std::io::Error::other(
+            "Litestream restore credential pipe is unavailable",
+        ))
+    })?;
+    if let Err(error) = write_aws_shared_credentials(&mut stdin, credentials) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(LitestreamError::Execute(error));
+    }
+    drop(stdin);
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(LitestreamError::Execute(std::io::Error::other(
+            "Litestream restore stdout pipe is unavailable",
+        )));
+    };
+    let reader = match thread::Builder::new()
+        .name("kosh-litestream-restore-output".into())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            stdout
+                .by_ref()
+                .take(output_limit as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            Ok::<_, std::io::Error>(bytes)
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(LitestreamError::Execute(error));
+        }
+    };
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(COMMAND_POLL_INTERVAL),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(LitestreamError::Execute(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Litestream restore timed out",
+                )));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(LitestreamError::Execute(error));
+            }
+        }
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| {
+            LitestreamError::Execute(std::io::Error::other(
+                "Litestream restore output reader panicked",
+            ))
+        })?
+        .map_err(LitestreamError::Execute)?;
+    if bytes.len() > output_limit {
+        return Err(LitestreamError::OversizedControlResponse);
+    }
+    if !status.success() {
+        return Err(LitestreamError::CommandFailed {
+            exit_code: status.code(),
+        });
+    }
+    Ok(bytes)
+}
+
+fn credentialed_restore_command(
+    binary: &ImmutableLitestreamBinary,
+    arguments: &[OsString],
+    restore_write_root: Option<&Path>,
+) -> Result<Command, LitestreamError> {
+    #[cfg(target_os = "macos")]
+    if let Some(write_root) = restore_write_root {
+        let profile = restore_sandbox_profile(write_root)?;
+        let mut command = Command::new(SANDBOX_EXEC_PATH);
+        command
+            .args(["-p", profile.as_str()])
+            .arg(binary.path())
+            .args(arguments);
+        return Ok(command);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = restore_write_root;
+
+    let mut command = Command::new(binary.path());
+    command.args(arguments);
+    Ok(command)
+}
+
+#[cfg(target_os = "macos")]
+fn restore_sandbox_profile(write_root: &Path) -> Result<String, LitestreamError> {
+    let canonical_write_root =
+        fs::canonicalize(write_root).map_err(LitestreamError::PrepareRestoreDestination)?;
+    let write_root = canonical_write_root
+        .to_str()
+        .ok_or(LitestreamError::NonUtf8RuntimePath)?;
+    if write_root.chars().any(|character| character.is_control()) {
+        return Err(LitestreamError::InvalidConfigField("restore sandbox path"));
+    }
+    let escaped = write_root.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!(
+        "(version 1)\n\
+         (deny default)\n\
+         (allow process*)\n\
+         (allow sysctl-read)\n\
+         (allow file-read*)\n\
+         (allow file-write* (literal \"/dev/null\") (subpath \"{escaped}\"))\n\
+         (allow network*)\n\
+         (allow system-socket)\n\
+         (allow mach-lookup)\n\
+         (allow ipc-posix*)"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn verify_spawned_restore_process(
+    binary: &ImmutableLitestreamBinary,
+    child: &mut std::process::Child,
+) -> Result<(), LitestreamError> {
+    let deadline = Instant::now() + PROCESS_IDENTITY_TIMEOUT;
+    loop {
+        let identity_error = match running_process_cdhash(child.id()) {
+            Ok(actual) if actual == binary.code_signature_cdhash => return Ok(()),
+            Ok(_) => LitestreamError::ProcessCodeSignatureMismatch,
+            Err(error) => LitestreamError::ProcessIdentityUnavailable(error),
+        };
+        if child
+            .try_wait()
+            .map_err(LitestreamError::Execute)?
+            .is_some()
+            || Instant::now() >= deadline
+        {
+            return Err(identity_error);
+        }
+        thread::sleep(COMMAND_POLL_INTERVAL);
+    }
+}
+
 fn ensure_bounded_output(bytes: &[u8], limit: usize) -> Result<(), LitestreamError> {
     if bytes.len() > limit {
         return Err(LitestreamError::OversizedControlResponse);
@@ -1458,10 +2245,96 @@ impl<E: CommandExecutor> LitestreamControl for CommandLitestreamControl<E> {
 mod tests {
     use std::{
         os::unix::fs::{symlink, PermissionsExt},
-        sync::{Arc, Mutex},
+        sync::{Arc, Barrier, Mutex},
     };
 
     use super::*;
+    use crate::backup::domain::{
+        BackupSetId, R2AccountId, R2BucketName, R2Jurisdiction, ReplicaEpochId,
+    };
+
+    fn staged_restore_test_binary(root: &Path, bytes: &[u8]) -> ImmutableLitestreamBinary {
+        let source_path = root.join("source-litestream");
+        fs::write(&source_path, bytes).expect("restore test binary");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o700))
+            .expect("restore test binary permissions");
+        let pin = BinaryPin {
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            size: bytes.len() as u64,
+            code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
+        };
+        let verified = VerifiedLitestreamBinary {
+            path: source_path.clone(),
+            sha256: pin.sha256.clone(),
+            size: pin.size,
+            code_signature_cdhash: restore_test_process_cdhash(),
+            file: verify_binary(&source_path, &pin).expect("verified restore test binary"),
+        };
+        let runtime =
+            LitestreamRuntimePaths::new(&root.join("runtime")).expect("restore test runtime");
+        verified
+            .stage_immutable(&runtime)
+            .expect("immutable restore test binary")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn restore_test_process_cdhash() -> String {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read ignored"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("signed shell process");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut previous = None;
+        let cdhash = loop {
+            let current = running_process_cdhash(child.id()).expect("shell process CDHash");
+            if previous.as_ref() == Some(&current) {
+                break current;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shell process CDHash did not stabilize"
+            );
+            previous = Some(current);
+            thread::sleep(Duration::from_millis(10));
+        };
+        child.kill().expect("terminate shell process");
+        child.wait().expect("reap shell process");
+        cdhash
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn restore_test_process_cdhash() -> String {
+        "0".repeat(40)
+    }
+
+    fn thaw_restore_test_binary(binary: &ImmutableLitestreamBinary) {
+        let directory_path = binary.path().parent().expect("immutable directory");
+        let directory = File::open(directory_path).expect("immutable directory descriptor");
+        clear_user_immutable(&directory).expect("thaw immutable directory");
+        fs::set_permissions(directory_path, fs::Permissions::from_mode(0o700))
+            .expect("thawed directory permissions");
+        let file = File::open(binary.path()).expect("immutable binary descriptor");
+        clear_user_immutable(&file).expect("thaw immutable binary");
+        fs::set_permissions(binary.path(), fs::Permissions::from_mode(0o700))
+            .expect("thawed binary permissions");
+    }
+
+    fn restore_test_target() -> (R2Target, R2ObjectKey) {
+        let target = R2Target {
+            account_id: R2AccountId::parse("0123456789abcdef0123456789abcdef")
+                .expect("test account"),
+            jurisdiction: R2Jurisdiction::Default,
+            bucket: R2BucketName::parse("kosh-restore-test").expect("test bucket"),
+        };
+        let replica_path = target
+            .keyspace(&BackupSetId::new())
+            .litestream(&ReplicaEpochId::new());
+        (target, replica_path)
+    }
 
     #[derive(Clone, Debug)]
     struct FakeExecutor {
@@ -1611,6 +2484,545 @@ mod tests {
         .expect("restore result");
         assert_eq!(result.txid, plan.max_txid);
         assert_eq!(result.integrity_check, IntegrityCheck::Full);
+    }
+
+    #[test]
+    fn restore_commands_pin_exact_txid_and_full_integrity_without_secrets() {
+        let source = Path::new("/data/kosh.sqlite3");
+        let target = Path::new("/data/restore/kosh.sqlite3");
+        let config = Path::new("/data/run/backup/ls.yml");
+        let txid = LitestreamTxid::from_local(42);
+        let preview = restore_arguments(config, source, target, txid, true);
+        let restore = restore_arguments(config, source, target, txid, false);
+        assert_eq!(
+            preview,
+            [
+                "restore",
+                "-config",
+                "/data/run/backup/ls.yml",
+                "-txid",
+                "000000000000002a",
+                "-dry-run",
+                "-json",
+                "-o",
+                "/data/restore/kosh.sqlite3",
+                "/data/kosh.sqlite3",
+            ]
+            .map(OsString::from)
+        );
+        assert_eq!(
+            restore,
+            [
+                "restore",
+                "-config",
+                "/data/run/backup/ls.yml",
+                "-txid",
+                "000000000000002a",
+                "-json",
+                "-integrity-check",
+                "full",
+                "-o",
+                "/data/restore/kosh.sqlite3",
+                "/data/kosh.sqlite3",
+            ]
+            .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn concurrent_restore_config_staging_converges_on_one_immutable_directory() {
+        const BUILDERS: usize = 4;
+
+        let root = tempfile::tempdir().expect("restore config root");
+        let rendered = "dbs:\n  - path: /tmp/kosh.sqlite3\n".to_owned();
+        let (_, replica_path) = restore_test_target();
+        let barrier = Arc::new(Barrier::new(BUILDERS + 1));
+        let configs = thread::scope(|scope| {
+            let builders = (0..BUILDERS)
+                .map(|_| {
+                    let data_root = root.path().to_owned();
+                    let rendered = rendered.clone();
+                    let replica_path = replica_path.clone();
+                    let barrier = Arc::clone(&barrier);
+                    scope.spawn(move || {
+                        let runtime = LitestreamRuntimePaths::new(&data_root)
+                            .expect("concurrent restore runtime");
+                        barrier.wait();
+                        stage_immutable_restore_config(&runtime, &rendered, &replica_path)
+                            .expect("converged immutable restore config")
+                    })
+                })
+                .collect::<Vec<_>>();
+            barrier.wait();
+            builders
+                .into_iter()
+                .map(|builder| builder.join().expect("restore config builder"))
+                .collect::<Vec<_>>()
+        });
+
+        for config in &configs {
+            assert_eq!(config.path, configs[0].path);
+            assert_eq!(config.sha256, configs[0].sha256);
+            assert_eq!(config.size, configs[0].size);
+            config.reverify_before_spawn().expect("immutable config");
+        }
+        let stage_root = configs[0]
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .expect("restore config stage root");
+        let entries = fs::read_dir(stage_root)
+            .expect("restore config entries")
+            .map(|entry| entry.expect("restore config entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|name| name.to_str() == Some(configs[0].sha256.as_str()))
+                .count(),
+            1
+        );
+        assert!(!entries
+            .iter()
+            .any(|name| { name.to_str().is_some_and(|name| name.ends_with(".tmp")) }));
+
+        remove_partial_restore_config(
+            configs[0]
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore config");
+    }
+
+    #[test]
+    fn offline_restore_supplies_credentials_only_through_stdin_and_checks_exact_results() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let binary = staged_restore_test_binary(
+            root.path(),
+            br#"#!/bin/sh
+set -eu
+test "${AWS_SHARED_CREDENTIALS_FILE:-}" = "/dev/fd/0"
+test "${AWS_EC2_METADATA_DISABLED:-}" = "true"
+test -z "${UNRELATED_SECRET:-}"
+IFS= read -r profile
+IFS= read -r access_key
+IFS= read -r secret_key
+test "$profile" = "[default]"
+test "$access_key" = "aws_access_key_id = 00000000000000000000000000000000"
+test "$secret_key" = "aws_secret_access_key = 0000000000000000000000000000000000000000000000000000000000000000"
+dry=0
+target=
+txid=
+source=
+while test "$#" -gt 0; do
+  case "$1" in
+    -config) shift 2 ;;
+    -txid) txid=$2; shift 2 ;;
+    -dry-run) dry=1; shift ;;
+    -integrity-check) test "$2" = "full"; shift 2 ;;
+    -json) shift ;;
+    -o) target=$2; shift 2 ;;
+    restore) shift ;;
+    -*) exit 92 ;;
+    *) source=$1; shift ;;
+  esac
+done
+if test "$dry" = 1; then
+  printf '{"source":"%s","target_path":"%s","replica":"s3","min_txid":"%s","max_txid":"%s","files":[{"level":0,"name":"exact.ltx","min_txid":"%s","max_txid":"%s","size":12,"timestamp":"2026-07-30T19:00:00Z"}]}' "$source" "$target" "$txid" "$txid" "$txid" "$txid"
+else
+  printf 'restored' >"$target"
+  printf '{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_check":"full"}' "$target" "$txid"
+fi
+"#,
+        );
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let target = root.path().join("restored.sqlite3");
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
+        let txid = LitestreamTxid::from_local(42);
+        assert_ne!(engine.config.path, runtime.config());
+        runtime
+            .write_config("wrong shared restore config")
+            .expect("rewrite shared runtime config");
+        assert!(
+            fs::write(&engine.config.path, "wrong private restore config").is_err(),
+            "private restore config must be immutable"
+        );
+
+        let plan = engine
+            .preview(&source, &target, txid)
+            .expect("credentialed preview");
+        assert_eq!(plan.max_txid, txid);
+        let result = engine
+            .restore(&source, &target, txid)
+            .expect("credentialed restore");
+        assert_eq!(result.txid, txid);
+        assert_eq!(fs::read(target).expect("restore bytes"), b"restored");
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove immutable restore test binary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn offline_restore_rejects_a_dangling_destination_symlink_without_spawning() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("restore command root");
+        let marker = root.path().join("litestream-was-launched");
+        let binary = staged_restore_test_binary(
+            root.path(),
+            format!("#!/bin/sh\n: > '{}'\n", marker.display()).as_bytes(),
+        );
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let outside = root.path().join("outside.sqlite3");
+        let target = root.path().join("restored.sqlite3");
+        symlink(&outside, &target).expect("dangling destination symlink");
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
+
+        assert!(matches!(
+            engine.restore(&source, &target, LitestreamTxid::from_local(42)),
+            Err(LitestreamError::RestoreDestinationExists)
+        ));
+        assert!(!marker.exists(), "Litestream must not be spawned");
+        assert!(
+            fs::symlink_metadata(&target)
+                .expect("destination symlink")
+                .file_type()
+                .is_symlink(),
+            "the caller-owned destination must remain untouched"
+        );
+        assert!(
+            !outside.exists(),
+            "the symlink target must remain untouched"
+        );
+
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove immutable restore test binary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn offline_restore_exclusively_publishes_after_a_destination_symlink_race() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let outside = root.path().join("outside.sqlite3");
+        fs::write(&outside, b"outside-must-not-change").expect("outside fixture");
+        let target = root.path().join("restored.sqlite3");
+        let binary = staged_restore_test_binary(
+            root.path(),
+            format!(
+                r#"#!/bin/sh
+set -eu
+IFS= read -r _
+IFS= read -r _
+IFS= read -r _
+target=
+txid=
+while test "$#" -gt 0; do
+  case "$1" in
+    -config) shift 2 ;;
+    -txid) txid=$2; shift 2 ;;
+    -integrity-check) test "$2" = "full"; shift 2 ;;
+    -json) shift ;;
+    -o) target=$2; shift 2 ;;
+    restore) shift ;;
+    -*) exit 92 ;;
+    *) shift ;;
+  esac
+done
+test "$target" != '{}'
+printf 'restored' >"$target"
+sleep 1
+printf '{{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_check":"full"}}' "$target" "$txid"
+"#,
+                target.display()
+            )
+            .as_bytes(),
+        );
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
+
+        let raced_target = target.clone();
+        let raced_outside = outside.clone();
+        let restore_root = root.path().to_owned();
+        let racer = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let private_output_exists = fs::read_dir(&restore_root)
+                    .expect("restore root entries")
+                    .filter_map(Result::ok)
+                    .any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".kosh-litestream-restore-")
+                            && entry.path().join("database.sqlite3").is_file()
+                    });
+                if private_output_exists {
+                    std::os::unix::fs::symlink(&raced_outside, &raced_target)
+                        .expect("race destination symlink");
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "private restore output was not observed"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let restore_result = engine.restore(&source, &target, LitestreamTxid::from_local(42));
+        racer.join().expect("destination racer");
+        assert!(matches!(
+            restore_result,
+            Err(LitestreamError::RestoreDestinationExists)
+        ));
+        assert!(
+            fs::symlink_metadata(&target)
+                .expect("raced destination symlink")
+                .file_type()
+                .is_symlink(),
+            "exclusive publication must not replace a raced-in node"
+        );
+        assert_eq!(
+            fs::read(&outside).expect("outside bytes"),
+            b"outside-must-not-change"
+        );
+        assert!(
+            fs::read_dir(root.path())
+                .expect("restore root entries")
+                .all(|entry| {
+                    !entry
+                        .expect("restore root entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".kosh-litestream-restore-")
+                }),
+            "failed publication must clean its private restore directory"
+        );
+
+        fs::remove_file(&target).expect("remove raced symlink");
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove immutable restore test binary");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn offline_restore_sandbox_blocks_a_private_output_symlink_escape() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let outside = root.path().join("outside.sqlite3");
+        fs::write(&outside, b"outside-must-not-change").expect("outside fixture");
+        let target = root.path().join("restored.sqlite3");
+        let binary = staged_restore_test_binary(
+            root.path(),
+            format!(
+                r#"#!/bin/sh
+set -eu
+IFS= read -r _
+IFS= read -r _
+IFS= read -r _
+target=
+while test "$#" -gt 0; do
+  case "$1" in
+    -config|-txid|-integrity-check|-o)
+      if test "$1" = "-o"; then target=$2; fi
+      shift 2
+      ;;
+    -json|restore) shift ;;
+    -*) exit 92 ;;
+    *) shift ;;
+  esac
+done
+ln -s '{}' "$target"
+printf 'escaped' >"$target"
+"#,
+                outside.display()
+            )
+            .as_bytes(),
+        );
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
+
+        assert!(matches!(
+            engine.restore(&source, &target, LitestreamTxid::from_local(42)),
+            Err(LitestreamError::CommandFailed { .. })
+        ));
+        assert_eq!(
+            fs::read(&outside).expect("outside bytes"),
+            b"outside-must-not-change"
+        );
+        assert!(!target.exists(), "failed restore must not be published");
+        assert!(
+            fs::read_dir(root.path())
+                .expect("restore root entries")
+                .all(|entry| {
+                    !entry
+                        .expect("restore root entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".kosh-litestream-restore-")
+                }),
+            "sandboxed failure must clean its private restore directory"
+        );
+
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove immutable restore test binary");
+    }
+
+    #[test]
+    fn offline_restore_reverifies_the_immutable_binary_before_credentials_are_sent() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let binary =
+            staged_restore_test_binary(root.path(), b"#!/bin/sh\ncat >/dev/null\nexit 0\n");
+        let marker = root.path().join("replacement-was-launched");
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let target = root.path().join("restored.sqlite3");
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
+
+        thaw_restore_test_binary(&binary);
+        fs::write(
+            binary.path(),
+            format!("#!/bin/sh\n: > '{}'\n", marker.display()),
+        )
+        .expect("replace staged binary");
+        assert!(matches!(
+            engine.preview(&source, &target, LitestreamTxid::from_local(42)),
+            Err(LitestreamError::BinarySizeMismatch
+                | LitestreamError::BinaryChecksumMismatch
+                | LitestreamError::InvalidStagedBinary)
+        ));
+        assert!(!marker.exists(), "replacement process must never launch");
+
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove modified restore test binary");
     }
 
     #[test]

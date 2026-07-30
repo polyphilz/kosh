@@ -1068,6 +1068,9 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
     match error {
         LitestreamError::PrepareRuntime(_)
         | LitestreamError::WriteConfig(_)
+        | LitestreamError::StageRestoreConfig(_)
+        | LitestreamError::PrepareRestoreDestination(_)
+        | LitestreamError::PublishRestoreDestination(_)
         | LitestreamError::Execute(_) => {
             RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true)
         }
@@ -1075,6 +1078,7 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
             RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, true)
         }
         LitestreamError::InvalidConfigField(_)
+        | LitestreamError::InvalidRestoreConfig
         | LitestreamError::RelativeDatabasePath
         | LitestreamError::NonUtf8RuntimePath
         | LitestreamError::ControlSocketPathTooLong => {
@@ -1083,6 +1087,8 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
         LitestreamError::InvalidJson(_)
         | LitestreamError::InvalidTxid
         | LitestreamError::InvalidSyncContract
+        | LitestreamError::InvalidRestoreContract
+        | LitestreamError::InvalidRestoreDestination
         | LitestreamError::UnexpectedDatabasePath
         | LitestreamError::OversizedControlResponse => {
             RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, false)
@@ -1101,6 +1107,7 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
         | LitestreamError::ProcessCodeSignatureMismatch
         | LitestreamError::ProcessIdentityUnavailable(_)
         | LitestreamError::UnsafeProtocolPin
+        | LitestreamError::RestoreDestinationExists
         | LitestreamError::RestorePlanTooLarge => {
             RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
         }

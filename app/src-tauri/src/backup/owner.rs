@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     domain::{BackupSetId, BackupWriterId, R2Keyspace, ReplicaEpochId, OBJECT_FORMAT_VERSION},
     object_store::{
-        ObjectContentType, ObjectStore, ObjectStoreError, PutCondition, PutObjectOutcome,
-        PutObjectRequest,
+        ObjectContentType, ObjectStore, ObjectStoreError, ObjectVersion, PutCondition,
+        PutObjectOutcome, PutObjectRequest,
     },
 };
 
@@ -58,6 +58,69 @@ pub(crate) enum RemoteOwnerError {
     Invalid,
     #[error("the remote owner record is unavailable")]
     Store(#[from] ObjectStoreError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RemoteOwnerSnapshot {
+    backup_set_id: BackupSetId,
+    pub(crate) replica_epoch_id: ReplicaEpochId,
+    pub(crate) writer_id: BackupWriterId,
+    version: ObjectVersion,
+}
+
+pub(crate) fn inspect_remote_owner(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+) -> Result<RemoteOwnerSnapshot, RemoteOwnerError> {
+    let current = read_owner(store, &keyspace.owner())?;
+    Ok(RemoteOwnerSnapshot {
+        backup_set_id: current.document.backup_set_id,
+        replica_epoch_id: current.document.replica_epoch_id,
+        writer_id: current.document.writer_id,
+        version: current.version,
+    })
+}
+
+/// Explicitly transfers a backup set to this installation and a fresh replica
+/// epoch. The previewed owner document and object version form the takeover
+/// authorization; a concurrent owner change makes the conditional write fail.
+pub(crate) fn take_over_remote_owner(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+    expected: &RemoteOwnerSnapshot,
+    next_replica_epoch_id: &ReplicaEpochId,
+    next_writer_id: &BackupWriterId,
+) -> Result<(), RemoteOwnerError> {
+    if expected.backup_set_id != *backup_set_id
+        || expected.replica_epoch_id == *next_replica_epoch_id
+    {
+        return Err(RemoteOwnerError::Invalid);
+    }
+    let current = read_owner(store, &keyspace.owner())?;
+    if current.document.backup_set_id != expected.backup_set_id
+        || current.document.replica_epoch_id != expected.replica_epoch_id
+        || current.document.writer_id != expected.writer_id
+        || current.version != expected.version
+    {
+        return Err(RemoteOwnerError::Conflict);
+    }
+    let replacement =
+        RemoteOwnerDocument::new(backup_set_id, next_replica_epoch_id, next_writer_id);
+    let replacement_bytes = replacement.encode()?;
+    match store.put(PutObjectRequest {
+        key: keyspace.owner(),
+        bytes: replacement_bytes.clone(),
+        content_type: ObjectContentType::Json,
+        kosh_sha256: None,
+        condition: PutCondition::IfMatch(current.version),
+    })? {
+        PutObjectOutcome::Stored => {
+            verify_exact_owner(store, &keyspace.owner(), &replacement, &replacement_bytes)
+                .map(|_| ())
+        }
+        PutObjectOutcome::ConditionNotMet => Err(RemoteOwnerError::Conflict),
+    }
 }
 
 pub(crate) fn claim_remote_owner(
@@ -267,6 +330,47 @@ mod tests {
                 .replica_epoch_id,
             next_epoch
         );
+    }
+
+    #[test]
+    fn explicit_takeover_requires_the_previewed_owner_version_and_advances_epoch() {
+        let (backup_set_id, keyspace, store, first_epoch, first_writer) = fixture();
+        claim_remote_owner(
+            &store,
+            &keyspace,
+            &backup_set_id,
+            &first_epoch,
+            &first_writer,
+        )
+        .expect("first owner");
+        let preview = inspect_remote_owner(&store, &keyspace).expect("owner preview");
+        let next_epoch = ReplicaEpochId::new();
+        let next_writer = BackupWriterId::new();
+
+        take_over_remote_owner(
+            &store,
+            &keyspace,
+            &backup_set_id,
+            &preview,
+            &next_epoch,
+            &next_writer,
+        )
+        .expect("explicit takeover");
+        let taken_over = inspect_remote_owner(&store, &keyspace).expect("taken-over owner");
+        assert_eq!(taken_over.replica_epoch_id, next_epoch);
+        assert_eq!(taken_over.writer_id, next_writer);
+
+        assert!(matches!(
+            take_over_remote_owner(
+                &store,
+                &keyspace,
+                &backup_set_id,
+                &preview,
+                &ReplicaEpochId::new(),
+                &BackupWriterId::new(),
+            ),
+            Err(RemoteOwnerError::Conflict)
+        ));
     }
 
     #[test]

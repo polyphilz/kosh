@@ -12,6 +12,7 @@ mod offsite_checkpoint;
 pub(crate) mod passages;
 mod paths;
 mod research_runs;
+mod restore_install;
 mod safety_snapshot;
 pub(crate) mod search;
 pub(crate) mod settings;
@@ -79,6 +80,10 @@ pub use passages::{
 pub use paths::DatabasePaths;
 pub(crate) use research_runs::{AppendResearchEventWrite, CreateResearchRunWrite};
 pub use research_runs::{ListResearchRunsInput, ResearchRunPage, ResearchRunRecord};
+pub(crate) use restore_install::{
+    create_empty_media as create_empty_restore_media_database, install as install_restored_pair,
+    validate_pair as validate_restored_pair, RestoreInstallReport,
+};
 pub(crate) use safety_snapshot::SafetySnapshotReason;
 pub use search::{
     LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
@@ -134,6 +139,7 @@ impl Database {
             }
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
+        restore_install::recover_interrupted(&paths)?;
 
         let main_state = connection::inspect_file(&paths.main)?;
         let media_state = connection::inspect_file(&paths.media)?;
