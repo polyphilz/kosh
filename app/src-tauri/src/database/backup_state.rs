@@ -5,7 +5,7 @@ use crate::backup::domain::{
     ReplicaEpochId,
 };
 
-use super::{DatabaseError, Result};
+use super::{backup_media, DatabaseError, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OffsiteBackupConfig {
@@ -81,6 +81,7 @@ pub(super) fn save(
     }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let current = load(&transaction)?;
+    let previous = current.clone();
     let cleanup_pending = transaction.query_row(
         "SELECT EXISTS(
             SELECT 1
@@ -174,6 +175,12 @@ pub(super) fn save(
     }
     let saved =
         load(&transaction)?.ok_or_else(|| invalid("saved configuration could not be loaded"))?;
+    backup_media::synchronize_for_saved_config(
+        &transaction,
+        previous.as_ref(),
+        &saved,
+        input.now_ms,
+    )?;
     transaction.commit()?;
     Ok(saved)
 }

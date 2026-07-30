@@ -1,3 +1,4 @@
+mod backup_media;
 mod backup_state;
 pub(crate) mod commands;
 pub(crate) mod connection;
@@ -17,6 +18,8 @@ pub(crate) mod tidbits;
 mod validation;
 mod writer;
 
+#[cfg(test)]
+mod backup_media_tests;
 #[cfg(test)]
 mod backup_state_tests;
 #[cfg(test)]
@@ -50,6 +53,9 @@ use std::{
 
 use rusqlite::Connection;
 
+pub(crate) use backup_media::{OffsiteMediaUploadClaim, OffsiteMediaUploadFailureCode};
+#[cfg(test)]
+pub(crate) use backup_state::SaveOffsiteBackupConfigInput;
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use maintenance::MaintenanceDatabaseSnapshot;
@@ -310,6 +316,44 @@ fn writer_loop(
                     &mut main,
                     &backup_set_id,
                 ));
+            }
+            WriterMessage::ReconcileOffsiteMediaUploads { now_ms, reply } => {
+                let _ = reply.send(backup_media::reconcile(&mut main, now_ms));
+            }
+            WriterMessage::RecoverInterruptedOffsiteMediaUploads { now_ms, reply } => {
+                let _ = reply.send(backup_media::recover_interrupted(&main, now_ms));
+            }
+            WriterMessage::ClaimNextOffsiteMediaUpload {
+                now_ms,
+                lease_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_media::claim_next(&mut main, now_ms, lease_id));
+            }
+            WriterMessage::CompleteOffsiteMediaUpload {
+                claim,
+                remote_version,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(backup_media::complete(
+                    &main,
+                    &claim,
+                    &remote_version,
+                    now_ms,
+                ));
+            }
+            WriterMessage::FailOffsiteMediaUpload {
+                claim,
+                code,
+                retry_at_ms,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(backup_media::fail(&main, &claim, code, retry_at_ms, now_ms));
+            }
+            WriterMessage::OffsiteMediaUploadProgress { reply } => {
+                let _ = reply.send(backup_media::progress(&main));
             }
             WriterMessage::FullIntegrityCheck { reply } => {
                 let _ = reply.send(validation::full_integrity_check_pair(&main, &media));

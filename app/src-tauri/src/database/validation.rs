@@ -28,6 +28,7 @@ const MAIN_TABLES: &[&str] = &[
     "media_blob_reap_candidate",
     "offsite_backup_config",
     "offsite_credential_cleanup",
+    "offsite_media_upload",
     "passage",
     "passage_embedding",
     "passage_embedding_index",

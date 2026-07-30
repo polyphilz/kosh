@@ -207,6 +207,10 @@ impl ContentSha256 {
         Self(bytes)
     }
 
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     pub(crate) fn parse_hex(value: &str) -> Result<Self, BackupDomainError> {
         if value.len() != 64 || !is_lower_hex(value) {
             return Err(BackupDomainError::InvalidField("sha256"));

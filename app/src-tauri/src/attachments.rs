@@ -271,7 +271,7 @@ async fn ingest_generic_attachment(
     let display_filename = safe_attachment_filename(filename);
     let media_type = attachment_media_type(&display_filename).to_owned();
 
-    tauri::async_runtime::spawn_blocking(move || {
+    let record = tauri::async_runtime::spawn_blocking(move || {
         let extraction = is_text_media_type(&media_type).then(|| extract_text(&raw));
         let staged = StagedAttachment::from_reader(
             Cursor::new(raw),
@@ -295,7 +295,9 @@ async fn ingest_generic_attachment(
     })
     .await
     .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
-    .map_err(Into::into)
+    .map_err(crate::database::commands::CommandError::from)?;
+    state.wake_media_backup();
+    Ok(record)
 }
 
 fn read_bounded_attachment(path: &Path, max_bytes: u64) -> Result<Vec<u8>, DatabaseError> {

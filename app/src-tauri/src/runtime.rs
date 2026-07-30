@@ -48,6 +48,7 @@ pub(crate) struct RuntimeState {
     data_dir: PathBuf,
     claude_processes: ClaudeProcessManager,
     passage_embedding_indexer: PassageEmbeddingIndexer,
+    media_backup: crate::backup::media_reconciler::MediaBackupCoordinator,
     database: Arc<Database>,
     embedding_runtime: Arc<EmbeddingRuntime>,
     clock: Arc<dyn Clock>,
@@ -106,6 +107,19 @@ fn start_optional_pdf_extraction(client: DatabaseClient) -> crate::pdf::PdfExtra
     }
 }
 
+fn start_optional_media_backup(
+    client: DatabaseClient,
+    paths: DatabasePaths,
+) -> crate::backup::media_reconciler::MediaBackupCoordinator {
+    match crate::backup::media_reconciler::MediaBackupCoordinator::start(client, paths) {
+        Ok(coordinator) => coordinator,
+        Err(error) => {
+            log::warn!("off-site media backup is unavailable; Kosh will continue locally: {error}");
+            crate::backup::media_reconciler::MediaBackupCoordinator::disabled()
+        }
+    }
+}
+
 impl RuntimeState {
     pub(crate) fn production(
         data_dir: PathBuf,
@@ -117,11 +131,13 @@ impl RuntimeState {
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
         let image_ocr = start_optional_image_ocr(database.client());
         let pdf_extraction = start_optional_pdf_extraction(database.client());
+        let media_backup = start_optional_media_backup(database.client(), database.paths().clone());
         let media_limits = MediaLimits::default().validate()?;
         let state = Self {
             claude_processes: ClaudeProcessManager::production(&data_dir),
             data_dir,
             passage_embedding_indexer,
+            media_backup,
             database: Arc::new(database),
             embedding_runtime,
             clock: Arc::new(SystemClock),
@@ -178,6 +194,7 @@ impl RuntimeState {
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
             passage_embedding_indexer: PassageEmbeddingIndexer::disabled(),
+            media_backup: crate::backup::media_reconciler::MediaBackupCoordinator::disabled(),
             database: Arc::new(database),
             clock,
             ids,
@@ -253,6 +270,10 @@ impl RuntimeState {
 
     pub(crate) fn wake_pdf_extraction(&self) {
         self.pdf_extraction.wake();
+    }
+
+    pub(crate) fn wake_media_backup(&self) {
+        self.media_backup.wake();
     }
 
     pub(crate) fn pdf_open_directory(&self) -> PathBuf {

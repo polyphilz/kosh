@@ -8,6 +8,9 @@ use sha2::{Digest, Sha256};
 use crate::backup::domain::BackupSetId;
 
 use super::{
+    backup_media::{
+        OffsiteMediaUploadClaim, OffsiteMediaUploadFailureCode, OffsiteMediaUploadProgress,
+    },
     backup_state::{OffsiteBackupConfig, SaveOffsiteBackupConfigInput},
     drafts::{ClearDraftInput, Draft, SaveDraftWrite},
     embedding_index::{
@@ -85,6 +88,35 @@ pub(super) enum WriterMessage {
     CompleteOffsiteCredentialCleanup {
         backup_set_id: BackupSetId,
         reply: SyncSender<Result<()>>,
+    },
+    ReconcileOffsiteMediaUploads {
+        now_ms: i64,
+        reply: SyncSender<Result<u64>>,
+    },
+    RecoverInterruptedOffsiteMediaUploads {
+        now_ms: i64,
+        reply: SyncSender<Result<u64>>,
+    },
+    ClaimNextOffsiteMediaUpload {
+        now_ms: i64,
+        lease_id: String,
+        reply: SyncSender<Result<Option<OffsiteMediaUploadClaim>>>,
+    },
+    CompleteOffsiteMediaUpload {
+        claim: OffsiteMediaUploadClaim,
+        remote_version: String,
+        now_ms: i64,
+        reply: SyncSender<Result<bool>>,
+    },
+    FailOffsiteMediaUpload {
+        claim: OffsiteMediaUploadClaim,
+        code: OffsiteMediaUploadFailureCode,
+        retry_at_ms: Option<i64>,
+        now_ms: i64,
+        reply: SyncSender<Result<bool>>,
+    },
+    OffsiteMediaUploadProgress {
+        reply: SyncSender<Result<OffsiteMediaUploadProgress>>,
     },
     FullIntegrityCheck {
         reply: SyncSender<Result<()>>,
@@ -438,6 +470,96 @@ impl DatabaseClient {
                 backup_set_id,
                 reply,
             })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn reconcile_offsite_media_uploads(&self, now_ms: i64) -> Result<u64> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ReconcileOffsiteMediaUploads { now_ms, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn recover_interrupted_offsite_media_uploads(&self, now_ms: i64) -> Result<u64> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RecoverInterruptedOffsiteMediaUploads { now_ms, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn claim_next_offsite_media_upload(
+        &self,
+        now_ms: i64,
+        lease_id: String,
+    ) -> Result<Option<OffsiteMediaUploadClaim>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ClaimNextOffsiteMediaUpload {
+                now_ms,
+                lease_id,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn complete_offsite_media_upload(
+        &self,
+        claim: OffsiteMediaUploadClaim,
+        remote_version: String,
+        now_ms: i64,
+    ) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::CompleteOffsiteMediaUpload {
+                claim,
+                remote_version,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn fail_offsite_media_upload(
+        &self,
+        claim: OffsiteMediaUploadClaim,
+        code: OffsiteMediaUploadFailureCode,
+        retry_at_ms: Option<i64>,
+        now_ms: i64,
+    ) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::FailOffsiteMediaUpload {
+                claim,
+                code,
+                retry_at_ms,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn offsite_media_upload_progress(&self) -> Result<OffsiteMediaUploadProgress> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::OffsiteMediaUploadProgress { reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
