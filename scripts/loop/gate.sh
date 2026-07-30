@@ -150,13 +150,6 @@ request_reactions_json="$(
     -H "Accept: application/vnd.github+json" \
     "repos/$repo/issues/comments/$request_id/reactions?per_page=100"
 )"
-pr_reactions_json="$(
-  "$gh_bin" api \
-    --paginate \
-    --slurp \
-    -H "Accept: application/vnd.github+json" \
-    "repos/$repo/issues/$pr_number/reactions?per_page=100"
-)"
 request_approval_count="$(
   jq \
     --arg bot "$review_bot" \
@@ -170,20 +163,6 @@ request_approval_count="$(
         )
     ] | length' \
     <<<"$request_reactions_json"
-)"
-pr_approval_count="$(
-  jq \
-    --arg bot "$review_bot" \
-    --arg requested "$request_created_at" \
-    '[
-      .[][]
-      | select(
-          .user.login == $bot
-          and .content == "+1"
-          and .created_at >= $requested
-        )
-    ] | length' \
-    <<<"$pr_reactions_json"
 )"
 
 head_short="${head_sha:0:10}"
@@ -207,7 +186,7 @@ matching_review_count="$(
     ] | length' \
     <<<"$comments_json"
 )"
-((request_approval_count + pr_approval_count + matching_review_count > 0)) ||
-  fail "no post-request +1 or clean Codex completion matches current head $head_short"
+((request_approval_count + matching_review_count > 0)) ||
+  fail "no +1 on the current review request or clean Codex completion matches current head $head_short"
 
 echo "merge gate passed for $pr_url at $head_sha"

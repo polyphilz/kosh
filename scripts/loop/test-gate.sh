@@ -164,8 +164,7 @@ export FAKE_COMMENTS_JSON
 }
 status_output="$("$status" polyphilz/kosh)"
 grep -F "review request: issue comment 77" <<<"$status_output" >/dev/null
-grep -F "PR reactions (post-request +1 is clean merge evidence):" \
-  <<<"$status_output" >/dev/null
+grep -F "PR reactions (informational; not merge evidence):" <<<"$status_output" >/dev/null
 grep -F "matching clean completions:" <<<"$status_output" >/dev/null
 grep -F "clean $bot 2026-07-27T18:05:00Z reviewed 0123456789" \
   <<<"$status_output" >/dev/null
@@ -196,8 +195,7 @@ export FAKE_COMMENTS_JSON
 "$gate" 1 polyphilz/kosh >/dev/null
 export FAKE_REQUEST_REACTIONS_JSON='[]'
 
-# A PR-body +1 created after the current-head request is Codex's documented
-# clean-review signal and is sufficient when no clean comment is posted.
+# A PR-body +1 is not tied to a request or head and cannot authorize a merge.
 FAKE_PR_REACTIONS_JSON="$(
   jq -cn \
     --arg bot "$bot" \
@@ -208,7 +206,10 @@ FAKE_PR_REACTIONS_JSON="$(
     }]'
 )"
 export FAKE_PR_REACTIONS_JSON
-"$gate" 1 polyphilz/kosh >/dev/null
+if "$gate" 1 polyphilz/kosh >/dev/null 2>&1; then
+  echo "expected merge gate to block: unbound PR-body reaction" >&2
+  exit 1
+fi
 export FAKE_PR_REACTIONS_JSON='[]'
 
 expect_blocked() {
@@ -249,7 +250,6 @@ FAKE_PR_REACTIONS_JSON="$(
 )"
 export FAKE_PR_REACTIONS_JSON
 expect_blocked "stale reaction"
-export FAKE_PR_REACTIONS_JSON='[]'
 
 FAKE_COMMENTS_JSON="$(
   jq -cn \
