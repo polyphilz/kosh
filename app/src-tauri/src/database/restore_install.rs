@@ -705,7 +705,7 @@ mod tests {
                 |row| row.get::<_, i32>(0),
             )
             .expect("main head"),
-            21
+            22
         );
         assert_eq!(
             media

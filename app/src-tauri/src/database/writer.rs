@@ -17,7 +17,11 @@ use super::{
     backup_media::{
         OffsiteMediaUploadClaim, OffsiteMediaUploadFailureCode, OffsiteMediaUploadProgress,
     },
-    backup_state::{OffsiteBackupConfig, SaveOffsiteBackupConfigInput},
+    backup_state::{
+        BeginOffsiteBackupConfigIntentInput, BeginOffsiteBackupTakeoverIntentInput,
+        OffsiteBackupConfig, OffsiteBackupConfigIntent, OffsiteBackupTakeoverIntent,
+        SaveOffsiteBackupConfigInput,
+    },
     drafts::{ClearDraftInput, Draft, SaveDraftWrite},
     embedding_index::{
         InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
@@ -91,6 +95,40 @@ pub(super) enum WriterMessage {
     SaveOffsiteBackupConfig {
         input: SaveOffsiteBackupConfigInput,
         reply: SyncSender<Result<OffsiteBackupConfig>>,
+    },
+    BeginOffsiteBackupConfigIntent {
+        input: BeginOffsiteBackupConfigIntentInput,
+        reply: SyncSender<Result<()>>,
+    },
+    LoadOffsiteBackupConfigIntent {
+        reply: SyncSender<Result<Option<OffsiteBackupConfigIntent>>>,
+    },
+    CommitOffsiteBackupConfigIntent {
+        operation_id: String,
+        reply: SyncSender<Result<OffsiteBackupConfig>>,
+    },
+    CompleteOffsiteBackupConfigIntent {
+        operation_id: String,
+        reply: SyncSender<Result<()>>,
+    },
+    AbortOffsiteBackupConfigIntent {
+        operation_id: String,
+        reply: SyncSender<Result<()>>,
+    },
+    BeginOffsiteBackupTakeoverIntent {
+        input: BeginOffsiteBackupTakeoverIntentInput,
+        reply: SyncSender<Result<()>>,
+    },
+    LoadOffsiteBackupTakeoverIntent {
+        reply: SyncSender<Result<Option<OffsiteBackupTakeoverIntent>>>,
+    },
+    CommitOffsiteBackupTakeoverIntent {
+        operation_id: String,
+        reply: SyncSender<Result<OffsiteBackupConfig>>,
+    },
+    AbortOffsiteBackupTakeoverIntent {
+        operation_id: String,
+        reply: SyncSender<Result<()>>,
     },
     LoadOffsiteCredentialCleanup {
         reply: SyncSender<Result<Vec<BackupSetId>>>,
@@ -472,6 +510,25 @@ impl DatabaseClient {
         }
     }
 
+    fn request<T>(
+        &self,
+        message: impl FnOnce(SyncSender<Result<T>>) -> WriterMessage,
+    ) -> Result<T> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(message(reply))
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    fn lock_offsite_media_fence(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.offsite_media_fence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn diagnostics(&self) -> Result<DatabaseDiagnostics> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
@@ -521,6 +578,77 @@ impl DatabaseClient {
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn begin_offsite_backup_config_intent(
+        &self,
+        input: BeginOffsiteBackupConfigIntentInput,
+    ) -> Result<()> {
+        let _fence = self.lock_offsite_media_fence();
+        self.request(|reply| WriterMessage::BeginOffsiteBackupConfigIntent { input, reply })
+    }
+
+    pub(crate) fn load_offsite_backup_config_intent(
+        &self,
+    ) -> Result<Option<OffsiteBackupConfigIntent>> {
+        self.request(|reply| WriterMessage::LoadOffsiteBackupConfigIntent { reply })
+    }
+
+    pub(crate) fn commit_offsite_backup_config_intent(
+        &self,
+        operation_id: String,
+    ) -> Result<OffsiteBackupConfig> {
+        let _fence = self.lock_offsite_media_fence();
+        self.request(|reply| WriterMessage::CommitOffsiteBackupConfigIntent {
+            operation_id,
+            reply,
+        })
+    }
+
+    pub(crate) fn complete_offsite_backup_config_intent(&self, operation_id: String) -> Result<()> {
+        self.request(|reply| WriterMessage::CompleteOffsiteBackupConfigIntent {
+            operation_id,
+            reply,
+        })
+    }
+
+    pub(crate) fn abort_offsite_backup_config_intent(&self, operation_id: String) -> Result<()> {
+        self.request(|reply| WriterMessage::AbortOffsiteBackupConfigIntent {
+            operation_id,
+            reply,
+        })
+    }
+
+    pub(crate) fn begin_offsite_backup_takeover_intent(
+        &self,
+        input: BeginOffsiteBackupTakeoverIntentInput,
+    ) -> Result<()> {
+        let _fence = self.lock_offsite_media_fence();
+        self.request(|reply| WriterMessage::BeginOffsiteBackupTakeoverIntent { input, reply })
+    }
+
+    pub(crate) fn load_offsite_backup_takeover_intent(
+        &self,
+    ) -> Result<Option<OffsiteBackupTakeoverIntent>> {
+        self.request(|reply| WriterMessage::LoadOffsiteBackupTakeoverIntent { reply })
+    }
+
+    pub(crate) fn commit_offsite_backup_takeover_intent(
+        &self,
+        operation_id: String,
+    ) -> Result<OffsiteBackupConfig> {
+        let _fence = self.lock_offsite_media_fence();
+        self.request(|reply| WriterMessage::CommitOffsiteBackupTakeoverIntent {
+            operation_id,
+            reply,
+        })
+    }
+
+    pub(crate) fn abort_offsite_backup_takeover_intent(&self, operation_id: String) -> Result<()> {
+        self.request(|reply| WriterMessage::AbortOffsiteBackupTakeoverIntent {
+            operation_id,
+            reply,
+        })
     }
 
     pub(crate) fn with_current_offsite_media_upload<T>(

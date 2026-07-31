@@ -54,6 +54,15 @@ pub enum DatabaseError {
     #[error("off-site backup configuration changed before this operation")]
     StaleOffsiteBackupConfig,
 
+    #[error("another durable off-site backup operation is still pending")]
+    OffsiteBackupOperationPending,
+
+    #[error("off-site backup must be disabled before changing its recovery target")]
+    OffsiteBackupMustBeDisabled,
+
+    #[error("the durable off-site backup operation is no longer pending")]
+    OffsiteBackupOperationNotFound,
+
     #[error("invalid off-site checkpoint: {0}")]
     InvalidOffsiteCheckpoint(String),
 

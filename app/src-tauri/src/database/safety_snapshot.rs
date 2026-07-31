@@ -587,7 +587,7 @@ fn prepare_snapshot_capacity_with(
 }
 
 #[cfg(unix)]
-fn available_space_bytes(path: &Path) -> Result<u64> {
+pub(crate) fn available_space_bytes(path: &Path) -> Result<u64> {
     use std::{ffi::CString, mem::MaybeUninit, os::unix::ffi::OsStrExt};
 
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
@@ -603,7 +603,7 @@ fn available_space_bytes(path: &Path) -> Result<u64> {
 }
 
 #[cfg(not(unix))]
-fn available_space_bytes(_path: &Path) -> Result<u64> {
+pub(crate) fn available_space_bytes(_path: &Path) -> Result<u64> {
     Err(DatabaseError::InvalidInput(
         "safety snapshot capacity checks require a Unix filesystem".into(),
     ))

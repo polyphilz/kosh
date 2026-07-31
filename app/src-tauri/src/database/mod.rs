@@ -58,7 +58,11 @@ use std::{
 use rusqlite::Connection;
 
 pub(crate) use backup_media::{OffsiteMediaUploadClaim, OffsiteMediaUploadFailureCode};
-pub(crate) use backup_state::{OffsiteBackupConfig, SaveOffsiteBackupConfigInput};
+pub(crate) use backup_state::{
+    BeginOffsiteBackupConfigIntentInput, BeginOffsiteBackupTakeoverIntentInput,
+    CredentialIntentAction, OffsiteBackupConfig, OffsiteBackupConfigIntent,
+    OffsiteBackupTakeoverIntent, OffsiteOperationState, SaveOffsiteBackupConfigInput,
+};
 pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use maintenance::MaintenanceDatabaseSnapshot;
@@ -82,6 +86,7 @@ pub(crate) use restore_install::{
     create_empty_media as create_empty_restore_media_database, install as install_restored_pair,
     validate_pair as validate_restored_pair, RestoreInstallReport,
 };
+pub(crate) use safety_snapshot::available_space_bytes as available_storage_bytes;
 pub(crate) use safety_snapshot::SafetySnapshotReason;
 pub use search::{
     LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
@@ -316,6 +321,57 @@ fn writer_loop(
             }
             WriterMessage::SaveOffsiteBackupConfig { input, reply } => {
                 let _ = reply.send(backup_state::save(&mut main, input));
+            }
+            WriterMessage::BeginOffsiteBackupConfigIntent { input, reply } => {
+                let _ = reply.send(backup_state::begin_config_intent(&mut main, input));
+            }
+            WriterMessage::LoadOffsiteBackupConfigIntent { reply } => {
+                let _ = reply.send(backup_state::load_config_intent(&main));
+            }
+            WriterMessage::CommitOffsiteBackupConfigIntent {
+                operation_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_state::commit_config_intent(&mut main, &operation_id));
+            }
+            WriterMessage::CompleteOffsiteBackupConfigIntent {
+                operation_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_state::complete_config_intent(
+                    &mut main,
+                    &operation_id,
+                ));
+            }
+            WriterMessage::AbortOffsiteBackupConfigIntent {
+                operation_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_state::abort_config_intent(&mut main, &operation_id));
+            }
+            WriterMessage::BeginOffsiteBackupTakeoverIntent { input, reply } => {
+                let _ = reply.send(backup_state::begin_takeover_intent(&mut main, input));
+            }
+            WriterMessage::LoadOffsiteBackupTakeoverIntent { reply } => {
+                let _ = reply.send(backup_state::load_takeover_intent(&main));
+            }
+            WriterMessage::CommitOffsiteBackupTakeoverIntent {
+                operation_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_state::commit_takeover_intent(
+                    &mut main,
+                    &operation_id,
+                ));
+            }
+            WriterMessage::AbortOffsiteBackupTakeoverIntent {
+                operation_id,
+                reply,
+            } => {
+                let _ = reply.send(backup_state::abort_takeover_intent(
+                    &mut main,
+                    &operation_id,
+                ));
             }
             WriterMessage::LoadOffsiteCredentialCleanup { reply } => {
                 let _ = reply.send(backup_state::load_credential_cleanup(&main));

@@ -2,11 +2,17 @@ use rusqlite::OptionalExtension;
 use tempfile::TempDir;
 
 use crate::backup::domain::{
-    BackupProvider, BackupSetId, R2AccountId, R2BucketName, R2Jurisdiction, R2Target,
-    ReplicaEpochId, FIXED_R2_PREFIX,
+    BackupProvider, BackupSetId, BackupWriterId, R2AccountId, R2BucketName, R2Jurisdiction,
+    R2Target, ReplicaEpochId, FIXED_R2_PREFIX,
 };
 
-use super::{backup_state::SaveOffsiteBackupConfigInput, Database, DatabaseError, DatabasePaths};
+use super::{
+    backup_state::{
+        BeginOffsiteBackupConfigIntentInput, CredentialIntentAction, OffsiteBackupTakeoverIntent,
+        OffsiteOperationState, SaveOffsiteBackupConfigInput,
+    },
+    Database, DatabaseError, DatabasePaths,
+};
 
 const ACCOUNT_ID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -208,6 +214,156 @@ fn credential_cleanup_completion_is_idempotent_for_unqueued_sets() {
             .expect("active configuration"),
         Some(active)
     );
+}
+
+#[test]
+fn recovery_target_intent_is_durable_and_commits_before_being_cleared() {
+    let root = TempDir::new().expect("temporary root");
+    let paths = DatabasePaths::new(root.path());
+    let database = Database::initialize(paths.clone()).expect("database");
+    let client = database.client();
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    let backup_set_id = BackupSetId::new();
+    let replica_epoch_id = ReplicaEpochId::new();
+    client
+        .begin_offsite_backup_config_intent(BeginOffsiteBackupConfigIntentInput {
+            operation_id: operation_id.clone(),
+            proposed: SaveOffsiteBackupConfigInput {
+                expected_revision: 0,
+                backup_set_id: backup_set_id.clone(),
+                replica_epoch_id: replica_epoch_id.clone(),
+                enabled: false,
+                target: target(R2Jurisdiction::Default, "kosh-local"),
+                now_ms: 100,
+            },
+            credential_action: CredentialIntentAction::Replace,
+        })
+        .expect("begin intent");
+    assert!(matches!(
+        client.save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+            expected_revision: 0,
+            backup_set_id: BackupSetId::new(),
+            replica_epoch_id: ReplicaEpochId::new(),
+            enabled: false,
+            target: target(R2Jurisdiction::Default, "other-target"),
+            now_ms: 101,
+        }),
+        Err(DatabaseError::OffsiteBackupOperationPending)
+    ));
+    database.shutdown().expect("shutdown");
+
+    let reopened = Database::initialize(paths).expect("reopened database");
+    let client = reopened.client();
+    let pending = client
+        .load_offsite_backup_config_intent()
+        .expect("load intent")
+        .expect("durable intent");
+    assert_eq!(pending.operation_id, operation_id);
+    assert_eq!(pending.state, OffsiteOperationState::Pending);
+    assert_eq!(pending.proposed.backup_set_id, backup_set_id);
+    assert_eq!(pending.proposed.replica_epoch_id, replica_epoch_id);
+    let saved = client
+        .commit_offsite_backup_config_intent(operation_id.clone())
+        .expect("commit intent");
+    assert_eq!(saved.revision, 1);
+    assert_eq!(
+        client
+            .load_offsite_backup_config_intent()
+            .expect("committed intent")
+            .expect("intent retained")
+            .state,
+        OffsiteOperationState::Committed
+    );
+    client
+        .complete_offsite_backup_config_intent(operation_id)
+        .expect("complete intent");
+    assert!(client
+        .load_offsite_backup_config_intent()
+        .expect("cleared intent")
+        .is_none());
+    assert_eq!(
+        client.load_offsite_backup_config().expect("config"),
+        Some(saved)
+    );
+}
+
+#[test]
+fn pending_recovery_target_intent_can_abort_without_mutating_configuration() {
+    let root = TempDir::new().expect("temporary root");
+    let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+    let client = database.client();
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    client
+        .begin_offsite_backup_config_intent(BeginOffsiteBackupConfigIntentInput {
+            operation_id: operation_id.clone(),
+            proposed: SaveOffsiteBackupConfigInput {
+                expected_revision: 0,
+                backup_set_id: BackupSetId::new(),
+                replica_epoch_id: ReplicaEpochId::new(),
+                enabled: false,
+                target: target(R2Jurisdiction::Default, "kosh-local"),
+                now_ms: 100,
+            },
+            credential_action: CredentialIntentAction::Replace,
+        })
+        .expect("begin intent");
+    client
+        .abort_offsite_backup_config_intent(operation_id)
+        .expect("abort intent");
+    assert_eq!(
+        client.load_offsite_backup_config().expect("configuration"),
+        None
+    );
+    assert!(client
+        .load_offsite_backup_config_intent()
+        .expect("intent")
+        .is_none());
+}
+
+#[test]
+fn takeover_intent_atomically_advances_the_local_epoch() {
+    let root = TempDir::new().expect("temporary root");
+    let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+    let client = database.client();
+    let current = client
+        .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+            expected_revision: 0,
+            backup_set_id: BackupSetId::new(),
+            replica_epoch_id: ReplicaEpochId::new(),
+            enabled: false,
+            target: target(R2Jurisdiction::Default, "kosh-local"),
+            now_ms: 100,
+        })
+        .expect("configuration");
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    let next_replica_epoch_id = ReplicaEpochId::new();
+    client
+        .begin_offsite_backup_takeover_intent(OffsiteBackupTakeoverIntent {
+            operation_id: operation_id.clone(),
+            expected_revision: current.revision,
+            backup_set_id: current.backup_set_id.clone(),
+            previous_replica_epoch_id: current.replica_epoch_id.clone(),
+            next_replica_epoch_id: next_replica_epoch_id.clone(),
+            expected_owner_replica_epoch_id: ReplicaEpochId::new(),
+            expected_owner_writer_id: BackupWriterId::new(),
+            expected_owner_version: "owner-version-1".into(),
+            next_writer_id: BackupWriterId::new(),
+            created_at_ms: 200,
+        })
+        .expect("begin takeover");
+    assert!(client
+        .load_offsite_backup_takeover_intent()
+        .expect("takeover intent")
+        .is_some());
+    let updated = client
+        .commit_offsite_backup_takeover_intent(operation_id)
+        .expect("commit takeover");
+    assert_eq!(updated.revision, current.revision + 1);
+    assert_eq!(updated.replica_epoch_id, next_replica_epoch_id);
+    assert!(client
+        .load_offsite_backup_takeover_intent()
+        .expect("cleared takeover")
+        .is_none());
 }
 
 #[test]

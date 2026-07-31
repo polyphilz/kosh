@@ -144,6 +144,11 @@ impl RuntimeState {
         {
             log::warn!("startup media lifecycle recovery could not complete: {error}");
         }
+        if let Err(error) =
+            crate::backup::settings::reconcile_startup_backup_state(&database.client(), &data_dir)
+        {
+            log::warn!("startup off-site backup reconciliation remains pending: {error:?}");
+        }
         let litestream_backup = crate::backup::litestream_runtime::LitestreamRuntimeService::start(
             database.client(),
             data_dir.clone(),

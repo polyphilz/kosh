@@ -17,8 +17,10 @@ use zeroize::Zeroize;
 
 use crate::{
     database::{
-        DatabaseClient, DatabaseError, DatabasePaths, OffsiteBackupConfig,
-        SaveOffsiteBackupConfigInput,
+        available_storage_bytes, BeginOffsiteBackupConfigIntentInput,
+        BeginOffsiteBackupTakeoverIntentInput, CredentialIntentAction, DatabaseClient,
+        DatabaseError, DatabasePaths, OffsiteBackupConfig, OffsiteBackupConfigIntent,
+        OffsiteBackupTakeoverIntent, OffsiteOperationState, SaveOffsiteBackupConfigInput,
     },
     runtime::RuntimeState,
 };
@@ -35,7 +37,7 @@ use super::{
     },
     litestream_runtime::{RelationalBackupPhase, RelationalBackupStatus},
     object_store::{ObjectStoreError, ObjectStoreErrorCode, R2ObjectStore},
-    owner::{inspect_remote_owner, take_over_remote_owner, RemoteOwnerError, RemoteOwnerSnapshot},
+    owner::{inspect_remote_owner, resume_remote_takeover, RemoteOwnerError, RemoteOwnerSnapshot},
     probe::{verify_object_store, ObjectStoreProbeError},
     restore::{
         discover_checkpoints, drill_checkpoint, preview_checkpoint, RemoteCheckpoint, RestoreError,
@@ -49,6 +51,7 @@ use super::{
 const RESTORE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const EXACT_TRANSACTION_RETENTION_DAYS: u32 = 30;
 const TAKEOVER_CONFIRMATION: &str = "TAKE OVER";
+const RESTORE_DRILL_STORAGE_HEADROOM_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -378,10 +381,27 @@ impl BackupContext {
 pub(crate) async fn load_backup_settings(
     state: State<'_, RuntimeState>,
 ) -> BackupCommandResult<BackupSettingsSnapshot> {
-    let client = state.database_client();
+    let context = BackupContext::from_state(&state);
     let relational = state.relational_backup_status();
     let checkpoint = state.checkpoint_backup_status();
-    run_blocking(move || load_snapshot(&client, relational, checkpoint)).await
+    let (snapshot, changed) = run_blocking(move || {
+        let _guard = lock_gate(&context.gate);
+        let changed = match reconcile_pending_backup_operations(&context.client, &context.data_root)
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                log::warn!("durable off-site backup operation remains pending: {error:?}");
+                false
+            }
+        };
+        clean_retired_credentials(&context.client);
+        load_snapshot(&context.client, relational, checkpoint).map(|snapshot| (snapshot, changed))
+    })
+    .await?;
+    if changed {
+        state.reload_backup_configuration();
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -603,40 +623,40 @@ fn configure_blocking(
         .map(|config| config.replica_epoch_id.clone())
         .unwrap_or_else(ReplicaEpochId::new);
     let supplied = take_credentials(&mut input.access_key_id, &mut input.secret_access_key)?;
-    let previous_credentials = match &supplied {
-        Some(_) => match MacOsKeychainCredentialStore.load(&backup_set_id) {
-            Ok(credentials) => Some(credentials),
-            Err(CredentialError::Missing) => None,
-            Err(error) => return Err(map_credential_error(error)),
-        },
-        None => {
-            MacOsKeychainCredentialStore
-                .load(&backup_set_id)
-                .map_err(map_credential_error)?;
-            None
-        }
-    };
-    if let Some(credentials) = &supplied {
+    let credential_action = if supplied.is_some() {
+        CredentialIntentAction::Replace
+    } else {
         MacOsKeychainCredentialStore
-            .save(&backup_set_id, credentials)
+            .load(&backup_set_id)
             .map_err(map_credential_error)?;
-    }
-    let saved = context
+        CredentialIntentAction::Reuse
+    };
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    context
         .client
-        .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
-            expected_revision: input.expected_revision,
-            backup_set_id: backup_set_id.clone(),
-            replica_epoch_id,
-            enabled: false,
-            target,
-            now_ms,
-        });
-    if let Err(error) = saved {
-        if supplied.is_some() {
-            restore_credentials(&backup_set_id, previous_credentials.as_ref())?;
+        .begin_offsite_backup_config_intent(BeginOffsiteBackupConfigIntentInput {
+            operation_id: operation_id.clone(),
+            proposed: SaveOffsiteBackupConfigInput {
+                expected_revision: input.expected_revision,
+                backup_set_id,
+                replica_epoch_id,
+                enabled: false,
+                target,
+                now_ms,
+            },
+            credential_action,
+        })
+        .map_err(map_database_error)?;
+    if let Some(credentials) = supplied {
+        if let Err(error) = MacOsKeychainCredentialStore.stage(&operation_id, &credentials) {
+            let _ = MacOsKeychainCredentialStore.remove_staged(&operation_id);
+            let _ = context
+                .client
+                .abort_offsite_backup_config_intent(operation_id);
+            return Err(map_credential_error(error));
         }
-        return Err(map_database_error(error));
     }
+    reconcile_pending_backup_operations(&context.client, &context.data_root)?;
     clean_retired_credentials(&context.client);
     Ok(())
 }
@@ -737,6 +757,27 @@ fn drill_restore_blocking(
         RESTORE_COMMAND_TIMEOUT,
     )
     .map_err(map_litestream_error)?;
+    let preview_target = context
+        .data_root
+        .join(format!(".restore-preview-{}.sqlite3", uuid::Uuid::now_v7()));
+    reject_existing_path(&preview_target)?;
+    let preview = preview_checkpoint(
+        &store,
+        &keyspace,
+        &config.backup_set_id,
+        &checkpoint_id,
+        &engine,
+        &context.paths.main,
+        &preview_target,
+    )
+    .map_err(map_restore_error)?;
+    reject_unexpected_preview_output(&preview_target)?;
+    ensure_restore_drill_capacity_with(
+        &context.data_root,
+        preview.plan_total_bytes,
+        checkpoint.referenced_total_bytes(),
+        available_storage_bytes,
+    )?;
     let drill_root = context
         .data_root
         .join(format!(".restore-drill-{}", uuid::Uuid::now_v7()));
@@ -756,6 +797,44 @@ fn drill_restore_blocking(
         restored_media_bytes: report.restored_media_bytes,
         completed_at_ms,
     })
+}
+
+fn ensure_restore_drill_capacity_with(
+    data_root: &Path,
+    relational_bytes: u64,
+    media_bytes: u64,
+    available_space: impl FnOnce(&Path) -> crate::database::Result<u64>,
+) -> BackupCommandResult<()> {
+    let required = relational_bytes
+        .checked_mul(2)
+        .and_then(|bytes| {
+            media_bytes
+                .checked_mul(2)
+                .and_then(|media| bytes.checked_add(media))
+        })
+        .and_then(|bytes| bytes.checked_add(RESTORE_DRILL_STORAGE_HEADROOM_BYTES))
+        .ok_or_else(|| {
+            BackupCommandError::new(
+                BackupCommandErrorCode::RestoreFailed,
+                "This recovery point is too large to stage safely.",
+            )
+        })?;
+    let available = available_space(data_root).map_err(|_| {
+        BackupCommandError::new(
+            BackupCommandErrorCode::RestoreFailed,
+            "Available storage could not be verified, so the recovery drill was not started.",
+        )
+    })?;
+    if available < required {
+        return Err(BackupCommandError::new(
+            BackupCommandErrorCode::RestoreFailed,
+            format!(
+                "Not enough free storage for this recovery drill. Free at least {} more bytes and try again.",
+                required - available
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn takeover_blocking(
@@ -802,25 +881,174 @@ fn takeover_blocking(
         .load()
         .map_err(map_writer_identity_error)?;
     let next_epoch = ReplicaEpochId::new();
-    take_over_remote_owner(
-        &store,
-        &keyspace,
-        &config.backup_set_id,
-        &owner,
-        &next_epoch,
-        &writer,
-    )
-    .map_err(map_owner_error)?;
+    let operation_id = uuid::Uuid::now_v7().to_string();
     context
         .client
-        .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+        .begin_offsite_backup_takeover_intent(BeginOffsiteBackupTakeoverIntentInput {
+            operation_id,
             expected_revision: config.revision,
             backup_set_id: config.backup_set_id,
-            replica_epoch_id: next_epoch,
-            enabled: false,
-            target: config.target,
-            now_ms,
+            previous_replica_epoch_id: config.replica_epoch_id,
+            next_replica_epoch_id: next_epoch,
+            expected_owner_version: owner.version().to_owned(),
+            expected_owner_replica_epoch_id: owner.replica_epoch_id,
+            expected_owner_writer_id: owner.writer_id,
+            next_writer_id: writer,
+            created_at_ms: now_ms,
         })
+        .map_err(map_database_error)?;
+    reconcile_pending_backup_operations(&context.client, &context.data_root)?;
+    Ok(())
+}
+
+pub(crate) fn reconcile_startup_backup_state(
+    client: &DatabaseClient,
+    data_root: &Path,
+) -> BackupCommandResult<bool> {
+    let changed = reconcile_pending_backup_operations(client, data_root)?;
+    clean_retired_credentials(client);
+    Ok(changed)
+}
+
+fn reconcile_pending_backup_operations(
+    client: &DatabaseClient,
+    data_root: &Path,
+) -> BackupCommandResult<bool> {
+    let mut changed = false;
+    if let Some(intent) = client
+        .load_offsite_backup_config_intent()
+        .map_err(map_database_error)?
+    {
+        reconcile_config_intent(client, &MacOsKeychainCredentialStore, intent)?;
+        changed = true;
+    }
+    if let Some(intent) = client
+        .load_offsite_backup_takeover_intent()
+        .map_err(map_database_error)?
+    {
+        reconcile_takeover_intent(client, data_root, intent)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+fn reconcile_config_intent(
+    client: &DatabaseClient,
+    credentials: &dyn CredentialStore,
+    intent: OffsiteBackupConfigIntent,
+) -> BackupCommandResult<()> {
+    if intent.state == OffsiteOperationState::Pending {
+        let active_credentials = match intent.credential_action {
+            CredentialIntentAction::Reuse => {
+                match credentials.load(&intent.proposed.backup_set_id) {
+                    Ok(credentials) => credentials,
+                    Err(CredentialError::Missing) => {
+                        client
+                            .abort_offsite_backup_config_intent(intent.operation_id)
+                            .map_err(map_database_error)?;
+                        return Err(map_credential_error(CredentialError::Missing));
+                    }
+                    Err(error) => return Err(map_credential_error(error)),
+                }
+            }
+            CredentialIntentAction::Replace => {
+                match credentials.load_staged(&intent.operation_id) {
+                    Ok(credentials) => credentials,
+                    Err(CredentialError::Missing) => {
+                        client
+                            .abort_offsite_backup_config_intent(intent.operation_id)
+                            .map_err(map_database_error)?;
+                        return Ok(());
+                    }
+                    Err(error) => return Err(map_credential_error(error)),
+                }
+            }
+        };
+        if intent.credential_action == CredentialIntentAction::Replace {
+            credentials
+                .save(&intent.proposed.backup_set_id, &active_credentials)
+                .map_err(map_credential_error)?;
+        }
+        client
+            .commit_offsite_backup_config_intent(intent.operation_id.clone())
+            .map_err(map_database_error)?;
+    }
+
+    if intent.credential_action == CredentialIntentAction::Replace {
+        match credentials.load_staged(&intent.operation_id) {
+            Ok(staged) => credentials
+                .save(&intent.proposed.backup_set_id, &staged)
+                .map_err(map_credential_error)?,
+            Err(CredentialError::Missing) => {
+                credentials
+                    .load(&intent.proposed.backup_set_id)
+                    .map_err(map_credential_error)?;
+            }
+            Err(error) => return Err(map_credential_error(error)),
+        }
+        credentials
+            .remove_staged(&intent.operation_id)
+            .map_err(map_credential_error)?;
+    } else {
+        credentials
+            .load(&intent.proposed.backup_set_id)
+            .map_err(map_credential_error)?;
+    }
+    client
+        .complete_offsite_backup_config_intent(intent.operation_id)
+        .map_err(map_database_error)
+}
+
+fn reconcile_takeover_intent(
+    client: &DatabaseClient,
+    data_root: &Path,
+    intent: OffsiteBackupTakeoverIntent,
+) -> BackupCommandResult<()> {
+    let config = client
+        .load_offsite_backup_config()
+        .map_err(map_database_error)?
+        .ok_or_else(not_configured)?;
+    if config.revision != intent.expected_revision
+        || config.backup_set_id != intent.backup_set_id
+        || config.replica_epoch_id != intent.previous_replica_epoch_id
+        || config.enabled
+    {
+        return Err(stale_configuration());
+    }
+    let credentials = MacOsKeychainCredentialStore
+        .load(&intent.backup_set_id)
+        .map_err(map_credential_error)?;
+    let keyspace = config.target.keyspace(&intent.backup_set_id);
+    let store = R2ObjectStore::new(config.target, keyspace.clone(), &credentials)
+        .map_err(map_object_store_error)?;
+    let writer = MacOsInstallationWriterIdentity::new(data_root.to_owned())
+        .load()
+        .map_err(map_writer_identity_error)?;
+    if writer != intent.next_writer_id {
+        return Err(BackupCommandError::new(
+            BackupCommandErrorCode::OwnerChanged,
+            "This installation's backup identity changed before takeover could finish.",
+        ));
+    }
+    if let Err(error) = resume_remote_takeover(
+        &store,
+        &keyspace,
+        &intent.backup_set_id,
+        &intent.expected_owner_replica_epoch_id,
+        &intent.expected_owner_writer_id,
+        &intent.expected_owner_version,
+        &intent.next_replica_epoch_id,
+        &intent.next_writer_id,
+    ) {
+        if matches!(error, RemoteOwnerError::Conflict) {
+            client
+                .abort_offsite_backup_takeover_intent(intent.operation_id)
+                .map_err(map_database_error)?;
+        }
+        return Err(map_owner_error(error));
+    }
+    client
+        .commit_offsite_backup_takeover_intent(intent.operation_id)
         .map_err(map_database_error)?;
     Ok(())
 }
@@ -963,24 +1191,17 @@ fn zeroize_optional(value: &mut Option<String>) {
     }
 }
 
-fn restore_credentials(
-    backup_set_id: &BackupSetId,
-    previous: Option<&R2Credentials>,
-) -> BackupCommandResult<()> {
-    match previous {
-        Some(previous) => MacOsKeychainCredentialStore.save(backup_set_id, previous),
-        None => MacOsKeychainCredentialStore.remove(backup_set_id),
-    }
-    .map_err(map_credential_error)
+fn clean_retired_credentials(client: &DatabaseClient) {
+    clean_retired_credentials_with(client, &MacOsKeychainCredentialStore);
 }
 
-fn clean_retired_credentials(client: &DatabaseClient) {
+fn clean_retired_credentials_with(client: &DatabaseClient, credentials: &dyn CredentialStore) {
     let Ok(pending) = client.load_offsite_credential_cleanup() else {
         log::warn!("could not inspect queued off-site credential cleanup");
         return;
     };
     for backup_set_id in pending {
-        if MacOsKeychainCredentialStore.remove(&backup_set_id).is_err() {
+        if credentials.remove(&backup_set_id).is_err() {
             log::warn!("queued off-site credential cleanup could not access Keychain");
             continue;
         }
@@ -1060,6 +1281,12 @@ fn owner_changed() -> BackupCommandError {
 fn map_database_error(error: DatabaseError) -> BackupCommandError {
     match error {
         DatabaseError::StaleOffsiteBackupConfig => stale_configuration(),
+        DatabaseError::OffsiteBackupOperationPending
+        | DatabaseError::OffsiteBackupOperationNotFound => stale_configuration(),
+        DatabaseError::OffsiteBackupMustBeDisabled => BackupCommandError::new(
+            BackupCommandErrorCode::BackupMustBeDisabled,
+            "Turn off backup and wait for background recovery work to stop before changing its target.",
+        ),
         DatabaseError::InvalidInput(_) | DatabaseError::InvalidOffsiteBackupConfig(_) => {
             BackupCommandError::invalid("The backup configuration is invalid.")
         }
@@ -1181,9 +1408,133 @@ fn map_writer_identity_error(_error: WriterIdentityError) -> BackupCommandError 
 mod tests {
     use super::*;
     use crate::backup::domain::BackupProvider;
+    use crate::database::{Database, DatabasePaths};
+    use std::{collections::HashMap, sync::Mutex};
 
     const ACCESS_KEY: &str = "0123456789abcdef0123456789abcdef";
     const SECRET_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[derive(Default)]
+    struct FakeCredentialStore {
+        active: Mutex<HashMap<String, (String, String)>>,
+        staged: Mutex<HashMap<String, (String, String)>>,
+    }
+
+    impl FakeCredentialStore {
+        fn pair(credentials: &R2Credentials) -> (String, String) {
+            (
+                credentials.access_key_id().to_owned(),
+                credentials.secret_access_key().to_owned(),
+            )
+        }
+
+        fn decode(pair: &(String, String)) -> Result<R2Credentials, CredentialError> {
+            R2Credentials::new(pair.0.clone(), pair.1.clone())
+        }
+
+        fn has_active(&self, backup_set_id: &BackupSetId) -> bool {
+            self.active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains_key(backup_set_id.as_str())
+        }
+
+        fn has_staged(&self, operation_id: &str) -> bool {
+            self.staged
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains_key(operation_id)
+        }
+    }
+
+    impl CredentialStore for FakeCredentialStore {
+        fn save(
+            &self,
+            backup_set_id: &BackupSetId,
+            credentials: &R2Credentials,
+        ) -> Result<(), CredentialError> {
+            self.active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(backup_set_id.to_string(), Self::pair(credentials));
+            Ok(())
+        }
+
+        fn load(&self, backup_set_id: &BackupSetId) -> Result<R2Credentials, CredentialError> {
+            let active = self
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self::decode(
+                active
+                    .get(backup_set_id.as_str())
+                    .ok_or(CredentialError::Missing)?,
+            )
+        }
+
+        fn remove(&self, backup_set_id: &BackupSetId) -> Result<(), CredentialError> {
+            self.active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(backup_set_id.as_str());
+            Ok(())
+        }
+
+        fn stage(
+            &self,
+            operation_id: &str,
+            credentials: &R2Credentials,
+        ) -> Result<(), CredentialError> {
+            self.staged
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(operation_id.to_owned(), Self::pair(credentials));
+            Ok(())
+        }
+
+        fn load_staged(&self, operation_id: &str) -> Result<R2Credentials, CredentialError> {
+            let staged = self
+                .staged
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self::decode(staged.get(operation_id).ok_or(CredentialError::Missing)?)
+        }
+
+        fn remove_staged(&self, operation_id: &str) -> Result<(), CredentialError> {
+            self.staged
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(operation_id);
+            Ok(())
+        }
+    }
+
+    fn pending_config_fixture(
+        client: &DatabaseClient,
+        credential_action: CredentialIntentAction,
+    ) -> (String, BackupSetId) {
+        let operation_id = uuid::Uuid::now_v7().to_string();
+        let backup_set_id = BackupSetId::new();
+        client
+            .begin_offsite_backup_config_intent(BeginOffsiteBackupConfigIntentInput {
+                operation_id: operation_id.clone(),
+                proposed: SaveOffsiteBackupConfigInput {
+                    expected_revision: 0,
+                    backup_set_id: backup_set_id.clone(),
+                    replica_epoch_id: ReplicaEpochId::new(),
+                    enabled: false,
+                    target: R2Target {
+                        account_id: R2AccountId::parse(ACCESS_KEY).expect("account"),
+                        jurisdiction: R2Jurisdiction::Default,
+                        bucket: R2BucketName::parse("kosh-test").expect("bucket"),
+                    },
+                    now_ms: 10,
+                },
+                credential_action,
+            })
+            .expect("begin config intent");
+        (operation_id, backup_set_id)
+    }
 
     #[test]
     fn command_errors_are_public_and_never_echo_credentials() {
@@ -1196,6 +1547,171 @@ mod tests {
         assert!(!serialized.contains(&access));
         assert!(!serialized.contains(&secret));
         assert!(serialized.contains("INVALID_INPUT"));
+    }
+
+    #[test]
+    fn pending_staged_credentials_reconcile_to_active_config_and_clear_the_journal() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let store = FakeCredentialStore::default();
+        let (operation_id, backup_set_id) =
+            pending_config_fixture(&client, CredentialIntentAction::Replace);
+        let credentials = R2Credentials::new(ACCESS_KEY, SECRET_KEY).expect("credentials");
+        store
+            .stage(&operation_id, &credentials)
+            .expect("stage credentials");
+        let intent = client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .expect("pending intent");
+
+        reconcile_config_intent(&client, &store, intent).expect("reconcile intent");
+
+        assert!(store.has_active(&backup_set_id));
+        assert!(!store.has_staged(&operation_id));
+        assert!(client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .is_none());
+        assert_eq!(
+            client
+                .load_offsite_backup_config()
+                .expect("configuration")
+                .expect("saved configuration")
+                .backup_set_id,
+            backup_set_id
+        );
+    }
+
+    #[test]
+    fn missing_staged_credentials_abort_an_uncommitted_config_without_mutation() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let store = FakeCredentialStore::default();
+        pending_config_fixture(&client, CredentialIntentAction::Replace);
+        let intent = client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .expect("pending intent");
+
+        reconcile_config_intent(&client, &store, intent).expect("abort missing stage");
+
+        assert!(client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .is_none());
+        assert_eq!(
+            client.load_offsite_backup_config().expect("configuration"),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_reused_credentials_abort_an_uncommitted_config_and_remain_recoverable() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let store = FakeCredentialStore::default();
+        pending_config_fixture(&client, CredentialIntentAction::Reuse);
+        let intent = client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .expect("pending intent");
+
+        let error =
+            reconcile_config_intent(&client, &store, intent).expect_err("missing credentials");
+
+        assert_eq!(error.code, BackupCommandErrorCode::CredentialsMissing);
+        assert!(client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .is_none());
+        assert_eq!(
+            client.load_offsite_backup_config().expect("configuration"),
+            None
+        );
+    }
+
+    #[test]
+    fn committed_config_reconciliation_accepts_verified_active_credentials_after_stage_cleanup() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let store = FakeCredentialStore::default();
+        let (operation_id, backup_set_id) =
+            pending_config_fixture(&client, CredentialIntentAction::Replace);
+        let credentials = R2Credentials::new(ACCESS_KEY, SECRET_KEY).expect("credentials");
+        store
+            .save(&backup_set_id, &credentials)
+            .expect("active credentials");
+        client
+            .commit_offsite_backup_config_intent(operation_id.clone())
+            .expect("committed config");
+        let committed = client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .expect("committed intent");
+        assert_eq!(committed.state, OffsiteOperationState::Committed);
+
+        reconcile_config_intent(&client, &store, committed).expect("finish cleanup");
+
+        assert!(client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .is_none());
+        assert!(store.has_active(&backup_set_id));
+    }
+
+    #[test]
+    fn queued_retired_credentials_retry_independently_of_configuration_changes() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let first = client
+            .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                expected_revision: 0,
+                backup_set_id: BackupSetId::new(),
+                replica_epoch_id: ReplicaEpochId::new(),
+                enabled: false,
+                target: R2Target {
+                    account_id: R2AccountId::parse(ACCESS_KEY).expect("account"),
+                    jurisdiction: R2Jurisdiction::Default,
+                    bucket: R2BucketName::parse("kosh-test").expect("bucket"),
+                },
+                now_ms: 10,
+            })
+            .expect("first config");
+        let second = client
+            .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                expected_revision: first.revision,
+                backup_set_id: BackupSetId::new(),
+                replica_epoch_id: ReplicaEpochId::new(),
+                enabled: false,
+                target: first.target.clone(),
+                now_ms: 20,
+            })
+            .expect("second config");
+        let store = FakeCredentialStore::default();
+        store
+            .save(
+                &first.backup_set_id,
+                &R2Credentials::new(ACCESS_KEY, SECRET_KEY).expect("credentials"),
+            )
+            .expect("retired credentials");
+
+        clean_retired_credentials_with(&client, &store);
+
+        assert!(!store.has_active(&first.backup_set_id));
+        assert!(client
+            .load_offsite_credential_cleanup()
+            .expect("cleanup queue")
+            .is_empty());
+        assert_eq!(
+            client.load_offsite_backup_config().expect("active config"),
+            Some(second)
+        );
     }
 
     #[test]
@@ -1238,6 +1754,31 @@ mod tests {
                 .code,
             BackupCommandErrorCode::InvalidInput
         );
+    }
+
+    #[test]
+    fn recovery_drill_requires_conservative_free_space_before_staging() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let required = (10_u64 * 2) + (20_u64 * 2) + RESTORE_DRILL_STORAGE_HEADROOM_BYTES;
+        ensure_restore_drill_capacity_with(root.path(), 10, 20, |_| Ok(required))
+            .expect("exact capacity");
+        let error = ensure_restore_drill_capacity_with(root.path(), 10, 20, |_| Ok(required - 1))
+            .expect_err("insufficient capacity");
+        assert_eq!(error.code, BackupCommandErrorCode::RestoreFailed);
+        assert!(error.message.contains("1 more bytes"));
+    }
+
+    #[test]
+    fn recovery_drill_size_overflow_fails_closed_without_querying_the_filesystem() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let queried = std::cell::Cell::new(false);
+        let error = ensure_restore_drill_capacity_with(root.path(), u64::MAX, 1, |_| {
+            queried.set(true);
+            Ok(u64::MAX)
+        })
+        .expect_err("overflow");
+        assert_eq!(error.code, BackupCommandErrorCode::RestoreFailed);
+        assert!(!queried.get());
     }
 
     #[test]
