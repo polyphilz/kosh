@@ -112,6 +112,7 @@ jq -e \
     and .restored.mediaBlobs >= 1
     and .restored.researchCitations >= 1
     and .restored.historicalResearchCitations >= 1
+    and .restored.interruptedReplicationDrafts == 1
     and .removedRemoteObjects > 0
     and .remoteResidueObjects == 0
   ' "$report" >/dev/null || fail "the redacted canary report is incomplete"

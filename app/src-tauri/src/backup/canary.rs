@@ -16,14 +16,18 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::database::CitationLocator;
 use crate::database::{
     drafts::SaveDraftWrite,
     passages,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    AppendResearchEventWrite, AttachmentIngestInput, CreateResearchRunWrite, Database,
-    DatabasePaths, EditTidbitInput, LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput,
-    SaveDraftInput, SaveOffsiteBackupConfigInput, SearchPassagesInput, SourceDraft, TidbitDraft,
+    AppendResearchEventWrite, AttachmentIngestInput, CitationResolution, CitationState,
+    CreateResearchRunWrite, Database, DatabasePaths, EditTidbitInput, LexicalSearchMode,
+    MediaLimits, PrepareOffsiteCheckpointInput, SaveDraftInput, SaveOffsiteBackupConfigInput,
+    SearchPassagesInput, SourceDraft, TidbitDraft,
 };
+use crate::research::{GroundedEvidenceKind, GroundedResearchAnswer};
 
 use super::{
     credentials::R2Credentials,
@@ -35,8 +39,8 @@ use super::{
     litestream::{
         configure_credential_pipe_environment, write_aws_shared_credentials,
         CommandLitestreamControl, CommandLitestreamRestore, EphemeralLitestreamRuntime,
-        ImmutableLitestreamBinary, LitestreamConfig, LitestreamControl, SystemCommandExecutor,
-        VerifiedLitestreamBinary,
+        ImmutableLitestreamBinary, LitestreamConfig, LitestreamControl, RelationalRestoreEngine,
+        SystemCommandExecutor, VerifiedLitestreamBinary,
     },
     object_store::{
         ObjectContentType, ObjectStore, PutCondition, PutMediaRequest, PutObjectOutcome,
@@ -52,6 +56,7 @@ use super::{
 const STARTUP_CANARY: &str = "koshstartupcanaryv1";
 const STARTUP_CANARY_TITLE: &str = "Kosh progressive startup canary";
 const STARTUP_CANARY_SOURCE: &str = "https://example.invalid/kosh-progressive-operability";
+const INTERRUPTED_REPLICATION_DRAFT_BYTES: usize = 4 * 1024 * 1024;
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -102,6 +107,7 @@ struct RestoredEvidence {
     exact_result_count: u64,
     resolved_source_url: String,
     historical_research_citations: u64,
+    interrupted_replication_drafts: u64,
 }
 
 struct SourceFixture {
@@ -109,7 +115,7 @@ struct SourceFixture {
     paths: DatabasePaths,
     backup_set_id: BackupSetId,
     epoch: ReplicaEpochId,
-    checkpoint: crate::database::PreparedOffsiteCheckpoint,
+    database: Option<Database>,
 }
 
 struct CanaryCleanup {
@@ -256,14 +262,14 @@ fn live_r2_canary_restores_complete_kosh_library_and_cleans_unique_backup_set() 
     );
     let target = canary_target();
     let credentials = canary_credentials();
-    let source = create_source_fixture(&target);
+    let mut source = create_source_fixture(&target);
     let keyspace = target.keyspace(&source.backup_set_id);
     let store = R2ObjectStore::new(target.clone(), keyspace.clone(), &credentials)
         .expect("canary object store");
     let mut cleanup = CanaryCleanup::new(store, keyspace.clone());
 
     let manifest = replicate_and_publish(
-        &source,
+        &mut source,
         &target,
         &credentials,
         &keyspace,
@@ -555,32 +561,12 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             .expect("complete canary media"));
         lease += 1;
     }
-    let checkpoint_id = super::domain::CheckpointId::new();
-    let created_at = UtcTimestamp::now().expect("canary checkpoint timestamp");
-    let created_at_ms = i64::try_from(
-        created_at
-            .unix_timestamp_nanos()
-            .expect("canary checkpoint epoch")
-            / 1_000_000,
-    )
-    .expect("canary checkpoint milliseconds");
-    let checkpoint = database
-        .client()
-        .prepare_offsite_checkpoint(PrepareOffsiteCheckpointInput {
-            checkpoint_id,
-            backup_set_id: backup_set_id.clone(),
-            replica_epoch_id: epoch.clone(),
-            created_at_ms,
-            kosh_version: env!("CARGO_PKG_VERSION").into(),
-        })
-        .expect("prepare canary checkpoint");
-    database.shutdown().expect("close canary source");
     SourceFixture {
         _source_root: source_root,
         paths,
         backup_set_id,
         epoch,
-        checkpoint,
+        database: Some(database),
     }
 }
 
@@ -628,8 +614,47 @@ fn grounded_answer(citation: &crate::database::CitationResolution) -> Value {
     })
 }
 
-fn replicate_and_publish(
+fn interrupted_replication_payload() -> String {
+    let salt = Uuid::now_v7();
+    let mut payload = String::with_capacity(INTERRUPTED_REPLICATION_DRAFT_BYTES);
+    let mut block = 0_u64;
+    while payload.len() < INTERRUPTED_REPLICATION_DRAFT_BYTES {
+        let mut hasher = Sha256::new();
+        hasher.update(salt.as_bytes());
+        hasher.update(block.to_le_bytes());
+        payload.push_str(&format!("{:x}", hasher.finalize()));
+        block = block.checked_add(1).expect("canary payload block overflow");
+    }
+    payload.truncate(INTERRUPTED_REPLICATION_DRAFT_BYTES);
+    payload
+}
+
+fn prepare_canary_checkpoint(
+    database: &Database,
     source: &SourceFixture,
+) -> crate::database::PreparedOffsiteCheckpoint {
+    let created_at = UtcTimestamp::now().expect("canary checkpoint timestamp");
+    let created_at_ms = i64::try_from(
+        created_at
+            .unix_timestamp_nanos()
+            .expect("canary checkpoint epoch")
+            / 1_000_000,
+    )
+    .expect("canary checkpoint milliseconds");
+    database
+        .client()
+        .prepare_offsite_checkpoint(PrepareOffsiteCheckpointInput {
+            checkpoint_id: super::domain::CheckpointId::new(),
+            backup_set_id: source.backup_set_id.clone(),
+            replica_epoch_id: source.epoch.clone(),
+            created_at_ms,
+            kosh_version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .expect("prepare canary checkpoint")
+}
+
+fn replicate_and_publish(
+    source: &mut SourceFixture,
     target: &R2Target,
     credentials: &R2Credentials,
     keyspace: &R2Keyspace,
@@ -660,6 +685,10 @@ fn replicate_and_publish(
         .paths()
         .write_config(&config)
         .expect("write canary config");
+    let database = source
+        .database
+        .take()
+        .expect("canary source database must be available exactly once");
 
     let mut interrupted = CanaryChild::spawn(&binary, runtime.paths().config(), credentials);
     wait_for_socket(interrupted.child_mut(), runtime.paths().socket());
@@ -669,11 +698,69 @@ fn replicate_and_publish(
         keyspace,
         replica_path.as_str(),
     );
+    let interrupted_draft = database
+        .client()
+        .save_draft(SaveDraftWrite {
+            input: SaveDraftInput {
+                context_key: "capture".into(),
+                tidbit_id: None,
+                base_revision_id: None,
+                title: Some("Interrupted replication fence".into()),
+                body_markdown: interrupted_replication_payload(),
+                sources: Vec::new(),
+            },
+            now_ms: 90,
+            draft_id: Uuid::now_v7().to_string(),
+            media_limits: MediaLimits::default(),
+        })
+        .expect("write interrupted replication fence");
+    assert_eq!(
+        interrupted_draft.body_markdown.len(),
+        INTERRUPTED_REPLICATION_DRAFT_BYTES
+    );
+    let interrupted_control = CommandLitestreamControl::new(
+        binary.path().to_owned(),
+        runtime.paths().socket().to_owned(),
+        60,
+        SystemCommandExecutor,
+    );
+    let interrupted_txid = interrupted_control
+        .sync_local(&source.paths.main)
+        .expect("capture interrupted canary transaction")
+        .txid;
     interrupted.kill_and_wait();
     remove_socket(runtime.paths().socket());
 
+    let mut proof_runtime =
+        EphemeralLitestreamRuntime::create().expect("isolated interruption proof runtime");
+    let proof_binary = verified
+        .stage_immutable(proof_runtime.paths())
+        .expect("immutable interruption proof Litestream");
+    let proof_engine = CommandLitestreamRestore::new(
+        &proof_binary,
+        proof_runtime.paths(),
+        target,
+        &replica_path,
+        proof_runtime.source_database_path(),
+        credentials,
+        RESTORE_TIMEOUT,
+    )
+    .expect("interruption proof restore engine");
+    let proof_target = evidence_root.join("interrupted-replication-proof.sqlite3");
+    assert!(
+        proof_engine
+            .preview(
+                proof_runtime.source_database_path(),
+                &proof_target,
+                interrupted_txid,
+            )
+            .is_err(),
+        "the interrupted transaction was already remotely restorable before Litestream was killed"
+    );
+
     let mut daemon = CanaryChild::spawn(&binary, runtime.paths().config(), credentials);
     wait_for_socket(daemon.child_mut(), runtime.paths().socket());
+    let checkpoint = prepare_canary_checkpoint(&database, source);
     let control = CommandLitestreamControl::new(
         binary.path().to_owned(),
         runtime.paths().socket().to_owned(),
@@ -684,7 +771,24 @@ fn replicate_and_publish(
         .sync_remote(&source.paths.main)
         .expect("real R2 remote sync");
     assert_eq!(sync.replica_txid, Some(sync.txid));
+    assert!(
+        sync.txid >= interrupted_txid,
+        "resumed replication did not cover the interrupted transaction"
+    );
+    proof_engine
+        .preview(
+            proof_runtime.source_database_path(),
+            &proof_target,
+            interrupted_txid,
+        )
+        .expect("interrupted transaction must become exactly restorable after retry");
     daemon.terminate_and_wait();
+    database.shutdown().expect("close canary source");
+    drop(proof_engine);
+    drop(proof_binary);
+    proof_runtime
+        .cleanup()
+        .expect("clean interruption proof runtime");
 
     claim_remote_owner(
         store,
@@ -695,22 +799,22 @@ fn replicate_and_publish(
     )
     .expect("claim canary remote owner");
     upload_referenced_media(&source.paths, store, keyspace);
-    let created_at = UtcTimestamp::from_unix_millis(source.checkpoint.created_at_ms)
-        .expect("manifest timestamp");
+    let created_at =
+        UtcTimestamp::from_unix_millis(checkpoint.created_at_ms).expect("manifest timestamp");
     let manifest = CheckpointManifestV1::new(CheckpointManifestInput {
-        backup_set_id: source.checkpoint.backup_set_id.clone(),
-        replica_epoch_id: source.checkpoint.replica_epoch_id.clone(),
-        checkpoint_id: source.checkpoint.checkpoint_id.clone(),
+        backup_set_id: checkpoint.backup_set_id.clone(),
+        replica_epoch_id: checkpoint.replica_epoch_id.clone(),
+        checkpoint_id: checkpoint.checkpoint_id.clone(),
         created_at,
-        kosh_version: source.checkpoint.kosh_version.clone(),
-        content_revision: source.checkpoint.content_revision,
-        main_migration_head: source.checkpoint.main_migration_head,
+        kosh_version: checkpoint.kosh_version.clone(),
+        content_revision: checkpoint.content_revision,
+        main_migration_head: checkpoint.main_migration_head,
         litestream_path: replica_path,
         txid: sync.txid.to_string(),
-        media_migration_head: source.checkpoint.media_migration_head,
-        referenced_hash_count: source.checkpoint.referenced_hash_count,
-        referenced_total_bytes: source.checkpoint.referenced_total_bytes,
-        referenced_hash_set_sha256: source.checkpoint.referenced_hash_set_sha256,
+        media_migration_head: checkpoint.media_migration_head,
+        referenced_hash_count: checkpoint.referenced_hash_count,
+        referenced_total_bytes: checkpoint.referenced_total_bytes,
+        referenced_hash_set_sha256: checkpoint.referenced_hash_set_sha256,
     })
     .expect("canary checkpoint manifest");
     let manifest_bytes = manifest.to_json().expect("canary manifest JSON");
@@ -941,16 +1045,8 @@ fn verify_restored_library(root: &Path) -> RestoredEvidence {
             .iter()
             .find_map(|source| source.url.clone())
             .expect("restored result source"),
-        historical_research_citations: query_count(
-            &main,
-            "SELECT count(*)
-             FROM research_run, json_each(research_run.final_answer_json, '$.citations') AS citation
-             JOIN tidbit
-               ON tidbit.id = json_extract(citation.value, '$.evidence.tidbit.id')
-             WHERE research_run.status = 'COMPLETED'
-               AND tidbit.current_revision_id
-                   <> json_extract(citation.value, '$.evidence.tidbit.revisionId')",
-        ),
+        historical_research_citations: verify_historical_research_citations(&main),
+        interrupted_replication_drafts: interrupted_replication_draft_count(&main),
     };
     assert!(evidence.active_tidbits >= 2);
     assert!(evidence.revisions >= 3);
@@ -961,10 +1057,123 @@ fn verify_restored_library(root: &Path) -> RestoredEvidence {
     assert_eq!(evidence.research_runs, 1);
     assert_eq!(evidence.research_citations, 1);
     assert_eq!(evidence.historical_research_citations, 1);
+    assert_eq!(evidence.interrupted_replication_drafts, 1);
     drop(media);
     drop(main);
     database.shutdown().expect("close restored library");
     evidence
+}
+
+fn verify_historical_research_citations(connection: &rusqlite::Connection) -> u64 {
+    let answer_json = connection
+        .query_row(
+            "SELECT final_answer_json
+             FROM research_run
+             WHERE status = 'COMPLETED' AND final_answer_json IS NOT NULL",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("restored grounded research answer");
+    let answer = serde_json::from_str::<GroundedResearchAnswer>(&answer_json)
+        .expect("restored grounded research answer contract");
+    assert_eq!(answer.citations.len(), 1);
+    let citation = &answer.citations[0];
+    assert_eq!(citation.evidence_kind, GroundedEvidenceKind::AuthoredTidbit);
+    assert_eq!(citation.evidence.state, CitationState::Current);
+    let resolved = passages::resolve_citation(connection, &citation.evidence.passage_id)
+        .expect("resolve restored historical research passage");
+    assert_eq!(resolved.state, CitationState::Historical);
+    assert!(
+        same_citation_provenance(&citation.evidence, &resolved),
+        "restored research citation changed its passage, revision, locator, or source provenance"
+    );
+    let tidbit = resolved
+        .tidbit
+        .as_ref()
+        .expect("historical authored citation tidbit");
+    let current_revision_id = connection
+        .query_row(
+            "SELECT current_revision_id FROM tidbit WHERE id = ?1",
+            [tidbit.id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("current revision for restored historical citation");
+    assert_ne!(current_revision_id, tidbit.revision_id);
+    u64::try_from(answer.citations.len()).expect("historical citation count")
+}
+
+fn same_citation_provenance(stored: &CitationResolution, resolved: &CitationResolution) -> bool {
+    stored.passage_id == resolved.passage_id
+        && stored.excerpt == resolved.excerpt
+        && stored.heading_context == resolved.heading_context
+        && stored.construction_version == resolved.construction_version
+        && stored.locator == resolved.locator
+        && stored.tidbit == resolved.tidbit
+        && stored.attachment == resolved.attachment
+        && stored.sources == resolved.sources
+}
+
+fn interrupted_replication_draft_count(connection: &rusqlite::Connection) -> u64 {
+    let expected_bytes =
+        i64::try_from(INTERRUPTED_REPLICATION_DRAFT_BYTES).expect("interrupted draft byte count");
+    let count = connection
+        .query_row(
+            "SELECT count(*)
+             FROM draft
+             JOIN draft_context ON draft_context.draft_id = draft.id
+             WHERE draft_context.context_key = 'capture'
+               AND length(CAST(draft.body_markdown AS BLOB)) = ?1",
+            [expected_bytes],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("restored interrupted replication draft");
+    u64::try_from(count).expect("non-negative interrupted draft count")
+}
+
+#[test]
+fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
+    let target = R2Target {
+        account_id: R2AccountId::parse("0123456789abcdef0123456789abcdef")
+            .expect("test account ID"),
+        jurisdiction: R2Jurisdiction::from_db("DEFAULT").expect("test jurisdiction"),
+        bucket: R2BucketName::parse("kosh-canary-test").expect("test bucket"),
+    };
+    let mut source = create_source_fixture(&target);
+    let database = source.database.as_ref().expect("test canary database");
+    let connection = database.open_main_read_only().expect("test canary read");
+    assert_eq!(verify_historical_research_citations(&connection), 1);
+
+    let answer_json = connection
+        .query_row(
+            "SELECT final_answer_json FROM research_run WHERE status = 'COMPLETED'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("test grounded answer");
+    let answer = serde_json::from_str::<GroundedResearchAnswer>(&answer_json)
+        .expect("test grounded answer contract");
+    let stored = &answer.citations[0].evidence;
+    let resolved = passages::resolve_citation(&connection, &stored.passage_id)
+        .expect("test historical passage resolution");
+    assert!(same_citation_provenance(stored, &resolved));
+
+    let mut wrong_locator = resolved.clone();
+    wrong_locator.locator = CitationLocator::TextLines {
+        start_line: 1,
+        end_line: 1,
+    };
+    assert!(!same_citation_provenance(stored, &wrong_locator));
+    let mut wrong_sources = resolved;
+    wrong_sources.sources.clear();
+    assert!(!same_citation_provenance(stored, &wrong_sources));
+
+    drop(connection);
+    source
+        .database
+        .take()
+        .expect("test canary database shutdown")
+        .shutdown()
+        .expect("close test canary database");
 }
 
 fn wait_for_socket(child: &mut Child, socket: &Path) {
