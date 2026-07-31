@@ -46,6 +46,7 @@ impl IdGenerator for UuidV7Generator {
 
 pub(crate) struct RuntimeState {
     data_dir: PathBuf,
+    resource_dir: Option<PathBuf>,
     claude_processes: ClaudeProcessManager,
     passage_embedding_indexer: PassageEmbeddingIndexer,
     litestream_backup: crate::backup::litestream_runtime::LitestreamRuntimeService,
@@ -63,6 +64,7 @@ pub(crate) struct RuntimeState {
     pending_file_selections: Mutex<HashMap<String, PendingFileSelection>>,
     file_drop_consumers: Mutex<HashSet<String>>,
     maintenance_gate: Arc<Mutex<()>>,
+    backup_operations_gate: Arc<Mutex<()>>,
 }
 
 struct PendingClipboardImage {
@@ -142,6 +144,11 @@ impl RuntimeState {
         {
             log::warn!("startup media lifecycle recovery could not complete: {error}");
         }
+        if let Err(error) =
+            crate::backup::settings::reconcile_startup_backup_state(&database.client())
+        {
+            log::warn!("startup off-site backup reconciliation remains pending: {error:?}");
+        }
         let litestream_backup = crate::backup::litestream_runtime::LitestreamRuntimeService::start(
             database.client(),
             data_dir.clone(),
@@ -163,6 +170,7 @@ impl RuntimeState {
         let state = Self {
             claude_processes: ClaudeProcessManager::production(&data_dir),
             data_dir,
+            resource_dir,
             passage_embedding_indexer,
             litestream_backup,
             media_backup,
@@ -179,6 +187,7 @@ impl RuntimeState {
             pending_file_selections: Mutex::new(HashMap::new()),
             file_drop_consumers: Mutex::new(HashSet::new()),
             maintenance_gate: Arc::new(Mutex::new(())),
+            backup_operations_gate: Arc::new(Mutex::new(())),
         };
         if let Err(error) =
             crate::media::recover_staging_directory(&state.media_staging_directory())
@@ -212,6 +221,7 @@ impl RuntimeState {
             claude_processes: ClaudeProcessManager::production(&data_dir),
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
+            resource_dir: None,
             passage_embedding_indexer: PassageEmbeddingIndexer::disabled(),
             litestream_backup:
                 crate::backup::litestream_runtime::LitestreamRuntimeService::disabled(),
@@ -228,6 +238,7 @@ impl RuntimeState {
             pending_file_selections: Mutex::new(HashMap::new()),
             file_drop_consumers: Mutex::new(HashSet::new()),
             maintenance_gate: Arc::new(Mutex::new(())),
+            backup_operations_gate: Arc::new(Mutex::new(())),
         };
         let _ = state
             .database
@@ -248,6 +259,18 @@ impl RuntimeState {
         Arc::clone(&self.maintenance_gate)
     }
 
+    pub(crate) fn backup_operations_gate(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.backup_operations_gate)
+    }
+
+    pub(crate) fn data_dir(&self) -> PathBuf {
+        self.data_dir.clone()
+    }
+
+    pub(crate) fn resource_dir(&self) -> Option<PathBuf> {
+        self.resource_dir.clone()
+    }
+
     pub(crate) fn relational_backup_status(
         &self,
     ) -> crate::backup::litestream_runtime::RelationalBackupStatus {
@@ -264,6 +287,34 @@ impl RuntimeState {
         &self,
     ) -> crate::backup::checkpoint::CheckpointBackupHandle {
         self.checkpoint_backup.handle()
+    }
+
+    pub(crate) fn reload_backup_configuration(&self) {
+        self.litestream_backup.reload_configuration();
+        self.media_backup.wake();
+    }
+
+    pub(crate) fn reconcile_backup_takeover_async(&self) {
+        let client = self.database.client();
+        let data_dir = self.data_dir.clone();
+        let gate = Arc::clone(&self.backup_operations_gate);
+        if let Err(error) = std::thread::Builder::new()
+            .name("kosh-backup-takeover-recovery".into())
+            .spawn(move || {
+                let _guard = gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Err(error) =
+                    crate::backup::settings::reconcile_deferred_takeover(&client, &data_dir)
+                {
+                    log::warn!(
+                        "deferred off-site backup takeover reconciliation remains pending: {error:?}"
+                    );
+                }
+            })
+        {
+            log::warn!("could not start deferred backup takeover reconciliation: {error}");
+        }
     }
 
     pub(crate) fn shutdown_for_exit(&self) {

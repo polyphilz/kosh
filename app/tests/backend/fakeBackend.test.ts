@@ -17,7 +17,7 @@ describe("FakeBackend tidbits", () => {
       searchDocuments: 1,
     });
     expect(diagnostics.storage.dataRoot).toBe("/tmp/kosh-browser-fixture");
-    expect(diagnostics.backupPhase).toBe("COMING_LATER");
+    expect(diagnostics.backupPhase).toBe("AVAILABLE");
     await expect(backend.runIntegrityCheck()).resolves.toMatchObject({
       databaseOk: true,
       media: { missingBlobAttachmentIds: [] },
@@ -286,6 +286,134 @@ describe("FakeBackend tidbits", () => {
     await expect(
       backend.searchPassages({ query: "cafe", mode: "DEFAULT", limit: 10 }),
     ).resolves.toMatchObject({ results: [], executionMode: "LEXICAL_ONLY" });
+  });
+});
+
+describe("FakeBackend offsite recovery", () => {
+  const credentials = {
+    accessKeyId: "fedcba9876543210fedcba9876543210",
+    secretAccessKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  };
+
+  it("models opt-in setup, separated status, checkpoints, preview, and a non-mutating drill", async () => {
+    const backend = new FakeBackend();
+    await expect(backend.loadBackupSettings()).resolves.toMatchObject({
+      config: null,
+      credentialState: "MISSING",
+      relational: { phase: "OFF" },
+      checkpoint: { phase: "OFF" },
+    });
+    await expect(
+      backend.testBackupConnection({
+        backupSetId: null,
+        accountId: "0123456789abcdef0123456789abcdef",
+        jurisdiction: "DEFAULT",
+        bucket: "kosh-local",
+        ...credentials,
+      }),
+    ).resolves.toMatchObject({ verified: true, cleanupComplete: true });
+
+    const configured = await backend.configureBackup({
+      expectedRevision: 0,
+      backupSetId: null,
+      accountId: "0123456789abcdef0123456789abcdef",
+      jurisdiction: "DEFAULT",
+      bucket: "kosh-local",
+      ...credentials,
+    });
+    expect(configured).toMatchObject({
+      config: { enabled: false, revision: 1, bucket: "kosh-local" },
+      credentialState: "STORED",
+    });
+    expect(JSON.stringify(configured)).not.toContain(credentials.accessKeyId);
+    expect(JSON.stringify(configured)).not.toContain(credentials.secretAccessKey);
+
+    const enabled = await backend.setBackupEnabled({ expectedRevision: 1, enabled: true });
+    expect(enabled).toMatchObject({
+      config: { enabled: true, revision: 2 },
+      relational: { phase: "RUNNING" },
+      checkpoint: { phase: "IDLE" },
+    });
+    await backend.backupNow();
+    const [checkpoint] = await backend.listBackupCheckpoints();
+    expect(checkpoint).toBeDefined();
+    await expect(
+      backend.previewBackupRestore({ checkpointId: checkpoint!.checkpointId }),
+    ).resolves.toMatchObject({
+      checkpoint,
+      owner: { isCurrentInstallation: true },
+    });
+    await expect(
+      backend.drillBackupRestore({ checkpointId: checkpoint!.checkpointId }),
+    ).resolves.toMatchObject({
+      checkpointId: checkpoint!.checkpointId,
+      restoredMediaCount: 0,
+    });
+  });
+
+  it("rejects partial credentials, stale revisions, active takeover, and stale owner evidence", async () => {
+    const backend = new FakeBackend();
+    await expect(
+      backend.configureBackup({
+        expectedRevision: 0,
+        backupSetId: null,
+        accountId: "0123456789abcdef0123456789abcdef",
+        jurisdiction: "DEFAULT",
+        bucket: "kosh-local",
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: null,
+      }),
+    ).rejects.toThrow("both");
+
+    const configured = await backend.configureBackup({
+      expectedRevision: 0,
+      backupSetId: null,
+      accountId: "0123456789abcdef0123456789abcdef",
+      jurisdiction: "DEFAULT",
+      bucket: "kosh-local",
+      ...credentials,
+    });
+    await expect(backend.setBackupEnabled({ expectedRevision: 0, enabled: true })).rejects.toThrow(
+      "changed",
+    );
+
+    const enabled = await backend.setBackupEnabled({
+      expectedRevision: configured.config!.revision,
+      enabled: true,
+    });
+    const takeover = {
+      expectedRevision: enabled.config!.revision,
+      expectedOwnerBackupSetId: enabled.config!.backupSetId,
+      expectedOwnerReplicaEpochId: enabled.config!.replicaEpochId,
+      expectedOwnerWriterId: "fixture-current-installation-writer",
+      expectedOwnerVersion: '"fixture-owner-v1"',
+      confirmation: "TAKE OVER" as const,
+    };
+    await expect(backend.takeOverBackup(takeover)).rejects.toThrow("Turn off");
+
+    const disabled = await backend.setBackupEnabled({
+      expectedRevision: enabled.config!.revision,
+      enabled: false,
+    });
+    await expect(
+      backend.takeOverBackup({
+        ...takeover,
+        expectedRevision: disabled.config!.revision,
+        expectedOwnerVersion: '"stale-owner"',
+      }),
+    ).rejects.toThrow("owner changed");
+    await expect(
+      backend.takeOverBackup({
+        ...takeover,
+        expectedRevision: disabled.config!.revision,
+      }),
+    ).resolves.toMatchObject({
+      config: {
+        revision: disabled.config!.revision + 1,
+        enabled: false,
+        replicaEpochId: "019f547b-6200-7000-8000-000000000e02",
+      },
+    });
   });
 });
 

@@ -8,6 +8,7 @@ use zeroize::{Zeroize, Zeroizing};
 use super::domain::{BackupSetId, BackupWriterId};
 
 const KEYCHAIN_SERVICE: &str = "com.rohan.kosh.offsite-backup.r2";
+const KEYCHAIN_STAGING_SERVICE: &str = "com.rohan.kosh.offsite-backup.r2.pending";
 const CREDENTIAL_FORMAT_VERSION: u32 = 3;
 const EMBEDDED_WRITER_CREDENTIAL_FORMAT_VERSION: u32 = 2;
 const LEGACY_CREDENTIAL_FORMAT_VERSION: u32 = 1;
@@ -191,6 +192,10 @@ pub(crate) trait CredentialStore: Send + Sync {
     ) -> Result<(), CredentialError>;
     fn load(&self, backup_set_id: &BackupSetId) -> Result<R2Credentials, CredentialError>;
     fn remove(&self, backup_set_id: &BackupSetId) -> Result<(), CredentialError>;
+    fn stage(&self, operation_id: &str, credentials: &R2Credentials)
+        -> Result<(), CredentialError>;
+    fn load_staged(&self, operation_id: &str) -> Result<R2Credentials, CredentialError>;
+    fn remove_staged(&self, operation_id: &str) -> Result<(), CredentialError>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -245,26 +250,43 @@ fn save_verified(
     backup_set_id: &BackupSetId,
     credentials: &R2Credentials,
 ) -> Result<(), CredentialError> {
-    let previous = match backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str()) {
+    save_entry_verified(
+        backend,
+        KEYCHAIN_SERVICE,
+        backup_set_id.as_str(),
+        credentials,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn save_entry_verified(
+    backend: &impl KeychainBackend,
+    service: &str,
+    account: &str,
+    credentials: &R2Credentials,
+) -> Result<(), CredentialError> {
+    let previous = match backend.load(service, account) {
         Ok(payload) => Some(Zeroizing::new(payload)),
         Err(CredentialError::Missing) => None,
         Err(error) => return Err(error),
     };
     let payload = credentials.encode()?;
-    if let Err(error) = backend.save(KEYCHAIN_SERVICE, backup_set_id.as_str(), payload.as_slice()) {
+    if let Err(error) = backend.save(service, account, payload.as_slice()) {
         return rollback_and_return(
             backend,
-            backup_set_id,
+            service,
+            account,
             previous.as_ref().map(|payload| payload.as_slice()),
             error,
         );
     }
-    let verified = match backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str()) {
+    let verified = match backend.load(service, account) {
         Ok(payload) => Zeroizing::new(payload),
         Err(error) => {
             return rollback_and_return(
                 backend,
-                backup_set_id,
+                service,
+                account,
                 previous.as_ref().map(|payload| payload.as_slice()),
                 error,
             );
@@ -273,7 +295,8 @@ fn save_verified(
     if verified.as_slice() != payload.as_slice() {
         return rollback_and_return(
             backend,
-            backup_set_id,
+            service,
+            account,
             previous.as_ref().map(|payload| payload.as_slice()),
             CredentialError::Unavailable,
         );
@@ -281,7 +304,8 @@ fn save_verified(
     if let Err(error) = R2Credentials::decode(verified.as_slice()) {
         return rollback_and_return(
             backend,
-            backup_set_id,
+            service,
+            account,
             previous.as_ref().map(|payload| payload.as_slice()),
             error,
         );
@@ -294,25 +318,30 @@ fn load_and_upgrade(
     backend: &impl KeychainBackend,
     backup_set_id: &BackupSetId,
 ) -> Result<R2Credentials, CredentialError> {
-    let original = Zeroizing::new(backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str())?);
+    load_entry_and_upgrade(backend, KEYCHAIN_SERVICE, backup_set_id.as_str())
+}
+
+#[cfg(target_os = "macos")]
+fn load_entry_and_upgrade(
+    backend: &impl KeychainBackend,
+    service: &str,
+    account: &str,
+) -> Result<R2Credentials, CredentialError> {
+    let original = Zeroizing::new(backend.load(service, account)?);
     let (credentials, needs_upgrade) = R2Credentials::decode_with_migration(original.as_slice())?;
     if !needs_upgrade {
         return Ok(credentials);
     }
     let upgraded = credentials.encode()?;
-    if let Err(error) = backend.save(
-        KEYCHAIN_SERVICE,
-        backup_set_id.as_str(),
-        upgraded.as_slice(),
-    ) {
-        restore_previous(backend, backup_set_id, Some(original.as_slice()))
+    if let Err(error) = backend.save(service, account, upgraded.as_slice()) {
+        restore_previous(backend, service, account, Some(original.as_slice()))
             .map_err(|_| CredentialError::Unavailable)?;
         return Err(error);
     }
-    let verified = match backend.load(KEYCHAIN_SERVICE, backup_set_id.as_str()) {
+    let verified = match backend.load(service, account) {
         Ok(payload) => Zeroizing::new(payload),
         Err(error) => {
-            restore_previous(backend, backup_set_id, Some(original.as_slice()))
+            restore_previous(backend, service, account, Some(original.as_slice()))
                 .map_err(|_| CredentialError::Unavailable)?;
             return Err(error);
         }
@@ -320,7 +349,7 @@ fn load_and_upgrade(
     if verified.as_slice() != upgraded.as_slice()
         || R2Credentials::decode(verified.as_slice()).is_err()
     {
-        restore_previous(backend, backup_set_id, Some(original.as_slice()))
+        restore_previous(backend, service, account, Some(original.as_slice()))
             .map_err(|_| CredentialError::Unavailable)?;
         return Err(CredentialError::Unavailable);
     }
@@ -330,32 +359,34 @@ fn load_and_upgrade(
 #[cfg(target_os = "macos")]
 fn rollback_and_return(
     backend: &impl KeychainBackend,
-    backup_set_id: &BackupSetId,
+    service: &str,
+    account: &str,
     previous: Option<&[u8]>,
     original_error: CredentialError,
 ) -> Result<(), CredentialError> {
-    restore_previous(backend, backup_set_id, previous).map_err(|_| CredentialError::Unavailable)?;
+    restore_previous(backend, service, account, previous)
+        .map_err(|_| CredentialError::Unavailable)?;
     Err(original_error)
 }
 
 #[cfg(target_os = "macos")]
 fn restore_previous(
     backend: &impl KeychainBackend,
-    backup_set_id: &BackupSetId,
+    service: &str,
+    account: &str,
     previous: Option<&[u8]>,
 ) -> Result<(), CredentialError> {
-    let account = backup_set_id.as_str();
     match previous {
         Some(previous) => {
-            backend.save(KEYCHAIN_SERVICE, account, previous)?;
-            let restored = Zeroizing::new(backend.load(KEYCHAIN_SERVICE, account)?);
+            backend.save(service, account, previous)?;
+            let restored = Zeroizing::new(backend.load(service, account)?);
             if restored.as_slice() != previous {
                 return Err(CredentialError::Unavailable);
             }
         }
         None => {
-            backend.remove(KEYCHAIN_SERVICE, account)?;
-            match backend.load(KEYCHAIN_SERVICE, account) {
+            backend.remove(service, account)?;
+            match backend.load(service, account) {
                 Err(CredentialError::Missing) => {}
                 Ok(_) | Err(_) => return Err(CredentialError::Unavailable),
             }
@@ -390,6 +421,40 @@ impl CredentialStore for MacOsKeychainCredentialStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         SystemKeychainBackend.remove(KEYCHAIN_SERVICE, backup_set_id.as_str())
     }
+
+    fn stage(
+        &self,
+        operation_id: &str,
+        credentials: &R2Credentials,
+    ) -> Result<(), CredentialError> {
+        let _guard = KEYCHAIN_OPERATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        save_entry_verified(
+            &SystemKeychainBackend,
+            KEYCHAIN_STAGING_SERVICE,
+            operation_id,
+            credentials,
+        )
+    }
+
+    fn load_staged(&self, operation_id: &str) -> Result<R2Credentials, CredentialError> {
+        let _guard = KEYCHAIN_OPERATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        load_entry_and_upgrade(
+            &SystemKeychainBackend,
+            KEYCHAIN_STAGING_SERVICE,
+            operation_id,
+        )
+    }
+
+    fn remove_staged(&self, operation_id: &str) -> Result<(), CredentialError> {
+        let _guard = KEYCHAIN_OPERATION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        SystemKeychainBackend.remove(KEYCHAIN_STAGING_SERVICE, operation_id)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -415,6 +480,22 @@ impl CredentialStore for MacOsKeychainCredentialStore {
     }
 
     fn remove(&self, _backup_set_id: &BackupSetId) -> Result<(), CredentialError> {
+        Err(CredentialError::Unavailable)
+    }
+
+    fn stage(
+        &self,
+        _operation_id: &str,
+        _credentials: &R2Credentials,
+    ) -> Result<(), CredentialError> {
+        Err(CredentialError::Unavailable)
+    }
+
+    fn load_staged(&self, _operation_id: &str) -> Result<R2Credentials, CredentialError> {
+        Err(CredentialError::Unavailable)
+    }
+
+    fn remove_staged(&self, _operation_id: &str) -> Result<(), CredentialError> {
         Err(CredentialError::Unavailable)
     }
 }
@@ -528,6 +609,30 @@ mod tests {
         )
         .expect("replacement credentials");
         assert_eq!(replaced.access_key_id(), replacement.access_key_id());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_credentials_use_an_operation_scoped_keychain_namespace() {
+        let backend = FakeKeychainBackend::default();
+        let backup_set_id = BackupSetId::new();
+        let operation_id = uuid::Uuid::now_v7().to_string();
+        let credentials = R2Credentials::new(ACCESS_KEY, SECRET_KEY).expect("credentials");
+
+        save_entry_verified(
+            &backend,
+            KEYCHAIN_STAGING_SERVICE,
+            &operation_id,
+            &credentials,
+        )
+        .expect("staged save");
+
+        assert!(backend.contains(KEYCHAIN_STAGING_SERVICE, &operation_id));
+        assert!(!backend.contains(KEYCHAIN_SERVICE, backup_set_id.as_str()));
+        let loaded = load_entry_and_upgrade(&backend, KEYCHAIN_STAGING_SERVICE, &operation_id)
+            .expect("staged load");
+        assert_eq!(loaded.access_key_id(), ACCESS_KEY);
+        assert_eq!(loaded.secret_access_key(), SECRET_KEY);
     }
 
     #[cfg(target_os = "macos")]

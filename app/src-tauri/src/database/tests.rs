@@ -942,6 +942,30 @@ fn missing_required_checkpoint_media_table_is_rejected_at_startup() {
 }
 
 #[test]
+fn missing_durable_backup_journal_is_rejected_at_startup() {
+    for table in [
+        "offsite_backup_config_intent",
+        "offsite_backup_takeover_intent",
+    ] {
+        let pair = TestPair::new();
+        drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
+
+        let connection = Connection::open(&pair.paths.main).expect("main database");
+        connection
+            .execute(&format!("DROP TABLE {table}"), [])
+            .expect("drop durable backup journal");
+        drop(connection);
+
+        let error = Database::initialize(pair.paths.clone()).expect_err("missing backup journal");
+        assert!(matches!(
+            error,
+            DatabaseError::Validation { kind: "main", .. }
+        ));
+        assert!(error.to_string().contains(table));
+    }
+}
+
+#[test]
 fn missing_or_altered_content_clock_trigger_is_rejected_at_startup() {
     for replacement in [
         None,

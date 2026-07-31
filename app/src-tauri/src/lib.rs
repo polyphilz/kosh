@@ -45,6 +45,14 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         runtime::runtime_probe,
         backup::checkpoint::checkpoint_backup_status,
         backup::checkpoint::backup_now,
+        backup::settings::load_backup_settings,
+        backup::settings::test_backup_connection,
+        backup::settings::configure_backup,
+        backup::settings::set_backup_enabled,
+        backup::settings::list_backup_checkpoints,
+        backup::settings::preview_backup_restore,
+        backup::settings::drill_backup_restore,
+        backup::settings::take_over_backup,
         claude::claude_setup_status,
         claude::claude_cli_defaults,
         claude::start_research_process,
@@ -122,6 +130,14 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         runtime::runtime_probe,
         backup::checkpoint::checkpoint_backup_status,
         backup::checkpoint::backup_now,
+        backup::settings::load_backup_settings,
+        backup::settings::test_backup_connection,
+        backup::settings::configure_backup,
+        backup::settings::set_backup_enabled,
+        backup::settings::list_backup_checkpoints,
+        backup::settings::preview_backup_restore,
+        backup::settings::drill_backup_restore,
+        backup::settings::take_over_backup,
         claude::claude_setup_status,
         claude::claude_cli_defaults,
         claude::start_research_process,
@@ -217,6 +233,8 @@ pub fn run() {
         app.manage(runtime);
         let startup_smoke = startup_smoke::run_if_requested(app)?;
         windows::setup(app, shortcut_settings)?;
+        app.state::<RuntimeState>()
+            .reconcile_backup_takeover_async();
         if !startup_smoke {
             app.state::<RuntimeState>()
                 .claude_processes()

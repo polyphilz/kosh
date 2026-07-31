@@ -68,6 +68,16 @@ pub(crate) struct RemoteOwnerSnapshot {
     version: ObjectVersion,
 }
 
+impl RemoteOwnerSnapshot {
+    pub(crate) fn backup_set_id(&self) -> &BackupSetId {
+        &self.backup_set_id
+    }
+
+    pub(crate) fn version(&self) -> &str {
+        self.version.as_str()
+    }
+}
+
 pub(crate) fn inspect_remote_owner(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
@@ -118,6 +128,52 @@ pub(crate) fn take_over_remote_owner(
         PutObjectOutcome::Stored => {
             verify_exact_owner(store, &keyspace.owner(), &replacement, &replacement_bytes)
                 .map(|_| ())
+        }
+        PutObjectOutcome::ConditionNotMet => Err(RemoteOwnerError::Conflict),
+    }
+}
+
+/// Finishes a takeover recorded before the remote conditional write. This is
+/// intentionally idempotent: a restart after the write observes the intended
+/// new owner and can safely commit the matching local epoch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resume_remote_takeover(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+    expected_replica_epoch_id: &ReplicaEpochId,
+    expected_writer_id: &BackupWriterId,
+    expected_version: &str,
+    next_replica_epoch_id: &ReplicaEpochId,
+    next_writer_id: &BackupWriterId,
+) -> Result<(), RemoteOwnerError> {
+    if expected_replica_epoch_id == next_replica_epoch_id || expected_version.is_empty() {
+        return Err(RemoteOwnerError::Invalid);
+    }
+    let key = keyspace.owner();
+    let current = read_owner(store, &key)?;
+    let replacement =
+        RemoteOwnerDocument::new(backup_set_id, next_replica_epoch_id, next_writer_id);
+    if current.document == replacement {
+        return Ok(());
+    }
+    if current.document.backup_set_id != *backup_set_id
+        || current.document.replica_epoch_id != *expected_replica_epoch_id
+        || current.document.writer_id != *expected_writer_id
+        || current.version.as_str() != expected_version
+    {
+        return Err(RemoteOwnerError::Conflict);
+    }
+    let replacement_bytes = replacement.encode()?;
+    match store.put(PutObjectRequest {
+        key: key.clone(),
+        bytes: replacement_bytes.clone(),
+        content_type: ObjectContentType::Json,
+        kosh_sha256: None,
+        condition: PutCondition::IfMatch(current.version),
+    })? {
+        PutObjectOutcome::Stored => {
+            verify_exact_owner(store, &key, &replacement, &replacement_bytes).map(|_| ())
         }
         PutObjectOutcome::ConditionNotMet => Err(RemoteOwnerError::Conflict),
     }
@@ -371,6 +427,41 @@ mod tests {
             ),
             Err(RemoteOwnerError::Conflict)
         ));
+    }
+
+    #[test]
+    fn journaled_takeover_resumes_idempotently_after_the_remote_write() {
+        let (backup_set_id, keyspace, store, first_epoch, first_writer) = fixture();
+        claim_remote_owner(
+            &store,
+            &keyspace,
+            &backup_set_id,
+            &first_epoch,
+            &first_writer,
+        )
+        .expect("first owner");
+        let preview = inspect_remote_owner(&store, &keyspace).expect("owner preview");
+        let expected_version = preview.version().to_owned();
+        let next_epoch = ReplicaEpochId::new();
+        let next_writer = BackupWriterId::new();
+
+        for _ in 0..2 {
+            resume_remote_takeover(
+                &store,
+                &keyspace,
+                &backup_set_id,
+                &first_epoch,
+                &first_writer,
+                &expected_version,
+                &next_epoch,
+                &next_writer,
+            )
+            .expect("resumable takeover");
+        }
+
+        let owner = inspect_remote_owner(&store, &keyspace).expect("new owner");
+        assert_eq!(owner.replica_epoch_id, next_epoch);
+        assert_eq!(owner.writer_id, next_writer);
     }
 
     #[test]

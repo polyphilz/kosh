@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ClearDraftInput,
+  ConfigureBackupInput,
   DeleteTidbitInput,
   EditTidbitInput,
   ListTidbitRevisionsInput,
@@ -12,6 +13,8 @@ import type {
   SaveDraftInput,
   SearchPassagesInput,
   SetShortcutSettingsInput,
+  TakeOverBackupInput,
+  TestBackupConnectionInput,
   TidbitDraft,
 } from "../../src/backend/contracts";
 import { tauriBackend } from "../../src/backend/tauriBackend";
@@ -174,6 +177,53 @@ describe("tauriBackend tidbit gateway", () => {
       ["retry_semantic_runtime"],
       ["repair_semantic_runtime"],
       ["semantic_runtime_logs"],
+    ]);
+  });
+
+  it("uses explicit write-only backup and recovery command envelopes", async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    const target: TestBackupConnectionInput = {
+      backupSetId: null,
+      accountId: "0123456789abcdef0123456789abcdef",
+      jurisdiction: "DEFAULT",
+      bucket: "kosh-local",
+      accessKeyId: "0123456789abcdef0123456789abcdef",
+      secretAccessKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    };
+    const configure: ConfigureBackupInput = {
+      expectedRevision: 0,
+      ...target,
+    };
+    const checkpoint = { checkpointId: "019f547b-6200-7000-8000-000000000001" };
+    const takeover: TakeOverBackupInput = {
+      expectedRevision: 2,
+      expectedOwnerBackupSetId: "019f547b-6200-7000-8000-000000000002",
+      expectedOwnerReplicaEpochId: "019f547b-6200-7000-8000-000000000003",
+      expectedOwnerWriterId: "a".repeat(64),
+      expectedOwnerVersion: '"etag"',
+      confirmation: "TAKE OVER",
+    };
+
+    await tauriBackend.loadBackupSettings();
+    await tauriBackend.testBackupConnection(target);
+    await tauriBackend.configureBackup(configure);
+    await tauriBackend.setBackupEnabled({ expectedRevision: 1, enabled: true });
+    await tauriBackend.backupNow();
+    await tauriBackend.listBackupCheckpoints();
+    await tauriBackend.previewBackupRestore(checkpoint);
+    await tauriBackend.drillBackupRestore(checkpoint);
+    await tauriBackend.takeOverBackup(takeover);
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["load_backup_settings"],
+      ["test_backup_connection", { input: target }],
+      ["configure_backup", { input: configure }],
+      ["set_backup_enabled", { input: { expectedRevision: 1, enabled: true } }],
+      ["backup_now"],
+      ["list_backup_checkpoints"],
+      ["preview_backup_restore", { input: checkpoint }],
+      ["drill_backup_restore", { input: checkpoint }],
+      ["take_over_backup", { input: takeover }],
     ]);
   });
 

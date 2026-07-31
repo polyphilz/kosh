@@ -82,7 +82,7 @@ pub(crate) async fn load_maintenance_diagnostics(
             media_limits: limits,
             native_logs,
             semantic_log_paths: semantic_log_paths(paths.root()),
-            backup_phase: "COMING_LATER",
+            backup_phase: "AVAILABLE",
         })
     })
     .await
