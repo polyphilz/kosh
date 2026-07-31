@@ -20,6 +20,22 @@ Use unique names in place of the examples.
 
 ## A. Clean core without Claude or semantic setup
 
+Before the visible walkthrough, the same exact package can run its commit-bound
+startup, migration, React-root, IPC, Exact-search, and citation preflight with
+both windows hidden:
+
+```sh
+pnpm release:acceptance prepare-clean preflight-YYYYMMDD
+pnpm release:acceptance launch-hidden preflight-YYYYMMDD absent
+pnpm release:acceptance check-core preflight-YYYYMMDD
+pnpm release:acceptance launch-hidden preflight-YYYYMMDD present
+```
+
+`launch-hidden` requires a clean source tree, verifies that the package embeds
+that exact HEAD, disables Claude, binds the receipt to the isolated profile,
+and exits by itself. It does not claim menu-bar, global-shortcut, native file
+dialog, focus-restoration, or other visible observations below.
+
 ```sh
 pnpm release:acceptance prepare-clean clean-YYYYMMDD
 pnpm release:acceptance launch clean-YYYYMMDD --without-claude

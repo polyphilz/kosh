@@ -16,6 +16,8 @@ import {
 import { basename, join, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
+import { selectMigrationSnapshot } from "./select-migration-snapshot.mjs";
+
 const command = process.argv[2] ?? "help";
 const arguments_ = process.argv.slice(3);
 const appRoot = resolve(import.meta.dirname, "..");
@@ -34,6 +36,9 @@ switch (command) {
     break;
   case "launch":
     launch(arguments_);
+    break;
+  case "launch-hidden":
+    launchHidden(arguments_);
     break;
   case "check-core":
     checkCore(arguments_);
@@ -92,25 +97,7 @@ function launch(values) {
   if (claudeMode === "auto") installClaudeShim(profile);
 
   const log = join(profile.root, "packaged-app.log");
-  const environment = {
-    ...process.env,
-    HOME: profile.home,
-    TMPDIR: profile.temporary,
-    PATH: "/usr/bin:/bin",
-  };
-  for (const name of [
-    "KOSH_DATA_DIR",
-    "KOSH_LLAMA_SERVER_PATH",
-    "KOSH_EMBEDDING_MODEL_PATH",
-    "KOSH_STARTUP_SMOKE_RECEIPT",
-    "KOSH_STARTUP_SMOKE_HEAD",
-    "KOSH_STARTUP_SMOKE_EXPECT",
-    "KOSH_CLAUDE_DISABLED",
-    "CLAUDE_CONFIG_DIR",
-  ]) {
-    delete environment[name];
-  }
-  if (claudeMode === "disabled") environment.KOSH_CLAUDE_DISABLED = "1";
+  const environment = packagedEnvironment(profile, claudeMode);
   const descriptor = openSync(log, "a");
   const child = spawn(app.executable, [], {
     detached: true,
@@ -135,6 +122,123 @@ function launch(values) {
   console.info(
     `Launched packaged Kosh (pid ${child.pid}) against ${profile.data}. Quit with Cmd+Q before running a check.`,
   );
+}
+
+function launchHidden(values) {
+  assert(
+    values.length >= 2 && values.length <= 3,
+    "launch-hidden accepts a profile name, absent|present, and optional Kosh.app path",
+  );
+  const profile = existingProfile(values[0]);
+  const expectation = values[1];
+  assert(
+    expectation === "absent" || expectation === "present",
+    "launch-hidden expectation must be absent or present",
+  );
+  const app = packagedApp(values[2]);
+  assertStopped(profile);
+
+  const headResult = spawnSync("git", ["-C", appRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  });
+  requireSuccess(headResult, "read exact release head");
+  const headSha = headResult.stdout.trim();
+  assert(/^[0-9a-f]{40}$/u.test(headSha), "release head is not an exact Git commit");
+  const statusResult = spawnSync(
+    "git",
+    ["-C", appRoot, "status", "--porcelain", "--untracked-files=normal"],
+    { encoding: "utf8" },
+  );
+  requireSuccess(statusResult, "inspect release source tree");
+  assert(statusResult.stdout === "", "launch-hidden requires a clean source tree");
+
+  const receiptPath = join(
+    profile.root,
+    `hidden-smoke-${headSha.slice(0, 12)}-${expectation}.json`,
+  );
+  assert(!existsSync(receiptPath), `hidden receipt already exists: ${receiptPath}`);
+  const environment = packagedEnvironment(profile, "disabled");
+  environment.KOSH_STARTUP_SMOKE_RECEIPT = receiptPath;
+  environment.KOSH_STARTUP_SMOKE_HEAD = headSha;
+  environment.KOSH_STARTUP_SMOKE_EXPECT = expectation;
+
+  const launchedAt = new Date().toISOString();
+  const result = spawnSync(app.executable, [], {
+    encoding: "utf8",
+    env: environment,
+    timeout: 45_000,
+  });
+  requireSuccess(result, "hidden packaged Kosh smoke");
+  assert(existsSync(receiptPath), "hidden packaged Kosh wrote no smoke receipt");
+  const receipt = readJson(receiptPath);
+  verifyHiddenReceipt(receipt, profile, headSha, expectation);
+
+  writeJsonReplacing(join(profile.root, "launch.json"), {
+    schemaVersion: 1,
+    launchedAt,
+    pid: result.pid,
+    appPath: app.path,
+    executable: app.executable,
+    home: profile.home,
+    dataDirectory: profile.data,
+    guiPath: environment.PATH,
+    claudeMode: "disabled",
+    claudeShim: false,
+    executionMode: "hidden-smoke",
+    receipt: receiptPath,
+  });
+  console.info(`Hidden packaged acceptance passed for ${basename(profile.root)} at ${headSha}.`);
+}
+
+function verifyHiddenReceipt(receipt, profile, headSha, expectation) {
+  assertEqual(receipt.schemaVersion, 4, "hidden smoke receipt schema");
+  assertEqual(receipt.headSha, headSha, "hidden smoke requested head");
+  assertEqual(receipt.buildHeadSha, headSha, "hidden smoke packaged build head");
+  assertEqual(receipt.expectation, expectation, "hidden smoke expectation");
+  assertEqual(receipt.dataDir, profile.data, "hidden smoke data directory");
+  assertEqual([...receipt.windows].sort(), ["main", "quick-add"], "hidden smoke windows");
+  assertEqual(
+    receipt.webviews.map(({ surface }) => surface).sort(),
+    ["main", "quick-add"],
+    "hidden smoke webviews",
+  );
+  for (const webview of receipt.webviews) {
+    assert(webview.rendered && webview.rootChildCount > 0, `${webview.surface} React root`);
+    assertEqual(webview.frontendOrigin, "tauri://localhost", `${webview.surface} origin`);
+    assertEqual(webview.probeDataDir, profile.data, `${webview.surface} IPC data directory`);
+    assertEqual(webview.canary.executionMode, "EXACT", `${webview.surface} search mode`);
+    assertEqual(webview.canary.citationState, "CURRENT", `${webview.surface} citation state`);
+  }
+}
+
+function packagedEnvironment(profile, claudeMode) {
+  const environment = {
+    ...process.env,
+    HOME: profile.home,
+    TMPDIR: profile.temporary,
+    PATH: "/usr/bin:/bin",
+  };
+  for (const name of [
+    "KOSH_DATA_DIR",
+    "KOSH_LLAMA_SERVER_PATH",
+    "KOSH_LITESTREAM_PATH",
+    "KOSH_LITESTREAM_R2_ACCOUNT_ID",
+    "KOSH_LITESTREAM_R2_JURISDICTION",
+    "KOSH_LITESTREAM_R2_BUCKET",
+    "KOSH_LITESTREAM_R2_PREFIX",
+    "KOSH_LITESTREAM_R2_ACCESS_KEY_ID",
+    "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY",
+    "KOSH_EMBEDDING_MODEL_PATH",
+    "KOSH_STARTUP_SMOKE_RECEIPT",
+    "KOSH_STARTUP_SMOKE_HEAD",
+    "KOSH_STARTUP_SMOKE_EXPECT",
+    "KOSH_CLAUDE_DISABLED",
+    "CLAUDE_CONFIG_DIR",
+  ]) {
+    delete environment[name];
+  }
+  if (claudeMode === "disabled") environment.KOSH_CLAUDE_DISABLED = "1";
+  return environment;
 }
 
 function checkCore(values) {
@@ -289,7 +393,11 @@ function checkUpgrade(values) {
     ) >= 1,
     "upgraded fixture is absent from lexical search",
   );
-  const snapshot = migrationSnapshot(profile);
+  const snapshot = migrationSnapshot(
+    profile,
+    fixture.mainMigrationHead,
+    fixture.mediaMigrationHead,
+  );
   verifySnapshot(snapshot);
   assertEqual(
     textSql(snapshot.main, "SELECT max(version) FROM refinery_schema_history"),
@@ -310,7 +418,8 @@ function proveUpgradeRecovery(values) {
   assert(values.length === 2, "prove-upgrade-recovery accepts source and new target profile names");
   const source = existingProfile(values[0]);
   assertStopped(source);
-  const snapshot = migrationSnapshot(source);
+  const fixture = readJson(join(fixtureRoot, "manifest.json"));
+  const snapshot = migrationSnapshot(source, fixture.mainMigrationHead, fixture.mediaMigrationHead);
   verifySnapshot(snapshot);
   const target = newProfile(values[1]);
   initializeProfile(target);
@@ -399,20 +508,20 @@ function logicalEvidence(profile) {
   };
 }
 
-function migrationSnapshot(profile) {
+function migrationSnapshot(profile, expectedMainHead, expectedMediaHead) {
   const root = join(profile.data, "safety-snapshots");
-  const candidates = readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith("migration-"))
-    .map((entry) => join(root, entry.name))
-    .sort();
-  assert(candidates.length >= 1, "packaged upgrade created no migration snapshot");
-  const directory = candidates.at(-1);
-  return {
-    directory,
-    manifest: join(directory, "manifest.json"),
-    main: join(directory, "kosh.sqlite3"),
-    media: join(directory, "media.sqlite3"),
-  };
+  return selectMigrationSnapshot({
+    root,
+    expectedMainHead,
+    expectedMediaHead,
+    inspect(snapshot) {
+      verifySnapshot(snapshot);
+      return {
+        main: numberSql(snapshot.main, "SELECT max(version) FROM refinery_schema_history"),
+        media: numberSql(snapshot.media, "SELECT max(version) FROM refinery_schema_history"),
+      };
+    },
+  });
 }
 
 function verifySnapshot(snapshot) {
@@ -579,6 +688,7 @@ function printUsage() {
   console.info(`Usage:
   pnpm release:acceptance prepare-clean <profile>
   pnpm release:acceptance launch <profile> [Kosh.app] [--without-claude]
+  pnpm release:acceptance launch-hidden <profile> <absent|present> [Kosh.app]
   pnpm release:acceptance check-core <profile>
   pnpm release:acceptance check-journeys <profile>
   pnpm release:acceptance checkpoint-restart <profile>

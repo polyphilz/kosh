@@ -92,7 +92,7 @@ The build:
 8. builds a universal Tauri application;
 9. ad-hoc signs the app and nested executables; and
 10. checks architectures, hashes, versions, executable bits, Info.plist,
-   signatures, exact resources, and bundle isolation.
+    signatures, exact resources, and bundle isolation.
 
 The verified artifact is:
 
@@ -111,6 +111,12 @@ local data remains allowed. The lane also checks current migrations,
 WAL/integrity, and operation without Claude or a semantic model.
 
 ## 3. Run release acceptance
+
+The checklist's `launch-hidden` preflight can verify the exact packaged commit,
+migrations, both rendered webviews, IPC, restart, Exact search, and citations
+without foregrounding Kosh. It is useful while the Mac is in active use, but it
+does not replace the checklist's visible menu, shortcut, file-dialog, focus,
+or `/Applications` observations.
 
 Follow
 [`app/tests/native/release-acceptance.md`](../app/tests/native/release-acceptance.md)
