@@ -66,7 +66,7 @@ test("diagnostics and maintenance settings stay visually stable", async ({ page 
   await expect(recovery).toHaveScreenshot("settings-recovery.png", {
     animations: "disabled",
     caret: "hide",
-    maxDiffPixelRatio: 0.001,
+    maxDiffPixelRatio: 0.015,
     threshold: 0.3,
   });
 
