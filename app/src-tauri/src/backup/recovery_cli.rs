@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -15,7 +16,9 @@ use super::{
     domain::{BackupSetId, CheckpointId, R2AccountId, R2BucketName, R2Jurisdiction, R2Target},
     litestream::{CommandLitestreamRestore, EphemeralLitestreamRuntime, VerifiedLitestreamBinary},
     object_store::R2ObjectStore,
-    restore::{discover_checkpoints, install_checkpoint, stage_checkpoint, RemoteCheckpoint},
+    restore::{
+        discover_checkpoints, install_checkpoint_into_empty, stage_checkpoint, RemoteCheckpoint,
+    },
 };
 
 const COMMAND: &str = "recovery";
@@ -27,6 +30,8 @@ const JURISDICTION_ENV: &str = "KOSH_LITESTREAM_R2_JURISDICTION";
 const BUCKET_ENV: &str = "KOSH_LITESTREAM_R2_BUCKET";
 const ACCESS_KEY_ENV: &str = "KOSH_LITESTREAM_R2_ACCESS_KEY_ID";
 const SECRET_KEY_ENV: &str = "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY";
+const RESERVATION_FILENAME: &str = ".kosh-recovery-reservation-v1";
+const MAX_RESERVATION_BYTES: u64 = 128;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +92,7 @@ fn run(arguments: Vec<OsString>) -> Result<RemoteRestoreReport, String> {
     let selector = parse_utf8(&arguments[2], "checkpoint selector")?;
     let target_root = PathBuf::from(&arguments[3]);
     validate_new_target(&target_root)?;
+    let reservation = RecoveryTargetReservation::reserve(&target_root)?;
     let target = load_target()?;
     let credentials = load_credentials()?;
     restore_remote(
@@ -94,7 +100,7 @@ fn run(arguments: Vec<OsString>) -> Result<RemoteRestoreReport, String> {
         &credentials,
         &backup_set_id,
         &selector,
-        &target_root,
+        reservation,
     )
 }
 
@@ -103,8 +109,9 @@ fn restore_remote(
     credentials: &R2Credentials,
     backup_set_id: &BackupSetId,
     selector: &str,
-    target_root: &Path,
+    mut reservation: RecoveryTargetReservation,
 ) -> Result<RemoteRestoreReport, String> {
+    let target_root = reservation.path().to_owned();
     let keyspace = target.keyspace(backup_set_id);
     let store = R2ObjectStore::new(target.clone(), keyspace.clone(), credentials)
         .map_err(|_| "the private R2 target could not be opened")?;
@@ -148,13 +155,15 @@ fn restore_remote(
         .map_err(|_| "the isolated recovery runtime could not be removed")?;
     let restored_media_count = staged.restored_media_count;
     let restored_media_bytes = staged.restored_media_bytes;
-    let install = install_checkpoint(&DatabasePaths::new(target_root), &staged)
+    reservation.verify_install_ready()?;
+    let install = install_checkpoint_into_empty(&DatabasePaths::new(&target_root), &staged)
         .map_err(|_| "the validated recovery point could not be installed")?;
     if install.safety_snapshot_id.is_some() {
         return Err("a clean-directory recovery unexpectedly replaced existing data".into());
     }
+    reservation.finish()?;
 
-    let database = Database::initialize(DatabasePaths::new(target_root))
+    let database = Database::initialize(DatabasePaths::new(&target_root))
         .map_err(|_| "the restored Kosh library did not reopen normally")?;
     let search_documents_rebuilt = database
         .client()
@@ -202,6 +211,163 @@ fn restore_remote(
         .shutdown()
         .map_err(|_| "the restored Kosh library did not close cleanly")?;
     Ok(report)
+}
+
+#[derive(Debug)]
+struct RecoveryTargetReservation {
+    root: PathBuf,
+    marker: PathBuf,
+    token: String,
+    active: bool,
+}
+
+impl RecoveryTargetReservation {
+    fn reserve(path: &Path) -> Result<Self, String> {
+        validate_new_target(path)?;
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                "the recovery target stopped being new; no data was changed".to_owned()
+            } else {
+                "the recovery target could not be reserved".to_owned()
+            }
+        })?;
+
+        let marker = path.join(RESERVATION_FILENAME);
+        let token = uuid::Uuid::now_v7().to_string();
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            let mut file = options
+                .open(&marker)
+                .map_err(|_| "the recovery target reservation could not be created")?;
+            file.write_all(token.as_bytes())
+                .map_err(|_| "the recovery target reservation could not be persisted")?;
+            file.sync_all()
+                .map_err(|_| "the recovery target reservation could not be persisted")?;
+            sync_directory(path)
+                .map_err(|_| "the recovery target reservation could not be persisted")?;
+            Ok(Self {
+                root: path.to_owned(),
+                marker,
+                token,
+                active: true,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(path.join(RESERVATION_FILENAME));
+            let _ = fs::remove_dir(path);
+        }
+        result
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+
+    fn verify_install_ready(&self) -> Result<(), String> {
+        let root_metadata = fs::symlink_metadata(&self.root)
+            .map_err(|_| "the recovery target reservation disappeared")?;
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            return Err("the recovery target reservation was replaced; no data was changed".into());
+        }
+        let marker_metadata = fs::symlink_metadata(&self.marker)
+            .map_err(|_| "the recovery target reservation was replaced; no data was changed")?;
+        if marker_metadata.file_type().is_symlink()
+            || !marker_metadata.is_file()
+            || marker_metadata.len() > MAX_RESERVATION_BYTES
+        {
+            return Err("the recovery target reservation was replaced; no data was changed".into());
+        }
+        let marker = open_marker_no_follow(&self.marker)
+            .map_err(|_| "the recovery target reservation was replaced; no data was changed")?;
+        let mut token = String::new();
+        marker
+            .take(MAX_RESERVATION_BYTES + 1)
+            .read_to_string(&mut token)
+            .map_err(|_| "the recovery target reservation was replaced; no data was changed")?;
+        if token != self.token {
+            return Err("the recovery target reservation was replaced; no data was changed".into());
+        }
+        let entries = fs::read_dir(&self.root)
+            .map_err(|_| "the recovery target reservation could not be inspected")?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "the recovery target reservation could not be inspected")?;
+        if entries.len() != 1
+            || entries[0].file_name() != RESERVATION_FILENAME
+            || !entries[0]
+                .file_type()
+                .is_ok_and(|file_type| file_type.is_file() && !file_type.is_symlink())
+        {
+            return Err("the recovery target stopped being empty; no data was changed".into());
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        verify_marker(&self.marker, &self.token)?;
+        fs::remove_file(&self.marker)
+            .map_err(|_| "the recovery target reservation could not be removed")?;
+        sync_directory(&self.root)
+            .map_err(|_| "the recovery target reservation removal was not durable")?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for RecoveryTargetReservation {
+    fn drop(&mut self) {
+        if self.active && self.verify_install_ready().is_ok() {
+            let _ = fs::remove_file(&self.marker);
+            let _ = fs::remove_dir(&self.root);
+        }
+    }
+}
+
+fn verify_marker(path: &Path, expected: &str) -> Result<(), String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| "the recovery target reservation disappeared")?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_RESERVATION_BYTES
+    {
+        return Err("the recovery target reservation was replaced".into());
+    }
+    let file =
+        open_marker_no_follow(path).map_err(|_| "the recovery target reservation was replaced")?;
+    let mut token = String::new();
+    file.take(MAX_RESERVATION_BYTES + 1)
+        .read_to_string(&mut token)
+        .map_err(|_| "the recovery target reservation could not be read")?;
+    if token != expected {
+        return Err("the recovery target reservation was replaced".into());
+    }
+    Ok(())
+}
+
+fn open_marker_no_follow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    options.open(path)
+}
+
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
 }
 
 fn select_checkpoint(
@@ -320,17 +486,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_requires_a_canonical_backup_set_selector_and_new_absolute_target() {
+    fn command_atomically_reserves_a_canonical_new_absolute_target() {
         let root = tempfile::tempdir().expect("recovery parent");
         let target = root.path().join("restored");
         validate_new_target(&target).expect("new target");
-        fs::create_dir(&target).expect("existing target");
+        let reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
+        assert!(target.join(RESERVATION_FILENAME).is_file());
         assert_eq!(
             validate_new_target(&target),
             Err("the recovery target already exists; no data was changed".into())
         );
+        assert!(RecoveryTargetReservation::reserve(&target).is_err());
         assert!(BackupSetId::parse("not-a-backup-set").is_err());
         assert!(CheckpointId::parse("not-a-checkpoint").is_err());
+        drop(reservation);
+        assert!(!target.exists(), "unused reservation must clean up");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn target_reservation_rejects_a_raced_directory_symlink_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("recovery parent");
+        let target = root.path().join("restored");
+        let displaced = root.path().join("displaced");
+        let outside = tempfile::tempdir().expect("outside target");
+        let reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
+        fs::rename(&target, &displaced).expect("displace reservation");
+        symlink(outside.path(), &target).expect("raced target symlink");
+
+        assert_eq!(
+            reservation.verify_install_ready(),
+            Err("the recovery target reservation was replaced; no data was changed".into())
+        );
+        drop(reservation);
+        assert!(fs::symlink_metadata(&target)
+            .expect("preserved target symlink")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_dir(outside.path())
+                .expect("outside entries")
+                .count(),
+            0,
+            "a raced symlink target must remain untouched"
+        );
     }
 
     #[test]

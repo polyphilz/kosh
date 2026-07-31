@@ -10,8 +10,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::database::{
-    create_empty_restore_media_database, install_restored_pair, validate_restored_pair,
-    DatabasePaths, RestoreInstallReport,
+    create_empty_restore_media_database, install_restored_pair, install_restored_pair_into_empty,
+    validate_restored_pair, DatabasePaths, RestoreInstallReport,
 };
 
 use super::{
@@ -279,6 +279,20 @@ pub(crate) fn install_checkpoint(
     staged: &StagedRestore,
 ) -> Result<RestoreInstallReport, RestoreError> {
     let report = install_restored_pair(
+        live_paths,
+        &staged.paths,
+        staged.checkpoint.checkpoint_id().clone(),
+    )
+    .map_err(RestoreError::Database)?;
+    remove_owned_staging(&staged.paths.root)?;
+    Ok(report)
+}
+
+pub(crate) fn install_checkpoint_into_empty(
+    live_paths: &DatabasePaths,
+    staged: &StagedRestore,
+) -> Result<RestoreInstallReport, RestoreError> {
+    let report = install_restored_pair_into_empty(
         live_paths,
         &staged.paths,
         staged.checkpoint.checkpoint_id().clone(),
@@ -1212,6 +1226,51 @@ mod tests {
             .join(snapshot_id)
             .join("manifest.json")
             .is_file());
+    }
+
+    #[test]
+    fn clean_directory_install_refuses_a_pair_created_after_remote_staging() {
+        let fixture = Fixture::new();
+        let staging_parent = tempfile::tempdir().expect("staging parent");
+        let staged = stage_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.checkpoint,
+            &fixture.engine,
+            &fixture.source_paths.main,
+            &staging_parent.path().join("restore"),
+        )
+        .expect("staged restore");
+        let destination = tempfile::tempdir().expect("raced destination");
+        let live_paths = DatabasePaths::new(destination.path());
+        let raced = Database::initialize(live_paths.clone()).expect("raced local database pair");
+        raced.shutdown().expect("close raced pair");
+        let main_before = fs::read(&live_paths.main).expect("raced main bytes");
+        let media_before = fs::read(&live_paths.media).expect("raced media bytes");
+
+        assert!(install_checkpoint_into_empty(&live_paths, &staged).is_err());
+        assert_eq!(
+            fs::read(&live_paths.main).expect("preserved main bytes"),
+            main_before
+        );
+        assert_eq!(
+            fs::read(&live_paths.media).expect("preserved media bytes"),
+            media_before
+        );
+        assert!(
+            staged.paths.root.exists(),
+            "a refused install must retain its independently validated staging pair"
+        );
+
+        let receipt_destination = tempfile::tempdir().expect("raced receipt destination");
+        let receipt_paths = DatabasePaths::new(receipt_destination.path());
+        let raced_receipt = receipt_destination.path().join("restore-install-v1.json");
+        fs::write(&raced_receipt, b"raced receipt").expect("raced receipt");
+        assert!(install_checkpoint_into_empty(&receipt_paths, &staged).is_err());
+        assert_eq!(
+            fs::read(raced_receipt).expect("preserved raced receipt"),
+            b"raced receipt"
+        );
     }
 
     #[test]

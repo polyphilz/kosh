@@ -296,6 +296,13 @@
       "invariants": ["authored-bytes", "idempotency"]
     },
     {
+      "id": "install-clean-target-race",
+      "phase": "install",
+      "failureClass": "concurrency",
+      "test": "backup::restore::tests::clean_directory_install_refuses_a_pair_created_after_remote_staging",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
       "id": "reopen-search-and-citation-rebuild",
       "phase": "reopen",
       "failureClass": "stale-state",
@@ -325,7 +332,7 @@
       "id": "reopen-cli-refuses-existing-target",
       "phase": "reopen",
       "failureClass": "filesystem",
-      "test": "backup::recovery_cli::tests::command_requires_a_canonical_backup_set_selector_and_new_absolute_target",
+      "test": "backup::recovery_cli::tests::command_atomically_reserves_a_canonical_new_absolute_target",
       "invariants": ["authored-bytes", "bounded-cleanup"]
     },
     {
