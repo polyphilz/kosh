@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::{CStr, CString, OsString},
+    ffi::{CStr, CString, OsStr, OsString},
     fmt,
     fs::{self, File, OpenOptions, TryLockError},
     io::{Read, Seek, SeekFrom, Write},
@@ -2413,6 +2413,7 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
             return Err(LitestreamError::RelativeDatabasePath);
         }
         let destination = ExclusiveRestoreDestination::prepare(target_path)?;
+        destination.verify_path_bindings()?;
         let bytes = self.execute(
             source_database_path,
             destination.private_path(),
@@ -2441,47 +2442,75 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 struct ExclusiveRestoreDestination {
     requested_path: PathBuf,
-    private_directory: PathBuf,
+    requested_parent: File,
+    requested_name: OsString,
+    private_directory: File,
+    private_directory_name: String,
     private_path: PathBuf,
 }
 
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 impl ExclusiveRestoreDestination {
     fn prepare(requested_path: &Path) -> Result<Self, LitestreamError> {
-        match fs::symlink_metadata(requested_path) {
-            Ok(_) => return Err(LitestreamError::RestoreDestinationExists),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(LitestreamError::PrepareRestoreDestination(error)),
-        }
         let parent = requested_path.parent().ok_or_else(|| {
             LitestreamError::PrepareRestoreDestination(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "restore destination has no parent",
             ))
         })?;
-        let parent_metadata =
-            fs::symlink_metadata(parent).map_err(LitestreamError::PrepareRestoreDestination)?;
+        let requested_name = requested_path.file_name().ok_or_else(|| {
+            LitestreamError::PrepareRestoreDestination(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "restore destination has no filename",
+            ))
+        })?;
+        restore_child_name(requested_name).map_err(LitestreamError::PrepareRestoreDestination)?;
+        let requested_parent =
+            open_directory_no_follow(parent).map_err(LitestreamError::PrepareRestoreDestination)?;
+        let parent_metadata = requested_parent
+            .metadata()
+            .map_err(LitestreamError::PrepareRestoreDestination)?;
         if !parent_metadata.file_type().is_dir() {
             return Err(LitestreamError::InvalidRestoreDestination);
         }
+        if restore_child_exists(&requested_parent, requested_name)
+            .map_err(LitestreamError::PrepareRestoreDestination)?
+        {
+            return Err(LitestreamError::RestoreDestinationExists);
+        }
 
         for _ in 0..8 {
-            let private_directory = parent.join(format!(
-                ".kosh-litestream-restore-{}.tmp",
-                uuid::Uuid::now_v7()
-            ));
-            let mut builder = fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            match builder.create(&private_directory) {
+            let private_directory_name =
+                format!(".kosh-litestream-restore-{}.tmp", uuid::Uuid::now_v7());
+            match create_private_restore_directory(&requested_parent, &private_directory_name) {
                 Ok(()) => {
-                    let private_path = private_directory.join("database.sqlite3");
+                    let private_directory = open_owned_runtime_directory_child(
+                        &requested_parent,
+                        &private_directory_name,
+                    )
+                    .map_err(LitestreamError::PrepareRestoreDestination)?
+                    .ok_or_else(|| {
+                        LitestreamError::PrepareRestoreDestination(std::io::Error::other(
+                            "private restore directory disappeared",
+                        ))
+                    })?;
+                    if !is_private_current_user_directory(&private_directory)
+                        .map_err(LitestreamError::PrepareRestoreDestination)?
+                    {
+                        return Err(LitestreamError::InvalidRestoreDestination);
+                    }
+                    requested_parent
+                        .sync_all()
+                        .map_err(LitestreamError::PrepareRestoreDestination)?;
+                    let private_path = parent
+                        .join(&private_directory_name)
+                        .join("database.sqlite3");
                     return Ok(Self {
                         requested_path: requested_path.to_owned(),
+                        requested_parent,
+                        requested_name: requested_name.to_owned(),
                         private_directory,
+                        private_directory_name,
                         private_path,
                     });
                 }
@@ -2503,8 +2532,32 @@ impl ExclusiveRestoreDestination {
         &self.private_path
     }
 
+    fn verify_path_bindings(&self) -> Result<(), LitestreamError> {
+        let requested_parent_path = self
+            .requested_path
+            .parent()
+            .ok_or(LitestreamError::InvalidRestoreDestination)?;
+        if !path_matches_open_directory(requested_parent_path, &self.requested_parent) {
+            return Err(LitestreamError::InvalidRestoreDestination);
+        }
+        let current_private = open_owned_runtime_directory_child(
+            &self.requested_parent,
+            &self.private_directory_name,
+        )
+        .map_err(LitestreamError::PublishRestoreDestination)?
+        .ok_or(LitestreamError::InvalidRestoreDestination)?;
+        if !same_runtime_file(&current_private, &self.private_directory) {
+            return Err(LitestreamError::InvalidRestoreDestination);
+        }
+        Ok(())
+    }
+
     fn publish(self) -> Result<(), LitestreamError> {
-        let private_file = open_restore_file_no_follow(&self.private_path)?;
+        self.verify_path_bindings()?;
+        let private_file =
+            open_owned_runtime_file_child(&self.private_directory, "database.sqlite3")
+                .map_err(LitestreamError::PublishRestoreDestination)?
+                .ok_or(LitestreamError::InvalidRestoreDestination)?;
         let private_metadata = private_file
             .metadata()
             .map_err(LitestreamError::PublishRestoreDestination)?;
@@ -2522,7 +2575,12 @@ impl ExclusiveRestoreDestination {
             .sync_all()
             .map_err(LitestreamError::PublishRestoreDestination)?;
 
-        match fs::hard_link(&self.private_path, &self.requested_path) {
+        match link_restore_file(
+            &self.private_directory,
+            OsStr::new("database.sqlite3"),
+            &self.requested_parent,
+            &self.requested_name,
+        ) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(LitestreamError::RestoreDestinationExists);
@@ -2531,66 +2589,213 @@ impl ExclusiveRestoreDestination {
         }
 
         let publication = (|| {
-            let published_file = open_restore_file_no_follow(&self.requested_path)?;
+            let published_file =
+                open_regular_restore_child(&self.requested_parent, &self.requested_name)?;
             let published_metadata = published_file
                 .metadata()
                 .map_err(LitestreamError::PublishRestoreDestination)?;
             if !same_restore_file(&private_metadata, &published_metadata) {
                 return Err(LitestreamError::InvalidRestoreDestination);
             }
-            sync_restore_parent(
-                self.requested_path
-                    .parent()
-                    .ok_or(LitestreamError::InvalidRestoreDestination)?,
-            )?;
-            fs::remove_file(&self.private_path)
+            self.requested_parent
+                .sync_all()
                 .map_err(LitestreamError::PublishRestoreDestination)?;
-            fs::remove_dir(&self.private_directory)
-                .map_err(LitestreamError::PublishRestoreDestination)?;
-            sync_restore_parent(
-                self.requested_path
-                    .parent()
-                    .ok_or(LitestreamError::InvalidRestoreDestination)?,
-            )?;
+            unlink_exact_restore_file(
+                &self.private_directory,
+                OsStr::new("database.sqlite3"),
+                &private_file,
+            )
+            .map_err(LitestreamError::PublishRestoreDestination)?;
+            remove_owned_runtime_directory_child(
+                &self.requested_parent,
+                &self.private_directory_name,
+                &self.private_directory,
+            )
+            .map_err(LitestreamError::PublishRestoreDestination)?;
+            self.verify_requested_parent_binding()?;
             Ok(())
         })();
         if let Err(error) = publication {
-            if let Ok(published_file) = open_restore_file_no_follow(&self.requested_path) {
-                if published_file
-                    .metadata()
-                    .is_ok_and(|metadata| same_restore_file(&private_metadata, &metadata))
-                {
-                    let _ = fs::remove_file(&self.requested_path);
-                }
-            }
-            if let Some(parent) = self.requested_path.parent() {
-                let _ = sync_restore_parent(parent);
-            }
+            let _ = unlink_exact_restore_file(
+                &self.requested_parent,
+                &self.requested_name,
+                &private_file,
+            );
+            let _ = self.requested_parent.sync_all();
             return Err(error);
         }
         Ok(())
+    }
+
+    fn verify_requested_parent_binding(&self) -> Result<(), LitestreamError> {
+        let requested_parent_path = self
+            .requested_path
+            .parent()
+            .ok_or(LitestreamError::InvalidRestoreDestination)?;
+        if path_matches_open_directory(requested_parent_path, &self.requested_parent) {
+            Ok(())
+        } else {
+            Err(LitestreamError::InvalidRestoreDestination)
+        }
     }
 }
 
 impl Drop for ExclusiveRestoreDestination {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.private_path);
-        let _ = fs::remove_dir(&self.private_directory);
+        let _ = remove_optional_private_restore_output(&self.private_directory);
+        let _ = remove_owned_runtime_directory_child(
+            &self.requested_parent,
+            &self.private_directory_name,
+            &self.private_directory,
+        );
     }
 }
 
-#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
-fn open_restore_file_no_follow(path: &Path) -> Result<File, LitestreamError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+fn restore_child_name(name: &OsStr) -> std::io::Result<CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+        return Err(std::io::Error::other("invalid restore child name"));
     }
-    options
-        .open(path)
-        .map_err(LitestreamError::PublishRestoreDestination)
+    CString::new(bytes).map_err(|_| std::io::Error::other("invalid restore child name"))
+}
+
+fn restore_child_exists(parent: &File, name: &OsStr) -> std::io::Result<bool> {
+    Ok(restore_child_stat(parent, name)?.is_some())
+}
+
+fn restore_child_stat(parent: &File, name: &OsStr) -> std::io::Result<Option<libc::stat>> {
+    let name = restore_child_name(name)?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result == 0 {
+        return Ok(Some(unsafe { stat.assume_init() }));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::NotFound {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+fn remove_optional_private_restore_output(parent: &File) -> std::io::Result<()> {
+    let name = OsStr::new("database.sqlite3");
+    let Some(identity) = restore_child_stat(parent, name)? else {
+        return Ok(());
+    };
+    let kind = identity.st_mode & libc::S_IFMT;
+    if kind == libc::S_IFREG {
+        return remove_optional_owned_runtime_file(parent, "database.sqlite3");
+    }
+    if kind != libc::S_IFLNK
+        || identity.st_uid != unsafe { libc::geteuid() }
+        || identity.st_nlink != 1
+    {
+        return Err(std::io::Error::other(
+            "private restore output has an unexpected type or owner",
+        ));
+    }
+    let current = restore_child_stat(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("private restore output disappeared during cleanup")
+    })?;
+    if current.st_dev != identity.st_dev
+        || current.st_ino != identity.st_ino
+        || current.st_mode != identity.st_mode
+        || current.st_uid != identity.st_uid
+    {
+        return Err(std::io::Error::other(
+            "private restore output identity changed",
+        ));
+    }
+    let name = restore_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn create_private_restore_directory(parent: &File, name: &str) -> std::io::Result<()> {
+    let name = restore_child_name(OsStr::new(name))?;
+    let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn link_restore_file(
+    source_parent: &File,
+    source_name: &OsStr,
+    target_parent: &File,
+    target_name: &OsStr,
+) -> std::io::Result<()> {
+    let source_name = restore_child_name(source_name)?;
+    let target_name = restore_child_name(target_name)?;
+    let result = unsafe {
+        libc::linkat(
+            source_parent.as_raw_fd(),
+            source_name.as_ptr(),
+            target_parent.as_raw_fd(),
+            target_name.as_ptr(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn open_regular_restore_child(parent: &File, name: &OsStr) -> Result<File, LitestreamError> {
+    let name = restore_child_name(name).map_err(LitestreamError::PublishRestoreDestination)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(LitestreamError::PublishRestoreDestination(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file
+        .metadata()
+        .map_err(LitestreamError::PublishRestoreDestination)?
+        .is_file()
+    {
+        return Err(LitestreamError::InvalidRestoreDestination);
+    }
+    Ok(file)
+}
+
+fn unlink_exact_restore_file(parent: &File, name: &OsStr, owned: &File) -> std::io::Result<()> {
+    let current = open_regular_restore_child(parent, name)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    if !same_runtime_file(&current, owned) {
+        return Err(std::io::Error::other("restore file identity changed"));
+    }
+    let name = restore_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(unix)]
@@ -2604,21 +2809,6 @@ fn same_restore_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 fn same_restore_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     right.file_type().is_file() && left.len() == right.len()
-}
-
-#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
-fn sync_restore_parent(path: &Path) -> Result<(), LitestreamError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    }
-    options
-        .open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(LitestreamError::PublishRestoreDestination)
 }
 
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
@@ -3652,6 +3842,50 @@ mod tests {
         active.cleanup().expect("cleanup active");
         fs::remove_file(replacement_database).expect("remove replacement fixture");
         fs::remove_dir(replacement_root).expect("remove replacement root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_restore_cleanup_never_follows_a_replacement_directory_symlink() {
+        let root = tempfile::tempdir().expect("restore root");
+        let requested = root.path().join("restored.sqlite3");
+        let destination =
+            ExclusiveRestoreDestination::prepare(&requested).expect("private destination");
+        fs::write(destination.private_path(), b"owned partial restore")
+            .expect("owned partial restore");
+        let private_directory = destination
+            .private_path()
+            .parent()
+            .expect("private restore parent")
+            .to_owned();
+        let displaced = root.path().join("displaced-private-restore");
+        fs::rename(&private_directory, &displaced).expect("displace private restore");
+
+        let replacement = root.path().join("replacement-private-restore");
+        fs::create_dir(&replacement).expect("replacement directory");
+        let replacement_database = replacement.join("database.sqlite3");
+        fs::write(&replacement_database, b"replacement-must-not-change")
+            .expect("replacement database");
+        std::os::unix::fs::symlink(&replacement, &private_directory)
+            .expect("replacement directory symlink");
+
+        drop(destination);
+
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement database"),
+            b"replacement-must-not-change"
+        );
+        assert!(
+            fs::symlink_metadata(&private_directory)
+                .expect("replacement symlink remains")
+                .file_type()
+                .is_symlink(),
+            "cleanup must not unlink a substituted path"
+        );
+        assert!(
+            !displaced.join("database.sqlite3").exists(),
+            "cleanup must remove the partial restore only through its retained directory descriptor"
+        );
     }
 
     #[test]

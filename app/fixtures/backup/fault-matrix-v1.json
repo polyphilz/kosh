@@ -247,6 +247,13 @@
       "invariants": ["authored-bytes", "bounded-cleanup"]
     },
     {
+      "id": "restore-private-output-parent-substitution",
+      "phase": "restore",
+      "failureClass": "concurrency",
+      "test": "backup::litestream::tests::private_restore_cleanup_never_follows_a_replacement_directory_symlink",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
       "id": "restore-sandbox-symlink-escape",
       "phase": "restore",
       "failureClass": "security",
