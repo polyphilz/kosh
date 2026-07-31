@@ -648,16 +648,30 @@ fn configure_blocking(
         })
         .map_err(map_database_error)?;
     if let Some(credentials) = supplied {
-        if let Err(error) = MacOsKeychainCredentialStore.stage(&operation_id, &credentials) {
-            let _ = MacOsKeychainCredentialStore.remove_staged(&operation_id);
-            let _ = context
-                .client
-                .abort_offsite_backup_config_intent(operation_id);
-            return Err(map_credential_error(error));
-        }
+        stage_replacement_credentials(
+            &context.client,
+            &MacOsKeychainCredentialStore,
+            &operation_id,
+            &credentials,
+        )?;
     }
     reconcile_pending_backup_operations(&context.client, &context.data_root)?;
     clean_retired_credentials(&context.client);
+    Ok(())
+}
+
+fn stage_replacement_credentials(
+    client: &DatabaseClient,
+    store: &dyn CredentialStore,
+    operation_id: &str,
+    credentials: &R2Credentials,
+) -> BackupCommandResult<()> {
+    if let Err(error) = store.stage(operation_id, credentials) {
+        if store.remove_staged(operation_id).is_ok() {
+            let _ = client.abort_offsite_backup_config_intent(operation_id.to_owned());
+        }
+        return Err(map_credential_error(error));
+    }
     Ok(())
 }
 
@@ -1420,7 +1434,10 @@ mod tests {
     use crate::database::{Database, DatabasePaths};
     use std::{
         collections::HashMap,
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
     };
 
     const ACCESS_KEY: &str = "0123456789abcdef0123456789abcdef";
@@ -1430,6 +1447,8 @@ mod tests {
     struct FakeCredentialStore {
         active: Mutex<HashMap<String, (String, String)>>,
         staged: Mutex<HashMap<String, (String, String)>>,
+        fail_stage_after_write: AtomicBool,
+        fail_staged_removal: AtomicBool,
     }
 
     impl FakeCredentialStore {
@@ -1456,6 +1475,14 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains_key(operation_id)
+        }
+
+        fn fail_next_stage_after_write(&self) {
+            self.fail_stage_after_write.store(true, Ordering::SeqCst);
+        }
+
+        fn set_staged_removal_failure(&self, fail: bool) {
+            self.fail_staged_removal.store(fail, Ordering::SeqCst);
         }
     }
 
@@ -1501,6 +1528,9 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert(operation_id.to_owned(), Self::pair(credentials));
+            if self.fail_stage_after_write.swap(false, Ordering::SeqCst) {
+                return Err(CredentialError::Unavailable);
+            }
             Ok(())
         }
 
@@ -1513,6 +1543,9 @@ mod tests {
         }
 
         fn remove_staged(&self, operation_id: &str) -> Result<(), CredentialError> {
+            if self.fail_staged_removal.load(Ordering::SeqCst) {
+                return Err(CredentialError::Unavailable);
+            }
             self.staged
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1674,6 +1707,60 @@ mod tests {
             .expect("intent")
             .is_none());
         assert!(store.has_active(&backup_set_id));
+    }
+
+    #[test]
+    fn failed_stage_cleanup_retains_its_discoverable_journal_until_recovery() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let store = FakeCredentialStore::default();
+        let (operation_id, backup_set_id) =
+            pending_config_fixture(&client, CredentialIntentAction::Replace);
+        let credentials = R2Credentials::new(ACCESS_KEY, SECRET_KEY).expect("credentials");
+        store.fail_next_stage_after_write();
+        store.set_staged_removal_failure(true);
+
+        let error = stage_replacement_credentials(&client, &store, &operation_id, &credentials)
+            .expect_err("staging failure");
+
+        assert_eq!(error.code, BackupCommandErrorCode::KeychainUnavailable);
+        assert!(store.has_staged(&operation_id));
+        let pending = client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .expect("retained intent");
+        assert_eq!(pending.operation_id, operation_id);
+
+        store.set_staged_removal_failure(false);
+        reconcile_config_intent(&client, &store, pending).expect("retry retained operation");
+
+        assert!(!store.has_staged(&operation_id));
+        assert!(store.has_active(&backup_set_id));
+        assert!(client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .is_none());
+    }
+
+    #[test]
+    fn failed_stage_aborts_only_after_confirmed_cleanup() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let store = FakeCredentialStore::default();
+        let (operation_id, _) = pending_config_fixture(&client, CredentialIntentAction::Replace);
+        let credentials = R2Credentials::new(ACCESS_KEY, SECRET_KEY).expect("credentials");
+        store.fail_next_stage_after_write();
+
+        stage_replacement_credentials(&client, &store, &operation_id, &credentials)
+            .expect_err("staging failure");
+
+        assert!(!store.has_staged(&operation_id));
+        assert!(client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .is_none());
     }
 
     #[test]
