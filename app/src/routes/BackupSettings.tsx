@@ -276,7 +276,7 @@ export function BackupSettings() {
     <>
       <section aria-labelledby="backup-title" className="settings-panel backup-settings">
         <PanelHeader
-          description="Private, single-writer disaster recovery to Cloudflare R2. This is backup, not multi-device sync."
+          description="Private R2 disaster recovery. This is backup, not multi-device sync."
           title="Offsite recovery"
         >
           <div className="backup-settings__header-actions">
