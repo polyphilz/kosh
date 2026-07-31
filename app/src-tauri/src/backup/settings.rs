@@ -905,9 +905,9 @@ pub(crate) fn reconcile_startup_backup_state(
     client: &DatabaseClient,
     data_root: &Path,
 ) -> BackupCommandResult<bool> {
-    let changed = reconcile_pending_backup_operations(client, data_root)?;
+    let reconciliation = reconcile_pending_backup_operations(client, data_root);
     clean_retired_credentials(client);
-    Ok(changed)
+    reconciliation
 }
 
 fn reconcile_pending_backup_operations(
