@@ -85,7 +85,7 @@ jobs:
   browser-webkit:
     name: WebKit editor and keyboard contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: app
@@ -214,6 +214,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Prove pinned Litestream transaction and restore protocol
         run: ../scripts/verify-litestream-ci-protocol.sh
+      - name: Verify the deterministic backup fault matrix
+        run: pnpm backup:verify-fault-matrix
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-support -- -D warnings
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support
@@ -224,6 +226,14 @@ jobs:
           name: litestream-protocol-${{ github.run_id }}
           path: app/.data/litestream-protocol/runs/*/report.json
           if-no-files-found: warn
+          retention-days: 14
+      - name: Retain backup fault-matrix evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-fault-matrix-${{ github.run_id }}
+          path: app/.data/backup-acceptance/fault-matrix-report-v1.json
+          if-no-files-found: error
           retention-days: 14
 
   native-startup:

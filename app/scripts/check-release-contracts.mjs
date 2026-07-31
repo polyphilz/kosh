@@ -8,6 +8,7 @@ const packageJson = readJson("package.json");
 const pin = readJson("src-tauri/resources/sidecars/llama-server-v1.json");
 const litestreamPin = readJson("src-tauri/resources/sidecars/litestream-v1.json");
 const cargo = readFileSync("src-tauri/Cargo.toml", "utf8");
+const main = readFileSync("src-tauri/src/main.rs", "utf8");
 
 assertEqual(local.productName, "Kosh", "product name");
 assertEqual(local.identifier, "com.rohan.kosh", "bundle identifier");
@@ -126,6 +127,12 @@ const expectedResources = {
   "resources/embedding-indexes/jina-v1-golden.json": "embedding-indexes/jina-v1-golden.json",
 };
 assertEqual(release.bundle.resources, expectedResources, "release resources");
+const recoveryEntry = main.indexOf("run_recovery_cli_if_requested()");
+const applicationEntry = main.indexOf("kosh_lib::run()");
+assert(
+  recoveryEntry >= 0 && applicationEntry > recoveryEntry,
+  "packaged recovery command must run before Tauri application startup",
+);
 
 console.info(
   `Release contracts passed: Kosh ${packageJson.version}, universal macOS ${pin.target.minimumSystemVersion}+, ad-hoc signed with explicit empty entitlements and bounded capabilities.`,

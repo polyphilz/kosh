@@ -47,6 +47,25 @@ cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
   --features test-support --lib backup::owner::tests
 ```
 
-The ordinary full `pnpm check` remains the release gate. Real-R2 destructive
-recovery and packaged-app acceptance are deliberately recorded in chunk 29h,
-where they can run outside pull requests under an isolated canary prefix.
+The ordinary full `pnpm check` remains the pull-request gate. The deterministic
+48-case matrix is checked with:
+
+```sh
+pnpm --dir app backup:verify-fault-matrix
+```
+
+Real-R2 destructive recovery stays outside pull requests and is recorded by
+the scheduled/manual packaged canary:
+
+```sh
+cd app
+pnpm release:build:app
+KOSH_R2_CANARY_REQUIRE_PACKAGED=1 ../scripts/run-litestream-r2-canary.sh
+```
+
+The canary uses a unique backup set, retries interrupted replication, drills
+the published point, executes the package's `recovery remote-restore` command
+into a brand-new isolated data directory, then starts the restored app with
+hidden windows. Its redacted receipt proves tidbits, immutable revisions,
+media bytes, rebuilt search, URL citations, historical Research citations, and
+zero remaining objects under the canary prefix.

@@ -6,6 +6,8 @@
 //! replication runs only for an enabled configuration under the supervised
 //! Litestream runtime.
 
+#[cfg(all(test, target_os = "macos"))]
+mod canary;
 pub(crate) mod checkpoint;
 pub(crate) mod credentials;
 pub(crate) mod domain;
@@ -15,6 +17,7 @@ pub(crate) mod media_reconciler;
 pub(crate) mod object_store;
 pub(crate) mod owner;
 pub(crate) mod probe;
+pub(crate) mod recovery_cli;
 pub(crate) mod restore;
 pub(crate) mod settings;
 pub(crate) mod writer_identity;

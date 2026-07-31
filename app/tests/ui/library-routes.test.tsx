@@ -20,7 +20,7 @@ describe("library lifecycle routes", () => {
     renderRoute(backend, "/library");
 
     expect(await screen.findByRole("heading", { name: "Library" })).toBeInTheDocument();
-    expect(screen.getAllByRole("listitem")).toHaveLength(12);
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(12));
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("link", { name: "All tidbits" }));

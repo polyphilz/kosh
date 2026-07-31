@@ -1,17 +1,22 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
+    ffi::{CStr, CString, OsStr, OsString},
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
     io::{Read, Seek, SeekFrom, Write},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{ffi::OsStringExt, process::CommandExt},
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -32,6 +37,10 @@ const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESTORE_FILES: usize = 100_000;
 const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
+const PRIVATE_RESTORE_OUTPUT_FILENAME: &str = "database.sqlite3";
+const EPHEMERAL_RUNTIME_CONTROL_FILENAME: &str = ".kosh-recovery-runtime-v1.json";
+const EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION: u32 = 2;
+const MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES: u64 = 4 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(target_os = "macos")]
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
@@ -208,6 +217,8 @@ pub struct ImmutableLitestreamBinary {
     sha256: String,
     size: u64,
     code_signature_cdhash: String,
+    bound_file: Option<Arc<File>>,
+    bound_directory: Option<Arc<File>>,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +231,8 @@ struct ImmutableLitestreamRestoreConfig {
     sha256: String,
     size: u64,
     replica_path: R2ObjectKey,
+    bound_file: Option<Arc<File>>,
+    bound_directory: Option<Arc<File>>,
 }
 
 impl VerifiedLitestreamBinary {
@@ -300,6 +313,13 @@ impl ImmutableLitestreamBinary {
         &self.path
     }
 
+    pub(crate) fn resolved_command_path(&self) -> Result<PathBuf, LitestreamError> {
+        self.bound_file.as_ref().map_or_else(
+            || Ok(self.path.clone()),
+            |file| open_file_path(file).map_err(LitestreamError::StageBinary),
+        )
+    }
+
     #[must_use]
     pub fn sha256(&self) -> &str {
         &self.sha256
@@ -311,6 +331,11 @@ impl ImmutableLitestreamBinary {
     }
 
     pub(crate) fn reverify_before_spawn(&self) -> Result<(), LitestreamError> {
+        if let (Some(file), Some(directory)) = (&self.bound_file, &self.bound_directory) {
+            verify_bound_immutable_file(file, directory, &self.sha256, self.size, 0o500)
+                .map_err(|_| LitestreamError::InvalidStagedBinary)?;
+            return Ok(());
+        }
         let file = verify_binary(
             &self.path,
             &BinaryPin {
@@ -340,7 +365,19 @@ impl ImmutableLitestreamBinary {
 }
 
 impl ImmutableLitestreamRestoreConfig {
+    fn resolved_command_path(&self) -> Result<PathBuf, LitestreamError> {
+        self.bound_file.as_ref().map_or_else(
+            || Ok(self.path.clone()),
+            |file| open_file_path(file).map_err(LitestreamError::StageRestoreConfig),
+        )
+    }
+
     fn reverify_before_spawn(&self) -> Result<(), LitestreamError> {
+        if let (Some(file), Some(directory)) = (&self.bound_file, &self.bound_directory) {
+            verify_bound_immutable_file(file, directory, &self.sha256, self.size, 0o400)
+                .map_err(|_| LitestreamError::InvalidRestoreConfig)?;
+            return Ok(());
+        }
         let parent = self
             .path
             .parent()
@@ -399,6 +436,9 @@ fn stage_immutable_restore_config(
     if rendered.is_empty() || rendered.len() > MAX_RESTORE_CONFIG_BYTES {
         return Err(LitestreamError::InvalidRestoreConfig);
     }
+    if let Some(root) = &runtime.bound_data_root {
+        return stage_bound_immutable_restore_config(runtime, root, rendered, replica_path);
+    }
     runtime.prepare()?;
     let bytes = rendered.as_bytes();
     let sha256 = format!("{:x}", Sha256::digest(bytes));
@@ -416,6 +456,8 @@ fn stage_immutable_restore_config(
         sha256: sha256.clone(),
         size,
         replica_path: replica_path.clone(),
+        bound_file: None,
+        bound_directory: None,
     };
     match fs::symlink_metadata(&final_directory) {
         Ok(_) => match config.reverify_before_spawn() {
@@ -739,6 +781,9 @@ fn stage_immutable_binary(
     binary: &VerifiedLitestreamBinary,
     runtime: &LitestreamRuntimePaths,
 ) -> Result<ImmutableLitestreamBinary, LitestreamError> {
+    if let Some(root) = &runtime.bound_data_root {
+        return stage_bound_immutable_binary(binary, runtime, root);
+    }
     runtime.prepare()?;
     let stage_root = runtime.directory().join("verified-litestream");
     prepare_private_runtime_directory(&stage_root).map_err(LitestreamError::StageBinary)?;
@@ -752,6 +797,8 @@ fn stage_immutable_binary(
                     sha256: binary.sha256.clone(),
                     size: binary.size,
                     code_signature_cdhash: binary.code_signature_cdhash.clone(),
+                    bound_file: None,
+                    bound_directory: None,
                 });
             }
             Err(_) => {
@@ -840,6 +887,116 @@ fn stage_immutable_binary(
         sha256: binary.sha256.clone(),
         size: binary.size,
         code_signature_cdhash: binary.code_signature_cdhash.clone(),
+        bound_file: None,
+        bound_directory: None,
+    })
+}
+
+fn stage_bound_immutable_binary(
+    binary: &VerifiedLitestreamBinary,
+    runtime: &LitestreamRuntimePaths,
+    root: &BoundRuntimeRoot,
+) -> Result<ImmutableLitestreamBinary, LitestreamError> {
+    let backup = runtime
+        .bound_backup_directory(&root.directory)
+        .map_err(LitestreamError::StageBinary)?;
+    let stages = ensure_private_runtime_directory_child(&backup, "verified-litestream")
+        .map_err(LitestreamError::StageBinary)?;
+    let final_directory = ensure_private_runtime_directory_child(&stages, &binary.sha256)
+        .map_err(LitestreamError::StageBinary)?;
+    let mut destination = create_private_runtime_child(&final_directory, "litestream")
+        .map_err(LitestreamError::StageBinary)?;
+    let mut source = binary
+        .file
+        .try_clone()
+        .map_err(LitestreamError::StageBinary)?;
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(LitestreamError::StageBinary)?;
+    let copied = std::io::copy(&mut source.take(binary.size + 1), &mut destination)
+        .map_err(LitestreamError::StageBinary)?;
+    if copied != binary.size {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    destination
+        .sync_all()
+        .map_err(LitestreamError::StageBinary)?;
+    use std::os::unix::fs::PermissionsExt;
+    destination
+        .set_permissions(fs::Permissions::from_mode(0o500))
+        .map_err(LitestreamError::StageBinary)?;
+    set_user_immutable(&destination).map_err(LitestreamError::StageBinary)?;
+    final_directory
+        .set_permissions(fs::Permissions::from_mode(0o500))
+        .map_err(LitestreamError::StageBinary)?;
+    set_user_immutable(&final_directory).map_err(LitestreamError::StageBinary)?;
+    final_directory
+        .sync_all()
+        .and_then(|()| stages.sync_all())
+        .map_err(LitestreamError::StageBinary)?;
+    let bound_file = Arc::new(destination);
+    let bound_directory = Arc::new(final_directory);
+    let path = runtime
+        .directory()
+        .join("verified-litestream")
+        .join(&binary.sha256)
+        .join("litestream");
+    Ok(ImmutableLitestreamBinary {
+        path,
+        sha256: binary.sha256.clone(),
+        size: binary.size,
+        code_signature_cdhash: binary.code_signature_cdhash.clone(),
+        bound_file: Some(bound_file),
+        bound_directory: Some(bound_directory),
+    })
+}
+
+fn stage_bound_immutable_restore_config(
+    runtime: &LitestreamRuntimePaths,
+    root: &BoundRuntimeRoot,
+    rendered: &str,
+    replica_path: &R2ObjectKey,
+) -> Result<ImmutableLitestreamRestoreConfig, LitestreamError> {
+    let bytes = rendered.as_bytes();
+    let sha256 = format!("{:x}", Sha256::digest(bytes));
+    let backup = runtime
+        .bound_backup_directory(&root.directory)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let stages = ensure_private_runtime_directory_child(&backup, "restore-configs")
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let final_directory = ensure_private_runtime_directory_child(&stages, &sha256)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let mut file = create_private_runtime_child(&final_directory, "ls.yml")
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o400))
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&file).map_err(LitestreamError::StageRestoreConfig)?;
+    final_directory
+        .set_permissions(fs::Permissions::from_mode(0o500))
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&final_directory).map_err(LitestreamError::StageRestoreConfig)?;
+    final_directory
+        .sync_all()
+        .and_then(|()| stages.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let bound_file = Arc::new(file);
+    let bound_directory = Arc::new(final_directory);
+    let path = runtime
+        .directory()
+        .join("restore-configs")
+        .join(&sha256)
+        .join("ls.yml");
+    Ok(ImmutableLitestreamRestoreConfig {
+        path,
+        sha256,
+        size: bytes.len() as u64,
+        replica_path: replica_path.clone(),
+        bound_file: Some(bound_file),
+        bound_directory: Some(bound_directory),
     })
 }
 
@@ -864,11 +1021,15 @@ fn validate_immutable_stage(
 }
 
 fn validate_immutable_file(file: &File) -> Result<(), LitestreamError> {
+    validate_immutable_file_mode(file, 0o500)
+}
+
+fn validate_immutable_file_mode(file: &File, expected_mode: u32) -> Result<(), LitestreamError> {
     let metadata = file.metadata().map_err(LitestreamError::StageBinary)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o777 != 0o500 {
+        if metadata.permissions().mode() & 0o777 != expected_mode {
             return Err(LitestreamError::InvalidStagedBinary);
         }
     }
@@ -907,6 +1068,47 @@ fn validate_immutable_directory_file(directory: &File) -> Result<(), LitestreamE
         }
     }
     Ok(())
+}
+
+fn verify_bound_immutable_file(
+    file: &File,
+    directory: &File,
+    expected_sha256: &str,
+    expected_size: u64,
+    expected_mode: u32,
+) -> Result<(), LitestreamError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata().map_err(LitestreamError::StageBinary)?;
+    if !metadata.is_file()
+        || metadata.len() != expected_size
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+    {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    let mut reader = file.try_clone().map_err(LitestreamError::StageBinary)?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(LitestreamError::StageBinary)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    let mut bounded = reader.take(expected_size + 1);
+    loop {
+        let read = bounded
+            .read(&mut buffer)
+            .map_err(LitestreamError::StageBinary)?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        hasher.update(&buffer[..read]);
+    }
+    if total != expected_size || format!("{:x}", hasher.finalize()) != expected_sha256 {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    validate_immutable_file_mode(file, expected_mode)?;
+    validate_immutable_directory_file(directory)
 }
 
 fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
@@ -1014,13 +1216,275 @@ pub(crate) fn clear_user_immutable(_file: &File) -> std::io::Result<()> {
 }
 
 /// Private configuration, socket, and future PID-record paths.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LitestreamRuntimePaths {
     directory: PathBuf,
     config: PathBuf,
     socket: PathBuf,
     pid: PathBuf,
     ownership_lock: PathBuf,
+    bound_data_root: Option<Arc<BoundRuntimeRoot>>,
+}
+
+#[derive(Debug)]
+struct BoundRuntimeRoot {
+    directory: File,
+    config: Mutex<Option<Arc<File>>>,
+}
+
+impl PartialEq for LitestreamRuntimePaths {
+    fn eq(&self, other: &Self) -> bool {
+        self.directory == other.directory
+            && self.config == other.config
+            && self.socket == other.socket
+            && self.pid == other.pid
+            && self.ownership_lock == other.ownership_lock
+    }
+}
+
+impl Eq for LitestreamRuntimePaths {}
+
+pub(crate) struct EphemeralLitestreamRuntime {
+    #[cfg(test)]
+    root: PathBuf,
+    source_database_path: PathBuf,
+    runtime: LitestreamRuntimePaths,
+    ownership: EphemeralRuntimeOwnership,
+    cleaned: bool,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EphemeralRuntimeControl {
+    schema_version: u32,
+    token: String,
+    root_device: u64,
+    root_inode: u64,
+}
+
+struct EphemeralRuntimeOwnership {
+    root: PathBuf,
+    token: String,
+    directory: File,
+    marker: File,
+}
+
+impl EphemeralLitestreamRuntime {
+    pub(crate) fn create() -> Result<Self, LitestreamError> {
+        #[cfg(unix)]
+        let parent = Path::new("/tmp");
+        #[cfg(not(unix))]
+        let parent = std::env::temp_dir().as_path();
+        reclaim_abandoned_ephemeral_runtimes(parent).map_err(LitestreamError::PrepareRuntime)?;
+        let mut ownership =
+            EphemeralRuntimeOwnership::create(parent).map_err(LitestreamError::PrepareRuntime)?;
+        let root = ownership.root.clone();
+        let runtime = match ownership
+            .directory
+            .try_clone()
+            .map_err(LitestreamError::PrepareRuntime)
+            .and_then(|directory| LitestreamRuntimePaths::new_bound(&root, directory))
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let _ = ownership.remove();
+                return Err(error);
+            }
+        };
+        let source_database_path = root.join("remote-kosh.sqlite3");
+        Ok(Self {
+            #[cfg(test)]
+            root,
+            source_database_path,
+            runtime,
+            ownership,
+            cleaned: false,
+        })
+    }
+
+    pub(crate) fn paths(&self) -> &LitestreamRuntimePaths {
+        &self.runtime
+    }
+
+    pub(crate) fn source_database_path(&self) -> &Path {
+        &self.source_database_path
+    }
+
+    pub(crate) fn cleanup(&mut self) -> Result<(), LitestreamError> {
+        if self.cleaned {
+            return Ok(());
+        }
+        self.ownership
+            .remove()
+            .map_err(LitestreamError::PrepareRuntime)?;
+        self.cleaned = true;
+        Ok(())
+    }
+}
+
+impl Drop for EphemeralLitestreamRuntime {
+    fn drop(&mut self) {
+        if !self.cleaned {
+            let _ = self.ownership.remove();
+        }
+    }
+}
+
+impl EphemeralRuntimeOwnership {
+    fn create(parent: &Path) -> std::io::Result<Self> {
+        let token = uuid::Uuid::now_v7().to_string();
+        let root = parent.join(format!("kosh-r-{token}"));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&root)?;
+        let directory = match open_directory_no_follow(&root) {
+            Ok(directory) => directory,
+            Err(error) => {
+                let _ = fs::remove_dir(&root);
+                return Err(error);
+            }
+        };
+        if !path_matches_open_directory(&root, &directory)
+            || !is_private_current_user_directory(&directory)?
+            || !runtime_directory_entries(&directory)?.is_empty()
+        {
+            let _ = remove_empty_owned_runtime_directory(&root, &directory);
+            return Err(std::io::Error::other(
+                "ephemeral recovery root was replaced",
+            ));
+        }
+        let (root_device, root_inode) = match runtime_file_identity(&directory) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = remove_empty_owned_runtime_directory(&root, &directory);
+                return Err(error);
+            }
+        };
+        let mut marker =
+            match create_private_runtime_child(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME) {
+                Ok(marker) => marker,
+                Err(error) => {
+                    let _ = remove_empty_owned_runtime_directory(&root, &directory);
+                    return Err(error);
+                }
+            };
+        if let Err(error) = marker.lock() {
+            let _ =
+                unlink_owned_runtime_file(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME, &marker);
+            let _ = remove_empty_owned_runtime_directory(&root, &directory);
+            return Err(error);
+        }
+        let control = EphemeralRuntimeControl {
+            schema_version: EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION,
+            token: token.clone(),
+            root_device,
+            root_inode,
+        };
+        if let Err(error) = write_ephemeral_runtime_control(&mut marker, &control)
+            .and_then(|()| directory.sync_all())
+            .and_then(|()| File::open(parent)?.sync_all())
+        {
+            let _ =
+                unlink_owned_runtime_file(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME, &marker);
+            let _ = remove_empty_owned_runtime_directory(&root, &directory);
+            return Err(error);
+        }
+        Ok(Self {
+            root,
+            token,
+            directory,
+            marker,
+        })
+    }
+
+    fn open(path: &Path) -> std::io::Result<Option<Self>> {
+        let Some(token) = ephemeral_runtime_token(path) else {
+            return Ok(None);
+        };
+        let directory = match open_directory_no_follow(path) {
+            Ok(directory) => directory,
+            Err(_) => return Ok(None),
+        };
+        if !path_matches_open_directory(path, &directory)
+            || !is_private_current_user_directory(&directory)?
+        {
+            return Ok(None);
+        }
+        let mut marker =
+            match open_regular_runtime_child(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME) {
+                Ok(marker) => marker,
+                Err(_) => return Ok(None),
+            };
+        if !is_private_current_user_file(&marker)? || runtime_link_count(&marker)? != 1 {
+            return Ok(None);
+        }
+        let control = match read_ephemeral_runtime_control(&mut marker) {
+            Ok(control) => control,
+            Err(_) => return Ok(None),
+        };
+        let (root_device, root_inode) = runtime_file_identity(&directory)?;
+        if control.schema_version != EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION
+            || control.token != token
+            || control.root_device != root_device
+            || control.root_inode != root_inode
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            root: path.to_owned(),
+            token,
+            directory,
+            marker,
+        }))
+    }
+
+    fn remove(&mut self) -> std::io::Result<()> {
+        if !path_matches_open_directory(&self.root, &self.directory) {
+            return Err(std::io::Error::other(
+                "ephemeral recovery root identity changed",
+            ));
+        }
+        let parent = self
+            .root
+            .parent()
+            .ok_or_else(|| std::io::Error::other("ephemeral recovery root has no parent"))?;
+        let quarantine = parent.join(format!("kosh-c-{}", self.token));
+        let already_quarantined = self.root == quarantine;
+        if !already_quarantined {
+            if quarantine.exists() {
+                return Err(std::io::Error::other(
+                    "ephemeral recovery quarantine already exists",
+                ));
+            }
+            fs::rename(&self.root, &quarantine)?;
+            if !path_matches_open_directory(&quarantine, &self.directory) {
+                if !self.root.exists() {
+                    let _ = fs::rename(&quarantine, &self.root);
+                }
+                return Err(std::io::Error::other(
+                    "ephemeral recovery quarantine identity changed",
+                ));
+            }
+        }
+        let quarantined_runtime = LitestreamRuntimePaths::new(&quarantine)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let cleanup = quarantined_runtime.remove_ephemeral_recovery_runtime_bound(
+            &quarantine,
+            &self.directory,
+            Some(&self.marker),
+        );
+        if cleanup.is_err() && !already_quarantined && !self.root.exists() {
+            let _ = fs::rename(&quarantine, &self.root);
+        }
+        if cleanup.is_ok() {
+            self.root = quarantine;
+        }
+        cleanup
+    }
 }
 
 impl LitestreamRuntimePaths {
@@ -1032,8 +1496,18 @@ impl LitestreamRuntimePaths {
             pid: directory.join("ls.pid.json"),
             ownership_lock: directory.join("ownership.lock"),
             directory,
+            bound_data_root: None,
         };
         ensure_socket_path_fits(&paths.socket)?;
+        Ok(paths)
+    }
+
+    fn new_bound(data_root: &Path, directory: File) -> Result<Self, LitestreamError> {
+        let mut paths = Self::new(data_root)?;
+        paths.bound_data_root = Some(Arc::new(BoundRuntimeRoot {
+            directory,
+            config: Mutex::new(None),
+        }));
         Ok(paths)
     }
 
@@ -1063,6 +1537,11 @@ impl LitestreamRuntimePaths {
     }
 
     pub fn prepare(&self) -> Result<(), LitestreamError> {
+        if let Some(root) = &self.bound_data_root {
+            self.bound_backup_directory(&root.directory)
+                .map_err(LitestreamError::PrepareRuntime)?;
+            return Ok(());
+        }
         let run_directory = self
             .directory
             .parent()
@@ -1085,6 +1564,11 @@ impl LitestreamRuntimePaths {
     }
 
     pub fn write_config(&self, config: &str) -> Result<(), LitestreamError> {
+        if let Some(root) = &self.bound_data_root {
+            return self
+                .write_bound_config(root, config)
+                .map_err(LitestreamError::WriteConfig);
+        }
         self.prepare()?;
         reject_symlink_or_non_file(&self.config).map_err(LitestreamError::WriteConfig)?;
         let temporary = self.directory.join("ls.yml.tmp");
@@ -1114,6 +1598,697 @@ impl LitestreamRuntimePaths {
             .map_err(LitestreamError::WriteConfig)?;
         Ok(())
     }
+
+    #[allow(
+        dead_code,
+        reason = "used by the ignored real-R2 canary test entry point"
+    )]
+    pub(crate) fn config_command_path(&self) -> Result<PathBuf, LitestreamError> {
+        let Some(root) = &self.bound_data_root else {
+            return Ok(self.config.clone());
+        };
+        let config = root
+            .config
+            .lock()
+            .map_err(|_| {
+                LitestreamError::WriteConfig(std::io::Error::other(
+                    "bound Litestream config lock is poisoned",
+                ))
+            })?
+            .clone()
+            .ok_or_else(|| {
+                LitestreamError::WriteConfig(std::io::Error::other(
+                    "bound Litestream config has not been written",
+                ))
+            })?;
+        open_file_path(&config).map_err(LitestreamError::WriteConfig)
+    }
+
+    fn bound_backup_directory(&self, root: &File) -> std::io::Result<File> {
+        let run = ensure_private_runtime_directory_child(root, "run")?;
+        ensure_private_runtime_directory_child(&run, "backup")
+    }
+
+    fn write_bound_config(&self, root: &BoundRuntimeRoot, config: &str) -> std::io::Result<()> {
+        let backup = self.bound_backup_directory(&root.directory)?;
+        remove_optional_owned_runtime_file(&backup, "ls.yml.tmp")?;
+        remove_optional_owned_runtime_file(&backup, "ls.yml")?;
+        let mut temporary = create_private_runtime_child(&backup, "ls.yml.tmp")?;
+        temporary.write_all(config.as_bytes())?;
+        temporary.sync_all()?;
+        use std::os::unix::fs::PermissionsExt;
+        temporary.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let temporary_name = runtime_child_name("ls.yml.tmp")?;
+        let config_name = runtime_child_name("ls.yml")?;
+        let renamed = unsafe {
+            libc::renameat(
+                backup.as_raw_fd(),
+                temporary_name.as_ptr(),
+                backup.as_raw_fd(),
+                config_name.as_ptr(),
+            )
+        };
+        if renamed != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        backup.sync_all()?;
+        *root
+            .config
+            .lock()
+            .map_err(|_| std::io::Error::other("bound Litestream config lock is poisoned"))? =
+            Some(Arc::new(temporary));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_ephemeral_recovery_runtime(
+        &self,
+        data_root: &Path,
+    ) -> std::io::Result<()> {
+        let directory = open_directory_no_follow(data_root)?;
+        self.remove_ephemeral_recovery_runtime_bound(data_root, &directory, None)
+    }
+
+    fn remove_ephemeral_recovery_runtime_bound(
+        &self,
+        data_root: &Path,
+        data_root_directory: &File,
+        ownership_marker: Option<&File>,
+    ) -> std::io::Result<()> {
+        self.remove_ephemeral_recovery_runtime_bound_with_hook(
+            data_root,
+            data_root_directory,
+            ownership_marker,
+            || {},
+        )
+    }
+
+    fn remove_ephemeral_recovery_runtime_bound_with_hook(
+        &self,
+        data_root: &Path,
+        data_root_directory: &File,
+        ownership_marker: Option<&File>,
+        before_cleanup: impl FnOnce(),
+    ) -> std::io::Result<()> {
+        let expected_directory = data_root.join("run").join("backup");
+        if !data_root.is_absolute()
+            || self.directory != expected_directory
+            || !is_ephemeral_recovery_root(data_root)
+            || !path_matches_open_directory(data_root, data_root_directory)
+            || !is_private_current_user_directory(data_root_directory)?
+        {
+            return Err(std::io::Error::other(
+                "refusing to remove an unrecognized recovery runtime",
+            ));
+        }
+        let parent = data_root
+            .parent()
+            .ok_or_else(|| std::io::Error::other("ephemeral recovery root has no parent"))?;
+        let root_name = data_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| std::io::Error::other("ephemeral recovery root name is invalid"))?;
+        // macOS exposes `/tmp` through the trusted `/private/tmp` symlink.
+        // Follow only this already-selected parent; the UUID child itself is
+        // still reopened with `O_NOFOLLOW` and identity-matched before removal.
+        let parent_directory = File::open(parent)?;
+        if !parent_directory.metadata()?.is_dir() {
+            return Err(std::io::Error::other(
+                "ephemeral recovery parent is not a directory",
+            ));
+        }
+
+        before_cleanup();
+        remove_ephemeral_runtime_tree_bound(data_root_directory)?;
+        if let Some(marker) = ownership_marker {
+            unlink_owned_runtime_file(
+                data_root_directory,
+                EPHEMERAL_RUNTIME_CONTROL_FILENAME,
+                marker,
+            )?;
+            data_root_directory.sync_all()?;
+        }
+        remove_owned_runtime_directory_child(&parent_directory, root_name, data_root_directory)
+    }
+}
+
+fn is_ephemeral_recovery_root(path: &Path) -> bool {
+    ephemeral_runtime_token(path).is_some()
+}
+
+fn ephemeral_runtime_token(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let token = name
+        .strip_prefix("kosh-r-")
+        .or_else(|| name.strip_prefix("kosh-c-"))?;
+    uuid::Uuid::parse_str(token)
+        .ok()
+        .filter(|parsed| parsed.to_string() == token)
+        .map(|_| token.to_owned())
+}
+
+fn reclaim_abandoned_ephemeral_runtimes(parent: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(parent)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        if ephemeral_runtime_token(&path).is_none() {
+            continue;
+        }
+        let Ok(Some(mut ownership)) = EphemeralRuntimeOwnership::open(&path) else {
+            continue;
+        };
+        match ownership.marker.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => continue,
+            Err(TryLockError::Error(_)) => continue,
+        }
+        // Unknown contents or a raced identity are preserved. One damaged
+        // temporary must not prevent a fresh disaster-recovery attempt.
+        let _ = ownership.remove();
+    }
+    Ok(())
+}
+
+fn write_ephemeral_runtime_control(
+    file: &mut File,
+    control: &EphemeralRuntimeControl,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(control)
+        .map_err(|_| std::io::Error::other("invalid ephemeral runtime control"))?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES {
+        return Err(std::io::Error::other(
+            "invalid ephemeral runtime control length",
+        ));
+    }
+    file.rewind()?;
+    file.set_len(0)?;
+    file.write_all(&bytes)?;
+    file.sync_all()
+}
+
+fn read_ephemeral_runtime_control(file: &mut File) -> std::io::Result<EphemeralRuntimeControl> {
+    let length = file.metadata()?.len();
+    if length == 0 || length > MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES {
+        return Err(std::io::Error::other(
+            "invalid ephemeral runtime control length",
+        ));
+    }
+    file.rewind()?;
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length {
+        return Err(std::io::Error::other(
+            "unstable ephemeral runtime control length",
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| std::io::Error::other("invalid ephemeral runtime control"))
+}
+
+fn create_private_runtime_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn ensure_private_runtime_directory_child(parent: &File, name: &str) -> std::io::Result<File> {
+    let name_value = runtime_child_name(name)?;
+    let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name_value.as_ptr(), 0o700) };
+    if created != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+    }
+    let directory = open_owned_runtime_directory_child(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("private runtime directory disappeared during creation")
+    })?;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = directory.metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {
+        return Err(std::io::Error::other(
+            "private runtime directory has unsafe ownership or permissions",
+        ));
+    }
+    directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+    directory.sync_all()?;
+    parent.sync_all()?;
+    Ok(directory)
+}
+
+fn open_regular_runtime_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "ephemeral runtime child is not regular",
+        ));
+    }
+    Ok(file)
+}
+
+fn unlink_owned_runtime_file(directory: &File, name: &str, owned: &File) -> std::io::Result<()> {
+    let current = open_regular_runtime_child(directory, name)?;
+    if !same_runtime_file(&current, owned)
+        || !is_private_current_user_file(&current)?
+        || runtime_link_count(&current)? != 1
+    {
+        return Err(std::io::Error::other(
+            "ephemeral runtime child identity changed",
+        ));
+    }
+    clear_user_immutable(&current)?;
+    let name = runtime_child_name(name)?;
+    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn remove_empty_owned_runtime_directory(path: &Path, directory: &File) -> std::io::Result<()> {
+    if !path_matches_open_directory(path, directory)
+        || !runtime_directory_entries(directory)?.is_empty()
+    {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory identity changed",
+        ));
+    }
+    clear_user_immutable(directory)?;
+    fs::remove_dir(path)?;
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn runtime_directory_entries(directory: &File) -> std::io::Result<Vec<OsString>> {
+    let descriptor = unsafe { libc::dup(directory.as_raw_fd()) };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(descriptor) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(descriptor);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    unsafe {
+        libc::rewinddir(stream);
+    }
+    let mut entries = Vec::new();
+    loop {
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            entries.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    if unsafe { libc::closedir(stream) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+fn runtime_child_name(name: &str) -> std::io::Result<CString> {
+    if name.is_empty() || name.as_bytes().contains(&b'/') {
+        return Err(std::io::Error::other(
+            "invalid ephemeral runtime child name",
+        ));
+    }
+    CString::new(name.as_bytes())
+        .map_err(|_| std::io::Error::other("invalid ephemeral runtime child name"))
+}
+
+fn remove_ephemeral_runtime_tree_bound(data_root: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(data_root)?;
+    if let Some(run) = open_owned_runtime_directory_child(data_root, "run")? {
+        make_runtime_directory_removable(&run)?;
+        if let Some(backup) = open_owned_runtime_directory_child(&run, "backup")? {
+            remove_ephemeral_backup_tree_bound(&backup)?;
+            remove_owned_runtime_directory_child(&run, "backup", &backup)?;
+        }
+        if !runtime_directory_entries(&run)?.is_empty() {
+            return Err(std::io::Error::other(
+                "ephemeral recovery run directory has unexpected contents",
+            ));
+        }
+        remove_owned_runtime_directory_child(data_root, "run", &run)?;
+    }
+
+    for name in [
+        "remote-kosh.sqlite3",
+        "remote-kosh.sqlite3-wal",
+        "remote-kosh.sqlite3-shm",
+    ] {
+        remove_optional_owned_runtime_file(data_root, name)?;
+    }
+    let remaining = runtime_directory_entries(data_root)?;
+    if remaining
+        .iter()
+        .any(|name| name != &OsString::from(EPHEMERAL_RUNTIME_CONTROL_FILENAME))
+    {
+        return Err(std::io::Error::other(
+            "ephemeral recovery root has unexpected contents",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_ephemeral_backup_tree_bound(backup: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(backup)?;
+    if let Some(stages) = open_owned_runtime_directory_child(backup, "verified-litestream")? {
+        remove_ephemeral_binary_stages_bound(&stages)?;
+        remove_owned_runtime_directory_child(backup, "verified-litestream", &stages)?;
+    }
+    if let Some(stages) = open_owned_runtime_directory_child(backup, "restore-configs")? {
+        remove_ephemeral_restore_config_stages_bound(&stages)?;
+        remove_owned_runtime_directory_child(backup, "restore-configs", &stages)?;
+    }
+    for name in ["ls.yml", "ls.pid.json", "ownership.lock", "ls.yml.tmp"] {
+        remove_optional_owned_runtime_file(backup, name)?;
+    }
+    remove_optional_owned_runtime_socket(backup, "ls.sock")?;
+    if !runtime_directory_entries(backup)?.is_empty() {
+        return Err(std::io::Error::other(
+            "ephemeral recovery runtime has unexpected contents",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_ephemeral_binary_stages_bound(stages: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(stages)?;
+    for entry in runtime_directory_entries(stages)? {
+        let name = entry
+            .to_str()
+            .ok_or_else(|| std::io::Error::other("invalid recovery binary stage name"))?;
+        let checksum = name
+            .strip_prefix('.')
+            .and_then(|value| value.strip_suffix(".tmp"))
+            .unwrap_or(name);
+        if !is_sha256(checksum) {
+            return Err(std::io::Error::other("unexpected recovery binary stage"));
+        }
+        remove_single_file_stage_bound(stages, name, "litestream")?;
+    }
+    Ok(())
+}
+
+fn remove_ephemeral_restore_config_stages_bound(stages: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(stages)?;
+    for entry in runtime_directory_entries(stages)? {
+        let name = entry
+            .to_str()
+            .ok_or_else(|| std::io::Error::other("invalid recovery config stage name"))?;
+        if let Some(checksum) = name
+            .strip_prefix('.')
+            .and_then(|value| value.strip_suffix(".lock"))
+        {
+            if !is_sha256(checksum) {
+                return Err(std::io::Error::other("unexpected recovery config lock"));
+            }
+            remove_optional_owned_runtime_file(stages, name)?;
+            continue;
+        }
+        let checksum = name.strip_prefix('.').unwrap_or(name);
+        let checksum = checksum
+            .split_once('.')
+            .map_or(checksum, |(checksum, _)| checksum);
+        if !is_sha256(checksum) {
+            return Err(std::io::Error::other("unexpected recovery config stage"));
+        }
+        remove_single_file_stage_bound(stages, name, "ls.yml")?;
+    }
+    Ok(())
+}
+
+fn remove_single_file_stage_bound(
+    parent: &File,
+    stage_name: &str,
+    filename: &str,
+) -> std::io::Result<()> {
+    let stage = open_owned_runtime_directory_child(parent, stage_name)?.ok_or_else(|| {
+        std::io::Error::other("ephemeral recovery stage disappeared during cleanup")
+    })?;
+    make_runtime_directory_removable(&stage)?;
+    remove_optional_owned_runtime_file(&stage, filename)?;
+    if !runtime_directory_entries(&stage)?.is_empty() {
+        return Err(std::io::Error::other(
+            "ephemeral recovery stage has unexpected contents",
+        ));
+    }
+    remove_owned_runtime_directory_child(parent, stage_name, &stage)
+}
+
+fn open_owned_runtime_directory_child(parent: &File, name: &str) -> std::io::Result<Option<File>> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let directory = unsafe { File::from_raw_fd(descriptor) };
+    use std::os::unix::fs::MetadataExt;
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory is not privately owned",
+        ));
+    }
+    Ok(Some(directory))
+}
+
+fn open_owned_runtime_file_child(parent: &File, name: &str) -> std::io::Result<Option<File>> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } || metadata.nlink() != 1
+    {
+        return Err(std::io::Error::other(
+            "ephemeral runtime file is not privately owned",
+        ));
+    }
+    Ok(Some(file))
+}
+
+fn make_runtime_directory_removable(directory: &File) -> std::io::Result<()> {
+    clear_user_immutable(directory)?;
+    use std::os::unix::fs::PermissionsExt;
+    directory.set_permissions(fs::Permissions::from_mode(0o700))
+}
+
+fn remove_optional_owned_runtime_file(parent: &File, name: &str) -> std::io::Result<()> {
+    let Some(owned) = open_owned_runtime_file_child(parent, name)? else {
+        return Ok(());
+    };
+    clear_user_immutable(&owned)?;
+    let current = open_owned_runtime_file_child(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("ephemeral runtime file disappeared during cleanup")
+    })?;
+    if !same_runtime_file(&current, &owned) {
+        return Err(std::io::Error::other(
+            "ephemeral runtime file identity changed",
+        ));
+    }
+    let name = runtime_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn remove_optional_owned_runtime_socket(parent: &File, name: &str) -> std::io::Result<()> {
+    let name = runtime_child_name(name)?;
+    let Some(identity) = runtime_socket_identity(parent, &name)? else {
+        return Ok(());
+    };
+    if runtime_socket_identity(parent, &name)? != Some(identity) {
+        return Err(std::io::Error::other(
+            "ephemeral runtime socket identity changed",
+        ));
+    }
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn runtime_socket_identity(parent: &File, name: &CString) -> std::io::Result<Option<(u64, u64)>> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFSOCK || stat.st_uid != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(
+            "ephemeral runtime socket is not privately owned",
+        ));
+    }
+    let device = stat
+        .st_dev
+        .try_into()
+        .map_err(|_| std::io::Error::other("ephemeral runtime socket device is invalid"))?;
+    let inode = stat.st_ino;
+    Ok(Some((device, inode)))
+}
+
+fn remove_owned_runtime_directory_child(
+    parent: &File,
+    name: &str,
+    owned: &File,
+) -> std::io::Result<()> {
+    make_runtime_directory_removable(owned)?;
+    if !runtime_directory_entries(owned)?.is_empty() {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory is not empty",
+        ));
+    }
+    let current = open_owned_runtime_directory_child(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("ephemeral runtime directory disappeared during cleanup")
+    })?;
+    if !same_runtime_file(&current, owned) {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory identity changed",
+        ));
+    }
+    clear_user_immutable(&current)?;
+    owned.sync_all()?;
+    let name = runtime_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    if result == 0 {
+        parent.sync_all()
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn path_matches_open_directory(path: &Path, directory: &File) -> bool {
+    let Ok(path_metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_dir() {
+        return false;
+    }
+    let Ok(open_metadata) = directory.metadata() else {
+        return false;
+    };
+    same_runtime_metadata(&path_metadata, &open_metadata)
+}
+
+fn same_runtime_file(left: &File, right: &File) -> bool {
+    left.metadata()
+        .ok()
+        .zip(right.metadata().ok())
+        .is_some_and(|(left, right)| same_runtime_metadata(&left, &right))
+}
+
+fn runtime_file_identity(file: &File) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn same_runtime_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn is_private_current_user_directory(directory: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = directory.metadata()?;
+    Ok(metadata.is_dir()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o777 == 0o700)
+}
+
+fn is_private_current_user_file(file: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(metadata.is_file()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o777 == 0o600)
+}
+
+fn runtime_link_count(file: &File) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(file.metadata()?.nlink())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn prepare_private_runtime_directory(path: &Path) -> std::io::Result<()> {
@@ -1459,6 +2634,7 @@ pub(crate) trait RelationalRestoreEngine: Send + Sync {
     fn restore(
         &self,
         source_database_path: &Path,
+        target_directory: &File,
         target_path: &Path,
         txid: LitestreamTxid,
     ) -> Result<RestoreResult, LitestreamError>;
@@ -1516,12 +2692,18 @@ impl<'a> CommandLitestreamRestore<'a> {
         target_path: &Path,
         txid: LitestreamTxid,
         dry_run: bool,
+        restore_write_directory: Option<&File>,
     ) -> Result<Vec<u8>, LitestreamError> {
-        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+        if !source_database_path.is_absolute()
+            || (restore_write_directory.is_none() && !target_path.is_absolute())
+            || (restore_write_directory.is_some()
+                && target_path != Path::new(PRIVATE_RESTORE_OUTPUT_FILENAME))
+        {
             return Err(LitestreamError::RelativeDatabasePath);
         }
+        let config_path = self.config.resolved_command_path()?;
         let arguments = restore_arguments(
-            &self.config.path,
+            &config_path,
             source_database_path,
             target_path,
             txid,
@@ -1539,8 +2721,92 @@ impl<'a> CommandLitestreamRestore<'a> {
             } else {
                 MAX_CONTROL_OUTPUT_BYTES
             },
-            if dry_run { None } else { target_path.parent() },
+            restore_write_directory,
         )
+    }
+
+    fn restore_with_hook(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        before_spawn: impl FnOnce(&ExclusiveRestoreDestination),
+    ) -> Result<RestoreResult, LitestreamError> {
+        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let destination = ExclusiveRestoreDestination::prepare(target_path)?;
+        self.restore_to_destination(
+            source_database_path,
+            target_path,
+            txid,
+            destination,
+            before_spawn,
+        )
+    }
+
+    #[cfg(test)]
+    fn restore_path(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestoreResult, LitestreamError> {
+        self.restore_with_hook(source_database_path, target_path, txid, |_| {})
+    }
+
+    fn restore_bound_with_hook(
+        &self,
+        source_database_path: &Path,
+        target_directory: &File,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        before_spawn: impl FnOnce(&ExclusiveRestoreDestination),
+    ) -> Result<RestoreResult, LitestreamError> {
+        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let destination =
+            ExclusiveRestoreDestination::prepare_bound(target_path, target_directory)?;
+        self.restore_to_destination(
+            source_database_path,
+            target_path,
+            txid,
+            destination,
+            before_spawn,
+        )
+    }
+
+    fn restore_to_destination(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        destination: ExclusiveRestoreDestination,
+        before_spawn: impl FnOnce(&ExclusiveRestoreDestination),
+    ) -> Result<RestoreResult, LitestreamError> {
+        destination.verify_path_bindings()?;
+        before_spawn(&destination);
+        let bound_output = Path::new(PRIVATE_RESTORE_OUTPUT_FILENAME);
+        let bytes = self.execute(
+            source_database_path,
+            bound_output,
+            txid,
+            false,
+            Some(destination.private_directory()),
+        )?;
+        let mut result = parse_restore_result_json(&bytes)?;
+        if (result.database_path != bound_output
+            && result.database_path != destination.private_path())
+            || result.replica != ReplicaKind::S3
+            || result.txid != txid
+            || result.integrity_check != IntegrityCheck::Full
+        {
+            return Err(LitestreamError::InvalidRestoreContract);
+        }
+        destination.publish()?;
+        result.database_path = target_path.to_owned();
+        Ok(result)
     }
 }
 
@@ -1555,7 +2821,7 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
         target_path: &Path,
         txid: LitestreamTxid,
     ) -> Result<RestorePlan, LitestreamError> {
-        let bytes = self.execute(source_database_path, target_path, txid, true)?;
+        let bytes = self.execute(source_database_path, target_path, txid, true, None)?;
         let plan = parse_restore_plan_json(&bytes)?;
         if plan.source != source_database_path.to_string_lossy()
             || plan.target_path != target_path
@@ -1576,30 +2842,17 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
     fn restore(
         &self,
         source_database_path: &Path,
+        target_directory: &File,
         target_path: &Path,
         txid: LitestreamTxid,
     ) -> Result<RestoreResult, LitestreamError> {
-        if !source_database_path.is_absolute() || !target_path.is_absolute() {
-            return Err(LitestreamError::RelativeDatabasePath);
-        }
-        let destination = ExclusiveRestoreDestination::prepare(target_path)?;
-        let bytes = self.execute(
+        self.restore_bound_with_hook(
             source_database_path,
-            destination.private_path(),
+            target_directory,
+            target_path,
             txid,
-            false,
-        )?;
-        let mut result = parse_restore_result_json(&bytes)?;
-        if result.database_path != destination.private_path()
-            || result.replica != ReplicaKind::S3
-            || result.txid != txid
-            || result.integrity_check != IntegrityCheck::Full
-        {
-            return Err(LitestreamError::InvalidRestoreContract);
-        }
-        destination.publish()?;
-        result.database_path = target_path.to_owned();
-        Ok(result)
+            |_| {},
+        )
     }
 }
 
@@ -1611,47 +2864,100 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 struct ExclusiveRestoreDestination {
     requested_path: PathBuf,
-    private_directory: PathBuf,
+    requested_parent_path: Option<PathBuf>,
+    requested_parent: File,
+    requested_name: OsString,
+    private_directory: File,
+    private_directory_name: String,
     private_path: PathBuf,
 }
 
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 impl ExclusiveRestoreDestination {
     fn prepare(requested_path: &Path) -> Result<Self, LitestreamError> {
-        match fs::symlink_metadata(requested_path) {
-            Ok(_) => return Err(LitestreamError::RestoreDestinationExists),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(LitestreamError::PrepareRestoreDestination(error)),
-        }
         let parent = requested_path.parent().ok_or_else(|| {
             LitestreamError::PrepareRestoreDestination(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "restore destination has no parent",
             ))
         })?;
-        let parent_metadata =
-            fs::symlink_metadata(parent).map_err(LitestreamError::PrepareRestoreDestination)?;
+        let requested_parent =
+            open_directory_no_follow(parent).map_err(LitestreamError::PrepareRestoreDestination)?;
+        Self::prepare_with_parent(requested_path, requested_parent, Some(parent.to_owned()))
+    }
+
+    fn prepare_bound(
+        requested_path: &Path,
+        requested_parent: &File,
+    ) -> Result<Self, LitestreamError> {
+        if !requested_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let requested_parent = requested_parent
+            .try_clone()
+            .map_err(LitestreamError::PrepareRestoreDestination)?;
+        Self::prepare_with_parent(requested_path, requested_parent, None)
+    }
+
+    fn prepare_with_parent(
+        requested_path: &Path,
+        requested_parent: File,
+        requested_parent_path: Option<PathBuf>,
+    ) -> Result<Self, LitestreamError> {
+        let requested_name = requested_path.file_name().ok_or_else(|| {
+            LitestreamError::PrepareRestoreDestination(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "restore destination has no filename",
+            ))
+        })?;
+        restore_child_name(requested_name).map_err(LitestreamError::PrepareRestoreDestination)?;
+        let parent_metadata = requested_parent
+            .metadata()
+            .map_err(LitestreamError::PrepareRestoreDestination)?;
         if !parent_metadata.file_type().is_dir() {
             return Err(LitestreamError::InvalidRestoreDestination);
         }
+        if restore_child_exists(&requested_parent, requested_name)
+            .map_err(LitestreamError::PrepareRestoreDestination)?
+        {
+            return Err(LitestreamError::RestoreDestinationExists);
+        }
 
         for _ in 0..8 {
-            let private_directory = parent.join(format!(
-                ".kosh-litestream-restore-{}.tmp",
-                uuid::Uuid::now_v7()
-            ));
-            let mut builder = fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            match builder.create(&private_directory) {
+            let private_directory_name =
+                format!(".kosh-litestream-restore-{}.tmp", uuid::Uuid::now_v7());
+            match create_private_restore_directory(&requested_parent, &private_directory_name) {
                 Ok(()) => {
-                    let private_path = private_directory.join("database.sqlite3");
+                    let private_directory = open_owned_runtime_directory_child(
+                        &requested_parent,
+                        &private_directory_name,
+                    )
+                    .map_err(LitestreamError::PrepareRestoreDestination)?
+                    .ok_or_else(|| {
+                        LitestreamError::PrepareRestoreDestination(std::io::Error::other(
+                            "private restore directory disappeared",
+                        ))
+                    })?;
+                    if !is_private_current_user_directory(&private_directory)
+                        .map_err(LitestreamError::PrepareRestoreDestination)?
+                    {
+                        return Err(LitestreamError::InvalidRestoreDestination);
+                    }
+                    requested_parent
+                        .sync_all()
+                        .map_err(LitestreamError::PrepareRestoreDestination)?;
+                    let private_path = requested_path
+                        .parent()
+                        .ok_or(LitestreamError::InvalidRestoreDestination)?
+                        .join(&private_directory_name)
+                        .join(PRIVATE_RESTORE_OUTPUT_FILENAME);
                     return Ok(Self {
                         requested_path: requested_path.to_owned(),
+                        requested_parent_path,
+                        requested_parent,
+                        requested_name: requested_name.to_owned(),
                         private_directory,
+                        private_directory_name,
                         private_path,
                     });
                 }
@@ -1673,8 +2979,34 @@ impl ExclusiveRestoreDestination {
         &self.private_path
     }
 
+    fn private_directory(&self) -> &File {
+        &self.private_directory
+    }
+
+    fn verify_path_bindings(&self) -> Result<(), LitestreamError> {
+        if let Some(requested_parent_path) = &self.requested_parent_path {
+            if !path_matches_open_directory(requested_parent_path, &self.requested_parent) {
+                return Err(LitestreamError::InvalidRestoreDestination);
+            }
+        }
+        let current_private = open_owned_runtime_directory_child(
+            &self.requested_parent,
+            &self.private_directory_name,
+        )
+        .map_err(LitestreamError::PublishRestoreDestination)?
+        .ok_or(LitestreamError::InvalidRestoreDestination)?;
+        if !same_runtime_file(&current_private, &self.private_directory) {
+            return Err(LitestreamError::InvalidRestoreDestination);
+        }
+        Ok(())
+    }
+
     fn publish(self) -> Result<(), LitestreamError> {
-        let private_file = open_restore_file_no_follow(&self.private_path)?;
+        self.verify_path_bindings()?;
+        let private_file =
+            open_owned_runtime_file_child(&self.private_directory, PRIVATE_RESTORE_OUTPUT_FILENAME)
+                .map_err(LitestreamError::PublishRestoreDestination)?
+                .ok_or(LitestreamError::InvalidRestoreDestination)?;
         let private_metadata = private_file
             .metadata()
             .map_err(LitestreamError::PublishRestoreDestination)?;
@@ -1692,7 +3024,12 @@ impl ExclusiveRestoreDestination {
             .sync_all()
             .map_err(LitestreamError::PublishRestoreDestination)?;
 
-        match fs::hard_link(&self.private_path, &self.requested_path) {
+        match link_restore_file(
+            &self.private_directory,
+            OsStr::new(PRIVATE_RESTORE_OUTPUT_FILENAME),
+            &self.requested_parent,
+            &self.requested_name,
+        ) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(LitestreamError::RestoreDestinationExists);
@@ -1701,42 +3038,49 @@ impl ExclusiveRestoreDestination {
         }
 
         let publication = (|| {
-            let published_file = open_restore_file_no_follow(&self.requested_path)?;
+            let published_file =
+                open_regular_restore_child(&self.requested_parent, &self.requested_name)?;
             let published_metadata = published_file
                 .metadata()
                 .map_err(LitestreamError::PublishRestoreDestination)?;
             if !same_restore_file(&private_metadata, &published_metadata) {
                 return Err(LitestreamError::InvalidRestoreDestination);
             }
-            sync_restore_parent(
-                self.requested_path
-                    .parent()
-                    .ok_or(LitestreamError::InvalidRestoreDestination)?,
-            )?;
-            fs::remove_file(&self.private_path)
+            self.requested_parent
+                .sync_all()
                 .map_err(LitestreamError::PublishRestoreDestination)?;
-            fs::remove_dir(&self.private_directory)
-                .map_err(LitestreamError::PublishRestoreDestination)?;
-            sync_restore_parent(
-                self.requested_path
-                    .parent()
-                    .ok_or(LitestreamError::InvalidRestoreDestination)?,
-            )?;
+            unlink_exact_restore_file(
+                &self.private_directory,
+                OsStr::new(PRIVATE_RESTORE_OUTPUT_FILENAME),
+                &private_file,
+            )
+            .map_err(LitestreamError::PublishRestoreDestination)?;
+            remove_owned_runtime_directory_child(
+                &self.requested_parent,
+                &self.private_directory_name,
+                &self.private_directory,
+            )
+            .map_err(LitestreamError::PublishRestoreDestination)?;
+            self.verify_requested_parent_binding()?;
             Ok(())
         })();
         if let Err(error) = publication {
-            if let Ok(published_file) = open_restore_file_no_follow(&self.requested_path) {
-                if published_file
-                    .metadata()
-                    .is_ok_and(|metadata| same_restore_file(&private_metadata, &metadata))
-                {
-                    let _ = fs::remove_file(&self.requested_path);
-                }
-            }
-            if let Some(parent) = self.requested_path.parent() {
-                let _ = sync_restore_parent(parent);
-            }
+            let _ = unlink_exact_restore_file(
+                &self.requested_parent,
+                &self.requested_name,
+                &private_file,
+            );
+            let _ = self.requested_parent.sync_all();
             return Err(error);
+        }
+        Ok(())
+    }
+
+    fn verify_requested_parent_binding(&self) -> Result<(), LitestreamError> {
+        if let Some(requested_parent_path) = &self.requested_parent_path {
+            if !path_matches_open_directory(requested_parent_path, &self.requested_parent) {
+                return Err(LitestreamError::InvalidRestoreDestination);
+            }
         }
         Ok(())
     }
@@ -1744,23 +3088,160 @@ impl ExclusiveRestoreDestination {
 
 impl Drop for ExclusiveRestoreDestination {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.private_path);
-        let _ = fs::remove_dir(&self.private_directory);
+        let _ = remove_optional_private_restore_output(&self.private_directory);
+        let _ = remove_owned_runtime_directory_child(
+            &self.requested_parent,
+            &self.private_directory_name,
+            &self.private_directory,
+        );
     }
 }
 
-#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
-fn open_restore_file_no_follow(path: &Path) -> Result<File, LitestreamError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+fn restore_child_name(name: &OsStr) -> std::io::Result<CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+        return Err(std::io::Error::other("invalid restore child name"));
     }
-    options
-        .open(path)
-        .map_err(LitestreamError::PublishRestoreDestination)
+    CString::new(bytes).map_err(|_| std::io::Error::other("invalid restore child name"))
+}
+
+fn restore_child_exists(parent: &File, name: &OsStr) -> std::io::Result<bool> {
+    Ok(restore_child_stat(parent, name)?.is_some())
+}
+
+fn restore_child_stat(parent: &File, name: &OsStr) -> std::io::Result<Option<libc::stat>> {
+    let name = restore_child_name(name)?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result == 0 {
+        return Ok(Some(unsafe { stat.assume_init() }));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::NotFound {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+fn remove_optional_private_restore_output(parent: &File) -> std::io::Result<()> {
+    let name = OsStr::new(PRIVATE_RESTORE_OUTPUT_FILENAME);
+    let Some(identity) = restore_child_stat(parent, name)? else {
+        return Ok(());
+    };
+    let kind = identity.st_mode & libc::S_IFMT;
+    if kind == libc::S_IFREG {
+        return remove_optional_owned_runtime_file(parent, PRIVATE_RESTORE_OUTPUT_FILENAME);
+    }
+    if kind != libc::S_IFLNK
+        || identity.st_uid != unsafe { libc::geteuid() }
+        || identity.st_nlink != 1
+    {
+        return Err(std::io::Error::other(
+            "private restore output has an unexpected type or owner",
+        ));
+    }
+    let current = restore_child_stat(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("private restore output disappeared during cleanup")
+    })?;
+    if current.st_dev != identity.st_dev
+        || current.st_ino != identity.st_ino
+        || current.st_mode != identity.st_mode
+        || current.st_uid != identity.st_uid
+    {
+        return Err(std::io::Error::other(
+            "private restore output identity changed",
+        ));
+    }
+    let name = restore_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn create_private_restore_directory(parent: &File, name: &str) -> std::io::Result<()> {
+    let name = restore_child_name(OsStr::new(name))?;
+    let result = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn link_restore_file(
+    source_parent: &File,
+    source_name: &OsStr,
+    target_parent: &File,
+    target_name: &OsStr,
+) -> std::io::Result<()> {
+    let source_name = restore_child_name(source_name)?;
+    let target_name = restore_child_name(target_name)?;
+    let result = unsafe {
+        libc::linkat(
+            source_parent.as_raw_fd(),
+            source_name.as_ptr(),
+            target_parent.as_raw_fd(),
+            target_name.as_ptr(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn open_regular_restore_child(parent: &File, name: &OsStr) -> Result<File, LitestreamError> {
+    let name = restore_child_name(name).map_err(LitestreamError::PublishRestoreDestination)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(LitestreamError::PublishRestoreDestination(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file
+        .metadata()
+        .map_err(LitestreamError::PublishRestoreDestination)?
+        .is_file()
+    {
+        return Err(LitestreamError::InvalidRestoreDestination);
+    }
+    Ok(file)
+}
+
+fn unlink_exact_restore_file(parent: &File, name: &OsStr, owned: &File) -> std::io::Result<()> {
+    let current = open_regular_restore_child(parent, name)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    if !same_runtime_file(&current, owned) {
+        return Err(std::io::Error::other("restore file identity changed"));
+    }
+    let name = restore_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(unix)]
@@ -1774,21 +3255,6 @@ fn same_restore_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 fn same_restore_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     right.file_type().is_file() && left.len() == right.len()
-}
-
-#[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
-fn sync_restore_parent(path: &Path) -> Result<(), LitestreamError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    }
-    options
-        .open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(LitestreamError::PublishRestoreDestination)
 }
 
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
@@ -1828,9 +3294,9 @@ fn execute_credentialed_command(
     credentials: &R2Credentials,
     timeout: Duration,
     output_limit: usize,
-    restore_write_root: Option<&Path>,
+    restore_write_directory: Option<&File>,
 ) -> Result<Vec<u8>, LitestreamError> {
-    let mut command = credentialed_restore_command(binary, arguments, restore_write_root)?;
+    let mut command = credentialed_restore_command(binary, arguments, restore_write_directory)?;
     command
         .env_clear()
         .env(
@@ -1929,32 +3395,54 @@ fn execute_credentialed_command(
 fn credentialed_restore_command(
     binary: &ImmutableLitestreamBinary,
     arguments: &[OsString],
-    restore_write_root: Option<&Path>,
+    restore_write_directory: Option<&File>,
 ) -> Result<Command, LitestreamError> {
+    let binary_path = binary.resolved_command_path()?;
     #[cfg(target_os = "macos")]
-    if let Some(write_root) = restore_write_root {
-        let profile = restore_sandbox_profile(write_root)?;
+    let mut command = if let Some(write_directory) = restore_write_directory {
+        let profile = restore_sandbox_profile(write_directory)?;
         let mut command = Command::new(SANDBOX_EXEC_PATH);
         command
             .args(["-p", profile.as_str()])
-            .arg(binary.path())
+            .arg(&binary_path)
             .args(arguments);
-        return Ok(command);
-    }
+        command
+    } else {
+        let mut command = Command::new(&binary_path);
+        command.args(arguments);
+        command
+    };
 
     #[cfg(not(target_os = "macos"))]
-    let _ = restore_write_root;
+    let mut command = {
+        let mut command = Command::new(&binary_path);
+        command.args(arguments);
+        command
+    };
 
-    let mut command = Command::new(binary.path());
-    command.args(arguments);
+    if let Some(write_directory) = restore_write_directory {
+        let descriptor = write_directory.as_raw_fd();
+        // SAFETY: `pre_exec` runs after fork and before exec. `fchdir` is
+        // async-signal-safe, and the retained descriptor remains available
+        // until exec even though it carries `O_CLOEXEC`.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fchdir(descriptor) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
     Ok(command)
 }
 
 #[cfg(target_os = "macos")]
-fn restore_sandbox_profile(write_root: &Path) -> Result<String, LitestreamError> {
-    let canonical_write_root =
-        fs::canonicalize(write_root).map_err(LitestreamError::PrepareRestoreDestination)?;
-    let write_root = canonical_write_root
+fn restore_sandbox_profile(write_directory: &File) -> Result<String, LitestreamError> {
+    let descriptor_path =
+        open_file_path(write_directory).map_err(LitestreamError::PrepareRestoreDestination)?;
+    let write_root = descriptor_path
         .to_str()
         .ok_or(LitestreamError::NonUtf8RuntimePath)?;
     if write_root.chars().any(|character| character.is_control()) {
@@ -1973,6 +3461,35 @@ fn restore_sandbox_profile(write_root: &Path) -> Result<String, LitestreamError>
          (allow mach-lookup)\n\
          (allow ipc-posix*)"
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn open_file_path(file: &File) -> std::io::Result<PathBuf> {
+    let mut buffer = vec![0_u8; libc::PATH_MAX as usize];
+    let result = unsafe {
+        libc::fcntl(
+            file.as_raw_fd(),
+            libc::F_GETPATH,
+            buffer.as_mut_ptr().cast::<libc::c_char>(),
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let Some(length) = buffer.iter().position(|byte| *byte == 0) else {
+        return Err(std::io::Error::other(
+            "open file path exceeded the platform path limit",
+        ));
+    };
+    if length == 0 {
+        return Err(std::io::Error::other("open file path is unavailable"));
+    }
+    Ok(PathBuf::from(OsString::from_vec(buffer[..length].to_vec())))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_file_path(file: &File) -> std::io::Result<PathBuf> {
+    fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
 #[cfg(target_os = "macos")]
@@ -2596,6 +4113,430 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_recovery_cleanup_removes_immutable_binary_and_config_stages() {
+        let source = tempfile::tempdir().expect("ephemeral recovery binary source");
+        let bytes = b"ephemeral recovery binary";
+        let source_path = source.path().join("litestream");
+        fs::write(&source_path, bytes).expect("write recovery binary");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o700))
+            .expect("recovery binary permissions");
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let pin = BinaryPin {
+            sha256: sha256.clone(),
+            size: bytes.len() as u64,
+            code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
+        };
+        let verified = VerifiedLitestreamBinary {
+            path: source_path.clone(),
+            sha256,
+            size: bytes.len() as u64,
+            code_signature_cdhash: restore_test_process_cdhash(),
+            file: verify_binary(&source_path, &pin).expect("verify recovery binary"),
+        };
+        let root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
+        fs::create_dir(&root).expect("create ephemeral recovery root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("ephemeral recovery root permissions");
+        let runtime = LitestreamRuntimePaths::new(&root).expect("ephemeral recovery paths");
+        let binary = verified
+            .stage_immutable(&runtime)
+            .expect("stage recovery binary");
+        let (_, replica_path) = restore_test_target();
+        let config = stage_immutable_restore_config(
+            &runtime,
+            "dbs:\n  - path: /tmp/kosh.sqlite3\n",
+            &replica_path,
+        )
+        .expect("stage recovery config");
+        binary
+            .reverify_before_spawn()
+            .expect("immutable recovery binary");
+        config
+            .reverify_before_spawn()
+            .expect("immutable recovery config");
+        drop(config);
+        drop(binary);
+        runtime
+            .remove_ephemeral_recovery_runtime(&root)
+            .expect("remove ephemeral recovery runtime");
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn ephemeral_runtime_mutations_stay_bound_after_root_replacement() {
+        let source = tempfile::tempdir().expect("bound runtime binary source");
+        let bytes = b"#!/bin/sh\nset -eu\ntest -r \"$1\"\n";
+        let source_path = source.path().join("litestream");
+        fs::write(&source_path, bytes).expect("write bound runtime binary");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o700))
+            .expect("bound runtime binary permissions");
+        let pin = BinaryPin {
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            size: bytes.len() as u64,
+            code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
+        };
+        let verified = VerifiedLitestreamBinary {
+            path: source_path.clone(),
+            sha256: pin.sha256.clone(),
+            size: pin.size,
+            code_signature_cdhash: restore_test_process_cdhash(),
+            file: verify_binary(&source_path, &pin).expect("verify bound runtime binary"),
+        };
+        let mut runtime = EphemeralLitestreamRuntime::create().expect("descriptor-bound runtime");
+        let requested_root = runtime.root.clone();
+        let displaced_root =
+            requested_root.with_file_name(format!("kosh-d-{}", uuid::Uuid::now_v7()));
+        fs::rename(&requested_root, &displaced_root).expect("displace runtime root");
+        fs::create_dir(&requested_root).expect("replacement runtime root");
+        fs::set_permissions(&requested_root, fs::Permissions::from_mode(0o700))
+            .expect("replacement runtime permissions");
+        let sentinel = requested_root.join("must-not-change");
+        fs::write(&sentinel, b"replacement").expect("replacement sentinel");
+
+        runtime.paths().prepare().expect("bound runtime prepare");
+        let binary = verified
+            .stage_immutable(runtime.paths())
+            .expect("bound immutable binary stage");
+        let (_, replica_path) = restore_test_target();
+        let config = stage_immutable_restore_config(
+            runtime.paths(),
+            "dbs:\n  - path: /tmp/kosh.sqlite3\n",
+            &replica_path,
+        )
+        .expect("bound immutable config stage");
+        config
+            .reverify_before_spawn()
+            .expect("reverify bound immutable config");
+        runtime
+            .paths()
+            .write_config("dbs: []\n")
+            .expect("bound shared config write");
+        let status = Command::new(
+            binary
+                .resolved_command_path()
+                .expect("resolve bound runtime binary"),
+        )
+        .arg(
+            config
+                .resolved_command_path()
+                .expect("resolve bound runtime config"),
+        )
+        .status()
+        .expect("execute descriptor-bound runtime binary");
+        assert!(status.success());
+
+        assert_eq!(
+            fs::read(&sentinel).expect("replacement sentinel"),
+            b"replacement"
+        );
+        assert!(
+            !requested_root.join("run").exists(),
+            "no runtime mutation may follow the replaced pathname"
+        );
+        assert!(displaced_root.join("run/backup/ls.yml").is_file());
+        assert!(displaced_root
+            .join("run/backup/verified-litestream")
+            .join(binary.sha256())
+            .join("litestream")
+            .is_file());
+        assert!(config
+            .path
+            .strip_prefix(&requested_root)
+            .ok()
+            .is_some_and(|relative| displaced_root.join(relative).is_file()));
+
+        drop(config);
+        drop(binary);
+        fs::remove_file(sentinel).expect("remove replacement sentinel");
+        fs::remove_dir(&requested_root).expect("remove replacement runtime root");
+        fs::rename(&displaced_root, &requested_root).expect("restore runtime root binding");
+        runtime.cleanup().expect("cleanup bound runtime");
+        assert!(!requested_root.exists());
+    }
+
+    #[test]
+    fn ephemeral_recovery_cleanup_refuses_unexpected_contents_without_removing_them() {
+        let root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
+        let runtime = LitestreamRuntimePaths::new(&root).expect("ephemeral recovery paths");
+        runtime.prepare().expect("prepare recovery runtime");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("private recovery root");
+        let unexpected = runtime.directory().join("operator-file");
+        fs::write(&unexpected, b"keep").expect("unexpected recovery file");
+        assert!(runtime.remove_ephemeral_recovery_runtime(&root).is_err());
+        assert_eq!(
+            fs::read(&unexpected).expect("preserved unexpected file"),
+            b"keep"
+        );
+        fs::remove_file(unexpected).expect("remove fixture");
+        runtime
+            .remove_ephemeral_recovery_runtime(&root)
+            .expect("cleanup fixture");
+    }
+
+    #[test]
+    fn next_ephemeral_runtime_reclaims_an_authenticated_interrupted_runtime() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let interrupted_root = interrupted.root.clone();
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"private recovery bytes",
+        )
+        .expect("write interrupted recovery database");
+        interrupted.cleaned = true;
+        drop(interrupted);
+        assert!(
+            interrupted_root.exists(),
+            "fixture must model a process that exited without Drop cleanup"
+        );
+
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry ephemeral runtime");
+        assert!(
+            !interrupted_root.exists(),
+            "the authenticated unlocked runtime and its database copy must be reclaimed"
+        );
+        retry.cleanup().expect("cleanup retry runtime");
+    }
+
+    #[test]
+    fn next_ephemeral_runtime_finishes_an_interrupted_quarantine_cleanup() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let original_root = interrupted.root.clone();
+        let quarantine_root =
+            original_root.with_file_name(format!("kosh-c-{}", interrupted.ownership.token));
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"private recovery bytes",
+        )
+        .expect("write interrupted recovery database");
+        fs::rename(&original_root, &quarantine_root).expect("model interrupted quarantine rename");
+        interrupted.root.clone_from(&quarantine_root);
+        interrupted.ownership.root.clone_from(&quarantine_root);
+        interrupted.cleaned = true;
+        drop(interrupted);
+
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry ephemeral runtime");
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while quarantine_root.exists() && Instant::now() < cleanup_deadline {
+            // Parallel recovery tests may have acquired this abandoned marker
+            // first. That scanner owns cleanup; wait for its descriptor-bound
+            // removal instead of treating the transient lock as data loss.
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !quarantine_root.exists(),
+            "an authenticated cleanup quarantine must remain retryable"
+        );
+        retry.cleanup().expect("cleanup retry runtime");
+    }
+
+    #[test]
+    fn quarantined_runtime_cleanup_never_unlinks_a_replacement_root() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let original_root = interrupted.root.clone();
+        let quarantine_root =
+            original_root.with_file_name(format!("kosh-c-{}", interrupted.ownership.token));
+        let displaced_root =
+            original_root.with_file_name(format!("displaced-{}", interrupted.ownership.token));
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"private recovery bytes",
+        )
+        .expect("write interrupted recovery database");
+        fs::rename(&original_root, &quarantine_root).expect("quarantine interrupted runtime");
+        let quarantined_runtime =
+            LitestreamRuntimePaths::new(&quarantine_root).expect("quarantined runtime paths");
+
+        let replacement_bytes = b"preserve replacement database";
+        let cleanup = quarantined_runtime.remove_ephemeral_recovery_runtime_bound_with_hook(
+            &quarantine_root,
+            &interrupted.ownership.directory,
+            Some(&interrupted.ownership.marker),
+            || {
+                fs::rename(&quarantine_root, &displaced_root)
+                    .expect("displace authenticated quarantine");
+                let mut builder = fs::DirBuilder::new();
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+                builder
+                    .create(&quarantine_root)
+                    .expect("replacement quarantine root");
+                fs::write(
+                    quarantine_root.join("remote-kosh.sqlite3"),
+                    replacement_bytes,
+                )
+                .expect("replacement database bytes");
+            },
+        );
+        assert!(
+            cleanup.is_err(),
+            "the final parent-bound removal must reject the replacement name"
+        );
+        assert_eq!(
+            fs::read(quarantine_root.join("remote-kosh.sqlite3"))
+                .expect("preserved replacement database"),
+            replacement_bytes
+        );
+        assert_eq!(
+            fs::read_dir(&displaced_root)
+                .expect("descriptor-owned displaced quarantine")
+                .count(),
+            0,
+            "cleanup must operate only through the authenticated directory descriptor"
+        );
+
+        interrupted.cleaned = true;
+        drop(interrupted);
+        fs::remove_dir(displaced_root).expect("remove displaced fixture");
+        fs::remove_file(quarantine_root.join("remote-kosh.sqlite3"))
+            .expect("remove replacement fixture");
+        fs::remove_dir(quarantine_root).expect("remove replacement root");
+    }
+
+    #[test]
+    fn ephemeral_runtime_reclamation_skips_active_and_replacement_roots() {
+        let mut active = EphemeralLitestreamRuntime::create().expect("active runtime");
+        let active_root = active.root.clone();
+        let mut peer = EphemeralLitestreamRuntime::create().expect("peer runtime");
+        assert!(
+            active_root.exists(),
+            "the held ownership lock must protect an active runtime"
+        );
+        peer.cleanup().expect("cleanup peer runtime");
+
+        let replacement_root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+        builder.create(&replacement_root).expect("replacement root");
+        let replacement_database = replacement_root.join("remote-kosh.sqlite3");
+        fs::write(&replacement_database, b"preserve unauthenticated bytes")
+            .expect("replacement bytes");
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry runtime");
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement"),
+            b"preserve unauthenticated bytes"
+        );
+
+        retry.cleanup().expect("cleanup retry");
+        active.cleanup().expect("cleanup active");
+        fs::remove_file(replacement_database).expect("remove replacement fixture");
+        fs::remove_dir(replacement_root).expect("remove replacement root");
+    }
+
+    #[test]
+    fn ephemeral_runtime_reclamation_rejects_a_copied_marker_in_a_substituted_directory() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let original_root = interrupted.root.clone();
+        let displaced_root =
+            original_root.with_file_name(format!("kosh-d-{}", uuid::Uuid::now_v7()));
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"descriptor-owned recovery bytes",
+        )
+        .expect("write original recovery database");
+        fs::rename(&original_root, &displaced_root).expect("displace original runtime");
+
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+        builder
+            .create(&original_root)
+            .expect("create substituted runtime");
+        let copied_marker = original_root.join(EPHEMERAL_RUNTIME_CONTROL_FILENAME);
+        fs::copy(
+            displaced_root.join(EPHEMERAL_RUNTIME_CONTROL_FILENAME),
+            &copied_marker,
+        )
+        .expect("copy authenticated marker");
+        fs::set_permissions(&copied_marker, fs::Permissions::from_mode(0o600))
+            .expect("copied marker permissions");
+        let replacement_database = original_root.join("remote-kosh.sqlite3");
+        fs::write(&replacement_database, b"preserve replacement database")
+            .expect("replacement database");
+
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry runtime");
+
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement database"),
+            b"preserve replacement database",
+            "a copied pathname token must not authorize cleanup of another directory identity"
+        );
+        retry.cleanup().expect("cleanup retry runtime");
+        fs::remove_file(replacement_database).expect("remove replacement database");
+        fs::remove_file(copied_marker).expect("remove copied marker");
+        fs::remove_dir(&original_root).expect("remove substituted runtime");
+        fs::rename(&displaced_root, &original_root).expect("restore original runtime binding");
+        interrupted.cleanup().expect("cleanup original runtime");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_restore_cleanup_never_follows_a_replacement_directory_symlink() {
+        let root = tempfile::tempdir().expect("restore root");
+        let requested = root.path().join("restored.sqlite3");
+        let destination =
+            ExclusiveRestoreDestination::prepare(&requested).expect("private destination");
+        fs::write(destination.private_path(), b"owned partial restore")
+            .expect("owned partial restore");
+        let private_directory = destination
+            .private_path()
+            .parent()
+            .expect("private restore parent")
+            .to_owned();
+        let displaced = root.path().join("displaced-private-restore");
+        fs::rename(&private_directory, &displaced).expect("displace private restore");
+
+        let replacement = root.path().join("replacement-private-restore");
+        fs::create_dir(&replacement).expect("replacement directory");
+        let replacement_database = replacement.join("database.sqlite3");
+        fs::write(&replacement_database, b"replacement-must-not-change")
+            .expect("replacement database");
+        std::os::unix::fs::symlink(&replacement, &private_directory)
+            .expect("replacement directory symlink");
+
+        drop(destination);
+
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement database"),
+            b"replacement-must-not-change"
+        );
+        assert!(
+            fs::symlink_metadata(&private_directory)
+                .expect("replacement symlink remains")
+                .file_type()
+                .is_symlink(),
+            "cleanup must not unlink a substituted path"
+        );
+        assert!(
+            !displaced.join("database.sqlite3").exists(),
+            "cleanup must remove the partial restore only through its retained directory descriptor"
+        );
+    }
+
+    #[test]
     fn offline_restore_supplies_credentials_only_through_stdin_and_checks_exact_results() {
         let root = tempfile::tempdir().expect("restore command root");
         let binary = staged_restore_test_binary(
@@ -2672,7 +4613,7 @@ fi
             .expect("credentialed preview");
         assert_eq!(plan.max_txid, txid);
         let result = engine
-            .restore(&source, &target, txid)
+            .restore_path(&source, &target, txid)
             .expect("credentialed restore");
         assert_eq!(result.txid, txid);
         assert_eq!(fs::read(target).expect("restore bytes"), b"restored");
@@ -2724,7 +4665,7 @@ fi
         .expect("bound restore engine");
 
         assert!(matches!(
-            engine.restore(&source, &target, LitestreamTxid::from_local(42)),
+            engine.restore_path(&source, &target, LitestreamTxid::from_local(42)),
             Err(LitestreamError::RestoreDestinationExists)
         ));
         assert!(!marker.exists(), "Litestream must not be spawned");
@@ -2839,7 +4780,7 @@ printf '{{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_c
                 thread::sleep(Duration::from_millis(5));
             }
         });
-        let restore_result = engine.restore(&source, &target, LitestreamTxid::from_local(42));
+        let restore_result = engine.restore_path(&source, &target, LitestreamTxid::from_local(42));
         racer.join().expect("destination racer");
         assert!(matches!(
             restore_result,
@@ -2938,7 +4879,7 @@ printf 'escaped' >"$target"
         .expect("bound restore engine");
 
         assert!(matches!(
-            engine.restore(&source, &target, LitestreamTxid::from_local(42)),
+            engine.restore_path(&source, &target, LitestreamTxid::from_local(42)),
             Err(LitestreamError::CommandFailed { .. })
         ));
         assert_eq!(
@@ -2959,6 +4900,121 @@ printf 'escaped' >"$target"
             "sandboxed failure must clean its private restore directory"
         );
 
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove immutable restore test binary");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn offline_restore_binds_sandbox_and_output_to_the_opened_private_directory() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let target = root.path().join("restored.sqlite3");
+        let replacement = root.path().join("replacement-private-directory");
+        fs::create_dir(&replacement).expect("replacement private directory");
+        let replacement_database = replacement.join("database.sqlite3");
+        fs::write(&replacement_database, b"replacement-must-not-change")
+            .expect("replacement database");
+        let displaced = root.path().join("displaced-private-directory");
+        let binary = staged_restore_test_binary(
+            root.path(),
+            br#"#!/bin/sh
+set -eu
+IFS= read -r _
+IFS= read -r _
+IFS= read -r _
+target=
+txid=
+while test "$#" -gt 0; do
+  case "$1" in
+    -config) shift 2 ;;
+    -txid) txid=$2; shift 2 ;;
+    -integrity-check) test "$2" = "full"; shift 2 ;;
+    -json) shift ;;
+    -o) target=$2; shift 2 ;;
+    restore) shift ;;
+    -*) exit 92 ;;
+    *) shift ;;
+  esac
+done
+test "$target" = "database.sqlite3"
+printf 'descriptor-bound-restore' >"$target"
+printf '{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_check":"full"}' "$target" "$txid"
+"#,
+        );
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
+
+        let result = engine.restore_with_hook(
+            &source,
+            &target,
+            LitestreamTxid::from_local(42),
+            |destination| {
+                let private_directory = destination
+                    .private_path()
+                    .parent()
+                    .expect("private restore directory");
+                fs::rename(private_directory, &displaced)
+                    .expect("displace private restore directory");
+                std::os::unix::fs::symlink(&replacement, private_directory)
+                    .expect("substitute private restore directory");
+            },
+        );
+
+        assert!(result.is_err(), "substituted private path must fail closed");
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement database"),
+            b"replacement-must-not-change"
+        );
+        assert!(
+            !displaced.join("database.sqlite3").exists(),
+            "failed publication must clean the descriptor-bound output"
+        );
+        let substituted = root
+            .path()
+            .read_dir()
+            .expect("restore root entries")
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".kosh-litestream-restore-")
+            })
+            .expect("substituted private path");
+        assert!(fs::symlink_metadata(substituted.path())
+            .expect("substituted private symlink")
+            .file_type()
+            .is_symlink());
+        fs::remove_file(substituted.path()).expect("remove substitution fixture");
+        fs::remove_dir(&displaced).expect("remove displaced private directory");
+        fs::remove_file(&replacement_database).expect("remove replacement database");
+        fs::remove_dir(&replacement).expect("remove replacement directory");
         remove_partial_restore_config(
             engine
                 .config
@@ -3402,6 +5458,8 @@ printf 'escaped' >"$target"
             sha256: "0".repeat(64),
             size: 1,
             code_signature_cdhash: actual,
+            bound_file: None,
+            bound_directory: None,
         };
         matching
             .verify_running_process(child.id())

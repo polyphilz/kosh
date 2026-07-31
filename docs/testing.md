@@ -22,6 +22,8 @@ may claim only the boundary it actually crosses.
 | R2 state, Keychain and object-store boundary | Rust fake tests plus the opt-in live probe in `app/tests/native/offsite-backup-foundation.md` | non-secret revisioned persistence, redacted versioned Keychain payloads, Cloudflare-only endpoints, fixed-prefix confinement, bounded conditional object operations and cleanup-after-failure |
 | durable off-site media reconciliation | Rust queue/worker tests in `app/tests/native/offsite-backup-media.md` | transactional source/preview seeding, guarded leases, off-writer bounded reads, create-only upload verification, offline/restart replay and writer independence |
 | supervised Litestream runtime | Rust supervisor/process tests in `app/tests/native/offsite-backup-litestream-runtime.md` | disabled inertness, private config/socket/PID ownership, bounded status, crash backoff, configuration reload, graceful final sync and local database independence |
+| complete off-site recovery matrix | `pnpm backup:verify-fault-matrix` plus Rust restore/install tests | 64 named failures across snapshot, configuration, media, replication, checkpoint, discovery, restore, install and reopen; exact mapping to executable tests and non-destructive invariants |
+| packaged real-R2 recovery | scheduled/manual `Packaged real-R2 recovery canary` workflow and `scripts/run-litestream-r2-canary.sh` | unique-prefix interrupted replication, manifest-last publication, drill, packaged clean-directory exact-TXID/media restore, normal hidden startup, search rebuild, authored/historical citations and verified remote cleanup |
 | native startup, restart, search and citation | `scripts/loop/runtime-gate.sh --ci` | real macOS Tauri process, both WKWebViews, fresh/restart persistence and actual runtime/search/citation IPC |
 | universal release structure and smoke | `pnpm release:build:app && pnpm release:smoke` | icons/metadata/CSP/capabilities/entitlements, dual-architecture app and sidecar, signatures/resources, executable-to-source commit binding, packaged React/capture/search/citation IPC, fresh restart identity, no Claude/model |
 | packaged release journeys | `app/tests/native/release-acceptance.md` | clean installed capture/search, media extraction, hybrid retrieval, grounded citations, restart, previous-release migration and separate-profile snapshot recovery |
@@ -84,6 +86,7 @@ pnpm check
 pnpm relevance:gate
 pnpm relevance:lexical-scale
 pnpm check:bundle
+pnpm backup:verify-fault-matrix
 ```
 
 After committing, aggregate the commit-bound hardening evidence from `app/`:

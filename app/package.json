@@ -43,9 +43,11 @@
     "release:build": "pnpm release:build:app",
     "litestream:verify-local": "../scripts/verify-litestream-local-protocol.sh",
     "litestream:verify-r2": "../scripts/verify-litestream-r2-protocol.sh",
+    "backup:verify-fault-matrix": "node scripts/check-backup-fault-matrix.mjs",
+    "backup:r2-canary": "../scripts/run-litestream-r2-canary.sh",
     "check:bundle": "pnpm build && ../scripts/check-bundle.sh",
     "check:frontend": "pnpm lint && pnpm fmt:check && pnpm build && pnpm test && pnpm test:browser",
-    "check:native": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support",
+    "check:native": "pnpm backup:verify-fault-matrix && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support",
     "check": "pnpm check:frontend && pnpm check:native"
   },
   "dependencies": {

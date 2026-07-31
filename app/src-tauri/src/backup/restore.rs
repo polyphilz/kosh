@@ -2,15 +2,21 @@
 
 use std::{
     collections::BTreeSet,
-    fs::{self, File},
-    path::Path,
+    ffi::{CStr, CString, OsString},
+    fs::{self, File, OpenOptions},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{ffi::OsStringExt, fs::OpenOptionsExt},
+    },
+    path::{Path, PathBuf},
 };
 
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::database::{
-    create_empty_restore_media_database, install_restored_pair, validate_restored_pair,
+    create_empty_restore_media_database_at, inspect_completed_restore_install,
+    install_restored_pair, open_restore_main_read_only_at, validate_restored_pair_at,
     DatabasePaths, RestoreInstallReport,
 };
 
@@ -22,13 +28,22 @@ use super::{
     litestream::{
         LitestreamError, LitestreamTxid, RelationalRestoreEngine, ReplicaKind, RestorePlan,
     },
-    object_store::{ObjectContentType, ObjectStore, ObjectStoreError},
+    object_store::{ListedObject, ObjectContentType, ObjectStore, ObjectStoreError},
     owner::{inspect_remote_owner, RemoteOwnerError, RemoteOwnerSnapshot},
 };
 
 const MAX_DISCOVERED_CHECKPOINTS: usize = 10_000;
 const MAX_LIST_PAGES: usize = 100;
 const MEDIA_RESTORE_PAGE_SIZE: u32 = 256;
+const STAGING_FILENAMES: [&str; 7] = [
+    "kosh.sqlite3",
+    "kosh.sqlite3-wal",
+    "kosh.sqlite3-shm",
+    "media.sqlite3",
+    "media.sqlite3-wal",
+    "media.sqlite3-shm",
+    "kosh.lock",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RemoteCheckpoint {
@@ -85,12 +100,72 @@ pub(crate) struct RestorePreview {
     pub(crate) plan_total_bytes: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct StagedRestore {
     pub(crate) checkpoint: RemoteCheckpoint,
     pub(crate) paths: DatabasePaths,
     pub(crate) restored_media_count: u64,
     pub(crate) restored_media_bytes: u64,
+    cleanup: StagingOwnership,
+}
+
+#[derive(Debug)]
+pub(crate) struct StagedDatabasePair {
+    main: File,
+    media: File,
+}
+
+impl StagedDatabasePair {
+    pub(crate) const fn main(&self) -> &File {
+        &self.main
+    }
+
+    pub(crate) const fn media(&self) -> &File {
+        &self.media
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_test(paths: &DatabasePaths) -> Result<Self, RestoreError> {
+        let directory = open_directory_no_follow(&paths.root)?;
+        open_validated_database_pair(paths, &directory)
+    }
+}
+
+impl StagedRestore {
+    pub(crate) fn open_validated_database_pair(&self) -> Result<StagedDatabasePair, RestoreError> {
+        open_validated_database_pair(&self.paths, &self.cleanup.directory)
+    }
+
+    pub(crate) const fn staging_directory(&self) -> &File {
+        &self.cleanup.directory
+    }
+}
+
+#[derive(Debug)]
+struct StagingOwnership {
+    root: PathBuf,
+    directory: File,
+    cleanup_authorized: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StagingDirectoryIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+}
+
+#[derive(Debug)]
+struct StagingChild {
+    name: String,
+    file: File,
+}
+
+impl Drop for StagingOwnership {
+    fn drop(&mut self) {
+        if self.cleanup_authorized {
+            let _ = self.remove();
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,7 +199,7 @@ pub(crate) enum RestoreError {
     InvalidStaging,
 }
 
-pub(crate) fn discover_checkpoints(
+fn load_checkpoint_manifests(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
     backup_set_id: &BackupSetId,
@@ -151,49 +226,143 @@ pub(crate) fn discover_checkpoints(
             if checkpoints.len() >= MAX_DISCOVERED_CHECKPOINTS {
                 return Err(RestoreError::TooManyCheckpoints);
             }
-            if listed.byte_length == 0 || listed.byte_length > MAX_MANIFEST_BYTES as u64 {
+            let checkpoint = load_checkpoint_manifest(store, keyspace, backup_set_id, &listed)?;
+            if !seen_checkpoint_ids.insert(checkpoint.checkpoint_id().clone()) {
                 return Err(RestoreError::Manifest);
             }
-            let result = store.get_bounded(&listed.key, MAX_MANIFEST_BYTES)?;
-            if result.metadata.byte_length != listed.byte_length
-                || result.metadata.version != listed.version
-                || result.metadata.byte_length != result.bytes.len() as u64
-                || result.metadata.content_type != Some(ObjectContentType::Json)
-                || result.metadata.kosh_sha256.is_some()
-                || result.metadata.object_format_version != Some(OBJECT_FORMAT_VERSION)
-            {
-                return Err(RestoreError::Manifest);
-            }
-            let manifest = CheckpointManifestV1::from_json(&result.bytes, keyspace)
-                .map_err(|_| RestoreError::Manifest)?;
-            if manifest.backup_set_id() != backup_set_id
-                || manifest
-                    .object_key(keyspace)
-                    .map_err(|_| RestoreError::Manifest)?
-                    != listed.key
-                || !seen_checkpoint_ids.insert(manifest.checkpoint_id().clone())
-            {
-                return Err(RestoreError::Manifest);
-            }
-            let created_at_unix_nanos = manifest
-                .created_at()
-                .unix_timestamp_nanos()
-                .map_err(|_| RestoreError::Manifest)?;
-            checkpoints.push(RemoteCheckpoint {
-                manifest,
-                created_at_unix_nanos,
-            });
+            checkpoints.push(checkpoint);
         }
         continuation = page.next;
         if continuation.is_none() {
             break;
         }
     }
+    Ok(checkpoints)
+}
+
+fn load_checkpoint_manifest(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+    listed: &ListedObject,
+) -> Result<RemoteCheckpoint, RestoreError> {
+    if listed.byte_length == 0 || listed.byte_length > MAX_MANIFEST_BYTES as u64 {
+        return Err(RestoreError::Manifest);
+    }
+    let result = store.get_bounded(&listed.key, MAX_MANIFEST_BYTES)?;
+    if result.metadata.byte_length != listed.byte_length
+        || result.metadata.version != listed.version
+        || result.metadata.byte_length != result.bytes.len() as u64
+        || result.metadata.content_type != Some(ObjectContentType::Json)
+        || result.metadata.kosh_sha256.is_some()
+        || result.metadata.object_format_version != Some(OBJECT_FORMAT_VERSION)
+    {
+        return Err(RestoreError::Manifest);
+    }
+    let manifest = CheckpointManifestV1::from_json(&result.bytes, keyspace)
+        .map_err(|_| RestoreError::Manifest)?;
+    if manifest.backup_set_id() != backup_set_id
+        || manifest
+            .object_key(keyspace)
+            .map_err(|_| RestoreError::Manifest)?
+            != listed.key
+    {
+        return Err(RestoreError::Manifest);
+    }
+    let created_at_unix_nanos = manifest
+        .created_at()
+        .unix_timestamp_nanos()
+        .map_err(|_| RestoreError::Manifest)?;
+    Ok(RemoteCheckpoint {
+        manifest,
+        created_at_unix_nanos,
+    })
+}
+
+fn is_exact_checkpoint_candidate(prefix: &str, key: &str, checkpoint_suffix: &str) -> bool {
+    let Some(relative) = key.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((epoch, filename)) = relative.split_once('/') else {
+        return false;
+    };
+    !epoch.is_empty() && !filename.contains('/') && filename.ends_with(checkpoint_suffix)
+}
+
+pub(crate) fn discover_checkpoint(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+    checkpoint_id: &CheckpointId,
+) -> Result<RemoteCheckpoint, RestoreError> {
+    let prefix = keyspace.checkpoint_prefix();
+    let checkpoint_suffix = format!("-{}.json", checkpoint_id.as_str());
+    let mut continuation = None;
+    let mut candidate = None;
+    let mut pages = 0_usize;
+    loop {
+        pages += 1;
+        if pages > MAX_LIST_PAGES {
+            return Err(RestoreError::TooManyCheckpoints);
+        }
+        let page = store.list(&prefix, continuation.as_ref())?;
+        if page.objects.is_empty() && page.next.is_some() {
+            return Err(RestoreError::Manifest);
+        }
+        for listed in page.objects {
+            if !is_exact_checkpoint_candidate(
+                prefix.as_str(),
+                listed.key.as_str(),
+                &checkpoint_suffix,
+            ) {
+                continue;
+            }
+            if candidate.replace(listed).is_some() {
+                return Err(RestoreError::Manifest);
+            }
+        }
+        continuation = page.next;
+        if continuation.is_none() {
+            break;
+        }
+    }
+    let listed = candidate.ok_or(RestoreError::CheckpointNotFound)?;
+    let checkpoint = load_checkpoint_manifest(store, keyspace, backup_set_id, &listed)?;
+    if checkpoint.checkpoint_id() != checkpoint_id {
+        return Err(RestoreError::Manifest);
+    }
+    Ok(checkpoint)
+}
+
+pub(crate) fn discover_checkpoints(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+) -> Result<Vec<RemoteCheckpoint>, RestoreError> {
+    let mut checkpoints = load_checkpoint_manifests(store, keyspace, backup_set_id)?;
+    let owner = inspect_remote_owner(store, keyspace)?;
+    if owner.backup_set_id() != backup_set_id {
+        return Err(RestoreError::Owner(RemoteOwnerError::Invalid));
+    }
     checkpoints.sort_by(|left, right| {
-        right
-            .created_at_unix_nanos
-            .cmp(&left.created_at_unix_nanos)
-            .then_with(|| right.checkpoint_id().cmp(left.checkpoint_id()))
+        let left_is_active = left.replica_epoch_id() == &owner.replica_epoch_id;
+        let right_is_active = right.replica_epoch_id() == &owner.replica_epoch_id;
+        right_is_active.cmp(&left_is_active).then_with(|| {
+            if left_is_active {
+                right
+                    .content_revision()
+                    .cmp(&left.content_revision())
+                    .then_with(|| right.created_at_unix_nanos.cmp(&left.created_at_unix_nanos))
+                    .then_with(|| right.checkpoint_id().cmp(left.checkpoint_id()))
+            } else {
+                right
+                    .created_at_unix_nanos
+                    .cmp(&left.created_at_unix_nanos)
+                    .then_with(|| right.replica_epoch_id().cmp(left.replica_epoch_id()))
+                    .then_with(|| right.content_revision().cmp(&left.content_revision()))
+                    .then_with(|| right.checkpoint_id().cmp(left.checkpoint_id()))
+            }
+        })
     });
     Ok(checkpoints)
 }
@@ -243,49 +412,127 @@ pub(crate) fn stage_checkpoint(
     source_database_path: &Path,
     staging_root: &Path,
 ) -> Result<StagedRestore, RestoreError> {
+    stage_checkpoint_with_identity(
+        store,
+        keyspace,
+        checkpoint,
+        engine,
+        source_database_path,
+        staging_root,
+        None,
+    )
+}
+
+pub(crate) fn stage_checkpoint_at_identity(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    checkpoint: &RemoteCheckpoint,
+    engine: &dyn RelationalRestoreEngine,
+    source_database_path: &Path,
+    staging_root: &Path,
+    identity: StagingDirectoryIdentity,
+) -> Result<StagedRestore, RestoreError> {
+    stage_checkpoint_with_identity(
+        store,
+        keyspace,
+        checkpoint,
+        engine,
+        source_database_path,
+        staging_root,
+        Some(identity),
+    )
+}
+
+fn stage_checkpoint_with_identity(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    checkpoint: &RemoteCheckpoint,
+    engine: &dyn RelationalRestoreEngine,
+    source_database_path: &Path,
+    staging_root: &Path,
+    expected_identity: Option<StagingDirectoryIdentity>,
+) -> Result<StagedRestore, RestoreError> {
     let paths = DatabasePaths::new(staging_root);
-    prepare_empty_staging(staging_root)?;
-    let operation = (|| {
+    let cleanup = StagingOwnership::prepare(staging_root, expected_identity)?;
+    (|| {
         validate_replica_binding(engine, checkpoint)?;
         let txid = checkpoint.txid()?;
         let plan = engine.preview(source_database_path, &paths.main, txid)?;
         validate_plan(&plan, source_database_path, &paths.main, checkpoint)?;
-        let result = engine.restore(source_database_path, &paths.main, txid)?;
+        let result = engine.restore(source_database_path, &cleanup.directory, &paths.main, txid)?;
         if result.database_path != paths.main
             || result.replica != ReplicaKind::S3
             || result.txid != txid
         {
             return Err(RestoreError::Manifest);
         }
-        validate_checkpoint_evidence(&paths.main, checkpoint)?;
-        let (restored_media_count, restored_media_bytes) =
-            rebuild_media(store, keyspace, checkpoint, &paths)?;
-        validate_restored_pair(&paths)?;
+        let main_file = open_regular_child_read_write(&cleanup.directory, "kosh.sqlite3")?;
+        let main = open_restore_main_read_only_at(&main_file)?;
+        validate_checkpoint_evidence(&main, checkpoint)?;
+        let (restored_media_count, restored_media_bytes, media_file) =
+            rebuild_media(store, keyspace, checkpoint, &main, &cleanup.directory)?;
+        drop(main);
+        validate_restored_pair_at(&main_file, &media_file)?;
+        if !path_matches_open_file(&paths.root, &cleanup.directory) {
+            return Err(RestoreError::InvalidStaging);
+        }
         Ok(StagedRestore {
             checkpoint: checkpoint.clone(),
             paths,
             restored_media_count,
             restored_media_bytes,
+            cleanup,
         })
-    })();
-    if operation.is_err() {
-        let _ = remove_owned_staging(staging_root);
-    }
-    operation
+    })()
 }
 
 pub(crate) fn install_checkpoint(
     live_paths: &DatabasePaths,
     staged: &StagedRestore,
 ) -> Result<RestoreInstallReport, RestoreError> {
+    if let Some(report) =
+        inspect_completed_restore_install(live_paths, staged.checkpoint.checkpoint_id())?
+    {
+        staged.cleanup.remove()?;
+        return Ok(report);
+    }
+    let staged_pair = staged.open_validated_database_pair()?;
     let report = install_restored_pair(
         live_paths,
-        &staged.paths,
+        staged_pair.main(),
+        staged_pair.media(),
         staged.checkpoint.checkpoint_id().clone(),
     )
     .map_err(RestoreError::Database)?;
-    remove_owned_staging(&staged.paths.root)?;
+    staged.cleanup.remove()?;
     Ok(report)
+}
+
+pub(crate) fn remove_staged_checkpoint(staged: &StagedRestore) -> Result<(), RestoreError> {
+    staged.cleanup.remove()
+}
+
+pub(crate) fn remove_staging_root(root: &Path) -> Result<(), RestoreError> {
+    let Some(mut cleanup) = StagingOwnership::open(root)? else {
+        return Ok(());
+    };
+    cleanup.authorize_existing_cleanup()?;
+    cleanup.remove()
+}
+
+pub(crate) fn remove_staging_root_at_identity(
+    root: &Path,
+    identity: StagingDirectoryIdentity,
+) -> Result<bool, RestoreError> {
+    let Some(mut cleanup) = StagingOwnership::open(root)? else {
+        return Ok(true);
+    };
+    if cleanup.identity()? != identity {
+        return Ok(false);
+    }
+    cleanup.authorize_existing_cleanup()?;
+    cleanup.remove()?;
+    Ok(true)
 }
 
 pub(crate) fn drill_checkpoint(
@@ -309,7 +556,7 @@ pub(crate) fn drill_checkpoint(
         restored_media_count: staged.restored_media_count,
         restored_media_bytes: staged.restored_media_bytes,
     };
-    remove_owned_staging(drill_root)?;
+    staged.cleanup.remove()?;
     Ok(report)
 }
 
@@ -347,14 +594,9 @@ fn validate_plan(
 }
 
 fn validate_checkpoint_evidence(
-    main_path: &Path,
+    connection: &Connection,
     checkpoint: &RemoteCheckpoint,
 ) -> Result<(), RestoreError> {
-    let connection = Connection::open_with_flags(
-        main_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(crate::database::DatabaseError::from)?;
     let content_revision = connection
         .query_row(
             "SELECT revision
@@ -438,14 +680,11 @@ fn rebuild_media(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
     checkpoint: &RemoteCheckpoint,
-    paths: &DatabasePaths,
-) -> Result<(u64, u64), RestoreError> {
-    let main = Connection::open_with_flags(
-        &paths.main,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(crate::database::DatabaseError::from)?;
-    let mut media = create_empty_restore_media_database(&paths.media)?;
+    main: &Connection,
+    staging_directory: &File,
+) -> Result<(u64, u64, File), RestoreError> {
+    let media_file = create_regular_child(staging_directory, "media.sqlite3")?;
+    let mut media = create_empty_restore_media_database_at(&media_file)?;
     let transaction = media
         .transaction()
         .map_err(crate::database::DatabaseError::from)?;
@@ -454,7 +693,7 @@ fn rebuild_media(
     let mut digest = Sha256::new();
     let mut cursor = None;
     loop {
-        let references = load_referenced_media_page(&main, cursor, MEDIA_RESTORE_PAGE_SIZE)?;
+        let references = load_referenced_media_page(main, cursor, MEDIA_RESTORE_PAGE_SIZE)?;
         if references.is_empty() {
             break;
         }
@@ -502,6 +741,8 @@ fn rebuild_media(
         .commit()
         .map_err(crate::database::DatabaseError::from)?;
     drop(media);
+    media_file.sync_all()?;
+    staging_directory.sync_all()?;
     if count != checkpoint.manifest.referenced_hash_count()
         || total_bytes != checkpoint.manifest.referenced_total_bytes()
         || ContentSha256::from_bytes(digest.finalize().into())
@@ -509,7 +750,7 @@ fn rebuild_media(
     {
         return Err(RestoreError::MediaMismatch);
     }
-    Ok((count, total_bytes))
+    Ok((count, total_bytes, media_file))
 }
 
 #[derive(Clone, Copy)]
@@ -584,64 +825,338 @@ fn load_referenced_media_page(
     Ok(references)
 }
 
-fn prepare_empty_staging(root: &Path) -> Result<(), RestoreError> {
-    match fs::create_dir(root) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = fs::symlink_metadata(root)?;
-            if metadata.file_type().is_symlink()
-                || !metadata.is_dir()
-                || fs::read_dir(root)?.next().is_some()
-            {
-                return Err(RestoreError::InvalidStaging);
-            }
+impl StagingOwnership {
+    fn prepare(
+        root: &Path,
+        expected_identity: Option<StagingDirectoryIdentity>,
+    ) -> Result<Self, RestoreError> {
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+        match builder.create(root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => return Err(error.into()),
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
-    }
-    File::open(root)?.sync_all()?;
-    Ok(())
-}
-
-fn remove_owned_staging(root: &Path) -> Result<(), RestoreError> {
-    let metadata = match fs::symlink_metadata(root) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(RestoreError::InvalidStaging);
-    }
-    let allowed = [
-        "kosh.sqlite3",
-        "kosh.sqlite3-wal",
-        "kosh.sqlite3-shm",
-        "media.sqlite3",
-        "media.sqlite3-wal",
-        "media.sqlite3-shm",
-        "kosh.lock",
-    ];
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file()
-            || !entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| allowed.contains(&name))
-        {
+        let Some(mut ownership) = Self::open(root)? else {
+            return Err(RestoreError::InvalidStaging);
+        };
+        if !directory_entries(&ownership.directory)?.is_empty() {
             return Err(RestoreError::InvalidStaging);
         }
-        fs::remove_file(entry.path())?;
+        if expected_identity.is_some_and(|expected| {
+            ownership
+                .identity()
+                .map_or(true, |actual| actual != expected)
+        }) {
+            return Err(RestoreError::InvalidStaging);
+        }
+        ownership.cleanup_authorized = true;
+        let chmod = unsafe { libc::fchmod(ownership.directory.as_raw_fd(), 0o700) };
+        if chmod != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        ownership.directory.sync_all()?;
+        Ok(ownership)
     }
-    fs::remove_dir(root)?;
-    if let Some(parent) = root.parent() {
-        File::open(parent)?.sync_all()?;
+
+    fn open(root: &Path) -> Result<Option<Self>, RestoreError> {
+        let metadata = match fs::symlink_metadata(root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(RestoreError::InvalidStaging);
+        }
+        let directory = open_directory_no_follow(root)?;
+        if !path_matches_open_file(root, &directory) || !is_current_user_directory(&directory)? {
+            return Err(RestoreError::InvalidStaging);
+        }
+        Ok(Some(Self {
+            root: root.to_owned(),
+            directory,
+            cleanup_authorized: false,
+        }))
     }
-    Ok(())
+
+    fn authorize_existing_cleanup(&mut self) -> Result<(), RestoreError> {
+        let _ = inspect_staging_children(&self.directory)?;
+        self.cleanup_authorized = true;
+        Ok(())
+    }
+
+    fn identity(&self) -> Result<StagingDirectoryIdentity, RestoreError> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = self.directory.metadata()?;
+        Ok(StagingDirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
+    fn remove(&self) -> Result<(), RestoreError> {
+        if !self.cleanup_authorized {
+            return Err(RestoreError::InvalidStaging);
+        }
+        let inspected = inspect_staging_children(&self.directory)?;
+        for child in &inspected {
+            unlink_owned_child(&self.directory, &child.name, &child.file)?;
+        }
+        self.directory.sync_all()?;
+        if !directory_entries(&self.directory)?.is_empty() {
+            return Err(RestoreError::InvalidStaging);
+        }
+        if path_matches_open_file(&self.root, &self.directory) {
+            fs::remove_dir(&self.root)?;
+            if let Some(parent) = self.root.parent() {
+                File::open(parent)?.sync_all()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn inspect_staging_children(directory: &File) -> Result<Vec<StagingChild>, RestoreError> {
+    let mut children = Vec::new();
+    for entry in directory_entries(directory)? {
+        let Some(name) = entry.to_str() else {
+            return Err(RestoreError::InvalidStaging);
+        };
+        if !STAGING_FILENAMES.contains(&name) {
+            return Err(RestoreError::InvalidStaging);
+        }
+        let file = open_regular_child(directory, name)?;
+        if !is_current_user_file(&file)? {
+            return Err(RestoreError::InvalidStaging);
+        }
+        children.push(StagingChild {
+            name: name.to_owned(),
+            file,
+        });
+    }
+    Ok(children)
+}
+
+fn open_validated_database_pair(
+    paths: &DatabasePaths,
+    directory: &File,
+) -> Result<StagedDatabasePair, RestoreError> {
+    if paths.main != paths.root.join("kosh.sqlite3")
+        || paths.media != paths.root.join("media.sqlite3")
+        || !path_matches_open_file(&paths.root, directory)
+    {
+        return Err(RestoreError::InvalidStaging);
+    }
+    let main = open_regular_child_read_write(directory, "kosh.sqlite3")?;
+    let media = open_regular_child_read_write(directory, "media.sqlite3")?;
+    if !is_current_user_file(&main)? || !is_current_user_file(&media)? {
+        return Err(RestoreError::InvalidStaging);
+    }
+
+    // Validate through the retained child descriptors, then prove the
+    // discoverable staging path still identifies the retained directory and
+    // exact files. Every later copy and comparison uses these descriptors, so
+    // a same-UID rename/replacement after this point cannot substitute another
+    // library.
+    validate_restored_pair_at(&main, &media)?;
+    let current_main = open_regular_child_read_write(directory, "kosh.sqlite3")?;
+    let current_media = open_regular_child_read_write(directory, "media.sqlite3")?;
+    if !path_matches_open_file(&paths.root, directory)
+        || !same_open_file(&main, &current_main)
+        || !same_open_file(&media, &current_media)
+    {
+        return Err(RestoreError::InvalidStaging);
+    }
+    Ok(StagedDatabasePair { main, media })
+}
+
+fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let directory = options.open(path)?;
+    if !directory.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging root is not a directory",
+        ));
+    }
+    Ok(directory)
+}
+
+fn open_regular_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging child is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn open_regular_child_read_write(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging child is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn create_regular_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging child is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn unlink_owned_child(directory: &File, name: &str, owned: &File) -> std::io::Result<()> {
+    let current = match open_regular_child(directory, name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !same_open_file(&current, owned) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "restore staging child identity changed",
+        ));
+    }
+    let name = child_name(name)?;
+    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn directory_entries(directory: &File) -> std::io::Result<Vec<OsString>> {
+    let descriptor = unsafe { libc::dup(directory.as_raw_fd()) };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(descriptor) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(descriptor);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    unsafe {
+        libc::rewinddir(stream);
+    }
+    let mut entries = Vec::new();
+    loop {
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            entries.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    if unsafe { libc::closedir(stream) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+fn child_name(name: &str) -> std::io::Result<CString> {
+    if name.is_empty() || name.as_bytes().contains(&b'/') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid restore staging child name",
+        ));
+    }
+    CString::new(name.as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid restore staging child name",
+        )
+    })
+}
+
+fn path_matches_open_file(path: &Path, open: &File) -> bool {
+    let Ok(path_metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_dir() {
+        return false;
+    }
+    let Ok(open_metadata) = open.metadata() else {
+        return false;
+    };
+    same_metadata(&path_metadata, &open_metadata)
+}
+
+fn same_open_file(left: &File, right: &File) -> bool {
+    left.metadata()
+        .ok()
+        .zip(right.metadata().ok())
+        .is_some_and(|(left, right)| same_metadata(&left, &right))
+}
+
+fn same_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn is_current_user_directory(directory: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = directory.metadata()?;
+    Ok(metadata.is_dir() && metadata.uid() == unsafe { libc::geteuid() })
+}
+
+fn is_current_user_file(file: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(metadata.is_file() && metadata.uid() == unsafe { libc::geteuid() })
 }
 
 #[cfg(test)]
@@ -659,8 +1174,8 @@ mod tests {
             },
             litestream::{IntegrityCheck, RestoreFile, RestoreResult},
             object_store::{
-                fake::FakeObjectStore, ObjectContentType, PutCondition, PutMediaRequest,
-                PutObjectRequest,
+                fake::{FakeObjectStore, ObjectOperation},
+                ObjectContentType, PutCondition, PutMediaRequest, PutObjectRequest,
             },
             owner::claim_remote_owner,
         },
@@ -690,6 +1205,45 @@ mod tests {
         source: PathBuf,
         replica_path: R2ObjectKey,
         txid: LitestreamTxid,
+    }
+
+    struct ParentReplacingRestoreEngine<'a> {
+        inner: &'a FakeRestoreEngine,
+        requested_root: PathBuf,
+        displaced_root: PathBuf,
+    }
+
+    impl RelationalRestoreEngine for ParentReplacingRestoreEngine<'_> {
+        fn replica_path(&self) -> &str {
+            self.inner.replica_path()
+        }
+
+        fn preview(
+            &self,
+            source_database_path: &Path,
+            target_path: &Path,
+            txid: LitestreamTxid,
+        ) -> Result<RestorePlan, LitestreamError> {
+            self.inner.preview(source_database_path, target_path, txid)
+        }
+
+        fn restore(
+            &self,
+            source_database_path: &Path,
+            target_directory: &File,
+            target_path: &Path,
+            txid: LitestreamTxid,
+        ) -> Result<RestoreResult, LitestreamError> {
+            fs::rename(&self.requested_root, &self.displaced_root)
+                .map_err(LitestreamError::Execute)?;
+            let replacement = Database::initialize(DatabasePaths::new(&self.requested_root))
+                .map_err(|error| LitestreamError::Execute(std::io::Error::other(error)))?;
+            replacement
+                .shutdown()
+                .map_err(|error| LitestreamError::Execute(std::io::Error::other(error)))?;
+            self.inner
+                .restore(source_database_path, target_directory, target_path, txid)
+        }
     }
 
     impl RelationalRestoreEngine for FakeRestoreEngine {
@@ -725,12 +1279,24 @@ mod tests {
         fn restore(
             &self,
             source_database_path: &Path,
+            target_directory: &File,
             target_path: &Path,
             txid: LitestreamTxid,
         ) -> Result<RestoreResult, LitestreamError> {
             assert_eq!(source_database_path, self.source);
             assert_eq!(txid, self.txid);
-            fs::copy(source_database_path, target_path).map_err(LitestreamError::Execute)?;
+            let mut source = File::open(source_database_path).map_err(LitestreamError::Execute)?;
+            let target_name = target_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LitestreamError::InvalidRestoreDestination)?;
+            let mut target = create_regular_child(target_directory, target_name)
+                .map_err(LitestreamError::Execute)?;
+            std::io::copy(&mut source, &mut target).map_err(LitestreamError::Execute)?;
+            target.sync_all().map_err(LitestreamError::Execute)?;
+            target_directory
+                .sync_all()
+                .map_err(LitestreamError::Execute)?;
             Ok(RestoreResult {
                 database_path: target_path.to_owned(),
                 replica: ReplicaKind::S3,
@@ -1043,7 +1609,66 @@ mod tests {
     }
 
     #[test]
-    fn discovery_sorts_fractional_timestamps_chronologically() {
+    fn staging_writes_stay_bound_after_the_requested_root_is_replaced() {
+        let fixture = Fixture::new();
+        let parent = tempfile::tempdir().expect("staging replacement parent");
+        let staging_root = parent.path().join("staging");
+        let displaced_root = parent.path().join("displaced-staging");
+        let engine = ParentReplacingRestoreEngine {
+            inner: &fixture.engine,
+            requested_root: staging_root.clone(),
+            displaced_root: displaced_root.clone(),
+        };
+
+        let result = stage_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.checkpoint,
+            &engine,
+            &fixture.source_paths.main,
+            &staging_root,
+        );
+        assert!(
+            matches!(result, Err(RestoreError::InvalidStaging)),
+            "unexpected staging result: {result:?}"
+        );
+
+        let replacement =
+            Database::initialize(DatabasePaths::new(&staging_root)).expect("replacement database");
+        let main = replacement
+            .open_main_read_only()
+            .expect("replacement main database");
+        let media = replacement
+            .open_media_read_only()
+            .expect("replacement media database");
+        assert_eq!(
+            main.query_row("SELECT count(*) FROM tidbit", [], |row| row
+                .get::<_, i64>(0))
+                .expect("replacement tidbit count"),
+            0
+        );
+        assert_eq!(
+            media
+                .query_row("SELECT count(*) FROM media_blob", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("replacement media count"),
+            0
+        );
+        drop(media);
+        drop(main);
+        replacement.shutdown().expect("close replacement database");
+        assert!(
+            fs::read_dir(&displaced_root)
+                .expect("displaced staging entries")
+                .next()
+                .is_none(),
+            "descriptor-bound cleanup must remove private restored data"
+        );
+    }
+
+    #[test]
+    fn discovery_sorts_content_revision_before_a_backward_clock_timestamp() {
         let fixture = Fixture::new();
         let original = &fixture.checkpoint.manifest;
         let newer_checkpoint_id = CheckpointId::new();
@@ -1051,8 +1676,8 @@ mod tests {
             backup_set_id: original.backup_set_id().clone(),
             replica_epoch_id: original.replica_epoch_id().clone(),
             checkpoint_id: newer_checkpoint_id.clone(),
-            created_at: UtcTimestamp::parse("2026-07-30T19:00:00.900Z")
-                .expect("fractional timestamp"),
+            created_at: UtcTimestamp::parse("2026-07-30T18:59:59Z")
+                .expect("backward-clock timestamp"),
             kosh_version: original.kosh_version().into(),
             content_revision: original.content_revision() + 1,
             main_migration_head: original.main_migration_head(),
@@ -1081,8 +1706,179 @@ mod tests {
 
         assert_eq!(checkpoints.len(), 2);
         assert_eq!(checkpoints[0].checkpoint_id(), &newer_checkpoint_id);
+        assert_eq!(checkpoints[0].created_at(), "2026-07-30T18:59:59Z");
+        assert_eq!(checkpoints[1].created_at(), "2026-07-30T19:00:00Z");
+    }
+
+    #[test]
+    fn discovery_sorts_equal_revisions_by_fractional_timestamp() {
+        let fixture = Fixture::new();
+        let original = &fixture.checkpoint.manifest;
+        let later_checkpoint_id = CheckpointId::new();
+        let later = CheckpointManifestV1::new(CheckpointManifestInput {
+            backup_set_id: original.backup_set_id().clone(),
+            replica_epoch_id: original.replica_epoch_id().clone(),
+            checkpoint_id: later_checkpoint_id.clone(),
+            created_at: UtcTimestamp::parse("2026-07-30T19:00:00.900Z")
+                .expect("fractional timestamp"),
+            kosh_version: original.kosh_version().into(),
+            content_revision: original.content_revision(),
+            main_migration_head: original.main_migration_head(),
+            litestream_path: fixture.keyspace.litestream(original.replica_epoch_id()),
+            txid: original.txid().into(),
+            media_migration_head: original.media_migration_head(),
+            referenced_hash_count: original.referenced_hash_count(),
+            referenced_total_bytes: original.referenced_total_bytes(),
+            referenced_hash_set_sha256: original.referenced_hash_set_sha256(),
+        })
+        .expect("later manifest");
+        fixture
+            .store
+            .put(PutObjectRequest {
+                key: later.object_key(&fixture.keyspace).expect("manifest key"),
+                bytes: later.to_json().expect("manifest bytes"),
+                content_type: ObjectContentType::Json,
+                kosh_sha256: None,
+                condition: PutCondition::IfAbsent,
+            })
+            .expect("later remote manifest");
+
+        let checkpoints =
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id)
+                .expect("checkpoint discovery");
+
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].checkpoint_id(), &later_checkpoint_id);
         assert_eq!(checkpoints[0].created_at(), "2026-07-30T19:00:00.900Z");
         assert_eq!(checkpoints[1].created_at(), "2026-07-30T19:00:00Z");
+    }
+
+    #[test]
+    fn discovery_prefers_the_active_epoch_before_cross_lineage_revisions() {
+        let fixture = Fixture::new();
+        let active = &fixture.checkpoint.manifest;
+        let abandoned_epoch = ReplicaEpochId::new();
+        let abandoned_checkpoint_id = CheckpointId::new();
+        let abandoned = CheckpointManifestV1::new(CheckpointManifestInput {
+            backup_set_id: active.backup_set_id().clone(),
+            replica_epoch_id: abandoned_epoch.clone(),
+            checkpoint_id: abandoned_checkpoint_id.clone(),
+            created_at: UtcTimestamp::parse("2026-07-30T20:00:00Z").expect("abandoned timestamp"),
+            kosh_version: active.kosh_version().into(),
+            content_revision: active.content_revision() + 100,
+            main_migration_head: active.main_migration_head(),
+            litestream_path: fixture.keyspace.litestream(&abandoned_epoch),
+            txid: active.txid().into(),
+            media_migration_head: active.media_migration_head(),
+            referenced_hash_count: active.referenced_hash_count(),
+            referenced_total_bytes: active.referenced_total_bytes(),
+            referenced_hash_set_sha256: active.referenced_hash_set_sha256(),
+        })
+        .expect("abandoned manifest");
+        fixture
+            .store
+            .put(PutObjectRequest {
+                key: abandoned
+                    .object_key(&fixture.keyspace)
+                    .expect("manifest key"),
+                bytes: abandoned.to_json().expect("manifest bytes"),
+                content_type: ObjectContentType::Json,
+                kosh_sha256: None,
+                condition: PutCondition::IfAbsent,
+            })
+            .expect("abandoned remote manifest");
+
+        let checkpoints =
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id)
+                .expect("checkpoint discovery");
+
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].replica_epoch_id(), active.replica_epoch_id());
+        assert_eq!(checkpoints[0].checkpoint_id(), active.checkpoint_id());
+        assert_eq!(checkpoints[1].replica_epoch_id(), &abandoned_epoch);
+        assert_eq!(checkpoints[1].checkpoint_id(), &abandoned_checkpoint_id);
+        assert!(checkpoints[1].content_revision() > checkpoints[0].content_revision());
+    }
+
+    #[test]
+    fn exact_checkpoint_discovery_does_not_depend_on_the_mutable_owner_record() {
+        let fixture = Fixture::new();
+        fixture.store.remove_for_test(&fixture.keyspace.owner());
+
+        let exact = discover_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.backup_set_id,
+            fixture.checkpoint.checkpoint_id(),
+        )
+        .expect("immutable exact checkpoint");
+
+        assert_eq!(exact.checkpoint_id(), fixture.checkpoint.checkpoint_id());
+        assert!(matches!(
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id),
+            Err(RestoreError::Owner(_))
+        ));
+    }
+
+    #[test]
+    fn exact_checkpoint_discovery_ignores_unrelated_corrupt_manifests() {
+        let fixture = Fixture::new();
+        let epoch = fixture.checkpoint.replica_epoch_id();
+        let corrupt_manifests = [
+            (
+                CheckpointId::new(),
+                UtcTimestamp::parse("2026-07-30T19:00:01Z").expect("malformed timestamp"),
+                b"not-json".to_vec(),
+                ObjectContentType::Json,
+            ),
+            (
+                CheckpointId::new(),
+                UtcTimestamp::parse("2026-07-30T19:00:02Z").expect("oversized timestamp"),
+                vec![b'x'; MAX_MANIFEST_BYTES + 1],
+                ObjectContentType::Json,
+            ),
+            (
+                CheckpointId::new(),
+                UtcTimestamp::parse("2026-07-30T19:00:03Z").expect("binary timestamp"),
+                b"{}".to_vec(),
+                ObjectContentType::Binary,
+            ),
+        ];
+        for (checkpoint_id, created_at, bytes, content_type) in corrupt_manifests {
+            fixture
+                .store
+                .put(PutObjectRequest {
+                    key: fixture
+                        .keyspace
+                        .checkpoint(epoch, &checkpoint_id, &created_at)
+                        .expect("corrupt manifest key"),
+                    bytes,
+                    content_type,
+                    kosh_sha256: None,
+                    condition: PutCondition::IfAbsent,
+                })
+                .expect("unrelated corrupt manifest");
+        }
+        fixture.store.clear_operations();
+
+        let exact = discover_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.backup_set_id,
+            fixture.checkpoint.checkpoint_id(),
+        )
+        .expect("isolated exact checkpoint");
+
+        assert_eq!(exact.checkpoint_id(), fixture.checkpoint.checkpoint_id());
+        assert_eq!(
+            fixture.store.operations(),
+            [ObjectOperation::List, ObjectOperation::Get],
+            "exact discovery must not fetch unrelated manifests"
+        );
+        assert!(matches!(
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id),
+            Err(RestoreError::Manifest)
+        ));
     }
 
     #[test]
@@ -1120,6 +1916,15 @@ mod tests {
 
         assert!(matches!(
             discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id),
+            Err(RestoreError::Manifest)
+        ));
+        assert!(matches!(
+            discover_checkpoint(
+                &fixture.store,
+                &fixture.keyspace,
+                &fixture.backup_set_id,
+                original.checkpoint_id(),
+            ),
             Err(RestoreError::Manifest)
         ));
     }
@@ -1180,6 +1985,108 @@ mod tests {
             1
         );
         restored.shutdown().expect("close restored library");
+    }
+
+    #[test]
+    fn staged_restore_lifetime_removes_an_uninstalled_owned_pair() {
+        let fixture = Fixture::new();
+        let staging_parent = tempfile::tempdir().expect("staging parent");
+        let staging_root = staging_parent.path().join("restore");
+        let staged = stage_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.checkpoint,
+            &fixture.engine,
+            &fixture.source_paths.main,
+            &staging_root,
+        )
+        .expect("staged restore");
+        assert!(staged.paths.main.is_file());
+        assert!(staged.paths.media.is_file());
+        let audited =
+            Database::initialize(staged.paths.clone()).expect("reopen staged restore for audit");
+        audited.shutdown().expect("close staged audit");
+
+        drop(staged);
+
+        assert!(
+            !staging_root.exists(),
+            "dropping an uninstalled staged restore must remove authored copies"
+        );
+    }
+
+    #[test]
+    fn staged_restore_cleanup_is_bound_to_its_opened_directory() {
+        let fixture = Fixture::new();
+        let staging_parent = tempfile::tempdir().expect("staging parent");
+        let staging_root = staging_parent.path().join("restore");
+        let displaced_root = staging_parent.path().join("displaced");
+        let staged = stage_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.checkpoint,
+            &fixture.engine,
+            &fixture.source_paths.main,
+            &staging_root,
+        )
+        .expect("staged restore");
+        fs::rename(&staging_root, &displaced_root).expect("displace staging root");
+        let replacement_paths = DatabasePaths::new(&staging_root);
+        let replacement =
+            Database::initialize(replacement_paths.clone()).expect("replacement library");
+        replacement.shutdown().expect("close replacement library");
+        let replacement_main = fs::read(&replacement_paths.main).expect("replacement main");
+        let replacement_media = fs::read(&replacement_paths.media).expect("replacement media");
+
+        drop(staged);
+
+        assert_eq!(
+            fs::read(&replacement_paths.main).expect("preserved replacement main"),
+            replacement_main
+        );
+        assert_eq!(
+            fs::read(&replacement_paths.media).expect("preserved replacement media"),
+            replacement_media
+        );
+        assert_eq!(
+            fs::read_dir(&displaced_root)
+                .expect("descriptor-owned displaced staging root")
+                .count(),
+            0,
+            "cleanup must unlink only children in its opened directory"
+        );
+    }
+
+    #[test]
+    fn staging_rejection_never_claims_or_cleans_an_existing_library() {
+        let fixture = Fixture::new();
+        let existing_parent = tempfile::tempdir().expect("existing parent");
+        let existing_root = existing_parent.path().join("existing");
+        let existing_paths = DatabasePaths::new(&existing_root);
+        let existing = Database::initialize(existing_paths.clone()).expect("existing Kosh library");
+        existing.shutdown().expect("close existing library");
+        let existing_main = fs::read(&existing_paths.main).expect("existing main");
+        let existing_media = fs::read(&existing_paths.media).expect("existing media");
+
+        assert!(matches!(
+            stage_checkpoint(
+                &fixture.store,
+                &fixture.keyspace,
+                &fixture.checkpoint,
+                &fixture.engine,
+                &fixture.source_paths.main,
+                &existing_root,
+            ),
+            Err(RestoreError::InvalidStaging)
+        ));
+        assert_eq!(
+            fs::read(&existing_paths.main).expect("preserved existing main"),
+            existing_main
+        );
+        assert_eq!(
+            fs::read(&existing_paths.media).expect("preserved existing media"),
+            existing_media
+        );
     }
 
     #[test]

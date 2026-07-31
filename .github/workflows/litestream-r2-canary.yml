@@ -1,0 +1,63 @@
+name: Packaged real-R2 recovery canary
+
+on:
+  schedule:
+    - cron: "29 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaged-litestream-r2-canary
+  cancel-in-progress: false
+
+jobs:
+  packaged-recovery:
+    runs-on: macos-15
+    environment: r2-canary
+    timeout-minutes: 45
+    env:
+      KOSH_LITESTREAM_R2_ACCOUNT_ID: ${{ secrets.KOSH_LITESTREAM_R2_ACCOUNT_ID }}
+      KOSH_LITESTREAM_R2_JURISDICTION: DEFAULT
+      KOSH_LITESTREAM_R2_BUCKET: ${{ secrets.KOSH_LITESTREAM_R2_BUCKET }}
+      KOSH_LITESTREAM_R2_ACCESS_KEY_ID: ${{ secrets.KOSH_LITESTREAM_R2_ACCESS_KEY_ID }}
+      KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY: ${{ secrets.KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY }}
+      KOSH_R2_CANARY_REQUIRE_PACKAGED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: pnpm --dir app install --frozen-lockfile
+      - name: Verify repository, secret, bundle, and recovery contracts
+        run: scripts/check-repository.sh
+      - name: Build the exact packaged candidate
+        run: pnpm --dir app release:build:app
+      - name: Restore a complete checkpoint with the packaged command
+        run: scripts/run-litestream-r2-canary.sh
+      - name: Upload redacted recovery evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-r2-recovery-${{ github.run_id }}
+          path: |
+            app/.data/r2-canary/*/canary-report-v1.json
+            app/.data/r2-canary/*/checkpoint-manifest-v1.json
+            app/.data/r2-canary/*/packaged-recovery-smoke-v1.json
+            app/.data/r2-canary/*/packaged-home/packaged-recovery-startup-receipt.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
