@@ -39,7 +39,7 @@ const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
 const PRIVATE_RESTORE_OUTPUT_FILENAME: &str = "database.sqlite3";
 const EPHEMERAL_RUNTIME_CONTROL_FILENAME: &str = ".kosh-recovery-runtime-v1.json";
-const EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION: u32 = 1;
+const EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION: u32 = 2;
 const MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES: u64 = 4 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(target_os = "macos")]
@@ -1258,6 +1258,8 @@ pub(crate) struct EphemeralLitestreamRuntime {
 struct EphemeralRuntimeControl {
     schema_version: u32,
     token: String,
+    root_device: u64,
+    root_inode: u64,
 }
 
 struct EphemeralRuntimeOwnership {
@@ -1355,6 +1357,13 @@ impl EphemeralRuntimeOwnership {
                 "ephemeral recovery root was replaced",
             ));
         }
+        let (root_device, root_inode) = match runtime_file_identity(&directory) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = remove_empty_owned_runtime_directory(&root, &directory);
+                return Err(error);
+            }
+        };
         let mut marker =
             match create_private_runtime_child(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME) {
                 Ok(marker) => marker,
@@ -1372,6 +1381,8 @@ impl EphemeralRuntimeOwnership {
         let control = EphemeralRuntimeControl {
             schema_version: EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION,
             token: token.clone(),
+            root_device,
+            root_inode,
         };
         if let Err(error) = write_ephemeral_runtime_control(&mut marker, &control)
             .and_then(|()| directory.sync_all())
@@ -1415,8 +1426,11 @@ impl EphemeralRuntimeOwnership {
             Ok(control) => control,
             Err(_) => return Ok(None),
         };
+        let (root_device, root_inode) = runtime_file_identity(&directory)?;
         if control.schema_version != EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION
             || control.token != token
+            || control.root_device != root_device
+            || control.root_inode != root_inode
         {
             return Ok(None);
         }
@@ -2236,6 +2250,12 @@ fn same_runtime_file(left: &File, right: &File) -> bool {
         .ok()
         .zip(right.metadata().ok())
         .is_some_and(|(left, right)| same_runtime_metadata(&left, &right))
+}
+
+fn runtime_file_identity(file: &File) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 fn same_runtime_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
@@ -4419,6 +4439,57 @@ mod tests {
         active.cleanup().expect("cleanup active");
         fs::remove_file(replacement_database).expect("remove replacement fixture");
         fs::remove_dir(replacement_root).expect("remove replacement root");
+    }
+
+    #[test]
+    fn ephemeral_runtime_reclamation_rejects_a_copied_marker_in_a_substituted_directory() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let original_root = interrupted.root.clone();
+        let displaced_root =
+            original_root.with_file_name(format!("kosh-d-{}", uuid::Uuid::now_v7()));
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"descriptor-owned recovery bytes",
+        )
+        .expect("write original recovery database");
+        fs::rename(&original_root, &displaced_root).expect("displace original runtime");
+
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+        builder
+            .create(&original_root)
+            .expect("create substituted runtime");
+        let copied_marker = original_root.join(EPHEMERAL_RUNTIME_CONTROL_FILENAME);
+        fs::copy(
+            displaced_root.join(EPHEMERAL_RUNTIME_CONTROL_FILENAME),
+            &copied_marker,
+        )
+        .expect("copy authenticated marker");
+        fs::set_permissions(&copied_marker, fs::Permissions::from_mode(0o600))
+            .expect("copied marker permissions");
+        let replacement_database = original_root.join("remote-kosh.sqlite3");
+        fs::write(&replacement_database, b"preserve replacement database")
+            .expect("replacement database");
+
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry runtime");
+
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement database"),
+            b"preserve replacement database",
+            "a copied pathname token must not authorize cleanup of another directory identity"
+        );
+        retry.cleanup().expect("cleanup retry runtime");
+        fs::remove_file(replacement_database).expect("remove replacement database");
+        fs::remove_file(copied_marker).expect("remove copied marker");
+        fs::remove_dir(&original_root).expect("remove substituted runtime");
+        fs::rename(&displaced_root, &original_root).expect("restore original runtime binding");
+        interrupted.cleanup().expect("cleanup original runtime");
     }
 
     #[cfg(unix)]
