@@ -331,6 +331,13 @@
       "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
     },
     {
+      "id": "install-abandoned-staging-substitution",
+      "phase": "install",
+      "failureClass": "concurrency",
+      "test": "backup::recovery_cli::tests::abandoned_staging_reclamation_preserves_a_replacement_library",
+      "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
+    },
+    {
       "id": "install-staging-cleanup-before-commit",
       "phase": "install",
       "failureClass": "filesystem",
@@ -343,6 +350,20 @@
       "failureClass": "crash-boundary",
       "test": "backup::recovery_cli::tests::descriptor_bound_install_publishes_a_durable_retry_receipt",
       "invariants": ["authored-bytes", "citation-provenance", "idempotency"]
+    },
+    {
+      "id": "restore-interrupted-ephemeral-runtime-reclaim",
+      "phase": "restore",
+      "failureClass": "crash-boundary",
+      "test": "backup::litestream::tests::next_ephemeral_runtime_reclaims_an_authenticated_interrupted_runtime",
+      "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
+    },
+    {
+      "id": "restore-interrupted-ephemeral-quarantine-reclaim",
+      "phase": "restore",
+      "failureClass": "retry",
+      "test": "backup::litestream::tests::next_ephemeral_runtime_finishes_an_interrupted_quarantine_cleanup",
+      "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
     },
     {
       "id": "reopen-search-and-citation-rebuild",

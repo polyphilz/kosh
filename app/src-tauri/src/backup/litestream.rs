@@ -1,9 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
+    ffi::{CStr, CString, OsString},
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
     io::{Read, Seek, SeekFrom, Write},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStringExt,
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
@@ -11,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -32,6 +36,9 @@ const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESTORE_FILES: usize = 100_000;
 const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
+const EPHEMERAL_RUNTIME_CONTROL_FILENAME: &str = ".kosh-recovery-runtime-v1.json";
+const EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION: u32 = 1;
+const MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES: u64 = 4 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(target_os = "macos")]
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
@@ -1024,10 +1031,26 @@ pub struct LitestreamRuntimePaths {
 }
 
 pub(crate) struct EphemeralLitestreamRuntime {
+    #[cfg(test)]
     root: PathBuf,
     source_database_path: PathBuf,
     runtime: LitestreamRuntimePaths,
+    ownership: EphemeralRuntimeOwnership,
     cleaned: bool,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EphemeralRuntimeControl {
+    schema_version: u32,
+    token: String,
+}
+
+struct EphemeralRuntimeOwnership {
+    root: PathBuf,
+    token: String,
+    directory: File,
+    marker: File,
 }
 
 impl EphemeralLitestreamRuntime {
@@ -1036,28 +1059,24 @@ impl EphemeralLitestreamRuntime {
         let parent = Path::new("/tmp");
         #[cfg(not(unix))]
         let parent = std::env::temp_dir().as_path();
-        let root = parent.join(format!("kosh-r-{}", uuid::Uuid::now_v7()));
-        fs::create_dir(&root).map_err(LitestreamError::PrepareRuntime)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(error) = fs::set_permissions(&root, fs::Permissions::from_mode(0o700)) {
-                let _ = fs::remove_dir(&root);
-                return Err(LitestreamError::PrepareRuntime(error));
-            }
-        }
+        reclaim_abandoned_ephemeral_runtimes(parent).map_err(LitestreamError::PrepareRuntime)?;
+        let mut ownership =
+            EphemeralRuntimeOwnership::create(parent).map_err(LitestreamError::PrepareRuntime)?;
+        let root = ownership.root.clone();
         let runtime = match LitestreamRuntimePaths::new(&root) {
             Ok(runtime) => runtime,
             Err(error) => {
-                let _ = fs::remove_dir(&root);
+                let _ = ownership.remove();
                 return Err(error);
             }
         };
         let source_database_path = root.join("remote-kosh.sqlite3");
         Ok(Self {
+            #[cfg(test)]
             root,
             source_database_path,
             runtime,
+            ownership,
             cleaned: false,
         })
     }
@@ -1071,8 +1090,11 @@ impl EphemeralLitestreamRuntime {
     }
 
     pub(crate) fn cleanup(&mut self) -> Result<(), LitestreamError> {
-        self.runtime
-            .remove_ephemeral_recovery_runtime(&self.root)
+        if self.cleaned {
+            return Ok(());
+        }
+        self.ownership
+            .remove()
             .map_err(LitestreamError::PrepareRuntime)?;
         self.cleaned = true;
         Ok(())
@@ -1082,8 +1104,153 @@ impl EphemeralLitestreamRuntime {
 impl Drop for EphemeralLitestreamRuntime {
     fn drop(&mut self) {
         if !self.cleaned {
-            let _ = self.runtime.remove_ephemeral_recovery_runtime(&self.root);
+            let _ = self.ownership.remove();
         }
+    }
+}
+
+impl EphemeralRuntimeOwnership {
+    fn create(parent: &Path) -> std::io::Result<Self> {
+        let token = uuid::Uuid::now_v7().to_string();
+        let root = parent.join(format!("kosh-r-{token}"));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&root)?;
+        let directory = match open_directory_no_follow(&root) {
+            Ok(directory) => directory,
+            Err(error) => {
+                let _ = fs::remove_dir(&root);
+                return Err(error);
+            }
+        };
+        if !path_matches_open_directory(&root, &directory)
+            || !is_private_current_user_directory(&directory)?
+            || !runtime_directory_entries(&directory)?.is_empty()
+        {
+            let _ = remove_empty_owned_runtime_directory(&root, &directory);
+            return Err(std::io::Error::other(
+                "ephemeral recovery root was replaced",
+            ));
+        }
+        let mut marker =
+            match create_private_runtime_child(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME) {
+                Ok(marker) => marker,
+                Err(error) => {
+                    let _ = remove_empty_owned_runtime_directory(&root, &directory);
+                    return Err(error);
+                }
+            };
+        if let Err(error) = marker.lock() {
+            let _ =
+                unlink_owned_runtime_file(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME, &marker);
+            let _ = remove_empty_owned_runtime_directory(&root, &directory);
+            return Err(error);
+        }
+        let control = EphemeralRuntimeControl {
+            schema_version: EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION,
+            token: token.clone(),
+        };
+        if let Err(error) = write_ephemeral_runtime_control(&mut marker, &control)
+            .and_then(|()| directory.sync_all())
+            .and_then(|()| File::open(parent)?.sync_all())
+        {
+            let _ =
+                unlink_owned_runtime_file(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME, &marker);
+            let _ = remove_empty_owned_runtime_directory(&root, &directory);
+            return Err(error);
+        }
+        Ok(Self {
+            root,
+            token,
+            directory,
+            marker,
+        })
+    }
+
+    fn open(path: &Path) -> std::io::Result<Option<Self>> {
+        let Some(token) = ephemeral_runtime_token(path) else {
+            return Ok(None);
+        };
+        let directory = match open_directory_no_follow(path) {
+            Ok(directory) => directory,
+            Err(_) => return Ok(None),
+        };
+        if !path_matches_open_directory(path, &directory)
+            || !is_private_current_user_directory(&directory)?
+        {
+            return Ok(None);
+        }
+        let mut marker =
+            match open_regular_runtime_child(&directory, EPHEMERAL_RUNTIME_CONTROL_FILENAME) {
+                Ok(marker) => marker,
+                Err(_) => return Ok(None),
+            };
+        if !is_private_current_user_file(&marker)? || runtime_link_count(&marker)? != 1 {
+            return Ok(None);
+        }
+        let control = match read_ephemeral_runtime_control(&mut marker) {
+            Ok(control) => control,
+            Err(_) => return Ok(None),
+        };
+        if control.schema_version != EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION
+            || control.token != token
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            root: path.to_owned(),
+            token,
+            directory,
+            marker,
+        }))
+    }
+
+    fn remove(&mut self) -> std::io::Result<()> {
+        if !path_matches_open_directory(&self.root, &self.directory) {
+            return Err(std::io::Error::other(
+                "ephemeral recovery root identity changed",
+            ));
+        }
+        let parent = self
+            .root
+            .parent()
+            .ok_or_else(|| std::io::Error::other("ephemeral recovery root has no parent"))?;
+        let quarantine = parent.join(format!("kosh-c-{}", self.token));
+        let already_quarantined = self.root == quarantine;
+        if !already_quarantined {
+            if quarantine.exists() {
+                return Err(std::io::Error::other(
+                    "ephemeral recovery quarantine already exists",
+                ));
+            }
+            fs::rename(&self.root, &quarantine)?;
+            if !path_matches_open_directory(&quarantine, &self.directory) {
+                if !self.root.exists() {
+                    let _ = fs::rename(&quarantine, &self.root);
+                }
+                return Err(std::io::Error::other(
+                    "ephemeral recovery quarantine identity changed",
+                ));
+            }
+        }
+        let quarantined_runtime = LitestreamRuntimePaths::new(&quarantine)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let cleanup = quarantined_runtime.remove_ephemeral_recovery_runtime_bound(
+            &quarantine,
+            &self.directory,
+            Some(&self.marker),
+        );
+        if cleanup.is_err() && !already_quarantined && !self.root.exists() {
+            let _ = fs::rename(&quarantine, &self.root);
+        }
+        if cleanup.is_ok() {
+            self.root = quarantine;
+        }
+        cleanup
     }
 }
 
@@ -1179,14 +1346,27 @@ impl LitestreamRuntimePaths {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_ephemeral_recovery_runtime(
         &self,
         data_root: &Path,
+    ) -> std::io::Result<()> {
+        let directory = open_directory_no_follow(data_root)?;
+        self.remove_ephemeral_recovery_runtime_bound(data_root, &directory, None)
+    }
+
+    fn remove_ephemeral_recovery_runtime_bound(
+        &self,
+        data_root: &Path,
+        data_root_directory: &File,
+        ownership_marker: Option<&File>,
     ) -> std::io::Result<()> {
         let expected_directory = data_root.join("run").join("backup");
         if !data_root.is_absolute()
             || self.directory != expected_directory
             || !is_ephemeral_recovery_root(data_root)
+            || !path_matches_open_directory(data_root, data_root_directory)
+            || !is_private_current_user_directory(data_root_directory)?
         {
             return Err(std::io::Error::other(
                 "refusing to remove an unrecognized recovery runtime",
@@ -1208,15 +1388,259 @@ impl LitestreamRuntimePaths {
                 .parent()
                 .ok_or_else(|| std::io::Error::other("recovery runtime has no run directory"))?,
         )?;
-        remove_empty_directory(data_root)
+        if let Some(marker) = ownership_marker {
+            if !path_matches_open_directory(data_root, data_root_directory) {
+                return Err(std::io::Error::other(
+                    "ephemeral recovery root changed during cleanup",
+                ));
+            }
+            unlink_owned_runtime_file(
+                data_root_directory,
+                EPHEMERAL_RUNTIME_CONTROL_FILENAME,
+                marker,
+            )?;
+            data_root_directory.sync_all()?;
+        }
+        remove_empty_owned_runtime_directory(data_root, data_root_directory)
     }
 }
 
 fn is_ephemeral_recovery_root(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("kosh-r-"))
-        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+    ephemeral_runtime_token(path).is_some()
+}
+
+fn ephemeral_runtime_token(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let token = name
+        .strip_prefix("kosh-r-")
+        .or_else(|| name.strip_prefix("kosh-c-"))?;
+    uuid::Uuid::parse_str(token)
+        .ok()
+        .filter(|parsed| parsed.to_string() == token)
+        .map(|_| token.to_owned())
+}
+
+fn reclaim_abandoned_ephemeral_runtimes(parent: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(parent)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        if ephemeral_runtime_token(&path).is_none() {
+            continue;
+        }
+        let Ok(Some(mut ownership)) = EphemeralRuntimeOwnership::open(&path) else {
+            continue;
+        };
+        match ownership.marker.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => continue,
+            Err(TryLockError::Error(_)) => continue,
+        }
+        // Unknown contents or a raced identity are preserved. One damaged
+        // temporary must not prevent a fresh disaster-recovery attempt.
+        let _ = ownership.remove();
+    }
+    Ok(())
+}
+
+fn write_ephemeral_runtime_control(
+    file: &mut File,
+    control: &EphemeralRuntimeControl,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(control)
+        .map_err(|_| std::io::Error::other("invalid ephemeral runtime control"))?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES {
+        return Err(std::io::Error::other(
+            "invalid ephemeral runtime control length",
+        ));
+    }
+    file.rewind()?;
+    file.set_len(0)?;
+    file.write_all(&bytes)?;
+    file.sync_all()
+}
+
+fn read_ephemeral_runtime_control(file: &mut File) -> std::io::Result<EphemeralRuntimeControl> {
+    let length = file.metadata()?.len();
+    if length == 0 || length > MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES {
+        return Err(std::io::Error::other(
+            "invalid ephemeral runtime control length",
+        ));
+    }
+    file.rewind()?;
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length {
+        return Err(std::io::Error::other(
+            "unstable ephemeral runtime control length",
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| std::io::Error::other("invalid ephemeral runtime control"))
+}
+
+fn create_private_runtime_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn open_regular_runtime_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "ephemeral runtime child is not regular",
+        ));
+    }
+    Ok(file)
+}
+
+fn unlink_owned_runtime_file(directory: &File, name: &str, owned: &File) -> std::io::Result<()> {
+    let current = open_regular_runtime_child(directory, name)?;
+    if !same_runtime_file(&current, owned)
+        || !is_private_current_user_file(&current)?
+        || runtime_link_count(&current)? != 1
+    {
+        return Err(std::io::Error::other(
+            "ephemeral runtime child identity changed",
+        ));
+    }
+    clear_user_immutable(&current)?;
+    let name = runtime_child_name(name)?;
+    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn remove_empty_owned_runtime_directory(path: &Path, directory: &File) -> std::io::Result<()> {
+    if !path_matches_open_directory(path, directory)
+        || !runtime_directory_entries(directory)?.is_empty()
+    {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory identity changed",
+        ));
+    }
+    clear_user_immutable(directory)?;
+    fs::remove_dir(path)?;
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn runtime_directory_entries(directory: &File) -> std::io::Result<Vec<OsString>> {
+    let descriptor = unsafe { libc::dup(directory.as_raw_fd()) };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(descriptor) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(descriptor);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    unsafe {
+        libc::rewinddir(stream);
+    }
+    let mut entries = Vec::new();
+    loop {
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            entries.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    if unsafe { libc::closedir(stream) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+fn runtime_child_name(name: &str) -> std::io::Result<CString> {
+    if name.is_empty() || name.as_bytes().contains(&b'/') {
+        return Err(std::io::Error::other(
+            "invalid ephemeral runtime child name",
+        ));
+    }
+    CString::new(name.as_bytes())
+        .map_err(|_| std::io::Error::other("invalid ephemeral runtime child name"))
+}
+
+fn path_matches_open_directory(path: &Path, directory: &File) -> bool {
+    let Ok(path_metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_dir() {
+        return false;
+    }
+    let Ok(open_metadata) = directory.metadata() else {
+        return false;
+    };
+    same_runtime_metadata(&path_metadata, &open_metadata)
+}
+
+fn same_runtime_file(left: &File, right: &File) -> bool {
+    left.metadata()
+        .ok()
+        .zip(right.metadata().ok())
+        .is_some_and(|(left, right)| same_runtime_metadata(&left, &right))
+}
+
+fn same_runtime_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn is_private_current_user_directory(directory: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = directory.metadata()?;
+    Ok(metadata.is_dir()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o777 == 0o700)
+}
+
+fn is_private_current_user_file(file: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(metadata.is_file()
+        && metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.mode() & 0o777 == 0o600)
+}
+
+fn runtime_link_count(file: &File) -> std::io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(file.metadata()?.nlink())
 }
 
 fn remove_ephemeral_binary_stages(stage_root: &Path) -> std::io::Result<()> {
@@ -2875,6 +3299,8 @@ mod tests {
         let root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
         let runtime = LitestreamRuntimePaths::new(&root).expect("ephemeral recovery paths");
         runtime.prepare().expect("prepare recovery runtime");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("private recovery root");
         let unexpected = runtime.directory().join("operator-file");
         fs::write(&unexpected, b"keep").expect("unexpected recovery file");
         assert!(runtime.remove_ephemeral_recovery_runtime(&root).is_err());
@@ -2886,6 +3312,96 @@ mod tests {
         runtime
             .remove_ephemeral_recovery_runtime(&root)
             .expect("cleanup fixture");
+    }
+
+    #[test]
+    fn next_ephemeral_runtime_reclaims_an_authenticated_interrupted_runtime() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let interrupted_root = interrupted.root.clone();
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"private recovery bytes",
+        )
+        .expect("write interrupted recovery database");
+        interrupted.cleaned = true;
+        drop(interrupted);
+        assert!(
+            interrupted_root.exists(),
+            "fixture must model a process that exited without Drop cleanup"
+        );
+
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry ephemeral runtime");
+        assert!(
+            !interrupted_root.exists(),
+            "the authenticated unlocked runtime and its database copy must be reclaimed"
+        );
+        retry.cleanup().expect("cleanup retry runtime");
+    }
+
+    #[test]
+    fn next_ephemeral_runtime_finishes_an_interrupted_quarantine_cleanup() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let original_root = interrupted.root.clone();
+        let quarantine_root =
+            original_root.with_file_name(format!("kosh-c-{}", interrupted.ownership.token));
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"private recovery bytes",
+        )
+        .expect("write interrupted recovery database");
+        fs::rename(&original_root, &quarantine_root).expect("model interrupted quarantine rename");
+        interrupted.root.clone_from(&quarantine_root);
+        interrupted.ownership.root.clone_from(&quarantine_root);
+        interrupted.cleaned = true;
+        drop(interrupted);
+
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry ephemeral runtime");
+        assert!(
+            !quarantine_root.exists(),
+            "an authenticated cleanup quarantine must remain retryable"
+        );
+        retry.cleanup().expect("cleanup retry runtime");
+    }
+
+    #[test]
+    fn ephemeral_runtime_reclamation_skips_active_and_replacement_roots() {
+        let mut active = EphemeralLitestreamRuntime::create().expect("active runtime");
+        let active_root = active.root.clone();
+        let mut peer = EphemeralLitestreamRuntime::create().expect("peer runtime");
+        assert!(
+            active_root.exists(),
+            "the held ownership lock must protect an active runtime"
+        );
+        peer.cleanup().expect("cleanup peer runtime");
+
+        let replacement_root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+        builder.create(&replacement_root).expect("replacement root");
+        let replacement_database = replacement_root.join("remote-kosh.sqlite3");
+        fs::write(&replacement_database, b"preserve unauthenticated bytes")
+            .expect("replacement bytes");
+        let mut retry = EphemeralLitestreamRuntime::create().expect("retry runtime");
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement"),
+            b"preserve unauthenticated bytes"
+        );
+
+        retry.cleanup().expect("cleanup retry");
+        active.cleanup().expect("cleanup active");
+        fs::remove_file(replacement_database).expect("remove replacement fixture");
+        fs::remove_dir(replacement_root).expect("remove replacement root");
     }
 
     #[test]

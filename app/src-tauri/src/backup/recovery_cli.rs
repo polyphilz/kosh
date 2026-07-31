@@ -25,10 +25,13 @@ use super::{
     litestream::{CommandLitestreamRestore, EphemeralLitestreamRuntime, VerifiedLitestreamBinary},
     object_store::R2ObjectStore,
     restore::{
-        discover_checkpoints, remove_staged_checkpoint, remove_staging_root, stage_checkpoint,
-        RemoteCheckpoint, StagedRestore,
+        discover_checkpoints, remove_staged_checkpoint, remove_staging_root_at_identity,
+        stage_checkpoint_at_identity, RemoteCheckpoint, StagedRestore, StagingDirectoryIdentity,
     },
 };
+
+#[cfg(test)]
+use super::restore::remove_staging_root;
 
 const COMMAND: &str = "recovery";
 const REMOTE_RESTORE: &str = "remote-restore";
@@ -45,7 +48,8 @@ const MAIN_TEMP_FILENAME: &str = ".kosh-recovery-main-v1.tmp";
 const MEDIA_TEMP_FILENAME: &str = ".kosh-recovery-media-v1.tmp";
 const MAIN_FILENAME: &str = "kosh.sqlite3";
 const MEDIA_FILENAME: &str = "media.sqlite3";
-const RESERVATION_SCHEMA_VERSION: u32 = 1;
+const RESERVATION_SCHEMA_VERSION: u32 = 2;
+const LEGACY_RESERVATION_SCHEMA_VERSION: u32 = 1;
 const MAX_RESERVATION_BYTES: u64 = 4 * 1024;
 const COMPLETION_SCHEMA_VERSION: u32 = 1;
 const MAX_COMPLETION_BYTES: u64 = 32 * 1024;
@@ -56,6 +60,10 @@ struct RecoveryReservationControl {
     schema_version: u32,
     token: String,
     target_data_directory: String,
+    #[serde(default)]
+    staging_device: Option<u64>,
+    #[serde(default)]
+    staging_inode: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -160,7 +168,6 @@ fn restore_remote(
         .map_err(|_| "complete recovery points could not be discovered")?;
     let checkpoint = select_checkpoint(checkpoints, selector)?;
 
-    let staging_root = reservation.staging_root();
     let mut ephemeral = EphemeralLitestreamRuntime::create()
         .map_err(|_| "the isolated recovery runtime could not be created")?;
     let staged = {
@@ -178,13 +185,15 @@ fn restore_remote(
             RESTORE_TIMEOUT,
         )
         .map_err(|_| "the bounded recovery runtime could not be prepared")?;
-        stage_checkpoint(
+        let (staging_root, staging_identity) = reservation.prepare_staging_root()?;
+        stage_checkpoint_at_identity(
             &store,
             &keyspace,
             &checkpoint,
             &engine,
             ephemeral.source_database_path(),
             &staging_root,
+            staging_identity,
         )
         .map_err(|_| "the selected recovery point failed exact database or media validation")?
     };
@@ -264,8 +273,10 @@ fn restore_remote(
 struct RecoveryTargetReservation {
     root: PathBuf,
     token: String,
+    control: RecoveryReservationControl,
     directory: File,
     marker: File,
+    staging_identity: Option<StagingDirectoryIdentity>,
     installed_main: Option<File>,
     installed_media: Option<File>,
     active: bool,
@@ -284,6 +295,8 @@ impl RecoveryTargetReservation {
             schema_version: RESERVATION_SCHEMA_VERSION,
             token: token.clone(),
             target_data_directory,
+            staging_device: None,
+            staging_inode: None,
         };
         let control_bytes = serde_json::to_vec(&control)
             .map_err(|_| "the recovery target reservation could not be encoded")?;
@@ -333,8 +346,10 @@ impl RecoveryTargetReservation {
         Ok(Self {
             root: path.to_owned(),
             token,
+            control,
             directory,
             marker,
+            staging_identity: None,
             installed_main: None,
             installed_media: None,
             active: true,
@@ -350,6 +365,54 @@ impl RecoveryTargetReservation {
             .parent()
             .expect("validated recovery target parent")
             .join(format!(".kosh-restore-{}", self.token))
+    }
+
+    fn prepare_staging_root(&mut self) -> Result<(PathBuf, StagingDirectoryIdentity), String> {
+        let root = self.staging_root();
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&root)
+            .map_err(|_| "the recovery staging directory could not be reserved")?;
+        let directory = match open_directory_no_follow(&root) {
+            Ok(directory) => directory,
+            Err(_) => {
+                let _ = fs::remove_dir(&root);
+                return Err("the recovery staging directory could not be opened".into());
+            }
+        };
+        let metadata = directory
+            .metadata()
+            .map_err(|_| "the recovery staging directory could not be inspected")?;
+        if !path_matches_open_file(&root, &directory)
+            || !is_private_owned_directory(&metadata)
+            || !directory_entries(&directory).is_ok_and(|entries| entries.is_empty())
+        {
+            let _ = remove_empty_open_directory(&root, &directory);
+            return Err("the recovery staging directory was replaced".into());
+        }
+        use std::os::unix::fs::MetadataExt;
+        let identity = StagingDirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        self.control.staging_device = Some(identity.device);
+        self.control.staging_inode = Some(identity.inode);
+        if sync_parent_directory(&root).is_err()
+            || write_reservation_control(&mut self.marker, &self.control).is_err()
+            || self.directory.sync_all().is_err()
+        {
+            self.control.staging_device = None;
+            self.control.staging_inode = None;
+            let _ = remove_empty_open_directory(&root, &directory);
+            return Err("the recovery staging ownership could not be persisted".into());
+        }
+        self.staging_identity = Some(identity);
+        Ok((root, identity))
     }
 
     fn verify_install_ready(&self) -> Result<(), String> {
@@ -578,7 +641,9 @@ impl RecoveryTargetReservation {
 impl Drop for RecoveryTargetReservation {
     fn drop(&mut self) {
         if self.active {
-            let _ = remove_staging_root(&self.staging_root());
+            if let Some(identity) = self.staging_identity {
+                let _ = remove_staging_root_at_identity(&self.staging_root(), identity);
+            }
             if let Some(main) = self.installed_main.as_ref() {
                 let _ = unlink_owned_child(&self.directory, MAIN_FILENAME, main);
             }
@@ -874,12 +939,16 @@ fn reclaim_abandoned_reservation(path: &Path) -> Result<(), String> {
         owned_entries.push((name.to_owned(), file));
     }
 
-    let staging_root = path
-        .parent()
-        .expect("validated recovery target parent")
-        .join(format!(".kosh-restore-{}", control.token));
-    remove_staging_root(&staging_root)
-        .map_err(|_| "the interrupted recovery staging pair could not be reclaimed")?;
+    if let Some(identity) = reservation_staging_identity(&control) {
+        let staging_root = path
+            .parent()
+            .expect("validated recovery target parent")
+            .join(format!(".kosh-restore-{}", control.token));
+        // A mismatched or invalid path is not the directory this reservation
+        // created. Preserve it and reclaim only the descriptor-owned target so
+        // disaster recovery can safely continue with a fresh token.
+        let _ = remove_staging_root_at_identity(&staging_root, identity);
+    }
     for (name, file) in owned_entries {
         unlink_owned_child(&directory, &name, &file)
             .map_err(|_| "the interrupted recovery files could not be reclaimed")?;
@@ -918,12 +987,42 @@ fn read_reservation_control(file: &mut File) -> std::io::Result<RecoveryReservat
     })
 }
 
+fn write_reservation_control(
+    file: &mut File,
+    control: &RecoveryReservationControl,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(control)
+        .map_err(|_| std::io::Error::other("invalid recovery reservation control"))?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_RESERVATION_BYTES {
+        return Err(std::io::Error::other(
+            "invalid recovery reservation control length",
+        ));
+    }
+    file.rewind()?;
+    file.set_len(0)?;
+    file.write_all(&bytes)?;
+    file.sync_all()
+}
+
+fn reservation_staging_identity(
+    control: &RecoveryReservationControl,
+) -> Option<StagingDirectoryIdentity> {
+    Some(StagingDirectoryIdentity {
+        device: control.staging_device?,
+        inode: control.staging_inode?,
+    })
+}
+
 fn reservation_control_matches(path: &Path, control: &RecoveryReservationControl) -> bool {
-    control.schema_version == RESERVATION_SCHEMA_VERSION
-        && path.to_str() == Some(control.target_data_directory.as_str())
+    matches!(
+        control.schema_version,
+        RESERVATION_SCHEMA_VERSION | LEGACY_RESERVATION_SCHEMA_VERSION
+    ) && path.to_str() == Some(control.target_data_directory.as_str())
         && uuid::Uuid::parse_str(&control.token)
             .ok()
             .is_some_and(|token| token.to_string() == control.token)
+        && ((control.staging_device.is_none() && control.staging_inode.is_none())
+            || reservation_staging_identity(control).is_some())
 }
 
 fn is_private_owned_directory(metadata: &fs::Metadata) -> bool {
@@ -1370,14 +1469,9 @@ mod tests {
         let mut interrupted =
             RecoveryTargetReservation::reserve(&target).expect("initial reservation");
         let first_token = interrupted.token.clone();
-        let staging_root = interrupted.staging_root();
-        fs::create_dir(&staging_root).expect("interrupted staging root");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&staging_root, fs::Permissions::from_mode(0o700))
-                .expect("private staging root");
-        }
+        let (staging_root, _) = interrupted
+            .prepare_staging_root()
+            .expect("persist interrupted staging identity");
         let staged = Database::initialize(DatabasePaths::new(&staging_root))
             .expect("interrupted staged pair");
         staged.shutdown().expect("close interrupted staged pair");
@@ -1393,6 +1487,48 @@ mod tests {
         assert!(target.join(RESERVATION_FILENAME).is_file());
         drop(retry);
         assert!(!target.exists(), "retry reservation must remain owned");
+    }
+
+    #[test]
+    fn abandoned_staging_reclamation_preserves_a_replacement_library() {
+        let root = tempfile::tempdir().expect("recovery parent");
+        let target = root.path().join("restored");
+        let mut interrupted =
+            RecoveryTargetReservation::reserve(&target).expect("initial reservation");
+        let (staging_root, _) = interrupted
+            .prepare_staging_root()
+            .expect("persist staging identity");
+        let original =
+            Database::initialize(DatabasePaths::new(&staging_root)).expect("original staged pair");
+        original.shutdown().expect("close original staged pair");
+        let displaced = root.path().join("displaced-staging");
+        fs::rename(&staging_root, &displaced).expect("displace owned staging directory");
+
+        let replacement_paths = DatabasePaths::new(&staging_root);
+        let replacement =
+            Database::initialize(replacement_paths.clone()).expect("replacement library");
+        replacement.shutdown().expect("close replacement library");
+        let replacement_main = fs::read(&replacement_paths.main).expect("replacement main bytes");
+        let replacement_media =
+            fs::read(&replacement_paths.media).expect("replacement media bytes");
+        interrupted.active = false;
+        drop(interrupted);
+
+        let retry = RecoveryTargetReservation::reserve(&target)
+            .expect("retry must reclaim only the owned target reservation");
+        assert_eq!(
+            fs::read(&replacement_paths.main).expect("preserved replacement main"),
+            replacement_main
+        );
+        assert_eq!(
+            fs::read(&replacement_paths.media).expect("preserved replacement media"),
+            replacement_media
+        );
+        assert!(
+            displaced.join(MAIN_FILENAME).is_file(),
+            "the renamed original is outside the authenticated cleanup path"
+        );
+        drop(retry);
     }
 
     #[test]
@@ -1648,6 +1784,7 @@ mod tests {
         assert!(ephemeral.paths().socket().as_os_str().len() < 100);
         assert!(root.exists());
         ephemeral.cleanup().expect("cleanup runtime");
+        ephemeral.cleanup().expect("idempotent cleanup");
         assert!(!root.exists());
     }
 }

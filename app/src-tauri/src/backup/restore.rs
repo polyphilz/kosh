@@ -115,6 +115,12 @@ struct StagingOwnership {
     cleanup_authorized: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StagingDirectoryIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+}
+
 #[derive(Debug)]
 struct StagingChild {
     name: String,
@@ -279,8 +285,48 @@ pub(crate) fn stage_checkpoint(
     source_database_path: &Path,
     staging_root: &Path,
 ) -> Result<StagedRestore, RestoreError> {
+    stage_checkpoint_with_identity(
+        store,
+        keyspace,
+        checkpoint,
+        engine,
+        source_database_path,
+        staging_root,
+        None,
+    )
+}
+
+pub(crate) fn stage_checkpoint_at_identity(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    checkpoint: &RemoteCheckpoint,
+    engine: &dyn RelationalRestoreEngine,
+    source_database_path: &Path,
+    staging_root: &Path,
+    identity: StagingDirectoryIdentity,
+) -> Result<StagedRestore, RestoreError> {
+    stage_checkpoint_with_identity(
+        store,
+        keyspace,
+        checkpoint,
+        engine,
+        source_database_path,
+        staging_root,
+        Some(identity),
+    )
+}
+
+fn stage_checkpoint_with_identity(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    checkpoint: &RemoteCheckpoint,
+    engine: &dyn RelationalRestoreEngine,
+    source_database_path: &Path,
+    staging_root: &Path,
+    expected_identity: Option<StagingDirectoryIdentity>,
+) -> Result<StagedRestore, RestoreError> {
     let paths = DatabasePaths::new(staging_root);
-    let cleanup = StagingOwnership::prepare(staging_root)?;
+    let cleanup = StagingOwnership::prepare(staging_root, expected_identity)?;
     (|| {
         validate_replica_binding(engine, checkpoint)?;
         let txid = checkpoint.txid()?;
@@ -331,6 +377,21 @@ pub(crate) fn remove_staging_root(root: &Path) -> Result<(), RestoreError> {
     };
     cleanup.authorize_existing_cleanup()?;
     cleanup.remove()
+}
+
+pub(crate) fn remove_staging_root_at_identity(
+    root: &Path,
+    identity: StagingDirectoryIdentity,
+) -> Result<bool, RestoreError> {
+    let Some(mut cleanup) = StagingOwnership::open(root)? else {
+        return Ok(true);
+    };
+    if cleanup.identity()? != identity {
+        return Ok(false);
+    }
+    cleanup.authorize_existing_cleanup()?;
+    cleanup.remove()?;
+    Ok(true)
 }
 
 pub(crate) fn drill_checkpoint(
@@ -630,7 +691,10 @@ fn load_referenced_media_page(
 }
 
 impl StagingOwnership {
-    fn prepare(root: &Path) -> Result<Self, RestoreError> {
+    fn prepare(
+        root: &Path,
+        expected_identity: Option<StagingDirectoryIdentity>,
+    ) -> Result<Self, RestoreError> {
         let mut builder = fs::DirBuilder::new();
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
@@ -643,6 +707,13 @@ impl StagingOwnership {
             return Err(RestoreError::InvalidStaging);
         };
         if !directory_entries(&ownership.directory)?.is_empty() {
+            return Err(RestoreError::InvalidStaging);
+        }
+        if expected_identity.is_some_and(|expected| {
+            ownership
+                .identity()
+                .map_or(true, |actual| actual != expected)
+        }) {
             return Err(RestoreError::InvalidStaging);
         }
         ownership.cleanup_authorized = true;
@@ -678,6 +749,15 @@ impl StagingOwnership {
         let _ = inspect_staging_children(&self.directory)?;
         self.cleanup_authorized = true;
         Ok(())
+    }
+
+    fn identity(&self) -> Result<StagingDirectoryIdentity, RestoreError> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = self.directory.metadata()?;
+        Ok(StagingDirectoryIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
     }
 
     fn remove(&self) -> Result<(), RestoreError> {
