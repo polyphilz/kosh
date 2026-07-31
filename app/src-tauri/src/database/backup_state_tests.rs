@@ -321,6 +321,50 @@ fn pending_recovery_target_intent_can_abort_without_mutating_configuration() {
 }
 
 #[test]
+fn recovery_target_intent_clamps_a_rolled_back_clock_before_keychain_work() {
+    let root = TempDir::new().expect("temporary root");
+    let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+    let client = database.client();
+    let current = client
+        .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+            expected_revision: 0,
+            backup_set_id: BackupSetId::new(),
+            replica_epoch_id: ReplicaEpochId::new(),
+            enabled: false,
+            target: target(R2Jurisdiction::Default, "kosh-local"),
+            now_ms: 1_000,
+        })
+        .expect("configuration");
+    let operation_id = uuid::Uuid::now_v7().to_string();
+    client
+        .begin_offsite_backup_config_intent(BeginOffsiteBackupConfigIntentInput {
+            operation_id: operation_id.clone(),
+            proposed: SaveOffsiteBackupConfigInput {
+                expected_revision: current.revision,
+                backup_set_id: current.backup_set_id.clone(),
+                replica_epoch_id: current.replica_epoch_id.clone(),
+                enabled: false,
+                target: current.target.clone(),
+                now_ms: 10,
+            },
+            credential_action: CredentialIntentAction::Reuse,
+        })
+        .expect("begin intent");
+    assert_eq!(
+        client
+            .load_offsite_backup_config_intent()
+            .expect("intent")
+            .expect("pending intent")
+            .proposed
+            .now_ms,
+        current.updated_at_ms
+    );
+    client
+        .abort_offsite_backup_config_intent(operation_id)
+        .expect("abort");
+}
+
+#[test]
 fn takeover_intent_atomically_advances_the_local_epoch() {
     let root = TempDir::new().expect("temporary root");
     let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
@@ -348,13 +392,14 @@ fn takeover_intent_atomically_advances_the_local_epoch() {
             expected_owner_writer_id: BackupWriterId::new(),
             expected_owner_version: "owner-version-1".into(),
             next_writer_id: BackupWriterId::new(),
-            created_at_ms: 200,
+            created_at_ms: 50,
         })
         .expect("begin takeover");
-    assert!(client
+    let pending = client
         .load_offsite_backup_takeover_intent()
         .expect("takeover intent")
-        .is_some());
+        .expect("pending takeover");
+    assert_eq!(pending.created_at_ms, current.updated_at_ms);
     let updated = client
         .commit_offsite_backup_takeover_intent(operation_id)
         .expect("commit takeover");

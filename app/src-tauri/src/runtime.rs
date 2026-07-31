@@ -145,7 +145,7 @@ impl RuntimeState {
             log::warn!("startup media lifecycle recovery could not complete: {error}");
         }
         if let Err(error) =
-            crate::backup::settings::reconcile_startup_backup_state(&database.client(), &data_dir)
+            crate::backup::settings::reconcile_startup_backup_state(&database.client())
         {
             log::warn!("startup off-site backup reconciliation remains pending: {error:?}");
         }
@@ -292,6 +292,29 @@ impl RuntimeState {
     pub(crate) fn reload_backup_configuration(&self) {
         self.litestream_backup.reload_configuration();
         self.media_backup.wake();
+    }
+
+    pub(crate) fn reconcile_backup_takeover_async(&self) {
+        let client = self.database.client();
+        let data_dir = self.data_dir.clone();
+        let gate = Arc::clone(&self.backup_operations_gate);
+        if let Err(error) = std::thread::Builder::new()
+            .name("kosh-backup-takeover-recovery".into())
+            .spawn(move || {
+                let _guard = gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Err(error) =
+                    crate::backup::settings::reconcile_deferred_takeover(&client, &data_dir)
+                {
+                    log::warn!(
+                        "deferred off-site backup takeover reconciliation remains pending: {error:?}"
+                    );
+                }
+            })
+        {
+            log::warn!("could not start deferred backup takeover reconciliation: {error}");
+        }
     }
 
     pub(crate) fn shutdown_for_exit(&self) {

@@ -233,6 +233,8 @@ pub fn run() {
         app.manage(runtime);
         let startup_smoke = startup_smoke::run_if_requested(app)?;
         windows::setup(app, shortcut_settings)?;
+        app.state::<RuntimeState>()
+            .reconcile_backup_takeover_async();
         if !startup_smoke {
             app.state::<RuntimeState>()
                 .claude_processes()

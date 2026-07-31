@@ -901,11 +901,8 @@ fn takeover_blocking(
     Ok(())
 }
 
-pub(crate) fn reconcile_startup_backup_state(
-    client: &DatabaseClient,
-    data_root: &Path,
-) -> BackupCommandResult<bool> {
-    let reconciliation = reconcile_pending_backup_operations(client, data_root);
+pub(crate) fn reconcile_startup_backup_state(client: &DatabaseClient) -> BackupCommandResult<bool> {
+    let reconciliation = reconcile_pending_config_operation(client);
     clean_retired_credentials(client);
     reconciliation
 }
@@ -914,22 +911,34 @@ fn reconcile_pending_backup_operations(
     client: &DatabaseClient,
     data_root: &Path,
 ) -> BackupCommandResult<bool> {
-    let mut changed = false;
+    let config_changed = reconcile_pending_config_operation(client)?;
+    let takeover_changed = reconcile_deferred_takeover(client, data_root)?;
+    Ok(config_changed || takeover_changed)
+}
+
+fn reconcile_pending_config_operation(client: &DatabaseClient) -> BackupCommandResult<bool> {
     if let Some(intent) = client
         .load_offsite_backup_config_intent()
         .map_err(map_database_error)?
     {
         reconcile_config_intent(client, &MacOsKeychainCredentialStore, intent)?;
-        changed = true;
+        return Ok(true);
     }
+    Ok(false)
+}
+
+pub(crate) fn reconcile_deferred_takeover(
+    client: &DatabaseClient,
+    data_root: &Path,
+) -> BackupCommandResult<bool> {
     if let Some(intent) = client
         .load_offsite_backup_takeover_intent()
         .map_err(map_database_error)?
     {
         reconcile_takeover_intent(client, data_root, intent)?;
-        changed = true;
+        return Ok(true);
     }
-    Ok(changed)
+    Ok(false)
 }
 
 fn reconcile_config_intent(
@@ -1712,6 +1721,47 @@ mod tests {
             client.load_offsite_backup_config().expect("active config"),
             Some(second)
         );
+    }
+
+    #[test]
+    fn synchronous_startup_leaves_remote_takeover_for_deferred_reconciliation() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let database = Database::initialize(DatabasePaths::new(root.path())).expect("database");
+        let client = database.client();
+        let current = client
+            .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                expected_revision: 0,
+                backup_set_id: BackupSetId::new(),
+                replica_epoch_id: ReplicaEpochId::new(),
+                enabled: false,
+                target: R2Target {
+                    account_id: R2AccountId::parse(ACCESS_KEY).expect("account"),
+                    jurisdiction: R2Jurisdiction::Default,
+                    bucket: R2BucketName::parse("kosh-test").expect("bucket"),
+                },
+                now_ms: 10,
+            })
+            .expect("configuration");
+        client
+            .begin_offsite_backup_takeover_intent(BeginOffsiteBackupTakeoverIntentInput {
+                operation_id: uuid::Uuid::now_v7().to_string(),
+                expected_revision: current.revision,
+                backup_set_id: current.backup_set_id,
+                previous_replica_epoch_id: current.replica_epoch_id,
+                next_replica_epoch_id: ReplicaEpochId::new(),
+                expected_owner_replica_epoch_id: ReplicaEpochId::new(),
+                expected_owner_writer_id: BackupWriterId::new(),
+                expected_owner_version: "owner-version".into(),
+                next_writer_id: BackupWriterId::new(),
+                created_at_ms: 20,
+            })
+            .expect("takeover intent");
+
+        assert!(!reconcile_startup_backup_state(&client).expect("local startup reconciliation"));
+        assert!(client
+            .load_offsite_backup_takeover_intent()
+            .expect("takeover intent")
+            .is_some());
     }
 
     #[test]

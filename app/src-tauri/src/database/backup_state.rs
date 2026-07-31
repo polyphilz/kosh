@@ -278,7 +278,7 @@ fn apply_config(
 
 pub(super) fn begin_config_intent(
     connection: &mut Connection,
-    input: BeginOffsiteBackupConfigIntentInput,
+    mut input: BeginOffsiteBackupConfigIntentInput,
 ) -> Result<()> {
     validate_operation_id(&input.operation_id)?;
     if input.proposed.enabled {
@@ -295,6 +295,9 @@ pub(super) fn begin_config_intent(
     }
     if current.as_ref().is_some_and(|config| config.enabled) {
         return Err(DatabaseError::OffsiteBackupMustBeDisabled);
+    }
+    if let Some(current) = &current {
+        input.proposed.now_ms = input.proposed.now_ms.max(current.updated_at_ms);
     }
     ensure_backup_set_not_queued(&transaction, &input.proposed.backup_set_id)?;
     transaction.execute(
@@ -477,7 +480,7 @@ pub(super) fn abort_config_intent(connection: &mut Connection, operation_id: &st
 
 pub(super) fn begin_takeover_intent(
     connection: &mut Connection,
-    input: BeginOffsiteBackupTakeoverIntentInput,
+    mut input: BeginOffsiteBackupTakeoverIntentInput,
 ) -> Result<()> {
     validate_takeover_intent(&input)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -492,6 +495,7 @@ pub(super) fn begin_takeover_intent(
     if current.enabled {
         return Err(DatabaseError::OffsiteBackupMustBeDisabled);
     }
+    input.created_at_ms = input.created_at_ms.max(current.updated_at_ms);
     transaction.execute(
         "INSERT INTO offsite_backup_takeover_intent (
             singleton_id,
