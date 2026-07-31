@@ -6,7 +6,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::ffi::OsStringExt,
+        unix::{ffi::OsStringExt, process::CommandExt},
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -36,6 +36,7 @@ const MAX_RESTORE_PLAN_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESTORE_FILES: usize = 100_000;
 const MAX_MACOS_UNIX_SOCKET_PATH_BYTES: usize = 103;
 const MAX_TRUSTED_CLEANUP_PINS: usize = 32;
+const PRIVATE_RESTORE_OUTPUT_FILENAME: &str = "database.sqlite3";
 const EPHEMERAL_RUNTIME_CONTROL_FILENAME: &str = ".kosh-recovery-runtime-v1.json";
 const EPHEMERAL_RUNTIME_CONTROL_SCHEMA_VERSION: u32 = 1;
 const MAX_EPHEMERAL_RUNTIME_CONTROL_BYTES: u64 = 4 * 1024;
@@ -2346,8 +2347,13 @@ impl<'a> CommandLitestreamRestore<'a> {
         target_path: &Path,
         txid: LitestreamTxid,
         dry_run: bool,
+        restore_write_directory: Option<&File>,
     ) -> Result<Vec<u8>, LitestreamError> {
-        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+        if !source_database_path.is_absolute()
+            || (restore_write_directory.is_none() && !target_path.is_absolute())
+            || (restore_write_directory.is_some()
+                && target_path != Path::new(PRIVATE_RESTORE_OUTPUT_FILENAME))
+        {
             return Err(LitestreamError::RelativeDatabasePath);
         }
         let arguments = restore_arguments(
@@ -2369,8 +2375,43 @@ impl<'a> CommandLitestreamRestore<'a> {
             } else {
                 MAX_CONTROL_OUTPUT_BYTES
             },
-            if dry_run { None } else { target_path.parent() },
+            restore_write_directory,
         )
+    }
+
+    fn restore_with_hook(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        before_spawn: impl FnOnce(&ExclusiveRestoreDestination),
+    ) -> Result<RestoreResult, LitestreamError> {
+        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let destination = ExclusiveRestoreDestination::prepare(target_path)?;
+        destination.verify_path_bindings()?;
+        before_spawn(&destination);
+        let bound_output = Path::new(PRIVATE_RESTORE_OUTPUT_FILENAME);
+        let bytes = self.execute(
+            source_database_path,
+            bound_output,
+            txid,
+            false,
+            Some(destination.private_directory()),
+        )?;
+        let mut result = parse_restore_result_json(&bytes)?;
+        if (result.database_path != bound_output
+            && result.database_path != destination.private_path())
+            || result.replica != ReplicaKind::S3
+            || result.txid != txid
+            || result.integrity_check != IntegrityCheck::Full
+        {
+            return Err(LitestreamError::InvalidRestoreContract);
+        }
+        destination.publish()?;
+        result.database_path = target_path.to_owned();
+        Ok(result)
     }
 }
 
@@ -2385,7 +2426,7 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
         target_path: &Path,
         txid: LitestreamTxid,
     ) -> Result<RestorePlan, LitestreamError> {
-        let bytes = self.execute(source_database_path, target_path, txid, true)?;
+        let bytes = self.execute(source_database_path, target_path, txid, true, None)?;
         let plan = parse_restore_plan_json(&bytes)?;
         if plan.source != source_database_path.to_string_lossy()
             || plan.target_path != target_path
@@ -2409,28 +2450,7 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
         target_path: &Path,
         txid: LitestreamTxid,
     ) -> Result<RestoreResult, LitestreamError> {
-        if !source_database_path.is_absolute() || !target_path.is_absolute() {
-            return Err(LitestreamError::RelativeDatabasePath);
-        }
-        let destination = ExclusiveRestoreDestination::prepare(target_path)?;
-        destination.verify_path_bindings()?;
-        let bytes = self.execute(
-            source_database_path,
-            destination.private_path(),
-            txid,
-            false,
-        )?;
-        let mut result = parse_restore_result_json(&bytes)?;
-        if result.database_path != destination.private_path()
-            || result.replica != ReplicaKind::S3
-            || result.txid != txid
-            || result.integrity_check != IntegrityCheck::Full
-        {
-            return Err(LitestreamError::InvalidRestoreContract);
-        }
-        destination.publish()?;
-        result.database_path = target_path.to_owned();
-        Ok(result)
+        self.restore_with_hook(source_database_path, target_path, txid, |_| {})
     }
 }
 
@@ -2504,7 +2524,7 @@ impl ExclusiveRestoreDestination {
                         .map_err(LitestreamError::PrepareRestoreDestination)?;
                     let private_path = parent
                         .join(&private_directory_name)
-                        .join("database.sqlite3");
+                        .join(PRIVATE_RESTORE_OUTPUT_FILENAME);
                     return Ok(Self {
                         requested_path: requested_path.to_owned(),
                         requested_parent,
@@ -2532,6 +2552,10 @@ impl ExclusiveRestoreDestination {
         &self.private_path
     }
 
+    fn private_directory(&self) -> &File {
+        &self.private_directory
+    }
+
     fn verify_path_bindings(&self) -> Result<(), LitestreamError> {
         let requested_parent_path = self
             .requested_path
@@ -2555,7 +2579,7 @@ impl ExclusiveRestoreDestination {
     fn publish(self) -> Result<(), LitestreamError> {
         self.verify_path_bindings()?;
         let private_file =
-            open_owned_runtime_file_child(&self.private_directory, "database.sqlite3")
+            open_owned_runtime_file_child(&self.private_directory, PRIVATE_RESTORE_OUTPUT_FILENAME)
                 .map_err(LitestreamError::PublishRestoreDestination)?
                 .ok_or(LitestreamError::InvalidRestoreDestination)?;
         let private_metadata = private_file
@@ -2577,7 +2601,7 @@ impl ExclusiveRestoreDestination {
 
         match link_restore_file(
             &self.private_directory,
-            OsStr::new("database.sqlite3"),
+            OsStr::new(PRIVATE_RESTORE_OUTPUT_FILENAME),
             &self.requested_parent,
             &self.requested_name,
         ) {
@@ -2602,7 +2626,7 @@ impl ExclusiveRestoreDestination {
                 .map_err(LitestreamError::PublishRestoreDestination)?;
             unlink_exact_restore_file(
                 &self.private_directory,
-                OsStr::new("database.sqlite3"),
+                OsStr::new(PRIVATE_RESTORE_OUTPUT_FILENAME),
                 &private_file,
             )
             .map_err(LitestreamError::PublishRestoreDestination)?;
@@ -2687,13 +2711,13 @@ fn restore_child_stat(parent: &File, name: &OsStr) -> std::io::Result<Option<lib
 }
 
 fn remove_optional_private_restore_output(parent: &File) -> std::io::Result<()> {
-    let name = OsStr::new("database.sqlite3");
+    let name = OsStr::new(PRIVATE_RESTORE_OUTPUT_FILENAME);
     let Some(identity) = restore_child_stat(parent, name)? else {
         return Ok(());
     };
     let kind = identity.st_mode & libc::S_IFMT;
     if kind == libc::S_IFREG {
-        return remove_optional_owned_runtime_file(parent, "database.sqlite3");
+        return remove_optional_owned_runtime_file(parent, PRIVATE_RESTORE_OUTPUT_FILENAME);
     }
     if kind != libc::S_IFLNK
         || identity.st_uid != unsafe { libc::geteuid() }
@@ -2848,9 +2872,9 @@ fn execute_credentialed_command(
     credentials: &R2Credentials,
     timeout: Duration,
     output_limit: usize,
-    restore_write_root: Option<&Path>,
+    restore_write_directory: Option<&File>,
 ) -> Result<Vec<u8>, LitestreamError> {
-    let mut command = credentialed_restore_command(binary, arguments, restore_write_root)?;
+    let mut command = credentialed_restore_command(binary, arguments, restore_write_directory)?;
     command
         .env_clear()
         .env(
@@ -2949,32 +2973,53 @@ fn execute_credentialed_command(
 fn credentialed_restore_command(
     binary: &ImmutableLitestreamBinary,
     arguments: &[OsString],
-    restore_write_root: Option<&Path>,
+    restore_write_directory: Option<&File>,
 ) -> Result<Command, LitestreamError> {
     #[cfg(target_os = "macos")]
-    if let Some(write_root) = restore_write_root {
-        let profile = restore_sandbox_profile(write_root)?;
+    let mut command = if let Some(write_directory) = restore_write_directory {
+        let profile = restore_sandbox_profile(write_directory)?;
         let mut command = Command::new(SANDBOX_EXEC_PATH);
         command
             .args(["-p", profile.as_str()])
             .arg(binary.path())
             .args(arguments);
-        return Ok(command);
-    }
+        command
+    } else {
+        let mut command = Command::new(binary.path());
+        command.args(arguments);
+        command
+    };
 
     #[cfg(not(target_os = "macos"))]
-    let _ = restore_write_root;
+    let mut command = {
+        let mut command = Command::new(binary.path());
+        command.args(arguments);
+        command
+    };
 
-    let mut command = Command::new(binary.path());
-    command.args(arguments);
+    if let Some(write_directory) = restore_write_directory {
+        let descriptor = write_directory.as_raw_fd();
+        // SAFETY: `pre_exec` runs after fork and before exec. `fchdir` is
+        // async-signal-safe, and the retained descriptor remains available
+        // until exec even though it carries `O_CLOEXEC`.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fchdir(descriptor) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
     Ok(command)
 }
 
 #[cfg(target_os = "macos")]
-fn restore_sandbox_profile(write_root: &Path) -> Result<String, LitestreamError> {
-    let canonical_write_root =
-        fs::canonicalize(write_root).map_err(LitestreamError::PrepareRestoreDestination)?;
-    let write_root = canonical_write_root
+fn restore_sandbox_profile(write_directory: &File) -> Result<String, LitestreamError> {
+    let descriptor_path =
+        open_file_path(write_directory).map_err(LitestreamError::PrepareRestoreDestination)?;
+    let write_root = descriptor_path
         .to_str()
         .ok_or(LitestreamError::NonUtf8RuntimePath)?;
     if write_root.chars().any(|character| character.is_control()) {
@@ -2993,6 +3038,30 @@ fn restore_sandbox_profile(write_root: &Path) -> Result<String, LitestreamError>
          (allow mach-lookup)\n\
          (allow ipc-posix*)"
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn open_file_path(file: &File) -> std::io::Result<PathBuf> {
+    let mut buffer = vec![0_u8; libc::PATH_MAX as usize];
+    let result = unsafe {
+        libc::fcntl(
+            file.as_raw_fd(),
+            libc::F_GETPATH,
+            buffer.as_mut_ptr().cast::<libc::c_char>(),
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let Some(length) = buffer.iter().position(|byte| *byte == 0) else {
+        return Err(std::io::Error::other(
+            "open file path exceeded the platform path limit",
+        ));
+    };
+    if length == 0 {
+        return Err(std::io::Error::other("open file path is unavailable"));
+    }
+    Ok(PathBuf::from(OsString::from_vec(buffer[..length].to_vec())))
 }
 
 #[cfg(target_os = "macos")]
@@ -4252,6 +4321,121 @@ printf 'escaped' >"$target"
             "sandboxed failure must clean its private restore directory"
         );
 
+        remove_partial_restore_config(
+            engine
+                .config
+                .path
+                .parent()
+                .expect("immutable config directory"),
+        )
+        .expect("remove immutable restore test config");
+        remove_partial_stage(binary.path().parent().expect("immutable directory"))
+            .expect("remove immutable restore test binary");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn offline_restore_binds_sandbox_and_output_to_the_opened_private_directory() {
+        let root = tempfile::tempdir().expect("restore command root");
+        let source = root.path().join("kosh.sqlite3");
+        fs::write(&source, b"source").expect("source");
+        let target = root.path().join("restored.sqlite3");
+        let replacement = root.path().join("replacement-private-directory");
+        fs::create_dir(&replacement).expect("replacement private directory");
+        let replacement_database = replacement.join("database.sqlite3");
+        fs::write(&replacement_database, b"replacement-must-not-change")
+            .expect("replacement database");
+        let displaced = root.path().join("displaced-private-directory");
+        let binary = staged_restore_test_binary(
+            root.path(),
+            br#"#!/bin/sh
+set -eu
+IFS= read -r _
+IFS= read -r _
+IFS= read -r _
+target=
+txid=
+while test "$#" -gt 0; do
+  case "$1" in
+    -config) shift 2 ;;
+    -txid) txid=$2; shift 2 ;;
+    -integrity-check) test "$2" = "full"; shift 2 ;;
+    -json) shift ;;
+    -o) target=$2; shift 2 ;;
+    restore) shift ;;
+    -*) exit 92 ;;
+    *) shift ;;
+  esac
+done
+test "$target" = "database.sqlite3"
+printf 'descriptor-bound-restore' >"$target"
+printf '{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_check":"full"}' "$target" "$txid"
+"#,
+        );
+        let runtime =
+            LitestreamRuntimePaths::new(&root.path().join("runtime")).expect("restore runtime");
+        let (r2_target, replica_path) = restore_test_target();
+        let credentials = R2Credentials::new(
+            "00000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("credentials");
+        let engine = CommandLitestreamRestore::new(
+            &binary,
+            &runtime,
+            &r2_target,
+            &replica_path,
+            &source,
+            &credentials,
+            Duration::from_secs(5),
+        )
+        .expect("bound restore engine");
+
+        let result = engine.restore_with_hook(
+            &source,
+            &target,
+            LitestreamTxid::from_local(42),
+            |destination| {
+                let private_directory = destination
+                    .private_path()
+                    .parent()
+                    .expect("private restore directory");
+                fs::rename(private_directory, &displaced)
+                    .expect("displace private restore directory");
+                std::os::unix::fs::symlink(&replacement, private_directory)
+                    .expect("substitute private restore directory");
+            },
+        );
+
+        assert!(result.is_err(), "substituted private path must fail closed");
+        assert_eq!(
+            fs::read(&replacement_database).expect("preserved replacement database"),
+            b"replacement-must-not-change"
+        );
+        assert!(
+            !displaced.join("database.sqlite3").exists(),
+            "failed publication must clean the descriptor-bound output"
+        );
+        let substituted = root
+            .path()
+            .read_dir()
+            .expect("restore root entries")
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".kosh-litestream-restore-")
+            })
+            .expect("substituted private path");
+        assert!(fs::symlink_metadata(substituted.path())
+            .expect("substituted private symlink")
+            .file_type()
+            .is_symlink());
+        fs::remove_file(substituted.path()).expect("remove substitution fixture");
+        fs::remove_dir(&displaced).expect("remove displaced private directory");
+        fs::remove_file(&replacement_database).expect("remove replacement database");
+        fs::remove_dir(&replacement).expect("remove replacement directory");
         remove_partial_restore_config(
             engine
                 .config

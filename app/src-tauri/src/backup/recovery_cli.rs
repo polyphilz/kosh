@@ -14,10 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::database::Database;
-
-#[cfg(test)]
-use crate::database::DatabasePaths;
+use crate::database::{Database, DatabasePaths};
 
 use super::{
     credentials::R2Credentials,
@@ -89,6 +86,18 @@ struct RemoteRestoreReport {
     research_runs: u64,
     research_citations: u64,
     safety_snapshot_created: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StagedAcceptanceEvidence {
+    active_tidbits: u64,
+    revisions: u64,
+    sources: u64,
+    attachments: u64,
+    media_blobs: u64,
+    search_documents_rebuilt: u64,
+    research_runs: u64,
+    research_citations: u64,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -207,45 +216,11 @@ fn restore_remote(
     let restored_media_count = staged.restored_media_count;
     let restored_media_bytes = staged.restored_media_bytes;
 
-    // Perform every write-capable reopen and search repair against the isolated
-    // staging pair. After publication, the target is touched only through its
-    // retained directory descriptor until the reservation is durably released.
-    let database = Database::initialize(staged.paths.clone())
-        .map_err(|_| "the independently staged Kosh library did not reopen normally")?;
-    let search_documents_rebuilt = database
-        .client()
-        .rebuild_search()
-        .map_err(|_| "the staged lexical search projection could not be rebuilt")?;
-    database
-        .client()
-        .full_integrity_check()
-        .map_err(|_| "the staged Kosh library failed its full integrity check")?;
-    let main = database
-        .open_main_read_only()
-        .map_err(|_| "the staged Kosh evidence could not be inspected")?;
-    let media = database
-        .open_media_read_only()
-        .map_err(|_| "the staged Kosh media could not be inspected")?;
-    let active_tidbits = count(
-        &main,
-        "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL",
-    )?;
-    let revisions = count(&main, "SELECT count(*) FROM tidbit_revision")?;
-    let sources = count(&main, "SELECT count(*) FROM source")?;
-    let attachments = count(&main, "SELECT count(*) FROM attachment")?;
-    let media_blobs = count(&media, "SELECT count(*) FROM media_blob")?;
-    let research_runs = count(&main, "SELECT count(*) FROM research_run")?;
-    let research_citations = count(
-        &main,
-        "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0)
-         FROM research_run
-         WHERE final_answer_json IS NOT NULL",
-    )?;
-    drop(media);
-    drop(main);
-    database
-        .shutdown()
-        .map_err(|_| "the staged Kosh library did not close cleanly")?;
+    // The recovery command is a dedicated one-shot process. Bind its working
+    // directory to the retained staging descriptor for the entire write-
+    // capable reopen so SQLite lock, migration, WAL, and search paths cannot
+    // follow a renamed or substituted staging pathname.
+    let evidence = audit_staged_database(staged.staging_directory())?;
 
     let report = RemoteRestoreReport {
         schema_version: 1,
@@ -255,14 +230,14 @@ fn restore_remote(
         target_data_directory: target_root.to_string_lossy().into_owned(),
         restored_media_count,
         restored_media_bytes,
-        active_tidbits,
-        revisions,
-        sources,
-        attachments,
-        media_blobs,
-        search_documents_rebuilt,
-        research_runs,
-        research_citations,
+        active_tidbits: evidence.active_tidbits,
+        revisions: evidence.revisions,
+        sources: evidence.sources,
+        attachments: evidence.attachments,
+        media_blobs: evidence.media_blobs,
+        search_documents_rebuilt: evidence.search_documents_rebuilt,
+        research_runs: evidence.research_runs,
+        research_citations: evidence.research_citations,
         safety_snapshot_created: false,
     };
 
@@ -1416,6 +1391,99 @@ fn count(connection: &rusqlite::Connection, sql: &str) -> Result<u64, String> {
     u64::try_from(value).map_err(|_| "the restored acceptance count is invalid".into())
 }
 
+fn audit_staged_database(directory: &File) -> Result<StagedAcceptanceEvidence, String> {
+    with_bound_working_directory(directory, || {
+        let database = Database::initialize(DatabasePaths::new("."))
+            .map_err(|_| "the independently staged Kosh library did not reopen normally")?;
+        let search_documents_rebuilt = database
+            .client()
+            .rebuild_search()
+            .map_err(|_| "the staged lexical search projection could not be rebuilt")?;
+        database
+            .client()
+            .full_integrity_check()
+            .map_err(|_| "the staged Kosh library failed its full integrity check")?;
+        let main = database
+            .open_main_read_only()
+            .map_err(|_| "the staged Kosh evidence could not be inspected")?;
+        let media = database
+            .open_media_read_only()
+            .map_err(|_| "the staged Kosh media could not be inspected")?;
+        let evidence = StagedAcceptanceEvidence {
+            active_tidbits: count(
+                &main,
+                "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL",
+            )?,
+            revisions: count(&main, "SELECT count(*) FROM tidbit_revision")?,
+            sources: count(&main, "SELECT count(*) FROM source")?,
+            attachments: count(&main, "SELECT count(*) FROM attachment")?,
+            media_blobs: count(&media, "SELECT count(*) FROM media_blob")?,
+            search_documents_rebuilt,
+            research_runs: count(&main, "SELECT count(*) FROM research_run")?,
+            research_citations: count(
+                &main,
+                "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0)
+                 FROM research_run
+                 WHERE final_answer_json IS NOT NULL",
+            )?,
+        };
+        drop(media);
+        drop(main);
+        database
+            .shutdown()
+            .map_err(|_| "the staged Kosh library did not close cleanly")?;
+        Ok(evidence)
+    })
+}
+
+fn with_bound_working_directory<T>(
+    directory: &File,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let binding = WorkingDirectoryBinding::enter(directory)
+        .map_err(|_| "the staged Kosh directory identity could not be bound")?;
+    let result = operation();
+    binding
+        .restore()
+        .map_err(|_| "the recovery process working directory could not be restored")?;
+    result
+}
+
+#[derive(Debug)]
+struct WorkingDirectoryBinding {
+    previous: File,
+    active: bool,
+}
+
+impl WorkingDirectoryBinding {
+    fn enter(directory: &File) -> std::io::Result<Self> {
+        let previous = open_directory_no_follow(Path::new("."))?;
+        if unsafe { libc::fchdir(directory.as_raw_fd()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            previous,
+            active: true,
+        })
+    }
+
+    fn restore(mut self) -> std::io::Result<()> {
+        if unsafe { libc::fchdir(self.previous.as_raw_fd()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for WorkingDirectoryBinding {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = unsafe { libc::fchdir(self.previous.as_raw_fd()) };
+        }
+    }
+}
+
 fn usage() -> String {
     "usage: kosh recovery remote-restore <backup-set-id> <latest|checkpoint-id> <new-absolute-data-directory>".into()
 }
@@ -1705,6 +1773,70 @@ mod tests {
             fs::read(&replacement_paths.media).expect("preserved replacement media"),
             replacement_media
         );
+    }
+
+    #[test]
+    fn write_capable_staging_audit_stays_bound_after_parent_replacement() {
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("recovery test executable"))
+                .args([
+                    "--exact",
+                    "backup::recovery_cli::tests::write_capable_staging_audit_worker",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("KOSH_BOUND_STAGING_AUDIT_WORKER", "1")
+                .status()
+                .expect("spawn isolated staging-audit worker");
+        assert!(status.success(), "isolated staging audit must pass");
+    }
+
+    #[test]
+    #[ignore = "invoked in an isolated process by the descriptor-binding test"]
+    fn write_capable_staging_audit_worker() {
+        if std::env::var_os("KOSH_BOUND_STAGING_AUDIT_WORKER").is_none() {
+            return;
+        }
+        std::env::remove_var("KOSH_BOUND_STAGING_AUDIT_WORKER");
+        let root = tempfile::tempdir().expect("staging audit parent");
+        let staging_root = root.path().join("staging");
+        let displaced = root.path().join("displaced-staging");
+        let staged_paths = DatabasePaths::new(&staging_root);
+        let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
+        staged.shutdown().expect("close staged database pair");
+        let staging_directory =
+            open_directory_no_follow(&staging_root).expect("retained staging directory descriptor");
+
+        fs::rename(&staging_root, &displaced).expect("displace staged directory");
+        let replacement_paths = DatabasePaths::new(&staging_root);
+        let replacement =
+            Database::initialize(replacement_paths.clone()).expect("replacement database pair");
+        replacement.shutdown().expect("close replacement pair");
+        let replacement_main = fs::read(&replacement_paths.main).expect("replacement main bytes");
+        let replacement_media =
+            fs::read(&replacement_paths.media).expect("replacement media bytes");
+        let replacement_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&replacement_paths.ownership_lock)
+            .expect("replacement ownership lock");
+        replacement_lock
+            .try_lock()
+            .expect("exclude a path-based replacement reopen");
+
+        let evidence = audit_staged_database(&staging_directory)
+            .expect("descriptor-bound write-capable audit");
+        assert_eq!(evidence.active_tidbits, 0);
+        assert_eq!(evidence.search_documents_rebuilt, 0);
+        assert_eq!(
+            fs::read(&replacement_paths.main).expect("preserved replacement main"),
+            replacement_main
+        );
+        assert_eq!(
+            fs::read(&replacement_paths.media).expect("preserved replacement media"),
+            replacement_media
+        );
+        drop(replacement_lock);
     }
 
     #[cfg(unix)]

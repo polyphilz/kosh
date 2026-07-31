@@ -134,6 +134,10 @@ impl StagedRestore {
     pub(crate) fn open_validated_database_pair(&self) -> Result<StagedDatabasePair, RestoreError> {
         open_validated_database_pair(&self.paths, &self.cleanup.directory)
     }
+
+    pub(crate) const fn staging_directory(&self) -> &File {
+        &self.cleanup.directory
+    }
 }
 
 #[derive(Debug)]
