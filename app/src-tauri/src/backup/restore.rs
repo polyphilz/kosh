@@ -264,12 +264,29 @@ pub(crate) fn discover_checkpoints(
             break;
         }
     }
+    let owner = inspect_remote_owner(store, keyspace)?;
+    if owner.backup_set_id() != backup_set_id {
+        return Err(RestoreError::Owner(RemoteOwnerError::Invalid));
+    }
     checkpoints.sort_by(|left, right| {
-        right
-            .content_revision()
-            .cmp(&left.content_revision())
-            .then_with(|| right.created_at_unix_nanos.cmp(&left.created_at_unix_nanos))
-            .then_with(|| right.checkpoint_id().cmp(left.checkpoint_id()))
+        let left_is_active = left.replica_epoch_id() == &owner.replica_epoch_id;
+        let right_is_active = right.replica_epoch_id() == &owner.replica_epoch_id;
+        right_is_active.cmp(&left_is_active).then_with(|| {
+            if left_is_active {
+                right
+                    .content_revision()
+                    .cmp(&left.content_revision())
+                    .then_with(|| right.created_at_unix_nanos.cmp(&left.created_at_unix_nanos))
+                    .then_with(|| right.checkpoint_id().cmp(left.checkpoint_id()))
+            } else {
+                right
+                    .created_at_unix_nanos
+                    .cmp(&left.created_at_unix_nanos)
+                    .then_with(|| right.replica_epoch_id().cmp(left.replica_epoch_id()))
+                    .then_with(|| right.content_revision().cmp(&left.content_revision()))
+                    .then_with(|| right.checkpoint_id().cmp(left.checkpoint_id()))
+            }
+        })
     });
     Ok(checkpoints)
 }
@@ -1658,6 +1675,53 @@ mod tests {
         assert_eq!(checkpoints[0].checkpoint_id(), &later_checkpoint_id);
         assert_eq!(checkpoints[0].created_at(), "2026-07-30T19:00:00.900Z");
         assert_eq!(checkpoints[1].created_at(), "2026-07-30T19:00:00Z");
+    }
+
+    #[test]
+    fn discovery_prefers_the_active_epoch_before_cross_lineage_revisions() {
+        let fixture = Fixture::new();
+        let active = &fixture.checkpoint.manifest;
+        let abandoned_epoch = ReplicaEpochId::new();
+        let abandoned_checkpoint_id = CheckpointId::new();
+        let abandoned = CheckpointManifestV1::new(CheckpointManifestInput {
+            backup_set_id: active.backup_set_id().clone(),
+            replica_epoch_id: abandoned_epoch.clone(),
+            checkpoint_id: abandoned_checkpoint_id.clone(),
+            created_at: UtcTimestamp::parse("2026-07-30T20:00:00Z").expect("abandoned timestamp"),
+            kosh_version: active.kosh_version().into(),
+            content_revision: active.content_revision() + 100,
+            main_migration_head: active.main_migration_head(),
+            litestream_path: fixture.keyspace.litestream(&abandoned_epoch),
+            txid: active.txid().into(),
+            media_migration_head: active.media_migration_head(),
+            referenced_hash_count: active.referenced_hash_count(),
+            referenced_total_bytes: active.referenced_total_bytes(),
+            referenced_hash_set_sha256: active.referenced_hash_set_sha256(),
+        })
+        .expect("abandoned manifest");
+        fixture
+            .store
+            .put(PutObjectRequest {
+                key: abandoned
+                    .object_key(&fixture.keyspace)
+                    .expect("manifest key"),
+                bytes: abandoned.to_json().expect("manifest bytes"),
+                content_type: ObjectContentType::Json,
+                kosh_sha256: None,
+                condition: PutCondition::IfAbsent,
+            })
+            .expect("abandoned remote manifest");
+
+        let checkpoints =
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id)
+                .expect("checkpoint discovery");
+
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].replica_epoch_id(), active.replica_epoch_id());
+        assert_eq!(checkpoints[0].checkpoint_id(), active.checkpoint_id());
+        assert_eq!(checkpoints[1].replica_epoch_id(), &abandoned_epoch);
+        assert_eq!(checkpoints[1].checkpoint_id(), &abandoned_checkpoint_id);
+        assert!(checkpoints[1].content_revision() > checkpoints[0].content_revision());
     }
 
     #[test]
