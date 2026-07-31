@@ -261,6 +261,13 @@
       "invariants": ["secret-isolation", "exact-txid"]
     },
     {
+      "id": "restore-staged-lifetime-cleanup",
+      "phase": "restore",
+      "failureClass": "crash-boundary",
+      "test": "backup::restore::tests::staged_restore_lifetime_removes_an_uninstalled_owned_pair",
+      "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
+    },
+    {
       "id": "install-partial-pair-rollback",
       "phase": "install",
       "failureClass": "crash-boundary",
@@ -301,6 +308,20 @@
       "failureClass": "concurrency",
       "test": "backup::recovery_cli::tests::descriptor_bound_install_rolls_back_a_raced_directory_without_touching_its_target",
       "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
+      "id": "install-interrupted-reservation-reclaim",
+      "phase": "install",
+      "failureClass": "crash-boundary",
+      "test": "backup::recovery_cli::tests::interrupted_private_reservation_and_staging_are_reclaimed_before_retry",
+      "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
+    },
+    {
+      "id": "install-staging-cleanup-before-commit",
+      "phase": "install",
+      "failureClass": "filesystem",
+      "test": "backup::recovery_cli::tests::staging_cleanup_failure_rolls_back_the_uncommitted_installed_pair",
+      "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
     },
     {
       "id": "reopen-search-and-citation-rebuild",

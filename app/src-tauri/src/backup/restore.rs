@@ -85,12 +85,18 @@ pub(crate) struct RestorePreview {
     pub(crate) plan_total_bytes: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct StagedRestore {
     pub(crate) checkpoint: RemoteCheckpoint,
     pub(crate) paths: DatabasePaths,
     pub(crate) restored_media_count: u64,
     pub(crate) restored_media_bytes: u64,
+}
+
+impl Drop for StagedRestore {
+    fn drop(&mut self) {
+        let _ = remove_owned_staging(&self.paths.root);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -290,6 +296,10 @@ pub(crate) fn install_checkpoint(
 
 pub(crate) fn remove_staged_checkpoint(staged: &StagedRestore) -> Result<(), RestoreError> {
     remove_owned_staging(&staged.paths.root)
+}
+
+pub(crate) fn remove_staging_root(root: &Path) -> Result<(), RestoreError> {
+    remove_owned_staging(root)
 }
 
 pub(crate) fn drill_checkpoint(
@@ -1184,6 +1194,31 @@ mod tests {
             1
         );
         restored.shutdown().expect("close restored library");
+    }
+
+    #[test]
+    fn staged_restore_lifetime_removes_an_uninstalled_owned_pair() {
+        let fixture = Fixture::new();
+        let staging_parent = tempfile::tempdir().expect("staging parent");
+        let staging_root = staging_parent.path().join("restore");
+        let staged = stage_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.checkpoint,
+            &fixture.engine,
+            &fixture.source_paths.main,
+            &staging_root,
+        )
+        .expect("staged restore");
+        assert!(staged.paths.main.is_file());
+        assert!(staged.paths.media.is_file());
+
+        drop(staged);
+
+        assert!(
+            !staging_root.exists(),
+            "dropping an uninstalled staged restore must remove authored copies"
+        );
     }
 
     #[test]
