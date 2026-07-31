@@ -688,7 +688,7 @@ fn set_enabled_blocking(
             replica_epoch_id: config.replica_epoch_id,
             enabled: input.enabled,
             target: config.target,
-            now_ms,
+            now_ms: now_ms.max(config.updated_at_ms),
         })
         .map_err(map_database_error)?;
     Ok(())
@@ -1418,7 +1418,10 @@ mod tests {
     use super::*;
     use crate::backup::domain::BackupProvider;
     use crate::database::{Database, DatabasePaths};
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
 
     const ACCESS_KEY: &str = "0123456789abcdef0123456789abcdef";
     const SECRET_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -1762,6 +1765,53 @@ mod tests {
             .load_offsite_backup_takeover_intent()
             .expect("takeover intent")
             .is_some());
+    }
+
+    #[test]
+    fn disabling_backup_clamps_a_rolled_back_clock() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let paths = DatabasePaths::new(root.path());
+        let database = Database::initialize(paths.clone()).expect("database");
+        let current = database
+            .client()
+            .save_offsite_backup_config(SaveOffsiteBackupConfigInput {
+                expected_revision: 0,
+                backup_set_id: BackupSetId::new(),
+                replica_epoch_id: ReplicaEpochId::new(),
+                enabled: true,
+                target: R2Target {
+                    account_id: R2AccountId::parse(ACCESS_KEY).expect("account"),
+                    jurisdiction: R2Jurisdiction::Default,
+                    bucket: R2BucketName::parse("kosh-test").expect("bucket"),
+                },
+                now_ms: 1_000,
+            })
+            .expect("enabled configuration");
+        let context = BackupContext {
+            client: database.client(),
+            paths,
+            data_root: root.path().to_owned(),
+            resource_dir: None,
+            gate: Arc::new(Mutex::new(())),
+        };
+
+        set_enabled_blocking(
+            context,
+            SetBackupEnabledInput {
+                expected_revision: current.revision,
+                enabled: false,
+            },
+            10,
+        )
+        .expect("disable after clock rollback");
+
+        let disabled = database
+            .client()
+            .load_offsite_backup_config()
+            .expect("configuration")
+            .expect("disabled configuration");
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.updated_at_ms, current.updated_at_ms);
     }
 
     #[test]
