@@ -15,7 +15,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::database::{
-    create_empty_restore_media_database, install_restored_pair, validate_restored_pair,
+    create_empty_restore_media_database_at, inspect_completed_restore_install,
+    install_restored_pair, open_restore_main_read_only_at, validate_restored_pair_at,
     DatabasePaths, RestoreInstallReport,
 };
 
@@ -364,17 +365,23 @@ fn stage_checkpoint_with_identity(
         let txid = checkpoint.txid()?;
         let plan = engine.preview(source_database_path, &paths.main, txid)?;
         validate_plan(&plan, source_database_path, &paths.main, checkpoint)?;
-        let result = engine.restore(source_database_path, &paths.main, txid)?;
+        let result = engine.restore(source_database_path, &cleanup.directory, &paths.main, txid)?;
         if result.database_path != paths.main
             || result.replica != ReplicaKind::S3
             || result.txid != txid
         {
             return Err(RestoreError::Manifest);
         }
-        validate_checkpoint_evidence(&paths.main, checkpoint)?;
-        let (restored_media_count, restored_media_bytes) =
-            rebuild_media(store, keyspace, checkpoint, &paths)?;
-        validate_restored_pair(&paths)?;
+        let main_file = open_regular_child_read_write(&cleanup.directory, "kosh.sqlite3")?;
+        let main = open_restore_main_read_only_at(&main_file)?;
+        validate_checkpoint_evidence(&main, checkpoint)?;
+        let (restored_media_count, restored_media_bytes, media_file) =
+            rebuild_media(store, keyspace, checkpoint, &main, &cleanup.directory)?;
+        drop(main);
+        validate_restored_pair_at(&main_file, &media_file)?;
+        if !path_matches_open_file(&paths.root, &cleanup.directory) {
+            return Err(RestoreError::InvalidStaging);
+        }
         Ok(StagedRestore {
             checkpoint: checkpoint.clone(),
             paths,
@@ -389,9 +396,17 @@ pub(crate) fn install_checkpoint(
     live_paths: &DatabasePaths,
     staged: &StagedRestore,
 ) -> Result<RestoreInstallReport, RestoreError> {
+    if let Some(report) =
+        inspect_completed_restore_install(live_paths, staged.checkpoint.checkpoint_id())?
+    {
+        staged.cleanup.remove()?;
+        return Ok(report);
+    }
+    let staged_pair = staged.open_validated_database_pair()?;
     let report = install_restored_pair(
         live_paths,
-        &staged.paths,
+        staged_pair.main(),
+        staged_pair.media(),
         staged.checkpoint.checkpoint_id().clone(),
     )
     .map_err(RestoreError::Database)?;
@@ -485,14 +500,9 @@ fn validate_plan(
 }
 
 fn validate_checkpoint_evidence(
-    main_path: &Path,
+    connection: &Connection,
     checkpoint: &RemoteCheckpoint,
 ) -> Result<(), RestoreError> {
-    let connection = Connection::open_with_flags(
-        main_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(crate::database::DatabaseError::from)?;
     let content_revision = connection
         .query_row(
             "SELECT revision
@@ -576,14 +586,11 @@ fn rebuild_media(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
     checkpoint: &RemoteCheckpoint,
-    paths: &DatabasePaths,
-) -> Result<(u64, u64), RestoreError> {
-    let main = Connection::open_with_flags(
-        &paths.main,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(crate::database::DatabaseError::from)?;
-    let mut media = create_empty_restore_media_database(&paths.media)?;
+    main: &Connection,
+    staging_directory: &File,
+) -> Result<(u64, u64, File), RestoreError> {
+    let media_file = create_regular_child(staging_directory, "media.sqlite3")?;
+    let mut media = create_empty_restore_media_database_at(&media_file)?;
     let transaction = media
         .transaction()
         .map_err(crate::database::DatabaseError::from)?;
@@ -592,7 +599,7 @@ fn rebuild_media(
     let mut digest = Sha256::new();
     let mut cursor = None;
     loop {
-        let references = load_referenced_media_page(&main, cursor, MEDIA_RESTORE_PAGE_SIZE)?;
+        let references = load_referenced_media_page(main, cursor, MEDIA_RESTORE_PAGE_SIZE)?;
         if references.is_empty() {
             break;
         }
@@ -640,6 +647,8 @@ fn rebuild_media(
         .commit()
         .map_err(crate::database::DatabaseError::from)?;
     drop(media);
+    media_file.sync_all()?;
+    staging_directory.sync_all()?;
     if count != checkpoint.manifest.referenced_hash_count()
         || total_bytes != checkpoint.manifest.referenced_total_bytes()
         || ContentSha256::from_bytes(digest.finalize().into())
@@ -647,7 +656,7 @@ fn rebuild_media(
     {
         return Err(RestoreError::MediaMismatch);
     }
-    Ok((count, total_bytes))
+    Ok((count, total_bytes, media_file))
 }
 
 #[derive(Clone, Copy)]
@@ -845,20 +854,20 @@ fn open_validated_database_pair(
     {
         return Err(RestoreError::InvalidStaging);
     }
-    let main = open_regular_child(directory, "kosh.sqlite3")?;
-    let media = open_regular_child(directory, "media.sqlite3")?;
+    let main = open_regular_child_read_write(directory, "kosh.sqlite3")?;
+    let media = open_regular_child_read_write(directory, "media.sqlite3")?;
     if !is_current_user_file(&main)? || !is_current_user_file(&media)? {
         return Err(RestoreError::InvalidStaging);
     }
 
-    // SQLite's pair validator is path based. Keep descriptor-bound children
-    // open across that audit, then prove the audited paths still identify the
-    // retained directory and exact files. Every later copy and comparison uses
-    // these descriptors, so a same-UID rename/replacement after this point
-    // cannot substitute another library.
-    validate_restored_pair(paths)?;
-    let current_main = open_regular_child(directory, "kosh.sqlite3")?;
-    let current_media = open_regular_child(directory, "media.sqlite3")?;
+    // Validate through the retained child descriptors, then prove the
+    // discoverable staging path still identifies the retained directory and
+    // exact files. Every later copy and comparison uses these descriptors, so
+    // a same-UID rename/replacement after this point cannot substitute another
+    // library.
+    validate_restored_pair_at(&main, &media)?;
+    let current_main = open_regular_child_read_write(directory, "kosh.sqlite3")?;
+    let current_media = open_regular_child_read_write(directory, "media.sqlite3")?;
     if !path_matches_open_file(&paths.root, directory)
         || !same_open_file(&main, &current_main)
         || !same_open_file(&media, &current_media)
@@ -890,6 +899,51 @@ fn open_regular_child(directory: &File, name: &str) -> std::io::Result<File> {
             directory.as_raw_fd(),
             name.as_ptr(),
             libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging child is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn open_regular_child_read_write(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging child is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn create_regular_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
         )
     };
     if descriptor < 0 {
@@ -1059,6 +1113,45 @@ mod tests {
         txid: LitestreamTxid,
     }
 
+    struct ParentReplacingRestoreEngine<'a> {
+        inner: &'a FakeRestoreEngine,
+        requested_root: PathBuf,
+        displaced_root: PathBuf,
+    }
+
+    impl RelationalRestoreEngine for ParentReplacingRestoreEngine<'_> {
+        fn replica_path(&self) -> &str {
+            self.inner.replica_path()
+        }
+
+        fn preview(
+            &self,
+            source_database_path: &Path,
+            target_path: &Path,
+            txid: LitestreamTxid,
+        ) -> Result<RestorePlan, LitestreamError> {
+            self.inner.preview(source_database_path, target_path, txid)
+        }
+
+        fn restore(
+            &self,
+            source_database_path: &Path,
+            target_directory: &File,
+            target_path: &Path,
+            txid: LitestreamTxid,
+        ) -> Result<RestoreResult, LitestreamError> {
+            fs::rename(&self.requested_root, &self.displaced_root)
+                .map_err(LitestreamError::Execute)?;
+            let replacement = Database::initialize(DatabasePaths::new(&self.requested_root))
+                .map_err(|error| LitestreamError::Execute(std::io::Error::other(error)))?;
+            replacement
+                .shutdown()
+                .map_err(|error| LitestreamError::Execute(std::io::Error::other(error)))?;
+            self.inner
+                .restore(source_database_path, target_directory, target_path, txid)
+        }
+    }
+
     impl RelationalRestoreEngine for FakeRestoreEngine {
         fn replica_path(&self) -> &str {
             self.replica_path.as_str()
@@ -1092,12 +1185,24 @@ mod tests {
         fn restore(
             &self,
             source_database_path: &Path,
+            target_directory: &File,
             target_path: &Path,
             txid: LitestreamTxid,
         ) -> Result<RestoreResult, LitestreamError> {
             assert_eq!(source_database_path, self.source);
             assert_eq!(txid, self.txid);
-            fs::copy(source_database_path, target_path).map_err(LitestreamError::Execute)?;
+            let mut source = File::open(source_database_path).map_err(LitestreamError::Execute)?;
+            let target_name = target_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(LitestreamError::InvalidRestoreDestination)?;
+            let mut target = create_regular_child(target_directory, target_name)
+                .map_err(LitestreamError::Execute)?;
+            std::io::copy(&mut source, &mut target).map_err(LitestreamError::Execute)?;
+            target.sync_all().map_err(LitestreamError::Execute)?;
+            target_directory
+                .sync_all()
+                .map_err(LitestreamError::Execute)?;
             Ok(RestoreResult {
                 database_path: target_path.to_owned(),
                 replica: ReplicaKind::S3,
@@ -1407,6 +1512,65 @@ mod tests {
             ));
             assert!(!staging_root.exists());
         }
+    }
+
+    #[test]
+    fn staging_writes_stay_bound_after_the_requested_root_is_replaced() {
+        let fixture = Fixture::new();
+        let parent = tempfile::tempdir().expect("staging replacement parent");
+        let staging_root = parent.path().join("staging");
+        let displaced_root = parent.path().join("displaced-staging");
+        let engine = ParentReplacingRestoreEngine {
+            inner: &fixture.engine,
+            requested_root: staging_root.clone(),
+            displaced_root: displaced_root.clone(),
+        };
+
+        let result = stage_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.checkpoint,
+            &engine,
+            &fixture.source_paths.main,
+            &staging_root,
+        );
+        assert!(
+            matches!(result, Err(RestoreError::InvalidStaging)),
+            "unexpected staging result: {result:?}"
+        );
+
+        let replacement =
+            Database::initialize(DatabasePaths::new(&staging_root)).expect("replacement database");
+        let main = replacement
+            .open_main_read_only()
+            .expect("replacement main database");
+        let media = replacement
+            .open_media_read_only()
+            .expect("replacement media database");
+        assert_eq!(
+            main.query_row("SELECT count(*) FROM tidbit", [], |row| row
+                .get::<_, i64>(0))
+                .expect("replacement tidbit count"),
+            0
+        );
+        assert_eq!(
+            media
+                .query_row("SELECT count(*) FROM media_blob", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("replacement media count"),
+            0
+        );
+        drop(media);
+        drop(main);
+        replacement.shutdown().expect("close replacement database");
+        assert!(
+            fs::read_dir(&displaced_root)
+                .expect("displaced staging entries")
+                .next()
+                .is_none(),
+            "descriptor-bound cleanup must remove private restored data"
+        );
     }
 
     #[test]

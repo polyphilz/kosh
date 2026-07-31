@@ -203,8 +203,13 @@ fn verify_pair(paths: &DatabasePaths, reason: SafetySnapshotReason) -> Result<()
     verify_pair_connections(&main, &media, reason)
 }
 
+#[cfg(test)]
 pub(super) fn verify_restore_pair(paths: &DatabasePaths) -> Result<()> {
     verify_pair(paths, SafetySnapshotReason::Restore)
+}
+
+pub(super) fn verify_restore_pair_connections(main: &Connection, media: &Connection) -> Result<()> {
+    verify_pair_connections(main, media, SafetySnapshotReason::Restore)
 }
 
 pub(super) fn create_pre_restore(paths: &DatabasePaths) -> Result<SafetySnapshotReport> {

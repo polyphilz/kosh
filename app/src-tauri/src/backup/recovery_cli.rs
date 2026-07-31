@@ -1491,6 +1491,16 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::FileExt;
+
+    fn descriptor_bytes(file: &File) -> Vec<u8> {
+        let length = usize::try_from(file.metadata().expect("descriptor metadata").len())
+            .expect("descriptor length fits memory");
+        let mut bytes = vec![0_u8; length];
+        file.read_exact_at(&mut bytes, 0)
+            .expect("read descriptor bytes");
+        bytes
+    }
 
     fn completed_report(backup_set_id: &BackupSetId, target: &Path) -> RemoteRestoreReport {
         RemoteRestoreReport {
@@ -1731,10 +1741,10 @@ mod tests {
         let staged_paths = DatabasePaths::new(&staging_root);
         let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
         staged.shutdown().expect("close staged pair");
-        let audited_main = fs::read(&staged_paths.main).expect("audited main bytes");
-        let audited_media = fs::read(&staged_paths.media).expect("audited media bytes");
         let staged_pair =
             StagedDatabasePair::open_for_test(&staged_paths).expect("bind audited staged pair");
+        let audited_main = descriptor_bytes(staged_pair.main());
+        let audited_media = descriptor_bytes(staged_pair.media());
 
         fs::rename(&staging_root, &displaced_staging).expect("displace audited staging root");
         let replacement_paths = DatabasePaths::new(&staging_root);

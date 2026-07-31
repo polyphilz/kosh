@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -216,6 +217,8 @@ pub struct ImmutableLitestreamBinary {
     sha256: String,
     size: u64,
     code_signature_cdhash: String,
+    bound_file: Option<Arc<File>>,
+    bound_directory: Option<Arc<File>>,
 }
 
 #[derive(Clone, Debug)]
@@ -228,6 +231,8 @@ struct ImmutableLitestreamRestoreConfig {
     sha256: String,
     size: u64,
     replica_path: R2ObjectKey,
+    bound_file: Option<Arc<File>>,
+    bound_directory: Option<Arc<File>>,
 }
 
 impl VerifiedLitestreamBinary {
@@ -308,6 +313,13 @@ impl ImmutableLitestreamBinary {
         &self.path
     }
 
+    pub(crate) fn resolved_command_path(&self) -> Result<PathBuf, LitestreamError> {
+        self.bound_file.as_ref().map_or_else(
+            || Ok(self.path.clone()),
+            |file| open_file_path(file).map_err(LitestreamError::StageBinary),
+        )
+    }
+
     #[must_use]
     pub fn sha256(&self) -> &str {
         &self.sha256
@@ -319,6 +331,11 @@ impl ImmutableLitestreamBinary {
     }
 
     pub(crate) fn reverify_before_spawn(&self) -> Result<(), LitestreamError> {
+        if let (Some(file), Some(directory)) = (&self.bound_file, &self.bound_directory) {
+            verify_bound_immutable_file(file, directory, &self.sha256, self.size, 0o500)
+                .map_err(|_| LitestreamError::InvalidStagedBinary)?;
+            return Ok(());
+        }
         let file = verify_binary(
             &self.path,
             &BinaryPin {
@@ -348,7 +365,19 @@ impl ImmutableLitestreamBinary {
 }
 
 impl ImmutableLitestreamRestoreConfig {
+    fn resolved_command_path(&self) -> Result<PathBuf, LitestreamError> {
+        self.bound_file.as_ref().map_or_else(
+            || Ok(self.path.clone()),
+            |file| open_file_path(file).map_err(LitestreamError::StageRestoreConfig),
+        )
+    }
+
     fn reverify_before_spawn(&self) -> Result<(), LitestreamError> {
+        if let (Some(file), Some(directory)) = (&self.bound_file, &self.bound_directory) {
+            verify_bound_immutable_file(file, directory, &self.sha256, self.size, 0o400)
+                .map_err(|_| LitestreamError::InvalidRestoreConfig)?;
+            return Ok(());
+        }
         let parent = self
             .path
             .parent()
@@ -407,6 +436,9 @@ fn stage_immutable_restore_config(
     if rendered.is_empty() || rendered.len() > MAX_RESTORE_CONFIG_BYTES {
         return Err(LitestreamError::InvalidRestoreConfig);
     }
+    if let Some(root) = &runtime.bound_data_root {
+        return stage_bound_immutable_restore_config(runtime, root, rendered, replica_path);
+    }
     runtime.prepare()?;
     let bytes = rendered.as_bytes();
     let sha256 = format!("{:x}", Sha256::digest(bytes));
@@ -424,6 +456,8 @@ fn stage_immutable_restore_config(
         sha256: sha256.clone(),
         size,
         replica_path: replica_path.clone(),
+        bound_file: None,
+        bound_directory: None,
     };
     match fs::symlink_metadata(&final_directory) {
         Ok(_) => match config.reverify_before_spawn() {
@@ -747,6 +781,9 @@ fn stage_immutable_binary(
     binary: &VerifiedLitestreamBinary,
     runtime: &LitestreamRuntimePaths,
 ) -> Result<ImmutableLitestreamBinary, LitestreamError> {
+    if let Some(root) = &runtime.bound_data_root {
+        return stage_bound_immutable_binary(binary, runtime, root);
+    }
     runtime.prepare()?;
     let stage_root = runtime.directory().join("verified-litestream");
     prepare_private_runtime_directory(&stage_root).map_err(LitestreamError::StageBinary)?;
@@ -760,6 +797,8 @@ fn stage_immutable_binary(
                     sha256: binary.sha256.clone(),
                     size: binary.size,
                     code_signature_cdhash: binary.code_signature_cdhash.clone(),
+                    bound_file: None,
+                    bound_directory: None,
                 });
             }
             Err(_) => {
@@ -848,6 +887,116 @@ fn stage_immutable_binary(
         sha256: binary.sha256.clone(),
         size: binary.size,
         code_signature_cdhash: binary.code_signature_cdhash.clone(),
+        bound_file: None,
+        bound_directory: None,
+    })
+}
+
+fn stage_bound_immutable_binary(
+    binary: &VerifiedLitestreamBinary,
+    runtime: &LitestreamRuntimePaths,
+    root: &BoundRuntimeRoot,
+) -> Result<ImmutableLitestreamBinary, LitestreamError> {
+    let backup = runtime
+        .bound_backup_directory(&root.directory)
+        .map_err(LitestreamError::StageBinary)?;
+    let stages = ensure_private_runtime_directory_child(&backup, "verified-litestream")
+        .map_err(LitestreamError::StageBinary)?;
+    let final_directory = ensure_private_runtime_directory_child(&stages, &binary.sha256)
+        .map_err(LitestreamError::StageBinary)?;
+    let mut destination = create_private_runtime_child(&final_directory, "litestream")
+        .map_err(LitestreamError::StageBinary)?;
+    let mut source = binary
+        .file
+        .try_clone()
+        .map_err(LitestreamError::StageBinary)?;
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(LitestreamError::StageBinary)?;
+    let copied = std::io::copy(&mut source.take(binary.size + 1), &mut destination)
+        .map_err(LitestreamError::StageBinary)?;
+    if copied != binary.size {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    destination
+        .sync_all()
+        .map_err(LitestreamError::StageBinary)?;
+    use std::os::unix::fs::PermissionsExt;
+    destination
+        .set_permissions(fs::Permissions::from_mode(0o500))
+        .map_err(LitestreamError::StageBinary)?;
+    set_user_immutable(&destination).map_err(LitestreamError::StageBinary)?;
+    final_directory
+        .set_permissions(fs::Permissions::from_mode(0o500))
+        .map_err(LitestreamError::StageBinary)?;
+    set_user_immutable(&final_directory).map_err(LitestreamError::StageBinary)?;
+    final_directory
+        .sync_all()
+        .and_then(|()| stages.sync_all())
+        .map_err(LitestreamError::StageBinary)?;
+    let bound_file = Arc::new(destination);
+    let bound_directory = Arc::new(final_directory);
+    let path = runtime
+        .directory()
+        .join("verified-litestream")
+        .join(&binary.sha256)
+        .join("litestream");
+    Ok(ImmutableLitestreamBinary {
+        path,
+        sha256: binary.sha256.clone(),
+        size: binary.size,
+        code_signature_cdhash: binary.code_signature_cdhash.clone(),
+        bound_file: Some(bound_file),
+        bound_directory: Some(bound_directory),
+    })
+}
+
+fn stage_bound_immutable_restore_config(
+    runtime: &LitestreamRuntimePaths,
+    root: &BoundRuntimeRoot,
+    rendered: &str,
+    replica_path: &R2ObjectKey,
+) -> Result<ImmutableLitestreamRestoreConfig, LitestreamError> {
+    let bytes = rendered.as_bytes();
+    let sha256 = format!("{:x}", Sha256::digest(bytes));
+    let backup = runtime
+        .bound_backup_directory(&root.directory)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let stages = ensure_private_runtime_directory_child(&backup, "restore-configs")
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let final_directory = ensure_private_runtime_directory_child(&stages, &sha256)
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let mut file = create_private_runtime_child(&final_directory, "ls.yml")
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o400))
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&file).map_err(LitestreamError::StageRestoreConfig)?;
+    final_directory
+        .set_permissions(fs::Permissions::from_mode(0o500))
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    set_user_immutable(&final_directory).map_err(LitestreamError::StageRestoreConfig)?;
+    final_directory
+        .sync_all()
+        .and_then(|()| stages.sync_all())
+        .map_err(LitestreamError::StageRestoreConfig)?;
+    let bound_file = Arc::new(file);
+    let bound_directory = Arc::new(final_directory);
+    let path = runtime
+        .directory()
+        .join("restore-configs")
+        .join(&sha256)
+        .join("ls.yml");
+    Ok(ImmutableLitestreamRestoreConfig {
+        path,
+        sha256,
+        size: bytes.len() as u64,
+        replica_path: replica_path.clone(),
+        bound_file: Some(bound_file),
+        bound_directory: Some(bound_directory),
     })
 }
 
@@ -872,11 +1021,15 @@ fn validate_immutable_stage(
 }
 
 fn validate_immutable_file(file: &File) -> Result<(), LitestreamError> {
+    validate_immutable_file_mode(file, 0o500)
+}
+
+fn validate_immutable_file_mode(file: &File, expected_mode: u32) -> Result<(), LitestreamError> {
     let metadata = file.metadata().map_err(LitestreamError::StageBinary)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o777 != 0o500 {
+        if metadata.permissions().mode() & 0o777 != expected_mode {
             return Err(LitestreamError::InvalidStagedBinary);
         }
     }
@@ -915,6 +1068,47 @@ fn validate_immutable_directory_file(directory: &File) -> Result<(), LitestreamE
         }
     }
     Ok(())
+}
+
+fn verify_bound_immutable_file(
+    file: &File,
+    directory: &File,
+    expected_sha256: &str,
+    expected_size: u64,
+    expected_mode: u32,
+) -> Result<(), LitestreamError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata().map_err(LitestreamError::StageBinary)?;
+    if !metadata.is_file()
+        || metadata.len() != expected_size
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+    {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    let mut reader = file.try_clone().map_err(LitestreamError::StageBinary)?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(LitestreamError::StageBinary)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    let mut bounded = reader.take(expected_size + 1);
+    loop {
+        let read = bounded
+            .read(&mut buffer)
+            .map_err(LitestreamError::StageBinary)?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        hasher.update(&buffer[..read]);
+    }
+    if total != expected_size || format!("{:x}", hasher.finalize()) != expected_sha256 {
+        return Err(LitestreamError::InvalidStagedBinary);
+    }
+    validate_immutable_file_mode(file, expected_mode)?;
+    validate_immutable_directory_file(directory)
 }
 
 fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
@@ -1022,14 +1216,33 @@ pub(crate) fn clear_user_immutable(_file: &File) -> std::io::Result<()> {
 }
 
 /// Private configuration, socket, and future PID-record paths.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct LitestreamRuntimePaths {
     directory: PathBuf,
     config: PathBuf,
     socket: PathBuf,
     pid: PathBuf,
     ownership_lock: PathBuf,
+    bound_data_root: Option<Arc<BoundRuntimeRoot>>,
 }
+
+#[derive(Debug)]
+struct BoundRuntimeRoot {
+    directory: File,
+    config: Mutex<Option<Arc<File>>>,
+}
+
+impl PartialEq for LitestreamRuntimePaths {
+    fn eq(&self, other: &Self) -> bool {
+        self.directory == other.directory
+            && self.config == other.config
+            && self.socket == other.socket
+            && self.pid == other.pid
+            && self.ownership_lock == other.ownership_lock
+    }
+}
+
+impl Eq for LitestreamRuntimePaths {}
 
 pub(crate) struct EphemeralLitestreamRuntime {
     #[cfg(test)]
@@ -1064,7 +1277,12 @@ impl EphemeralLitestreamRuntime {
         let mut ownership =
             EphemeralRuntimeOwnership::create(parent).map_err(LitestreamError::PrepareRuntime)?;
         let root = ownership.root.clone();
-        let runtime = match LitestreamRuntimePaths::new(&root) {
+        let runtime = match ownership
+            .directory
+            .try_clone()
+            .map_err(LitestreamError::PrepareRuntime)
+            .and_then(|directory| LitestreamRuntimePaths::new_bound(&root, directory))
+        {
             Ok(runtime) => runtime,
             Err(error) => {
                 let _ = ownership.remove();
@@ -1264,8 +1482,18 @@ impl LitestreamRuntimePaths {
             pid: directory.join("ls.pid.json"),
             ownership_lock: directory.join("ownership.lock"),
             directory,
+            bound_data_root: None,
         };
         ensure_socket_path_fits(&paths.socket)?;
+        Ok(paths)
+    }
+
+    fn new_bound(data_root: &Path, directory: File) -> Result<Self, LitestreamError> {
+        let mut paths = Self::new(data_root)?;
+        paths.bound_data_root = Some(Arc::new(BoundRuntimeRoot {
+            directory,
+            config: Mutex::new(None),
+        }));
         Ok(paths)
     }
 
@@ -1295,6 +1523,11 @@ impl LitestreamRuntimePaths {
     }
 
     pub fn prepare(&self) -> Result<(), LitestreamError> {
+        if let Some(root) = &self.bound_data_root {
+            self.bound_backup_directory(&root.directory)
+                .map_err(LitestreamError::PrepareRuntime)?;
+            return Ok(());
+        }
         let run_directory = self
             .directory
             .parent()
@@ -1317,6 +1550,11 @@ impl LitestreamRuntimePaths {
     }
 
     pub fn write_config(&self, config: &str) -> Result<(), LitestreamError> {
+        if let Some(root) = &self.bound_data_root {
+            return self
+                .write_bound_config(root, config)
+                .map_err(LitestreamError::WriteConfig);
+        }
         self.prepare()?;
         reject_symlink_or_non_file(&self.config).map_err(LitestreamError::WriteConfig)?;
         let temporary = self.directory.join("ls.yml.tmp");
@@ -1344,6 +1582,67 @@ impl LitestreamRuntimePaths {
         File::open(&self.directory)
             .and_then(|directory| directory.sync_all())
             .map_err(LitestreamError::WriteConfig)?;
+        Ok(())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "used by the ignored real-R2 canary test entry point"
+    )]
+    pub(crate) fn config_command_path(&self) -> Result<PathBuf, LitestreamError> {
+        let Some(root) = &self.bound_data_root else {
+            return Ok(self.config.clone());
+        };
+        let config = root
+            .config
+            .lock()
+            .map_err(|_| {
+                LitestreamError::WriteConfig(std::io::Error::other(
+                    "bound Litestream config lock is poisoned",
+                ))
+            })?
+            .clone()
+            .ok_or_else(|| {
+                LitestreamError::WriteConfig(std::io::Error::other(
+                    "bound Litestream config has not been written",
+                ))
+            })?;
+        open_file_path(&config).map_err(LitestreamError::WriteConfig)
+    }
+
+    fn bound_backup_directory(&self, root: &File) -> std::io::Result<File> {
+        let run = ensure_private_runtime_directory_child(root, "run")?;
+        ensure_private_runtime_directory_child(&run, "backup")
+    }
+
+    fn write_bound_config(&self, root: &BoundRuntimeRoot, config: &str) -> std::io::Result<()> {
+        let backup = self.bound_backup_directory(&root.directory)?;
+        remove_optional_owned_runtime_file(&backup, "ls.yml.tmp")?;
+        remove_optional_owned_runtime_file(&backup, "ls.yml")?;
+        let mut temporary = create_private_runtime_child(&backup, "ls.yml.tmp")?;
+        temporary.write_all(config.as_bytes())?;
+        temporary.sync_all()?;
+        use std::os::unix::fs::PermissionsExt;
+        temporary.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let temporary_name = runtime_child_name("ls.yml.tmp")?;
+        let config_name = runtime_child_name("ls.yml")?;
+        let renamed = unsafe {
+            libc::renameat(
+                backup.as_raw_fd(),
+                temporary_name.as_ptr(),
+                backup.as_raw_fd(),
+                config_name.as_ptr(),
+            )
+        };
+        if renamed != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        backup.sync_all()?;
+        *root
+            .config
+            .lock()
+            .map_err(|_| std::io::Error::other("bound Litestream config lock is poisoned"))? =
+            Some(Arc::new(temporary));
         Ok(())
     }
 
@@ -1509,6 +1808,31 @@ fn create_private_runtime_child(directory: &File, name: &str) -> std::io::Result
         return Err(std::io::Error::last_os_error());
     }
     Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn ensure_private_runtime_directory_child(parent: &File, name: &str) -> std::io::Result<File> {
+    let name_value = runtime_child_name(name)?;
+    let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name_value.as_ptr(), 0o700) };
+    if created != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+    }
+    let directory = open_owned_runtime_directory_child(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("private runtime directory disappeared during creation")
+    })?;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = directory.metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {
+        return Err(std::io::Error::other(
+            "private runtime directory has unsafe ownership or permissions",
+        ));
+    }
+    directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+    directory.sync_all()?;
+    parent.sync_all()?;
+    Ok(directory)
 }
 
 fn open_regular_runtime_child(directory: &File, name: &str) -> std::io::Result<File> {
@@ -2290,6 +2614,7 @@ pub(crate) trait RelationalRestoreEngine: Send + Sync {
     fn restore(
         &self,
         source_database_path: &Path,
+        target_directory: &File,
         target_path: &Path,
         txid: LitestreamTxid,
     ) -> Result<RestoreResult, LitestreamError>;
@@ -2356,8 +2681,9 @@ impl<'a> CommandLitestreamRestore<'a> {
         {
             return Err(LitestreamError::RelativeDatabasePath);
         }
+        let config_path = self.config.resolved_command_path()?;
         let arguments = restore_arguments(
-            &self.config.path,
+            &config_path,
             source_database_path,
             target_path,
             txid,
@@ -2390,6 +2716,55 @@ impl<'a> CommandLitestreamRestore<'a> {
             return Err(LitestreamError::RelativeDatabasePath);
         }
         let destination = ExclusiveRestoreDestination::prepare(target_path)?;
+        self.restore_to_destination(
+            source_database_path,
+            target_path,
+            txid,
+            destination,
+            before_spawn,
+        )
+    }
+
+    #[cfg(test)]
+    fn restore_path(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+    ) -> Result<RestoreResult, LitestreamError> {
+        self.restore_with_hook(source_database_path, target_path, txid, |_| {})
+    }
+
+    fn restore_bound_with_hook(
+        &self,
+        source_database_path: &Path,
+        target_directory: &File,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        before_spawn: impl FnOnce(&ExclusiveRestoreDestination),
+    ) -> Result<RestoreResult, LitestreamError> {
+        if !source_database_path.is_absolute() || !target_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let destination =
+            ExclusiveRestoreDestination::prepare_bound(target_path, target_directory)?;
+        self.restore_to_destination(
+            source_database_path,
+            target_path,
+            txid,
+            destination,
+            before_spawn,
+        )
+    }
+
+    fn restore_to_destination(
+        &self,
+        source_database_path: &Path,
+        target_path: &Path,
+        txid: LitestreamTxid,
+        destination: ExclusiveRestoreDestination,
+        before_spawn: impl FnOnce(&ExclusiveRestoreDestination),
+    ) -> Result<RestoreResult, LitestreamError> {
         destination.verify_path_bindings()?;
         before_spawn(&destination);
         let bound_output = Path::new(PRIVATE_RESTORE_OUTPUT_FILENAME);
@@ -2447,10 +2822,17 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
     fn restore(
         &self,
         source_database_path: &Path,
+        target_directory: &File,
         target_path: &Path,
         txid: LitestreamTxid,
     ) -> Result<RestoreResult, LitestreamError> {
-        self.restore_with_hook(source_database_path, target_path, txid, |_| {})
+        self.restore_bound_with_hook(
+            source_database_path,
+            target_directory,
+            target_path,
+            txid,
+            |_| {},
+        )
     }
 }
 
@@ -2462,6 +2844,7 @@ impl RelationalRestoreEngine for CommandLitestreamRestore<'_> {
 #[allow(dead_code, reason = "used by the chunk 29g production restore adapter")]
 struct ExclusiveRestoreDestination {
     requested_path: PathBuf,
+    requested_parent_path: Option<PathBuf>,
     requested_parent: File,
     requested_name: OsString,
     private_directory: File,
@@ -2478,6 +2861,29 @@ impl ExclusiveRestoreDestination {
                 "restore destination has no parent",
             ))
         })?;
+        let requested_parent =
+            open_directory_no_follow(parent).map_err(LitestreamError::PrepareRestoreDestination)?;
+        Self::prepare_with_parent(requested_path, requested_parent, Some(parent.to_owned()))
+    }
+
+    fn prepare_bound(
+        requested_path: &Path,
+        requested_parent: &File,
+    ) -> Result<Self, LitestreamError> {
+        if !requested_path.is_absolute() {
+            return Err(LitestreamError::RelativeDatabasePath);
+        }
+        let requested_parent = requested_parent
+            .try_clone()
+            .map_err(LitestreamError::PrepareRestoreDestination)?;
+        Self::prepare_with_parent(requested_path, requested_parent, None)
+    }
+
+    fn prepare_with_parent(
+        requested_path: &Path,
+        requested_parent: File,
+        requested_parent_path: Option<PathBuf>,
+    ) -> Result<Self, LitestreamError> {
         let requested_name = requested_path.file_name().ok_or_else(|| {
             LitestreamError::PrepareRestoreDestination(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -2485,8 +2891,6 @@ impl ExclusiveRestoreDestination {
             ))
         })?;
         restore_child_name(requested_name).map_err(LitestreamError::PrepareRestoreDestination)?;
-        let requested_parent =
-            open_directory_no_follow(parent).map_err(LitestreamError::PrepareRestoreDestination)?;
         let parent_metadata = requested_parent
             .metadata()
             .map_err(LitestreamError::PrepareRestoreDestination)?;
@@ -2522,11 +2926,14 @@ impl ExclusiveRestoreDestination {
                     requested_parent
                         .sync_all()
                         .map_err(LitestreamError::PrepareRestoreDestination)?;
-                    let private_path = parent
+                    let private_path = requested_path
+                        .parent()
+                        .ok_or(LitestreamError::InvalidRestoreDestination)?
                         .join(&private_directory_name)
                         .join(PRIVATE_RESTORE_OUTPUT_FILENAME);
                     return Ok(Self {
                         requested_path: requested_path.to_owned(),
+                        requested_parent_path,
                         requested_parent,
                         requested_name: requested_name.to_owned(),
                         private_directory,
@@ -2557,12 +2964,10 @@ impl ExclusiveRestoreDestination {
     }
 
     fn verify_path_bindings(&self) -> Result<(), LitestreamError> {
-        let requested_parent_path = self
-            .requested_path
-            .parent()
-            .ok_or(LitestreamError::InvalidRestoreDestination)?;
-        if !path_matches_open_directory(requested_parent_path, &self.requested_parent) {
-            return Err(LitestreamError::InvalidRestoreDestination);
+        if let Some(requested_parent_path) = &self.requested_parent_path {
+            if !path_matches_open_directory(requested_parent_path, &self.requested_parent) {
+                return Err(LitestreamError::InvalidRestoreDestination);
+            }
         }
         let current_private = open_owned_runtime_directory_child(
             &self.requested_parent,
@@ -2652,15 +3057,12 @@ impl ExclusiveRestoreDestination {
     }
 
     fn verify_requested_parent_binding(&self) -> Result<(), LitestreamError> {
-        let requested_parent_path = self
-            .requested_path
-            .parent()
-            .ok_or(LitestreamError::InvalidRestoreDestination)?;
-        if path_matches_open_directory(requested_parent_path, &self.requested_parent) {
-            Ok(())
-        } else {
-            Err(LitestreamError::InvalidRestoreDestination)
+        if let Some(requested_parent_path) = &self.requested_parent_path {
+            if !path_matches_open_directory(requested_parent_path, &self.requested_parent) {
+                return Err(LitestreamError::InvalidRestoreDestination);
+            }
         }
+        Ok(())
     }
 }
 
@@ -2975,24 +3377,25 @@ fn credentialed_restore_command(
     arguments: &[OsString],
     restore_write_directory: Option<&File>,
 ) -> Result<Command, LitestreamError> {
+    let binary_path = binary.resolved_command_path()?;
     #[cfg(target_os = "macos")]
     let mut command = if let Some(write_directory) = restore_write_directory {
         let profile = restore_sandbox_profile(write_directory)?;
         let mut command = Command::new(SANDBOX_EXEC_PATH);
         command
             .args(["-p", profile.as_str()])
-            .arg(binary.path())
+            .arg(&binary_path)
             .args(arguments);
         command
     } else {
-        let mut command = Command::new(binary.path());
+        let mut command = Command::new(&binary_path);
         command.args(arguments);
         command
     };
 
     #[cfg(not(target_os = "macos"))]
     let mut command = {
-        let mut command = Command::new(binary.path());
+        let mut command = Command::new(&binary_path);
         command.args(arguments);
         command
     };
@@ -3062,6 +3465,11 @@ fn open_file_path(file: &File) -> std::io::Result<PathBuf> {
         return Err(std::io::Error::other("open file path is unavailable"));
     }
     Ok(PathBuf::from(OsString::from_vec(buffer[..length].to_vec())))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_file_path(file: &File) -> std::io::Result<PathBuf> {
+    fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
 #[cfg(target_os = "macos")]
@@ -3736,6 +4144,99 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_runtime_mutations_stay_bound_after_root_replacement() {
+        let source = tempfile::tempdir().expect("bound runtime binary source");
+        let bytes = b"#!/bin/sh\nset -eu\ntest -r \"$1\"\n";
+        let source_path = source.path().join("litestream");
+        fs::write(&source_path, bytes).expect("write bound runtime binary");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o700))
+            .expect("bound runtime binary permissions");
+        let pin = BinaryPin {
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            size: bytes.len() as u64,
+            code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
+        };
+        let verified = VerifiedLitestreamBinary {
+            path: source_path.clone(),
+            sha256: pin.sha256.clone(),
+            size: pin.size,
+            code_signature_cdhash: restore_test_process_cdhash(),
+            file: verify_binary(&source_path, &pin).expect("verify bound runtime binary"),
+        };
+        let mut runtime = EphemeralLitestreamRuntime::create().expect("descriptor-bound runtime");
+        let requested_root = runtime.root.clone();
+        let displaced_root =
+            requested_root.with_file_name(format!("kosh-d-{}", uuid::Uuid::now_v7()));
+        fs::rename(&requested_root, &displaced_root).expect("displace runtime root");
+        fs::create_dir(&requested_root).expect("replacement runtime root");
+        fs::set_permissions(&requested_root, fs::Permissions::from_mode(0o700))
+            .expect("replacement runtime permissions");
+        let sentinel = requested_root.join("must-not-change");
+        fs::write(&sentinel, b"replacement").expect("replacement sentinel");
+
+        runtime.paths().prepare().expect("bound runtime prepare");
+        let binary = verified
+            .stage_immutable(runtime.paths())
+            .expect("bound immutable binary stage");
+        let (_, replica_path) = restore_test_target();
+        let config = stage_immutable_restore_config(
+            runtime.paths(),
+            "dbs:\n  - path: /tmp/kosh.sqlite3\n",
+            &replica_path,
+        )
+        .expect("bound immutable config stage");
+        config
+            .reverify_before_spawn()
+            .expect("reverify bound immutable config");
+        runtime
+            .paths()
+            .write_config("dbs: []\n")
+            .expect("bound shared config write");
+        let status = Command::new(
+            binary
+                .resolved_command_path()
+                .expect("resolve bound runtime binary"),
+        )
+        .arg(
+            config
+                .resolved_command_path()
+                .expect("resolve bound runtime config"),
+        )
+        .status()
+        .expect("execute descriptor-bound runtime binary");
+        assert!(status.success());
+
+        assert_eq!(
+            fs::read(&sentinel).expect("replacement sentinel"),
+            b"replacement"
+        );
+        assert!(
+            !requested_root.join("run").exists(),
+            "no runtime mutation may follow the replaced pathname"
+        );
+        assert!(displaced_root.join("run/backup/ls.yml").is_file());
+        assert!(displaced_root
+            .join("run/backup/verified-litestream")
+            .join(binary.sha256())
+            .join("litestream")
+            .is_file());
+        assert!(config
+            .path
+            .strip_prefix(&requested_root)
+            .ok()
+            .is_some_and(|relative| displaced_root.join(relative).is_file()));
+
+        drop(config);
+        drop(binary);
+        fs::remove_file(sentinel).expect("remove replacement sentinel");
+        fs::remove_dir(&requested_root).expect("remove replacement runtime root");
+        fs::rename(&displaced_root, &requested_root).expect("restore runtime root binding");
+        runtime.cleanup().expect("cleanup bound runtime");
+        assert!(!requested_root.exists());
+    }
+
+    #[test]
     fn ephemeral_recovery_cleanup_refuses_unexpected_contents_without_removing_them() {
         let root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
         let runtime = LitestreamRuntimePaths::new(&root).expect("ephemeral recovery paths");
@@ -4034,7 +4535,7 @@ fi
             .expect("credentialed preview");
         assert_eq!(plan.max_txid, txid);
         let result = engine
-            .restore(&source, &target, txid)
+            .restore_path(&source, &target, txid)
             .expect("credentialed restore");
         assert_eq!(result.txid, txid);
         assert_eq!(fs::read(target).expect("restore bytes"), b"restored");
@@ -4086,7 +4587,7 @@ fi
         .expect("bound restore engine");
 
         assert!(matches!(
-            engine.restore(&source, &target, LitestreamTxid::from_local(42)),
+            engine.restore_path(&source, &target, LitestreamTxid::from_local(42)),
             Err(LitestreamError::RestoreDestinationExists)
         ));
         assert!(!marker.exists(), "Litestream must not be spawned");
@@ -4201,7 +4702,7 @@ printf '{{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_c
                 thread::sleep(Duration::from_millis(5));
             }
         });
-        let restore_result = engine.restore(&source, &target, LitestreamTxid::from_local(42));
+        let restore_result = engine.restore_path(&source, &target, LitestreamTxid::from_local(42));
         racer.join().expect("destination racer");
         assert!(matches!(
             restore_result,
@@ -4300,7 +4801,7 @@ printf 'escaped' >"$target"
         .expect("bound restore engine");
 
         assert!(matches!(
-            engine.restore(&source, &target, LitestreamTxid::from_local(42)),
+            engine.restore_path(&source, &target, LitestreamTxid::from_local(42)),
             Err(LitestreamError::CommandFailed { .. })
         ));
         assert_eq!(
@@ -4879,6 +5380,8 @@ printf '{"db_path":"%s","replica":"s3","txid":"%s","duration_ms":1,"integrity_ch
             sha256: "0".repeat(64),
             size: 1,
             code_signature_cdhash: actual,
+            bound_file: None,
+            bound_directory: None,
         };
         matching
             .verify_running_process(child.id())

@@ -1,6 +1,7 @@
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
     io::{Read, Write},
+    os::{fd::AsRawFd, unix::fs::FileExt},
     path::{Path, PathBuf},
 };
 
@@ -72,40 +73,20 @@ pub(super) fn recover_interrupted(paths: &DatabasePaths) -> Result<()> {
 
 pub(crate) fn install(
     paths: &DatabasePaths,
-    staged: &DatabasePaths,
+    staged_main: &File,
+    staged_media: &File,
     checkpoint_id: CheckpointId,
 ) -> Result<RestoreInstallReport> {
-    fs::create_dir_all(&paths.root)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&paths.ownership_lock)?;
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            return Err(DatabaseError::DatabaseInUse {
-                path: paths.root.clone(),
-            });
-        }
-        Err(TryLockError::Error(error)) => return Err(error.into()),
-    }
+    let _lock = acquire_restore_lock(paths)?;
     recover_interrupted(paths)?;
 
-    if let Some(receipt) = read_optional_control(&paths.root.join(RECEIPT_FILENAME))? {
-        if receipt.checkpoint_id == checkpoint_id && live_pair_matches(paths, &receipt)? {
-            return Ok(RestoreInstallReport {
-                checkpoint_id,
-                outcome: RestoreInstallOutcome::AlreadyInstalled,
-                safety_snapshot_id: None,
-            });
-        }
+    if let Some(report) = completed_install(paths, &checkpoint_id)? {
+        return Ok(report);
     }
 
-    validate_pair(staged)?;
-    let main_sha256 = hash_regular_file(&staged.main)?;
-    let media_sha256 = hash_regular_file(&staged.media)?;
+    validate_pair_at(staged_main, staged_media)?;
+    let main_sha256 = hash_regular_descriptor(staged_main)?;
+    let media_sha256 = hash_regular_descriptor(staged_media)?;
     let (main_state, media_state) = (
         connection::inspect_file(&paths.main)?,
         connection::inspect_file(&paths.media)?,
@@ -132,8 +113,8 @@ pub(crate) fn install(
     let transaction = paths.root.join(TRANSACTION_DIRECTORY);
     create_private_transaction(&transaction)?;
     write_control(&transaction.join(JOURNAL_FILENAME), &control)?;
-    copy_regular_synced(&staged.main, &transaction.join("new-main.sqlite3"))?;
-    copy_regular_synced(&staged.media, &transaction.join("new-media.sqlite3"))?;
+    copy_regular_descriptor_synced(staged_main, &transaction.join("new-main.sqlite3"))?;
+    copy_regular_descriptor_synced(staged_media, &transaction.join("new-media.sqlite3"))?;
     sync_directory(&transaction)?;
 
     let installation = install_transaction(paths, &transaction, &control);
@@ -158,6 +139,50 @@ pub(crate) fn install(
     })
 }
 
+pub(crate) fn inspect_completed_install(
+    paths: &DatabasePaths,
+    checkpoint_id: &CheckpointId,
+) -> Result<Option<RestoreInstallReport>> {
+    let _lock = acquire_restore_lock(paths)?;
+    recover_interrupted(paths)?;
+    completed_install(paths, checkpoint_id)
+}
+
+fn acquire_restore_lock(paths: &DatabasePaths) -> Result<File> {
+    fs::create_dir_all(&paths.root)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&paths.ownership_lock)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => Err(DatabaseError::DatabaseInUse {
+            path: paths.root.clone(),
+        }),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+fn completed_install(
+    paths: &DatabasePaths,
+    checkpoint_id: &CheckpointId,
+) -> Result<Option<RestoreInstallReport>> {
+    let Some(receipt) = read_optional_control(&paths.root.join(RECEIPT_FILENAME))? else {
+        return Ok(None);
+    };
+    if receipt.checkpoint_id != *checkpoint_id || !live_pair_matches(paths, &receipt)? {
+        return Ok(None);
+    }
+    Ok(Some(RestoreInstallReport {
+        checkpoint_id: checkpoint_id.clone(),
+        outcome: RestoreInstallOutcome::AlreadyInstalled,
+        safety_snapshot_id: None,
+    }))
+}
+
+#[cfg(test)]
 pub(crate) fn validate_pair(paths: &DatabasePaths) -> Result<()> {
     if connection::inspect_file(&paths.main)? != FileState::Existing
         || connection::inspect_file(&paths.media)? != FileState::Existing
@@ -199,13 +224,58 @@ pub(crate) fn validate_pair(paths: &DatabasePaths) -> Result<()> {
     safety_snapshot::verify_restore_pair(paths)
 }
 
-pub(crate) fn create_empty_media(path: &Path) -> Result<rusqlite::Connection> {
-    if connection::inspect_file(path)? != FileState::Fresh {
-        return Err(invalid("restore media destination already exists"));
+pub(crate) fn validate_pair_at(main_file: &File, media_file: &File) -> Result<()> {
+    let mut main =
+        connection::open_bound_writer(main_file, DatabaseKind::Main, FileState::Existing)?;
+    let mut media =
+        connection::open_bound_writer(media_file, DatabaseKind::Media, FileState::Existing)?;
+    let mut main_status = migrations::inspect_main(&mut main)?;
+    let mut media_status = migrations::inspect_media(&mut media)?;
+    if media_status.pending {
+        migrations::run_media(&mut media)?;
+        media_status = migrations::inspect_media(&mut media)?;
     }
-    let mut media = connection::open_writer(path, DatabaseKind::Media, FileState::Fresh)?;
+    if main_status.pending {
+        migrations::run_main(&mut main)?;
+        main_status = migrations::inspect_main(&mut main)?;
+    }
+    let expected = migrations::expected_heads();
+    if main_status.pending
+        || media_status.pending
+        || main_status.head != expected.main
+        || media_status.head != expected.media
+    {
+        return Err(DatabaseError::Validation {
+            kind: "restore",
+            reason: format!(
+                "migration heads are ({:?}, {:?}), expected ({:?}, {:?})",
+                main_status.head, media_status.head, expected.main, expected.media
+            ),
+        });
+    }
+    let main_path = PathBuf::from(format!("/dev/fd/{}", main_file.as_raw_fd()));
+    let media_path = PathBuf::from(format!("/dev/fd/{}", media_file.as_raw_fd()));
+    validation::validate_migrated_pair(&mut main, &mut media, &main_path, &media_path)?;
+    drop(main);
+    drop(media);
+    main_file.sync_all()?;
+    media_file.sync_all()?;
+    let main = connection::open_bound_read_only(main_file, DatabaseKind::Main)?;
+    let media = connection::open_bound_read_only(media_file, DatabaseKind::Media)?;
+    safety_snapshot::verify_restore_pair_connections(&main, &media)
+}
+
+pub(crate) fn create_empty_media_at(file: &File) -> Result<rusqlite::Connection> {
+    if file.metadata()?.len() != 0 {
+        return Err(invalid("restore media destination is not empty"));
+    }
+    let mut media = connection::open_bound_writer(file, DatabaseKind::Media, FileState::Fresh)?;
     migrations::run_media(&mut media)?;
     Ok(media)
+}
+
+pub(crate) fn open_main_read_only_at(file: &File) -> Result<rusqlite::Connection> {
+    connection::open_bound_read_only(file, DatabaseKind::Main)
 }
 
 fn install_transaction(
@@ -220,9 +290,11 @@ fn install_transaction(
     fs::rename(transaction.join("new-main.sqlite3"), &paths.main)?;
     fs::rename(transaction.join("new-media.sqlite3"), &paths.media)?;
     sync_directory(&paths.root)?;
-    validate_pair(paths)?;
-    if hash_regular_file(&paths.main)? != control.main_sha256
-        || hash_regular_file(&paths.media)? != control.media_sha256
+    let main = open_regular_read_write_no_follow(&paths.main)?;
+    let media = open_regular_read_write_no_follow(&paths.media)?;
+    validate_pair_at(&main, &media)?;
+    if hash_regular_descriptor(&main)? != control.main_sha256
+        || hash_regular_descriptor(&media)? != control.media_sha256
     {
         return Err(invalid("installed restore bytes changed during validation"));
     }
@@ -414,6 +486,49 @@ fn copy_regular_synced(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn copy_regular_descriptor_synced(source: &File, destination: &Path) -> Result<()> {
+    if !source.metadata()?.file_type().is_file() {
+        return Err(invalid("restore source descriptor is not a regular file"));
+    }
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut output = options.open(destination)?;
+    let mut buffer = [0_u8; 128 * 1024];
+    let mut offset = 0_u64;
+    loop {
+        let read = source.read_at(&mut buffer, offset)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read])?;
+        offset = offset
+            .checked_add(u64::try_from(read).map_err(|_| invalid("restore source is too large"))?)
+            .ok_or_else(|| invalid("restore source is too large"))?;
+    }
+    output.sync_all()?;
+    Ok(())
+}
+
+fn open_regular_read_write_no_follow(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(invalid("installed restore database is not a regular file"));
+    }
+    Ok(file)
+}
+
 fn rename_regular(source: &Path, destination: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if !metadata.file_type().is_file() {
@@ -437,6 +552,26 @@ fn hash_regular_file(path: &Path) -> Result<String> {
             break;
         }
         digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn hash_regular_descriptor(file: &File) -> Result<String> {
+    if !file.metadata()?.file_type().is_file() {
+        return Err(invalid("restore database descriptor is not a regular file"));
+    }
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    let mut offset = 0_u64;
+    loop {
+        let read = file.read_at(&mut buffer, offset)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        offset = offset
+            .checked_add(u64::try_from(read).map_err(|_| invalid("restore source is too large"))?)
+            .ok_or_else(|| invalid("restore source is too large"))?;
     }
     Ok(format!("{:x}", digest.finalize()))
 }

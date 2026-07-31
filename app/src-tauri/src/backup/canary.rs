@@ -187,7 +187,11 @@ impl CanaryChild {
         binary
             .reverify_before_spawn()
             .expect("reverify canary Litestream");
-        let mut command = Command::new(binary.path());
+        let mut command = Command::new(
+            binary
+                .resolved_command_path()
+                .expect("resolve canary Litestream descriptor"),
+        );
         command
             .args(["replicate", "-config"])
             .arg(config)
@@ -690,7 +694,11 @@ fn replicate_and_publish(
         .take()
         .expect("canary source database must be available exactly once");
 
-    let mut interrupted = CanaryChild::spawn(&binary, runtime.paths().config(), credentials);
+    let runtime_config = runtime
+        .paths()
+        .config_command_path()
+        .expect("bound canary config descriptor");
+    let mut interrupted = CanaryChild::spawn(&binary, &runtime_config, credentials);
     wait_for_socket(interrupted.child_mut(), runtime.paths().socket());
     wait_for_replication_progress(
         interrupted.child_mut(),
@@ -698,6 +706,18 @@ fn replicate_and_publish(
         keyspace,
         replica_path.as_str(),
     );
+    let interrupted_control = CommandLitestreamControl::new(
+        binary
+            .resolved_command_path()
+            .expect("resolve interrupted control binary"),
+        runtime.paths().socket().to_owned(),
+        60,
+        SystemCommandExecutor,
+    );
+    let baseline_txid = interrupted_control
+        .sync_remote(&source.paths.main)
+        .expect("establish remotely restorable canary baseline")
+        .txid;
     let interrupted_draft = database
         .client()
         .save_draft(SaveDraftWrite {
@@ -718,16 +738,11 @@ fn replicate_and_publish(
         interrupted_draft.body_markdown.len(),
         INTERRUPTED_REPLICATION_DRAFT_BYTES
     );
-    let interrupted_control = CommandLitestreamControl::new(
-        binary.path().to_owned(),
-        runtime.paths().socket().to_owned(),
-        60,
-        SystemCommandExecutor,
-    );
     let interrupted_txid = interrupted_control
         .sync_local(&source.paths.main)
         .expect("capture interrupted canary transaction")
         .txid;
+    assert!(interrupted_txid > baseline_txid);
     interrupted.kill_and_wait();
     remove_socket(runtime.paths().socket());
 
@@ -747,22 +762,25 @@ fn replicate_and_publish(
     )
     .expect("interruption proof restore engine");
     let proof_target = evidence_root.join("interrupted-replication-proof.sqlite3");
+    let incomplete_plan = proof_engine
+        .preview(
+            proof_runtime.source_database_path(),
+            &proof_target,
+            baseline_txid,
+        )
+        .expect("observe the remotely restorable baseline after interruption");
     assert!(
-        proof_engine
-            .preview(
-                proof_runtime.source_database_path(),
-                &proof_target,
-                interrupted_txid,
-            )
-            .is_err(),
+        incomplete_plan.max_txid < interrupted_txid,
         "the interrupted transaction was already remotely restorable before Litestream was killed"
     );
 
-    let mut daemon = CanaryChild::spawn(&binary, runtime.paths().config(), credentials);
+    let mut daemon = CanaryChild::spawn(&binary, &runtime_config, credentials);
     wait_for_socket(daemon.child_mut(), runtime.paths().socket());
     let checkpoint = prepare_canary_checkpoint(&database, source);
     let control = CommandLitestreamControl::new(
-        binary.path().to_owned(),
+        binary
+            .resolved_command_path()
+            .expect("resolve canary control binary"),
         runtime.paths().socket().to_owned(),
         60,
         SystemCommandExecutor,
