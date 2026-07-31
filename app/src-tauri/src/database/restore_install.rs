@@ -35,12 +35,6 @@ pub(crate) struct RestoreInstallReport {
     pub(crate) safety_snapshot_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InstallPolicy {
-    AllowReplacement,
-    RequireEmpty,
-}
-
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InstallControl {
@@ -81,28 +75,6 @@ pub(crate) fn install(
     staged: &DatabasePaths,
     checkpoint_id: CheckpointId,
 ) -> Result<RestoreInstallReport> {
-    install_with_policy(
-        paths,
-        staged,
-        checkpoint_id,
-        InstallPolicy::AllowReplacement,
-    )
-}
-
-pub(crate) fn install_into_empty(
-    paths: &DatabasePaths,
-    staged: &DatabasePaths,
-    checkpoint_id: CheckpointId,
-) -> Result<RestoreInstallReport> {
-    install_with_policy(paths, staged, checkpoint_id, InstallPolicy::RequireEmpty)
-}
-
-fn install_with_policy(
-    paths: &DatabasePaths,
-    staged: &DatabasePaths,
-    checkpoint_id: CheckpointId,
-    policy: InstallPolicy,
-) -> Result<RestoreInstallReport> {
     fs::create_dir_all(&paths.root)?;
     let lock = OpenOptions::new()
         .create(true)
@@ -119,20 +91,16 @@ fn install_with_policy(
         }
         Err(TryLockError::Error(error)) => return Err(error.into()),
     }
-    match policy {
-        InstallPolicy::AllowReplacement => {
-            recover_interrupted(paths)?;
-            if let Some(receipt) = read_optional_control(&paths.root.join(RECEIPT_FILENAME))? {
-                if receipt.checkpoint_id == checkpoint_id && live_pair_matches(paths, &receipt)? {
-                    return Ok(RestoreInstallReport {
-                        checkpoint_id,
-                        outcome: RestoreInstallOutcome::AlreadyInstalled,
-                        safety_snapshot_id: None,
-                    });
-                }
-            }
+    recover_interrupted(paths)?;
+
+    if let Some(receipt) = read_optional_control(&paths.root.join(RECEIPT_FILENAME))? {
+        if receipt.checkpoint_id == checkpoint_id && live_pair_matches(paths, &receipt)? {
+            return Ok(RestoreInstallReport {
+                checkpoint_id,
+                outcome: RestoreInstallOutcome::AlreadyInstalled,
+                safety_snapshot_id: None,
+            });
         }
-        InstallPolicy::RequireEmpty => ensure_no_existing_restore_state(paths)?,
     }
 
     validate_pair(staged)?;
@@ -149,11 +117,6 @@ fn install_with_policy(
         });
     }
     let had_existing_pair = main_state == FileState::Existing;
-    if policy == InstallPolicy::RequireEmpty && had_existing_pair {
-        return Err(invalid(
-            "clean-directory restore target stopped being empty",
-        ));
-    }
     let safety_snapshot_id = if had_existing_pair {
         Some(safety_snapshot::create_pre_restore(paths)?.id)
     } else {
@@ -193,32 +156,6 @@ fn install_with_policy(
         outcome: RestoreInstallOutcome::Installed,
         safety_snapshot_id,
     })
-}
-
-fn ensure_no_existing_restore_state(paths: &DatabasePaths) -> Result<()> {
-    let mut paths_to_check = vec![
-        paths.main.clone(),
-        paths.media.clone(),
-        paths.root.join(TRANSACTION_DIRECTORY),
-        paths.root.join(RECEIPT_FILENAME),
-    ];
-    for database in [&paths.main, &paths.media] {
-        let base = database.as_os_str().to_string_lossy();
-        paths_to_check.push(PathBuf::from(format!("{base}-wal")));
-        paths_to_check.push(PathBuf::from(format!("{base}-shm")));
-    }
-    for path in paths_to_check {
-        match fs::symlink_metadata(path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Ok(_) => {
-                return Err(invalid(
-                    "clean-directory restore target stopped being empty",
-                ));
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_pair(paths: &DatabasePaths) -> Result<()> {

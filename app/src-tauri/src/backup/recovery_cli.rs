@@ -1,7 +1,11 @@
 use std::{
-    ffi::OsString,
+    ffi::{CStr, CString, OsString},
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::Seek,
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{ffi::OsStringExt, fs::OpenOptionsExt},
+    },
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -9,16 +13,14 @@ use std::{
 use serde::Serialize;
 use zeroize::Zeroize;
 
-use crate::database::{Database, DatabasePaths};
+use crate::database::{validate_restored_pair, Database, DatabasePaths};
 
 use super::{
     credentials::R2Credentials,
     domain::{BackupSetId, CheckpointId, R2AccountId, R2BucketName, R2Jurisdiction, R2Target},
     litestream::{CommandLitestreamRestore, EphemeralLitestreamRuntime, VerifiedLitestreamBinary},
     object_store::R2ObjectStore,
-    restore::{
-        discover_checkpoints, install_checkpoint_into_empty, stage_checkpoint, RemoteCheckpoint,
-    },
+    restore::{discover_checkpoints, remove_staged_checkpoint, stage_checkpoint, RemoteCheckpoint},
 };
 
 const COMMAND: &str = "recovery";
@@ -31,7 +33,10 @@ const BUCKET_ENV: &str = "KOSH_LITESTREAM_R2_BUCKET";
 const ACCESS_KEY_ENV: &str = "KOSH_LITESTREAM_R2_ACCESS_KEY_ID";
 const SECRET_KEY_ENV: &str = "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY";
 const RESERVATION_FILENAME: &str = ".kosh-recovery-reservation-v1";
-const MAX_RESERVATION_BYTES: u64 = 128;
+const MAIN_TEMP_FILENAME: &str = ".kosh-recovery-main-v1.tmp";
+const MEDIA_TEMP_FILENAME: &str = ".kosh-recovery-media-v1.tmp";
+const MAIN_FILENAME: &str = "kosh.sqlite3";
+const MEDIA_FILENAME: &str = "media.sqlite3";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,13 +160,9 @@ fn restore_remote(
         .map_err(|_| "the isolated recovery runtime could not be removed")?;
     let restored_media_count = staged.restored_media_count;
     let restored_media_bytes = staged.restored_media_bytes;
-    reservation.verify_install_ready()?;
-    let install = install_checkpoint_into_empty(&DatabasePaths::new(&target_root), &staged)
-        .map_err(|_| "the validated recovery point could not be installed")?;
-    if install.safety_snapshot_id.is_some() {
-        return Err("a clean-directory recovery unexpectedly replaced existing data".into());
-    }
-    reservation.finish()?;
+    reservation.install_validated_pair(&staged.paths)?;
+    remove_staged_checkpoint(&staged)
+        .map_err(|_| "the validated recovery staging pair could not be removed")?;
 
     let database = Database::initialize(DatabasePaths::new(&target_root))
         .map_err(|_| "the restored Kosh library did not reopen normally")?;
@@ -216,8 +217,8 @@ fn restore_remote(
 #[derive(Debug)]
 struct RecoveryTargetReservation {
     root: PathBuf,
-    marker: PathBuf,
-    token: String,
+    directory: File,
+    marker: File,
     active: bool,
 }
 
@@ -237,38 +238,37 @@ impl RecoveryTargetReservation {
                 "the recovery target could not be reserved".to_owned()
             }
         })?;
-
-        let marker = path.join(RESERVATION_FILENAME);
-        let token = uuid::Uuid::now_v7().to_string();
-        let result = (|| {
-            let mut options = OpenOptions::new();
-            options.create_new(true).write(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        let directory = match open_directory_no_follow(path) {
+            Ok(directory) => directory,
+            Err(_) => {
+                let _ = fs::remove_dir(path);
+                return Err("the recovery target reservation could not be opened".into());
             }
-            let mut file = options
-                .open(&marker)
-                .map_err(|_| "the recovery target reservation could not be created")?;
-            file.write_all(token.as_bytes())
-                .map_err(|_| "the recovery target reservation could not be persisted")?;
-            file.sync_all()
-                .map_err(|_| "the recovery target reservation could not be persisted")?;
-            sync_directory(path)
-                .map_err(|_| "the recovery target reservation could not be persisted")?;
-            Ok(Self {
-                root: path.to_owned(),
-                marker,
-                token,
-                active: true,
-            })
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(path.join(RESERVATION_FILENAME));
-            let _ = fs::remove_dir(path);
+        };
+        let directory_is_empty =
+            matches!(directory_entries(&directory), Ok(entries) if entries.is_empty());
+        if !path_matches_open_file(path, &directory) || !directory_is_empty {
+            let _ = remove_empty_open_directory(path, &directory);
+            return Err("the recovery target reservation was replaced; no data was changed".into());
         }
-        result
+        let marker = match create_private_child(&directory, RESERVATION_FILENAME) {
+            Ok(marker) => marker,
+            Err(_) => {
+                let _ = remove_empty_open_directory(path, &directory);
+                return Err("the recovery target reservation could not be created".into());
+            }
+        };
+        if marker.sync_all().is_err() || directory.sync_all().is_err() {
+            let _ = unlink_owned_child(&directory, RESERVATION_FILENAME, &marker);
+            let _ = remove_empty_open_directory(path, &directory);
+            return Err("the recovery target reservation could not be persisted".into());
+        }
+        Ok(Self {
+            root: path.to_owned(),
+            directory,
+            marker,
+            active: true,
+        })
     }
 
     fn path(&self) -> &Path {
@@ -276,50 +276,94 @@ impl RecoveryTargetReservation {
     }
 
     fn verify_install_ready(&self) -> Result<(), String> {
-        let root_metadata = fs::symlink_metadata(&self.root)
-            .map_err(|_| "the recovery target reservation disappeared")?;
-        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        if !path_matches_open_file(&self.root, &self.directory) {
             return Err("the recovery target reservation was replaced; no data was changed".into());
         }
-        let marker_metadata = fs::symlink_metadata(&self.marker)
-            .map_err(|_| "the recovery target reservation was replaced; no data was changed")?;
-        if marker_metadata.file_type().is_symlink()
-            || !marker_metadata.is_file()
-            || marker_metadata.len() > MAX_RESERVATION_BYTES
-        {
-            return Err("the recovery target reservation was replaced; no data was changed".into());
-        }
-        let marker = open_marker_no_follow(&self.marker)
-            .map_err(|_| "the recovery target reservation was replaced; no data was changed")?;
-        let mut token = String::new();
-        marker
-            .take(MAX_RESERVATION_BYTES + 1)
-            .read_to_string(&mut token)
-            .map_err(|_| "the recovery target reservation was replaced; no data was changed")?;
-        if token != self.token {
-            return Err("the recovery target reservation was replaced; no data was changed".into());
-        }
-        let entries = fs::read_dir(&self.root)
-            .map_err(|_| "the recovery target reservation could not be inspected")?
-            .collect::<Result<Vec<_>, _>>()
+        let entries = directory_entries(&self.directory)
             .map_err(|_| "the recovery target reservation could not be inspected")?;
-        if entries.len() != 1
-            || entries[0].file_name() != RESERVATION_FILENAME
-            || !entries[0]
-                .file_type()
-                .is_ok_and(|file_type| file_type.is_file() && !file_type.is_symlink())
-        {
+        if entries.as_slice() != [OsString::from(RESERVATION_FILENAME)] {
             return Err("the recovery target stopped being empty; no data was changed".into());
+        }
+        let marker = open_regular_child(&self.directory, RESERVATION_FILENAME)
+            .map_err(|_| "the recovery target reservation was replaced; no data was changed")?;
+        if !same_open_file(&marker, &self.marker) {
+            return Err("the recovery target reservation was replaced; no data was changed".into());
         }
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<(), String> {
-        verify_marker(&self.marker, &self.token)?;
-        fs::remove_file(&self.marker)
-            .map_err(|_| "the recovery target reservation could not be removed")?;
-        sync_directory(&self.root)
-            .map_err(|_| "the recovery target reservation removal was not durable")?;
+    fn install_validated_pair(&mut self, staged: &DatabasePaths) -> Result<(), String> {
+        self.install_validated_pair_with_hook(staged, || {})
+    }
+
+    fn install_validated_pair_with_hook(
+        &mut self,
+        staged: &DatabasePaths,
+        before_publish: impl FnOnce(),
+    ) -> Result<(), String> {
+        validate_restored_pair(staged)
+            .map_err(|_| "the independently staged recovery pair is no longer valid")?;
+        self.verify_install_ready()?;
+
+        let main_temporary =
+            copy_regular_into_child(&staged.main, &self.directory, MAIN_TEMP_FILENAME)
+                .map_err(|_| "the recovered main database could not be privately staged")?;
+        let media_temporary =
+            match copy_regular_into_child(&staged.media, &self.directory, MEDIA_TEMP_FILENAME) {
+                Ok(file) => file,
+                Err(_) => {
+                    let _ =
+                        unlink_owned_child(&self.directory, MAIN_TEMP_FILENAME, &main_temporary);
+                    return Err("the recovered media database could not be privately staged".into());
+                }
+            };
+
+        before_publish();
+        let publication = (|| {
+            link_child_exclusive(&self.directory, MAIN_TEMP_FILENAME, MAIN_FILENAME)?;
+            if let Err(error) =
+                link_child_exclusive(&self.directory, MEDIA_TEMP_FILENAME, MEDIA_FILENAME)
+            {
+                let _ = unlink_owned_child(&self.directory, MAIN_FILENAME, &main_temporary);
+                return Err(error);
+            }
+            self.directory.sync_all()?;
+            if !path_matches_open_file(&self.root, &self.directory) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "the reserved recovery directory was replaced",
+                ));
+            }
+            unlink_owned_child(&self.directory, MAIN_TEMP_FILENAME, &main_temporary)?;
+            unlink_owned_child(&self.directory, MEDIA_TEMP_FILENAME, &media_temporary)?;
+            self.directory.sync_all()?;
+            if !path_matches_open_file(&self.root, &self.directory) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "the reserved recovery directory was replaced",
+                ));
+            }
+            unlink_owned_child(&self.directory, RESERVATION_FILENAME, &self.marker)?;
+            self.directory.sync_all()?;
+            if !path_matches_open_file(&self.root, &self.directory) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "the reserved recovery directory was replaced",
+                ));
+            }
+            Ok(())
+        })();
+        if publication.is_err() {
+            let _ = unlink_owned_child(&self.directory, MAIN_FILENAME, &main_temporary);
+            let _ = unlink_owned_child(&self.directory, MEDIA_FILENAME, &media_temporary);
+            let _ = unlink_owned_child(&self.directory, MAIN_TEMP_FILENAME, &main_temporary);
+            let _ = unlink_owned_child(&self.directory, MEDIA_TEMP_FILENAME, &media_temporary);
+            let _ = self.directory.sync_all();
+            return Err(
+                "the clean recovery target changed during installation; no existing data was modified"
+                    .into(),
+            );
+        }
         self.active = false;
         Ok(())
     }
@@ -327,47 +371,222 @@ impl RecoveryTargetReservation {
 
 impl Drop for RecoveryTargetReservation {
     fn drop(&mut self) {
-        if self.active && self.verify_install_ready().is_ok() {
-            let _ = fs::remove_file(&self.marker);
-            let _ = fs::remove_dir(&self.root);
+        if self.active {
+            let _ = unlink_owned_child(&self.directory, RESERVATION_FILENAME, &self.marker);
+            let _ = self.directory.sync_all();
+            let _ = remove_empty_open_directory(&self.root, &self.directory);
         }
     }
 }
 
-fn verify_marker(path: &Path, expected: &str) -> Result<(), String> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|_| "the recovery target reservation disappeared")?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_RESERVATION_BYTES
-    {
-        return Err("the recovery target reservation was replaced".into());
+fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let directory = options.open(path)?;
+    if !directory.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "recovery reservation is not a directory",
+        ));
     }
-    let file =
-        open_marker_no_follow(path).map_err(|_| "the recovery target reservation was replaced")?;
-    let mut token = String::new();
-    file.take(MAX_RESERVATION_BYTES + 1)
-        .read_to_string(&mut token)
-        .map_err(|_| "the recovery target reservation could not be read")?;
-    if token != expected {
-        return Err("the recovery target reservation was replaced".into());
+    Ok(directory)
+}
+
+fn open_regular_no_follow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "recovery source is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn create_private_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+fn open_regular_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "recovery child is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn copy_regular_into_child(source: &Path, directory: &File, name: &str) -> std::io::Result<File> {
+    let mut source = open_regular_no_follow(source)?;
+    let source_length = source.metadata()?.len();
+    source.rewind()?;
+    let mut target = create_private_child(directory, name)?;
+    let copy = (|| {
+        let copied = std::io::copy(&mut source, &mut target)?;
+        if copied != source_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "recovery database copy was incomplete",
+            ));
+        }
+        target.sync_all()
+    })();
+    if let Err(error) = copy {
+        let _ = unlink_owned_child(directory, name, &target);
+        return Err(error);
+    }
+    Ok(target)
+}
+
+fn link_child_exclusive(directory: &File, source: &str, target: &str) -> std::io::Result<()> {
+    let source = child_name(source)?;
+    let target = child_name(target)?;
+    let result = unsafe {
+        libc::linkat(
+            directory.as_raw_fd(),
+            source.as_ptr(),
+            directory.as_raw_fd(),
+            target.as_ptr(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn unlink_owned_child(directory: &File, name: &str, owned: &File) -> std::io::Result<()> {
+    let current = match open_regular_child(directory, name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !same_open_file(&current, owned) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "recovery child ownership changed",
+        ));
+    }
+    let name = child_name(name)?;
+    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn remove_empty_open_directory(path: &Path, directory: &File) -> std::io::Result<()> {
+    if path_matches_open_file(path, directory) && directory_entries(directory)?.is_empty() {
+        fs::remove_dir(path)?;
     }
     Ok(())
 }
 
-fn open_marker_no_follow(path: &Path) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+fn path_matches_open_file(path: &Path, open: &File) -> bool {
+    let Ok(path_metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_dir() {
+        return false;
     }
-    options.open(path)
+    let Ok(open_metadata) = open.metadata() else {
+        return false;
+    };
+    same_metadata(&path_metadata, &open_metadata)
 }
 
-fn sync_directory(path: &Path) -> std::io::Result<()> {
-    File::open(path)?.sync_all()
+fn same_open_file(left: &File, right: &File) -> bool {
+    left.metadata()
+        .ok()
+        .zip(right.metadata().ok())
+        .is_some_and(|(left, right)| same_metadata(&left, &right))
+}
+
+fn same_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn directory_entries(directory: &File) -> std::io::Result<Vec<OsString>> {
+    let descriptor = unsafe { libc::dup(directory.as_raw_fd()) };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(descriptor) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(descriptor);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    unsafe {
+        libc::rewinddir(stream);
+    }
+    let mut entries = Vec::new();
+    loop {
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            entries.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    if unsafe { libc::closedir(stream) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+fn child_name(name: &str) -> std::io::Result<CString> {
+    if name.is_empty() || name.as_bytes().contains(&b'/') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid recovery child name",
+        ));
+    }
+    CString::new(name.as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid recovery child name",
+        )
+    })
 }
 
 fn select_checkpoint(
@@ -503,22 +722,65 @@ mod tests {
         assert!(!target.exists(), "unused reservation must clean up");
     }
 
+    #[test]
+    fn descriptor_bound_install_publishes_a_valid_pair_without_control_residue() {
+        let root = tempfile::tempdir().expect("recovery parent");
+        let target = root.path().join("restored");
+        let staged_root = tempfile::tempdir().expect("staged pair");
+        let staged_paths = DatabasePaths::new(staged_root.path());
+        let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
+        staged.shutdown().expect("close staged pair");
+        let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
+
+        reservation
+            .install_validated_pair(&staged_paths)
+            .expect("descriptor-bound install");
+
+        assert!(target.join(MAIN_FILENAME).is_file());
+        assert!(target.join(MEDIA_FILENAME).is_file());
+        for control in [
+            RESERVATION_FILENAME,
+            MAIN_TEMP_FILENAME,
+            MEDIA_TEMP_FILENAME,
+        ] {
+            assert!(!target.join(control).exists(), "{control} must be removed");
+        }
+        let restored =
+            Database::initialize(DatabasePaths::new(&target)).expect("reopen installed pair");
+        restored.shutdown().expect("close installed pair");
+    }
+
     #[cfg(unix)]
     #[test]
-    fn target_reservation_rejects_a_raced_directory_symlink_without_touching_its_target() {
+    fn descriptor_bound_install_rolls_back_a_raced_directory_without_touching_its_target() {
         use std::os::unix::fs::symlink;
 
         let root = tempfile::tempdir().expect("recovery parent");
         let target = root.path().join("restored");
         let displaced = root.path().join("displaced");
-        let outside = tempfile::tempdir().expect("outside target");
-        let reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
-        fs::rename(&target, &displaced).expect("displace reservation");
-        symlink(outside.path(), &target).expect("raced target symlink");
+        let staged_root = tempfile::tempdir().expect("staged pair");
+        let staged_paths = DatabasePaths::new(staged_root.path());
+        let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
+        staged.shutdown().expect("close staged pair");
+        let outside_parent = tempfile::tempdir().expect("outside parent");
+        let outside_root = outside_parent.path().join("existing-library");
+        let outside_paths = DatabasePaths::new(&outside_root);
+        let outside = Database::initialize(outside_paths.clone()).expect("outside database pair");
+        outside.shutdown().expect("close outside pair");
+        let outside_main = fs::read(&outside_paths.main).expect("outside main bytes");
+        let outside_media = fs::read(&outside_paths.media).expect("outside media bytes");
+        let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
 
+        let result = reservation.install_validated_pair_with_hook(&staged_paths, || {
+            fs::rename(&target, &displaced).expect("displace reservation");
+            symlink(&outside_root, &target).expect("raced target symlink");
+        });
         assert_eq!(
-            reservation.verify_install_ready(),
-            Err("the recovery target reservation was replaced; no data was changed".into())
+            result,
+            Err(
+                "the clean recovery target changed during installation; no existing data was modified"
+                    .into()
+            )
         );
         drop(reservation);
         assert!(fs::symlink_metadata(&target)
@@ -526,11 +788,19 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(
-            fs::read_dir(outside.path())
-                .expect("outside entries")
+            fs::read(&outside_paths.main).expect("preserved outside main"),
+            outside_main
+        );
+        assert_eq!(
+            fs::read(&outside_paths.media).expect("preserved outside media"),
+            outside_media
+        );
+        assert_eq!(
+            fs::read_dir(&displaced)
+                .expect("descriptor-owned displaced directory")
                 .count(),
             0,
-            "a raced symlink target must remain untouched"
+            "descriptor-relative rollback must remove only its own staged children"
         );
     }
 

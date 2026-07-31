@@ -299,7 +299,7 @@
       "id": "install-clean-target-race",
       "phase": "install",
       "failureClass": "concurrency",
-      "test": "backup::restore::tests::clean_directory_install_refuses_a_pair_created_after_remote_staging",
+      "test": "backup::recovery_cli::tests::descriptor_bound_install_rolls_back_a_raced_directory_without_touching_its_target",
       "invariants": ["authored-bytes", "bounded-cleanup"]
     },
     {
