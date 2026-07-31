@@ -718,6 +718,15 @@ pub(crate) mod fake {
                 .clear();
         }
 
+        pub(crate) fn remove_for_test(&self, key: &R2ObjectKey) {
+            self.validate_key(key).expect("valid fake object key");
+            self.state
+                .lock()
+                .expect("fake object store")
+                .objects
+                .remove(key.as_str());
+        }
+
         fn validate_key(&self, key: &R2ObjectKey) -> Result<(), ObjectStoreError> {
             self.keyspace
                 .validate_returned_key(key.as_str())

@@ -40,8 +40,8 @@ use super::{
     owner::{inspect_remote_owner, resume_remote_takeover, RemoteOwnerError, RemoteOwnerSnapshot},
     probe::{verify_object_store, ObjectStoreProbeError},
     restore::{
-        discover_checkpoints, drill_checkpoint, preview_checkpoint, RemoteCheckpoint, RestoreError,
-        RestorePreview,
+        discover_checkpoint, discover_checkpoints, drill_checkpoint, preview_checkpoint,
+        RemoteCheckpoint, RestoreError, RestorePreview,
     },
     writer_identity::{
         MacOsInstallationWriterIdentity, WriterIdentityError, WriterIdentityProvider,
@@ -1121,16 +1121,15 @@ fn find_checkpoint(
     backup_set_id: &BackupSetId,
     checkpoint_id: &CheckpointId,
 ) -> BackupCommandResult<RemoteCheckpoint> {
-    discover_checkpoints(store, keyspace, backup_set_id)
-        .map_err(map_restore_error)?
-        .into_iter()
-        .find(|checkpoint| checkpoint.checkpoint_id() == checkpoint_id)
-        .ok_or_else(|| {
-            BackupCommandError::new(
+    discover_checkpoint(store, keyspace, backup_set_id, checkpoint_id).map_err(
+        |error| match error {
+            RestoreError::CheckpointNotFound => BackupCommandError::new(
                 BackupCommandErrorCode::RestoreFailed,
                 "That recovery point is no longer available. Refresh recovery points.",
-            )
-        })
+            ),
+            other => map_restore_error(other),
+        },
+    )
 }
 
 fn open_saved_store(

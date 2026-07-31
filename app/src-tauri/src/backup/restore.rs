@@ -199,7 +199,7 @@ pub(crate) enum RestoreError {
     InvalidStaging,
 }
 
-pub(crate) fn discover_checkpoints(
+fn load_checkpoint_manifests(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
     backup_set_id: &BackupSetId,
@@ -264,6 +264,27 @@ pub(crate) fn discover_checkpoints(
             break;
         }
     }
+    Ok(checkpoints)
+}
+
+pub(crate) fn discover_checkpoint(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+    checkpoint_id: &CheckpointId,
+) -> Result<RemoteCheckpoint, RestoreError> {
+    load_checkpoint_manifests(store, keyspace, backup_set_id)?
+        .into_iter()
+        .find(|checkpoint| checkpoint.checkpoint_id() == checkpoint_id)
+        .ok_or(RestoreError::CheckpointNotFound)
+}
+
+pub(crate) fn discover_checkpoints(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+) -> Result<Vec<RemoteCheckpoint>, RestoreError> {
+    let mut checkpoints = load_checkpoint_manifests(store, keyspace, backup_set_id)?;
     let owner = inspect_remote_owner(store, keyspace)?;
     if owner.backup_set_id() != backup_set_id {
         return Err(RestoreError::Owner(RemoteOwnerError::Invalid));
@@ -1722,6 +1743,26 @@ mod tests {
         assert_eq!(checkpoints[1].replica_epoch_id(), &abandoned_epoch);
         assert_eq!(checkpoints[1].checkpoint_id(), &abandoned_checkpoint_id);
         assert!(checkpoints[1].content_revision() > checkpoints[0].content_revision());
+    }
+
+    #[test]
+    fn exact_checkpoint_discovery_does_not_depend_on_the_mutable_owner_record() {
+        let fixture = Fixture::new();
+        fixture.store.remove_for_test(&fixture.keyspace.owner());
+
+        let exact = discover_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.backup_set_id,
+            fixture.checkpoint.checkpoint_id(),
+        )
+        .expect("immutable exact checkpoint");
+
+        assert_eq!(exact.checkpoint_id(), fixture.checkpoint.checkpoint_id());
+        assert!(matches!(
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id),
+            Err(RestoreError::Owner(_))
+        ));
     }
 
     #[test]

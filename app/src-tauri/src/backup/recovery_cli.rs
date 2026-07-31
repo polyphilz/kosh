@@ -25,9 +25,9 @@ use super::{
     litestream::{CommandLitestreamRestore, EphemeralLitestreamRuntime, VerifiedLitestreamBinary},
     object_store::R2ObjectStore,
     restore::{
-        discover_checkpoints, remove_staged_checkpoint, remove_staging_root_at_identity,
-        stage_checkpoint_at_identity, RemoteCheckpoint, StagedDatabasePair, StagedRestore,
-        StagingDirectoryIdentity,
+        discover_checkpoint, discover_checkpoints, remove_staged_checkpoint,
+        remove_staging_root_at_identity, stage_checkpoint_at_identity, RemoteCheckpoint,
+        StagedDatabasePair, StagedRestore, StagingDirectoryIdentity,
     },
 };
 
@@ -49,7 +49,8 @@ const MAIN_TEMP_FILENAME: &str = ".kosh-recovery-main-v1.tmp";
 const MEDIA_TEMP_FILENAME: &str = ".kosh-recovery-media-v1.tmp";
 const MAIN_FILENAME: &str = "kosh.sqlite3";
 const MEDIA_FILENAME: &str = "media.sqlite3";
-const RESERVATION_SCHEMA_VERSION: u32 = 2;
+const RESERVATION_SCHEMA_VERSION: u32 = 3;
+const PREVIOUS_RESERVATION_SCHEMA_VERSION: u32 = 2;
 const LEGACY_RESERVATION_SCHEMA_VERSION: u32 = 1;
 const MAX_RESERVATION_BYTES: u64 = 4 * 1024;
 const COMPLETION_SCHEMA_VERSION: u32 = 1;
@@ -61,6 +62,10 @@ struct RecoveryReservationControl {
     schema_version: u32,
     token: String,
     target_data_directory: String,
+    #[serde(default)]
+    target_device: Option<u64>,
+    #[serde(default)]
+    target_inode: Option<u64>,
     #[serde(default)]
     staging_device: Option<u64>,
     #[serde(default)]
@@ -177,9 +182,22 @@ fn restore_remote(
     let keyspace = target.keyspace(backup_set_id);
     let store = R2ObjectStore::new(target.clone(), keyspace.clone(), credentials)
         .map_err(|_| "the private R2 target could not be opened")?;
-    let checkpoints = discover_checkpoints(&store, &keyspace, backup_set_id)
-        .map_err(|_| "complete recovery points could not be discovered")?;
-    let checkpoint = select_checkpoint(checkpoints, selector)?;
+    let checkpoint = if selector == LATEST {
+        let checkpoints = discover_checkpoints(&store, &keyspace, backup_set_id)
+            .map_err(|_| "complete recovery points could not be discovered")?;
+        select_checkpoint(checkpoints, selector)?
+    } else {
+        let checkpoint_id =
+            CheckpointId::parse(selector).map_err(|_| "invalid checkpoint selector".to_owned())?;
+        discover_checkpoint(&store, &keyspace, backup_set_id, &checkpoint_id).map_err(|error| {
+            match error {
+                super::restore::RestoreError::CheckpointNotFound => {
+                    "the selected complete recovery point was not found".to_owned()
+                }
+                _ => "complete recovery points could not be discovered".to_owned(),
+            }
+        })?
+    };
 
     let mut ephemeral = EphemeralLitestreamRuntime::create()
         .map_err(|_| "the isolated recovery runtime could not be created")?;
@@ -273,15 +291,15 @@ impl RecoveryTargetReservation {
             .ok_or_else(|| "the recovery target must be valid UTF-8".to_owned())?
             .to_owned();
         let token = uuid::Uuid::now_v7().to_string();
-        let control = RecoveryReservationControl {
+        let mut control = RecoveryReservationControl {
             schema_version: RESERVATION_SCHEMA_VERSION,
             token: token.clone(),
             target_data_directory,
+            target_device: None,
+            target_inode: None,
             staging_device: None,
             staging_inode: None,
         };
-        let control_bytes = serde_json::to_vec(&control)
-            .map_err(|_| "the recovery target reservation could not be encoded")?;
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -302,12 +320,27 @@ impl RecoveryTargetReservation {
                 return Err("the recovery target reservation could not be opened".into());
             }
         };
+        let directory_metadata = match directory.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                let _ = remove_empty_open_directory(path, &directory);
+                return Err("the recovery target reservation could not be inspected".into());
+            }
+        };
         let directory_is_empty =
             matches!(directory_entries(&directory), Ok(entries) if entries.is_empty());
-        if !path_matches_open_file(path, &directory) || !directory_is_empty {
+        if !path_matches_open_file(path, &directory)
+            || !is_private_owned_directory(&directory_metadata)
+            || !directory_is_empty
+        {
             let _ = remove_empty_open_directory(path, &directory);
             return Err("the recovery target reservation was replaced; no data was changed".into());
         }
+        use std::os::unix::fs::MetadataExt;
+        control.target_device = Some(directory_metadata.dev());
+        control.target_inode = Some(directory_metadata.ino());
+        let control_bytes = serde_json::to_vec(&control)
+            .map_err(|_| "the recovery target reservation could not be encoded")?;
         let mut marker = match create_private_child(&directory, RESERVATION_FILENAME) {
             Ok(marker) => marker,
             Err(_) => {
@@ -886,7 +919,7 @@ fn reclaim_abandoned_reservation(path: &Path) -> Result<(), String> {
         }
         Err(_) => return Err("the existing recovery reservation marker is invalid".into()),
     };
-    if !reservation_control_matches(path, &control) {
+    if !reservation_control_matches_directory(path, &directory, &control) {
         return Err("the existing recovery reservation marker is invalid".into());
     }
 
@@ -995,16 +1028,45 @@ fn reservation_staging_identity(
     })
 }
 
+fn reservation_target_identity(
+    control: &RecoveryReservationControl,
+) -> Option<StagingDirectoryIdentity> {
+    Some(StagingDirectoryIdentity {
+        device: control.target_device?,
+        inode: control.target_inode?,
+    })
+}
+
 fn reservation_control_matches(path: &Path, control: &RecoveryReservationControl) -> bool {
-    matches!(
-        control.schema_version,
-        RESERVATION_SCHEMA_VERSION | LEGACY_RESERVATION_SCHEMA_VERSION
-    ) && path.to_str() == Some(control.target_data_directory.as_str())
+    let target_identity_is_valid = match control.schema_version {
+        RESERVATION_SCHEMA_VERSION => reservation_target_identity(control).is_some(),
+        PREVIOUS_RESERVATION_SCHEMA_VERSION | LEGACY_RESERVATION_SCHEMA_VERSION => {
+            control.target_device.is_none() && control.target_inode.is_none()
+        }
+        _ => false,
+    };
+    target_identity_is_valid
+        && path.to_str() == Some(control.target_data_directory.as_str())
         && uuid::Uuid::parse_str(&control.token)
             .ok()
             .is_some_and(|token| token.to_string() == control.token)
         && ((control.staging_device.is_none() && control.staging_inode.is_none())
             || reservation_staging_identity(control).is_some())
+}
+
+fn reservation_control_matches_directory(
+    path: &Path,
+    directory: &File,
+    control: &RecoveryReservationControl,
+) -> bool {
+    let Some(identity) = reservation_target_identity(control) else {
+        return false;
+    };
+    reservation_control_matches(path, control)
+        && directory.metadata().ok().is_some_and(|metadata| {
+            use std::os::unix::fs::MetadataExt;
+            metadata.dev() == identity.device && metadata.ino() == identity.inode
+        })
 }
 
 fn is_private_owned_directory(metadata: &fs::Metadata) -> bool {
@@ -1566,6 +1628,55 @@ mod tests {
         assert!(target.join(RESERVATION_FILENAME).is_file());
         drop(retry);
         assert!(!target.exists(), "retry reservation must remain owned");
+    }
+
+    #[test]
+    fn abandoned_target_reclamation_rejects_a_copied_marker_in_a_substituted_directory() {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+        let root = tempfile::tempdir().expect("recovery parent");
+        let target = root.path().join("restored");
+        let mut interrupted =
+            RecoveryTargetReservation::reserve(&target).expect("initial reservation");
+        let marker_bytes = fs::read(target.join(RESERVATION_FILENAME)).expect("reservation marker");
+        interrupted.active = false;
+        drop(interrupted);
+
+        let displaced = root.path().join("displaced-reservation");
+        fs::rename(&target, &displaced).expect("displace original reservation");
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&target).expect("replacement directory");
+        let replacement_paths = DatabasePaths::new(&target);
+        let replacement =
+            Database::initialize(replacement_paths.clone()).expect("replacement library");
+        replacement.shutdown().expect("close replacement library");
+        let replacement_main = fs::read(&replacement_paths.main).expect("replacement main bytes");
+        let replacement_media =
+            fs::read(&replacement_paths.media).expect("replacement media bytes");
+        let mut copied_marker = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(target.join(RESERVATION_FILENAME))
+            .expect("copied reservation marker");
+        copied_marker
+            .write_all(&marker_bytes)
+            .expect("persist copied marker");
+        copied_marker.sync_all().expect("sync copied marker");
+        drop(copied_marker);
+
+        assert!(RecoveryTargetReservation::reserve(&target).is_err());
+        assert_eq!(
+            fs::read(&replacement_paths.main).expect("preserved replacement main"),
+            replacement_main
+        );
+        assert_eq!(
+            fs::read(&replacement_paths.media).expect("preserved replacement media"),
+            replacement_media
+        );
+        assert!(target.join(RESERVATION_FILENAME).is_file());
+        assert!(displaced.join(RESERVATION_FILENAME).is_file());
     }
 
     #[test]
