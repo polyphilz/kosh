@@ -266,8 +266,9 @@ pub(crate) fn discover_checkpoints(
     }
     checkpoints.sort_by(|left, right| {
         right
-            .created_at_unix_nanos
-            .cmp(&left.created_at_unix_nanos)
+            .content_revision()
+            .cmp(&left.content_revision())
+            .then_with(|| right.created_at_unix_nanos.cmp(&left.created_at_unix_nanos))
             .then_with(|| right.checkpoint_id().cmp(left.checkpoint_id()))
     });
     Ok(checkpoints)
@@ -1574,7 +1575,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_sorts_fractional_timestamps_chronologically() {
+    fn discovery_sorts_content_revision_before_a_backward_clock_timestamp() {
         let fixture = Fixture::new();
         let original = &fixture.checkpoint.manifest;
         let newer_checkpoint_id = CheckpointId::new();
@@ -1582,8 +1583,8 @@ mod tests {
             backup_set_id: original.backup_set_id().clone(),
             replica_epoch_id: original.replica_epoch_id().clone(),
             checkpoint_id: newer_checkpoint_id.clone(),
-            created_at: UtcTimestamp::parse("2026-07-30T19:00:00.900Z")
-                .expect("fractional timestamp"),
+            created_at: UtcTimestamp::parse("2026-07-30T18:59:59Z")
+                .expect("backward-clock timestamp"),
             kosh_version: original.kosh_version().into(),
             content_revision: original.content_revision() + 1,
             main_migration_head: original.main_migration_head(),
@@ -1612,6 +1613,49 @@ mod tests {
 
         assert_eq!(checkpoints.len(), 2);
         assert_eq!(checkpoints[0].checkpoint_id(), &newer_checkpoint_id);
+        assert_eq!(checkpoints[0].created_at(), "2026-07-30T18:59:59Z");
+        assert_eq!(checkpoints[1].created_at(), "2026-07-30T19:00:00Z");
+    }
+
+    #[test]
+    fn discovery_sorts_equal_revisions_by_fractional_timestamp() {
+        let fixture = Fixture::new();
+        let original = &fixture.checkpoint.manifest;
+        let later_checkpoint_id = CheckpointId::new();
+        let later = CheckpointManifestV1::new(CheckpointManifestInput {
+            backup_set_id: original.backup_set_id().clone(),
+            replica_epoch_id: original.replica_epoch_id().clone(),
+            checkpoint_id: later_checkpoint_id.clone(),
+            created_at: UtcTimestamp::parse("2026-07-30T19:00:00.900Z")
+                .expect("fractional timestamp"),
+            kosh_version: original.kosh_version().into(),
+            content_revision: original.content_revision(),
+            main_migration_head: original.main_migration_head(),
+            litestream_path: fixture.keyspace.litestream(original.replica_epoch_id()),
+            txid: original.txid().into(),
+            media_migration_head: original.media_migration_head(),
+            referenced_hash_count: original.referenced_hash_count(),
+            referenced_total_bytes: original.referenced_total_bytes(),
+            referenced_hash_set_sha256: original.referenced_hash_set_sha256(),
+        })
+        .expect("later manifest");
+        fixture
+            .store
+            .put(PutObjectRequest {
+                key: later.object_key(&fixture.keyspace).expect("manifest key"),
+                bytes: later.to_json().expect("manifest bytes"),
+                content_type: ObjectContentType::Json,
+                kosh_sha256: None,
+                condition: PutCondition::IfAbsent,
+            })
+            .expect("later remote manifest");
+
+        let checkpoints =
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id)
+                .expect("checkpoint discovery");
+
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].checkpoint_id(), &later_checkpoint_id);
         assert_eq!(checkpoints[0].created_at(), "2026-07-30T19:00:00.900Z");
         assert_eq!(checkpoints[1].created_at(), "2026-07-30T19:00:00Z");
     }
