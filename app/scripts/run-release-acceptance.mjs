@@ -183,7 +183,7 @@ function launchHidden(values) {
     dataDirectory: profile.data,
     guiPath: environment.PATH,
     claudeMode: "disabled",
-    claudeShim: false,
+    claudeShim: existsSync(join(profile.home, ".local/bin/claude")),
     executionMode: "hidden-smoke",
     receipt: receiptPath,
   });
