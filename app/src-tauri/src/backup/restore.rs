@@ -28,7 +28,7 @@ use super::{
     litestream::{
         LitestreamError, LitestreamTxid, RelationalRestoreEngine, ReplicaKind, RestorePlan,
     },
-    object_store::{ObjectContentType, ObjectStore, ObjectStoreError},
+    object_store::{ListedObject, ObjectContentType, ObjectStore, ObjectStoreError},
     owner::{inspect_remote_owner, RemoteOwnerError, RemoteOwnerSnapshot},
 };
 
@@ -226,38 +226,11 @@ fn load_checkpoint_manifests(
             if checkpoints.len() >= MAX_DISCOVERED_CHECKPOINTS {
                 return Err(RestoreError::TooManyCheckpoints);
             }
-            if listed.byte_length == 0 || listed.byte_length > MAX_MANIFEST_BYTES as u64 {
+            let checkpoint = load_checkpoint_manifest(store, keyspace, backup_set_id, &listed)?;
+            if !seen_checkpoint_ids.insert(checkpoint.checkpoint_id().clone()) {
                 return Err(RestoreError::Manifest);
             }
-            let result = store.get_bounded(&listed.key, MAX_MANIFEST_BYTES)?;
-            if result.metadata.byte_length != listed.byte_length
-                || result.metadata.version != listed.version
-                || result.metadata.byte_length != result.bytes.len() as u64
-                || result.metadata.content_type != Some(ObjectContentType::Json)
-                || result.metadata.kosh_sha256.is_some()
-                || result.metadata.object_format_version != Some(OBJECT_FORMAT_VERSION)
-            {
-                return Err(RestoreError::Manifest);
-            }
-            let manifest = CheckpointManifestV1::from_json(&result.bytes, keyspace)
-                .map_err(|_| RestoreError::Manifest)?;
-            if manifest.backup_set_id() != backup_set_id
-                || manifest
-                    .object_key(keyspace)
-                    .map_err(|_| RestoreError::Manifest)?
-                    != listed.key
-                || !seen_checkpoint_ids.insert(manifest.checkpoint_id().clone())
-            {
-                return Err(RestoreError::Manifest);
-            }
-            let created_at_unix_nanos = manifest
-                .created_at()
-                .unix_timestamp_nanos()
-                .map_err(|_| RestoreError::Manifest)?;
-            checkpoints.push(RemoteCheckpoint {
-                manifest,
-                created_at_unix_nanos,
-            });
+            checkpoints.push(checkpoint);
         }
         continuation = page.next;
         if continuation.is_none() {
@@ -267,16 +240,98 @@ fn load_checkpoint_manifests(
     Ok(checkpoints)
 }
 
+fn load_checkpoint_manifest(
+    store: &dyn ObjectStore,
+    keyspace: &R2Keyspace,
+    backup_set_id: &BackupSetId,
+    listed: &ListedObject,
+) -> Result<RemoteCheckpoint, RestoreError> {
+    if listed.byte_length == 0 || listed.byte_length > MAX_MANIFEST_BYTES as u64 {
+        return Err(RestoreError::Manifest);
+    }
+    let result = store.get_bounded(&listed.key, MAX_MANIFEST_BYTES)?;
+    if result.metadata.byte_length != listed.byte_length
+        || result.metadata.version != listed.version
+        || result.metadata.byte_length != result.bytes.len() as u64
+        || result.metadata.content_type != Some(ObjectContentType::Json)
+        || result.metadata.kosh_sha256.is_some()
+        || result.metadata.object_format_version != Some(OBJECT_FORMAT_VERSION)
+    {
+        return Err(RestoreError::Manifest);
+    }
+    let manifest = CheckpointManifestV1::from_json(&result.bytes, keyspace)
+        .map_err(|_| RestoreError::Manifest)?;
+    if manifest.backup_set_id() != backup_set_id
+        || manifest
+            .object_key(keyspace)
+            .map_err(|_| RestoreError::Manifest)?
+            != listed.key
+    {
+        return Err(RestoreError::Manifest);
+    }
+    let created_at_unix_nanos = manifest
+        .created_at()
+        .unix_timestamp_nanos()
+        .map_err(|_| RestoreError::Manifest)?;
+    Ok(RemoteCheckpoint {
+        manifest,
+        created_at_unix_nanos,
+    })
+}
+
+fn is_exact_checkpoint_candidate(prefix: &str, key: &str, checkpoint_suffix: &str) -> bool {
+    let Some(relative) = key.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((epoch, filename)) = relative.split_once('/') else {
+        return false;
+    };
+    !epoch.is_empty() && !filename.contains('/') && filename.ends_with(checkpoint_suffix)
+}
+
 pub(crate) fn discover_checkpoint(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
     backup_set_id: &BackupSetId,
     checkpoint_id: &CheckpointId,
 ) -> Result<RemoteCheckpoint, RestoreError> {
-    load_checkpoint_manifests(store, keyspace, backup_set_id)?
-        .into_iter()
-        .find(|checkpoint| checkpoint.checkpoint_id() == checkpoint_id)
-        .ok_or(RestoreError::CheckpointNotFound)
+    let prefix = keyspace.checkpoint_prefix();
+    let checkpoint_suffix = format!("-{}.json", checkpoint_id.as_str());
+    let mut continuation = None;
+    let mut candidate = None;
+    let mut pages = 0_usize;
+    loop {
+        pages += 1;
+        if pages > MAX_LIST_PAGES {
+            return Err(RestoreError::TooManyCheckpoints);
+        }
+        let page = store.list(&prefix, continuation.as_ref())?;
+        if page.objects.is_empty() && page.next.is_some() {
+            return Err(RestoreError::Manifest);
+        }
+        for listed in page.objects {
+            if !is_exact_checkpoint_candidate(
+                prefix.as_str(),
+                listed.key.as_str(),
+                &checkpoint_suffix,
+            ) {
+                continue;
+            }
+            if candidate.replace(listed).is_some() {
+                return Err(RestoreError::Manifest);
+            }
+        }
+        continuation = page.next;
+        if continuation.is_none() {
+            break;
+        }
+    }
+    let listed = candidate.ok_or(RestoreError::CheckpointNotFound)?;
+    let checkpoint = load_checkpoint_manifest(store, keyspace, backup_set_id, &listed)?;
+    if checkpoint.checkpoint_id() != checkpoint_id {
+        return Err(RestoreError::Manifest);
+    }
+    Ok(checkpoint)
 }
 
 pub(crate) fn discover_checkpoints(
@@ -1119,8 +1174,8 @@ mod tests {
             },
             litestream::{IntegrityCheck, RestoreFile, RestoreResult},
             object_store::{
-                fake::FakeObjectStore, ObjectContentType, PutCondition, PutMediaRequest,
-                PutObjectRequest,
+                fake::{FakeObjectStore, ObjectOperation},
+                ObjectContentType, PutCondition, PutMediaRequest, PutObjectRequest,
             },
             owner::claim_remote_owner,
         },
@@ -1766,6 +1821,67 @@ mod tests {
     }
 
     #[test]
+    fn exact_checkpoint_discovery_ignores_unrelated_corrupt_manifests() {
+        let fixture = Fixture::new();
+        let epoch = fixture.checkpoint.replica_epoch_id();
+        let corrupt_manifests = [
+            (
+                CheckpointId::new(),
+                UtcTimestamp::parse("2026-07-30T19:00:01Z").expect("malformed timestamp"),
+                b"not-json".to_vec(),
+                ObjectContentType::Json,
+            ),
+            (
+                CheckpointId::new(),
+                UtcTimestamp::parse("2026-07-30T19:00:02Z").expect("oversized timestamp"),
+                vec![b'x'; MAX_MANIFEST_BYTES + 1],
+                ObjectContentType::Json,
+            ),
+            (
+                CheckpointId::new(),
+                UtcTimestamp::parse("2026-07-30T19:00:03Z").expect("binary timestamp"),
+                b"{}".to_vec(),
+                ObjectContentType::Binary,
+            ),
+        ];
+        for (checkpoint_id, created_at, bytes, content_type) in corrupt_manifests {
+            fixture
+                .store
+                .put(PutObjectRequest {
+                    key: fixture
+                        .keyspace
+                        .checkpoint(epoch, &checkpoint_id, &created_at)
+                        .expect("corrupt manifest key"),
+                    bytes,
+                    content_type,
+                    kosh_sha256: None,
+                    condition: PutCondition::IfAbsent,
+                })
+                .expect("unrelated corrupt manifest");
+        }
+        fixture.store.clear_operations();
+
+        let exact = discover_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.backup_set_id,
+            fixture.checkpoint.checkpoint_id(),
+        )
+        .expect("isolated exact checkpoint");
+
+        assert_eq!(exact.checkpoint_id(), fixture.checkpoint.checkpoint_id());
+        assert_eq!(
+            fixture.store.operations(),
+            [ObjectOperation::List, ObjectOperation::Get],
+            "exact discovery must not fetch unrelated manifests"
+        );
+        assert!(matches!(
+            discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id),
+            Err(RestoreError::Manifest)
+        ));
+    }
+
+    #[test]
     fn discovery_rejects_duplicate_logical_checkpoint_ids_across_manifest_keys() {
         let fixture = Fixture::new();
         let original = &fixture.checkpoint.manifest;
@@ -1800,6 +1916,15 @@ mod tests {
 
         assert!(matches!(
             discover_checkpoints(&fixture.store, &fixture.keyspace, &fixture.backup_set_id),
+            Err(RestoreError::Manifest)
+        ));
+        assert!(matches!(
+            discover_checkpoint(
+                &fixture.store,
+                &fixture.keyspace,
+                &fixture.backup_set_id,
+                original.checkpoint_id(),
+            ),
             Err(RestoreError::Manifest)
         ));
     }
