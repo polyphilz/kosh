@@ -2,8 +2,13 @@
 
 use std::{
     collections::BTreeSet,
-    fs::{self, File},
-    path::Path,
+    ffi::{CStr, CString, OsString},
+    fs::{self, File, OpenOptions},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{ffi::OsStringExt, fs::OpenOptionsExt},
+    },
+    path::{Path, PathBuf},
 };
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -29,6 +34,15 @@ use super::{
 const MAX_DISCOVERED_CHECKPOINTS: usize = 10_000;
 const MAX_LIST_PAGES: usize = 100;
 const MEDIA_RESTORE_PAGE_SIZE: u32 = 256;
+const STAGING_FILENAMES: [&str; 7] = [
+    "kosh.sqlite3",
+    "kosh.sqlite3-wal",
+    "kosh.sqlite3-shm",
+    "media.sqlite3",
+    "media.sqlite3-wal",
+    "media.sqlite3-shm",
+    "kosh.lock",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RemoteCheckpoint {
@@ -85,17 +99,33 @@ pub(crate) struct RestorePreview {
     pub(crate) plan_total_bytes: u64,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct StagedRestore {
     pub(crate) checkpoint: RemoteCheckpoint,
     pub(crate) paths: DatabasePaths,
     pub(crate) restored_media_count: u64,
     pub(crate) restored_media_bytes: u64,
+    cleanup: StagingOwnership,
 }
 
-impl Drop for StagedRestore {
+#[derive(Debug)]
+struct StagingOwnership {
+    root: PathBuf,
+    directory: File,
+    cleanup_authorized: bool,
+}
+
+#[derive(Debug)]
+struct StagingChild {
+    name: String,
+    file: File,
+}
+
+impl Drop for StagingOwnership {
     fn drop(&mut self) {
-        let _ = remove_owned_staging(&self.paths.root);
+        if self.cleanup_authorized {
+            let _ = self.remove();
+        }
     }
 }
 
@@ -250,8 +280,8 @@ pub(crate) fn stage_checkpoint(
     staging_root: &Path,
 ) -> Result<StagedRestore, RestoreError> {
     let paths = DatabasePaths::new(staging_root);
-    prepare_empty_staging(staging_root)?;
-    let operation = (|| {
+    let cleanup = StagingOwnership::prepare(staging_root)?;
+    (|| {
         validate_replica_binding(engine, checkpoint)?;
         let txid = checkpoint.txid()?;
         let plan = engine.preview(source_database_path, &paths.main, txid)?;
@@ -272,12 +302,9 @@ pub(crate) fn stage_checkpoint(
             paths,
             restored_media_count,
             restored_media_bytes,
+            cleanup,
         })
-    })();
-    if operation.is_err() {
-        let _ = remove_owned_staging(staging_root);
-    }
-    operation
+    })()
 }
 
 pub(crate) fn install_checkpoint(
@@ -290,16 +317,20 @@ pub(crate) fn install_checkpoint(
         staged.checkpoint.checkpoint_id().clone(),
     )
     .map_err(RestoreError::Database)?;
-    remove_owned_staging(&staged.paths.root)?;
+    staged.cleanup.remove()?;
     Ok(report)
 }
 
 pub(crate) fn remove_staged_checkpoint(staged: &StagedRestore) -> Result<(), RestoreError> {
-    remove_owned_staging(&staged.paths.root)
+    staged.cleanup.remove()
 }
 
 pub(crate) fn remove_staging_root(root: &Path) -> Result<(), RestoreError> {
-    remove_owned_staging(root)
+    let Some(mut cleanup) = StagingOwnership::open(root)? else {
+        return Ok(());
+    };
+    cleanup.authorize_existing_cleanup()?;
+    cleanup.remove()
 }
 
 pub(crate) fn drill_checkpoint(
@@ -323,7 +354,7 @@ pub(crate) fn drill_checkpoint(
         restored_media_count: staged.restored_media_count,
         restored_media_bytes: staged.restored_media_bytes,
     };
-    remove_owned_staging(drill_root)?;
+    staged.cleanup.remove()?;
     Ok(report)
 }
 
@@ -598,64 +629,241 @@ fn load_referenced_media_page(
     Ok(references)
 }
 
-fn prepare_empty_staging(root: &Path) -> Result<(), RestoreError> {
-    match fs::create_dir(root) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = fs::symlink_metadata(root)?;
-            if metadata.file_type().is_symlink()
-                || !metadata.is_dir()
-                || fs::read_dir(root)?.next().is_some()
-            {
-                return Err(RestoreError::InvalidStaging);
-            }
+impl StagingOwnership {
+    fn prepare(root: &Path) -> Result<Self, RestoreError> {
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+        match builder.create(root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => return Err(error.into()),
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
-    }
-    File::open(root)?.sync_all()?;
-    Ok(())
-}
-
-fn remove_owned_staging(root: &Path) -> Result<(), RestoreError> {
-    let metadata = match fs::symlink_metadata(root) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(RestoreError::InvalidStaging);
-    }
-    let allowed = [
-        "kosh.sqlite3",
-        "kosh.sqlite3-wal",
-        "kosh.sqlite3-shm",
-        "media.sqlite3",
-        "media.sqlite3-wal",
-        "media.sqlite3-shm",
-        "kosh.lock",
-    ];
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file()
-            || !entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| allowed.contains(&name))
-        {
+        let Some(mut ownership) = Self::open(root)? else {
+            return Err(RestoreError::InvalidStaging);
+        };
+        if !directory_entries(&ownership.directory)?.is_empty() {
             return Err(RestoreError::InvalidStaging);
         }
-        fs::remove_file(entry.path())?;
+        ownership.cleanup_authorized = true;
+        let chmod = unsafe { libc::fchmod(ownership.directory.as_raw_fd(), 0o700) };
+        if chmod != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        ownership.directory.sync_all()?;
+        Ok(ownership)
     }
-    fs::remove_dir(root)?;
-    if let Some(parent) = root.parent() {
-        File::open(parent)?.sync_all()?;
+
+    fn open(root: &Path) -> Result<Option<Self>, RestoreError> {
+        let metadata = match fs::symlink_metadata(root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(RestoreError::InvalidStaging);
+        }
+        let directory = open_directory_no_follow(root)?;
+        if !path_matches_open_file(root, &directory) || !is_current_user_directory(&directory)? {
+            return Err(RestoreError::InvalidStaging);
+        }
+        Ok(Some(Self {
+            root: root.to_owned(),
+            directory,
+            cleanup_authorized: false,
+        }))
     }
-    Ok(())
+
+    fn authorize_existing_cleanup(&mut self) -> Result<(), RestoreError> {
+        let _ = inspect_staging_children(&self.directory)?;
+        self.cleanup_authorized = true;
+        Ok(())
+    }
+
+    fn remove(&self) -> Result<(), RestoreError> {
+        if !self.cleanup_authorized {
+            return Err(RestoreError::InvalidStaging);
+        }
+        let inspected = inspect_staging_children(&self.directory)?;
+        for child in &inspected {
+            unlink_owned_child(&self.directory, &child.name, &child.file)?;
+        }
+        self.directory.sync_all()?;
+        if !directory_entries(&self.directory)?.is_empty() {
+            return Err(RestoreError::InvalidStaging);
+        }
+        if path_matches_open_file(&self.root, &self.directory) {
+            fs::remove_dir(&self.root)?;
+            if let Some(parent) = self.root.parent() {
+                File::open(parent)?.sync_all()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn inspect_staging_children(directory: &File) -> Result<Vec<StagingChild>, RestoreError> {
+    let mut children = Vec::new();
+    for entry in directory_entries(directory)? {
+        let Some(name) = entry.to_str() else {
+            return Err(RestoreError::InvalidStaging);
+        };
+        if !STAGING_FILENAMES.contains(&name) {
+            return Err(RestoreError::InvalidStaging);
+        }
+        let file = open_regular_child(directory, name)?;
+        if !is_current_user_file(&file)? {
+            return Err(RestoreError::InvalidStaging);
+        }
+        children.push(StagingChild {
+            name: name.to_owned(),
+            file,
+        });
+    }
+    Ok(children)
+}
+
+fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let directory = options.open(path)?;
+    if !directory.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging root is not a directory",
+        ));
+    }
+    Ok(directory)
+}
+
+fn open_regular_child(directory: &File, name: &str) -> std::io::Result<File> {
+    let name = child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "restore staging child is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn unlink_owned_child(directory: &File, name: &str, owned: &File) -> std::io::Result<()> {
+    let current = match open_regular_child(directory, name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !same_open_file(&current, owned) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "restore staging child identity changed",
+        ));
+    }
+    let name = child_name(name)?;
+    let result = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn directory_entries(directory: &File) -> std::io::Result<Vec<OsString>> {
+    let descriptor = unsafe { libc::dup(directory.as_raw_fd()) };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(descriptor) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(descriptor);
+        }
+        return Err(std::io::Error::last_os_error());
+    }
+    unsafe {
+        libc::rewinddir(stream);
+    }
+    let mut entries = Vec::new();
+    loop {
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            entries.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    if unsafe { libc::closedir(stream) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+fn child_name(name: &str) -> std::io::Result<CString> {
+    if name.is_empty() || name.as_bytes().contains(&b'/') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid restore staging child name",
+        ));
+    }
+    CString::new(name.as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid restore staging child name",
+        )
+    })
+}
+
+fn path_matches_open_file(path: &Path, open: &File) -> bool {
+    let Ok(path_metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_dir() {
+        return false;
+    }
+    let Ok(open_metadata) = open.metadata() else {
+        return false;
+    };
+    same_metadata(&path_metadata, &open_metadata)
+}
+
+fn same_open_file(left: &File, right: &File) -> bool {
+    left.metadata()
+        .ok()
+        .zip(right.metadata().ok())
+        .is_some_and(|(left, right)| same_metadata(&left, &right))
+}
+
+fn same_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn is_current_user_directory(directory: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = directory.metadata()?;
+    Ok(metadata.is_dir() && metadata.uid() == unsafe { libc::geteuid() })
+}
+
+fn is_current_user_file(file: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok(metadata.is_file() && metadata.uid() == unsafe { libc::geteuid() })
 }
 
 #[cfg(test)]
@@ -1212,12 +1420,89 @@ mod tests {
         .expect("staged restore");
         assert!(staged.paths.main.is_file());
         assert!(staged.paths.media.is_file());
+        let audited =
+            Database::initialize(staged.paths.clone()).expect("reopen staged restore for audit");
+        audited.shutdown().expect("close staged audit");
 
         drop(staged);
 
         assert!(
             !staging_root.exists(),
             "dropping an uninstalled staged restore must remove authored copies"
+        );
+    }
+
+    #[test]
+    fn staged_restore_cleanup_is_bound_to_its_opened_directory() {
+        let fixture = Fixture::new();
+        let staging_parent = tempfile::tempdir().expect("staging parent");
+        let staging_root = staging_parent.path().join("restore");
+        let displaced_root = staging_parent.path().join("displaced");
+        let staged = stage_checkpoint(
+            &fixture.store,
+            &fixture.keyspace,
+            &fixture.checkpoint,
+            &fixture.engine,
+            &fixture.source_paths.main,
+            &staging_root,
+        )
+        .expect("staged restore");
+        fs::rename(&staging_root, &displaced_root).expect("displace staging root");
+        let replacement_paths = DatabasePaths::new(&staging_root);
+        let replacement =
+            Database::initialize(replacement_paths.clone()).expect("replacement library");
+        replacement.shutdown().expect("close replacement library");
+        let replacement_main = fs::read(&replacement_paths.main).expect("replacement main");
+        let replacement_media = fs::read(&replacement_paths.media).expect("replacement media");
+
+        drop(staged);
+
+        assert_eq!(
+            fs::read(&replacement_paths.main).expect("preserved replacement main"),
+            replacement_main
+        );
+        assert_eq!(
+            fs::read(&replacement_paths.media).expect("preserved replacement media"),
+            replacement_media
+        );
+        assert_eq!(
+            fs::read_dir(&displaced_root)
+                .expect("descriptor-owned displaced staging root")
+                .count(),
+            0,
+            "cleanup must unlink only children in its opened directory"
+        );
+    }
+
+    #[test]
+    fn staging_rejection_never_claims_or_cleans_an_existing_library() {
+        let fixture = Fixture::new();
+        let existing_parent = tempfile::tempdir().expect("existing parent");
+        let existing_root = existing_parent.path().join("existing");
+        let existing_paths = DatabasePaths::new(&existing_root);
+        let existing = Database::initialize(existing_paths.clone()).expect("existing Kosh library");
+        existing.shutdown().expect("close existing library");
+        let existing_main = fs::read(&existing_paths.main).expect("existing main");
+        let existing_media = fs::read(&existing_paths.media).expect("existing media");
+
+        assert!(matches!(
+            stage_checkpoint(
+                &fixture.store,
+                &fixture.keyspace,
+                &fixture.checkpoint,
+                &fixture.engine,
+                &fixture.source_paths.main,
+                &existing_root,
+            ),
+            Err(RestoreError::InvalidStaging)
+        ));
+        assert_eq!(
+            fs::read(&existing_paths.main).expect("preserved existing main"),
+            existing_main
+        );
+        assert_eq!(
+            fs::read(&existing_paths.media).expect("preserved existing media"),
+            existing_media
         );
     }
 

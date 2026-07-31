@@ -18,10 +18,16 @@ use crate::database::{validate_restored_pair, Database, DatabasePaths};
 
 use super::{
     credentials::R2Credentials,
-    domain::{BackupSetId, CheckpointId, R2AccountId, R2BucketName, R2Jurisdiction, R2Target},
+    domain::{
+        BackupSetId, CheckpointId, ContentSha256, R2AccountId, R2BucketName, R2Jurisdiction,
+        R2Target,
+    },
     litestream::{CommandLitestreamRestore, EphemeralLitestreamRuntime, VerifiedLitestreamBinary},
     object_store::R2ObjectStore,
-    restore::{discover_checkpoints, remove_staging_root, stage_checkpoint, RemoteCheckpoint},
+    restore::{
+        discover_checkpoints, remove_staged_checkpoint, remove_staging_root, stage_checkpoint,
+        RemoteCheckpoint, StagedRestore,
+    },
 };
 
 const COMMAND: &str = "recovery";
@@ -34,12 +40,15 @@ const BUCKET_ENV: &str = "KOSH_LITESTREAM_R2_BUCKET";
 const ACCESS_KEY_ENV: &str = "KOSH_LITESTREAM_R2_ACCESS_KEY_ID";
 const SECRET_KEY_ENV: &str = "KOSH_LITESTREAM_R2_SECRET_ACCESS_KEY";
 const RESERVATION_FILENAME: &str = ".kosh-recovery-reservation-v1";
+const COMPLETION_FILENAME: &str = ".kosh-recovery-completed-v1.json";
 const MAIN_TEMP_FILENAME: &str = ".kosh-recovery-main-v1.tmp";
 const MEDIA_TEMP_FILENAME: &str = ".kosh-recovery-media-v1.tmp";
 const MAIN_FILENAME: &str = "kosh.sqlite3";
 const MEDIA_FILENAME: &str = "media.sqlite3";
 const RESERVATION_SCHEMA_VERSION: u32 = 1;
 const MAX_RESERVATION_BYTES: u64 = 4 * 1024;
+const COMPLETION_SCHEMA_VERSION: u32 = 1;
+const MAX_COMPLETION_BYTES: u64 = 32 * 1024;
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -49,11 +58,11 @@ struct RecoveryReservationControl {
     target_data_directory: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteRestoreReport {
     schema_version: u32,
-    result: &'static str,
+    result: String,
     backup_set_id: String,
     checkpoint_id: String,
     target_data_directory: String,
@@ -68,6 +77,19 @@ struct RemoteRestoreReport {
     research_runs: u64,
     research_citations: u64,
     safety_snapshot_created: bool,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompletedRecoveryReceipt {
+    schema_version: u32,
+    reservation_token: String,
+    backup_set_id: String,
+    requested_checkpoint_selector: String,
+    target_data_directory: String,
+    main_sha256: ContentSha256,
+    media_sha256: ContentSha256,
+    report: RemoteRestoreReport,
 }
 
 pub(crate) fn run_if_requested() -> Option<i32> {
@@ -107,6 +129,10 @@ fn run(arguments: Vec<OsString>) -> Result<RemoteRestoreReport, String> {
         .and_then(|value| BackupSetId::parse(value).map_err(|_| "invalid backup set ID".into()))?;
     let selector = parse_utf8(&arguments[2], "checkpoint selector")?;
     let target_root = PathBuf::from(&arguments[3]);
+    if let Some(report) = load_completed_recovery(&target_root, &backup_set_id, selector.as_str())?
+    {
+        return Ok(report);
+    }
     let reservation = RecoveryTargetReservation::reserve(&target_root)?;
     let target = load_target()?;
     let credentials = load_credentials()?;
@@ -208,13 +234,9 @@ fn restore_remote(
         .shutdown()
         .map_err(|_| "the staged Kosh library did not close cleanly")?;
 
-    reservation.install_validated_pair(&staged.paths)?;
-    reservation.verify_installed_pair_matches(&staged.paths)?;
-    reservation.finish_after_staging_cleanup(&staged.paths.root)?;
-
-    Ok(RemoteRestoreReport {
+    let report = RemoteRestoreReport {
         schema_version: 1,
-        result: "PASSED",
+        result: "PASSED".into(),
         backup_set_id: backup_set_id.to_string(),
         checkpoint_id: checkpoint.checkpoint_id().to_string(),
         target_data_directory: target_root.to_string_lossy().into_owned(),
@@ -229,7 +251,13 @@ fn restore_remote(
         research_runs,
         research_citations,
         safety_snapshot_created: false,
-    })
+    };
+
+    reservation.install_validated_pair(&staged.paths)?;
+    reservation.verify_installed_pair_matches(&staged.paths)?;
+    reservation.finish_after_staging_cleanup(&staged, backup_set_id, selector, &report)?;
+
+    Ok(report)
 }
 
 #[derive(Debug)]
@@ -453,31 +481,97 @@ impl RecoveryTargetReservation {
         Ok(())
     }
 
-    fn finish(&mut self) -> Result<(), String> {
+    fn publish_completed(
+        &mut self,
+        backup_set_id: &BackupSetId,
+        selector: &str,
+        report: &RemoteRestoreReport,
+    ) -> Result<(), String> {
         if !path_matches_open_file(&self.root, &self.directory) {
             return Err("the recovery target was replaced before completion".into());
         }
-        unlink_owned_child(&self.directory, RESERVATION_FILENAME, &self.marker)
-            .map_err(|_| "the recovery target reservation could not be removed")?;
-        self.directory
-            .sync_all()
-            .map_err(|_| "the recovery target reservation removal was not durable")?;
-        if !path_matches_open_file(&self.root, &self.directory) {
-            return Err("the recovery target was replaced during completion".into());
+        let installed_main = self
+            .installed_main
+            .as_ref()
+            .ok_or_else(|| "the installed main database identity is unavailable".to_owned())?;
+        let installed_media = self
+            .installed_media
+            .as_ref()
+            .ok_or_else(|| "the installed media database identity is unavailable".to_owned())?;
+        let target_data_directory = self
+            .root
+            .to_str()
+            .ok_or_else(|| "the recovery target must be valid UTF-8".to_owned())?
+            .to_owned();
+        let receipt = CompletedRecoveryReceipt {
+            schema_version: COMPLETION_SCHEMA_VERSION,
+            reservation_token: self.token.clone(),
+            backup_set_id: backup_set_id.to_string(),
+            requested_checkpoint_selector: selector.to_owned(),
+            target_data_directory,
+            main_sha256: ContentSha256::from_bytes(
+                sha256_file(installed_main)
+                    .map_err(|_| "the completed main database could not be identified")?,
+            ),
+            media_sha256: ContentSha256::from_bytes(
+                sha256_file(installed_media)
+                    .map_err(|_| "the completed media database could not be identified")?,
+            ),
+            report: report.clone(),
+        };
+        let bytes = serde_json::to_vec(&receipt)
+            .map_err(|_| "the completed recovery receipt could not be encoded")?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_COMPLETION_BYTES {
+            return Err("the completed recovery receipt is outside its size limit".into());
         }
+        let mut completed = create_private_child(&self.directory, COMPLETION_FILENAME)
+            .map_err(|_| "the completed recovery receipt could not be created")?;
+        let publication = (|| {
+            completed.write_all(&bytes)?;
+            completed.sync_all()?;
+            self.directory.sync_all()?;
+            if !path_matches_open_file(&self.root, &self.directory) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "the completed recovery target was replaced",
+                ));
+            }
+            Ok(())
+        })();
+        if publication.is_err() {
+            let _ = unlink_owned_child(&self.directory, COMPLETION_FILENAME, &completed);
+            let _ = self.directory.sync_all();
+            return Err("the completed recovery receipt could not be persisted".into());
+        }
+
+        // The descriptor-bound completion receipt is the commit point. From
+        // here onward a retry can verify and return the same report even if
+        // the process dies before stdout is flushed or marker cleanup runs.
         self.installed_main = None;
         self.installed_media = None;
         self.active = false;
+        let _ = unlink_owned_child(&self.directory, RESERVATION_FILENAME, &self.marker);
+        let _ = self.directory.sync_all();
+        drop(completed);
         Ok(())
     }
 
-    fn finish_after_staging_cleanup(&mut self, staging_root: &Path) -> Result<(), String> {
-        if staging_root != self.staging_root() {
+    fn finish_after_staging_cleanup(
+        &mut self,
+        staged: &StagedRestore,
+        backup_set_id: &BackupSetId,
+        selector: &str,
+        report: &RemoteRestoreReport,
+    ) -> Result<(), String> {
+        if staged.paths.root != self.staging_root() {
             return Err("the validated recovery staging pair identity changed".into());
         }
-        remove_staging_root(staging_root)
+        remove_staged_checkpoint(staged)
             .map_err(|_| "the validated recovery staging pair could not be removed")?;
-        self.finish()
+        if !path_matches_open_file(&self.root, &self.directory) {
+            return Err("the recovery target was replaced before completion".into());
+        }
+        self.publish_completed(backup_set_id, selector, report)
     }
 }
 
@@ -496,6 +590,193 @@ impl Drop for RecoveryTargetReservation {
             let _ = remove_empty_open_directory(&self.root, &self.directory);
         }
     }
+}
+
+fn load_completed_recovery(
+    path: &Path,
+    backup_set_id: &BackupSetId,
+    selector: &str,
+) -> Result<Option<RemoteRestoreReport>, String> {
+    validate_target_location(path)?;
+    let metadata = match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Ok(metadata) => metadata,
+        Err(_) => return Err("the recovery target could not be inspected".into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(None);
+    }
+    let directory = match open_directory_no_follow(path) {
+        Ok(directory) => directory,
+        Err(_) => return Ok(None),
+    };
+    let directory_metadata = directory
+        .metadata()
+        .map_err(|_| "the completed recovery target could not be inspected")?;
+    if !path_matches_open_file(path, &directory) || !is_private_owned_directory(&directory_metadata)
+    {
+        return Ok(None);
+    }
+    let entries = directory_entries(&directory)
+        .map_err(|_| "the completed recovery target could not be inspected")?;
+    let has_completion = entries.contains(&OsString::from(COMPLETION_FILENAME));
+    let has_marker = entries.contains(&OsString::from(RESERVATION_FILENAME));
+    if !has_completion {
+        return Ok(None);
+    }
+
+    let mut marker = if has_marker {
+        let mut marker = open_regular_child(&directory, RESERVATION_FILENAME)
+            .map_err(|_| "the completed recovery reservation marker is invalid")?;
+        let marker_metadata = marker
+            .metadata()
+            .map_err(|_| "the completed recovery reservation marker is invalid")?;
+        if !is_private_owned_file(&marker_metadata) || link_count(&marker_metadata) != 1 {
+            return Err("the completed recovery reservation marker is invalid".into());
+        }
+        match marker.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                return Err("another recovery command still owns this target".into());
+            }
+            Err(TryLockError::Error(_)) => {
+                return Err("the completed recovery reservation could not be locked".into());
+            }
+        }
+        Some((
+            read_reservation_control(&mut marker)
+                .map_err(|_| "the completed recovery reservation marker is invalid")?,
+            marker,
+        ))
+    } else {
+        None
+    };
+
+    let verified = verify_completed_recovery(
+        path,
+        &directory,
+        &entries,
+        marker.as_ref().map(|(control, _)| control),
+        backup_set_id,
+        selector,
+    );
+    let report = match verified {
+        Ok(report) => report,
+        Err(_) if marker.is_some() => return Ok(None),
+        Err(message) => return Err(message),
+    };
+    if let Some((_, marker_file)) = marker.take() {
+        let _ = unlink_owned_child(&directory, RESERVATION_FILENAME, &marker_file);
+        let _ = directory.sync_all();
+    }
+    Ok(Some(report))
+}
+
+fn verify_completed_recovery(
+    path: &Path,
+    directory: &File,
+    entries: &[OsString],
+    reservation: Option<&RecoveryReservationControl>,
+    backup_set_id: &BackupSetId,
+    selector: &str,
+) -> Result<RemoteRestoreReport, String> {
+    let mut expected_entries = vec![
+        OsString::from(COMPLETION_FILENAME),
+        OsString::from(MAIN_FILENAME),
+        OsString::from(MEDIA_FILENAME),
+    ];
+    if reservation.is_some() {
+        expected_entries.push(OsString::from(RESERVATION_FILENAME));
+    }
+    expected_entries.sort();
+    if entries != expected_entries {
+        return Err("the completed recovery target contains unexpected data".into());
+    }
+
+    let mut completed = open_regular_child(directory, COMPLETION_FILENAME)
+        .map_err(|_| "the completed recovery receipt is invalid")?;
+    let completed_metadata = completed
+        .metadata()
+        .map_err(|_| "the completed recovery receipt is invalid")?;
+    if !is_private_owned_file(&completed_metadata) || link_count(&completed_metadata) != 1 {
+        return Err("the completed recovery receipt is invalid".into());
+    }
+    let receipt = read_completed_recovery(&mut completed)
+        .map_err(|_| "the completed recovery receipt is invalid")?;
+    let target = path
+        .to_str()
+        .ok_or_else(|| "the recovery target must be valid UTF-8".to_owned())?;
+    let canonical_token = uuid::Uuid::parse_str(&receipt.reservation_token)
+        .ok()
+        .is_some_and(|token| token.to_string() == receipt.reservation_token);
+    if receipt.schema_version != COMPLETION_SCHEMA_VERSION
+        || !canonical_token
+        || receipt.backup_set_id != backup_set_id.to_string()
+        || receipt.requested_checkpoint_selector != selector
+        || receipt.target_data_directory != target
+        || receipt.report.schema_version != 1
+        || receipt.report.result != "PASSED"
+        || receipt.report.backup_set_id != receipt.backup_set_id
+        || receipt.report.target_data_directory != receipt.target_data_directory
+        || (selector != LATEST && receipt.report.checkpoint_id != selector)
+        || reservation.is_some_and(|control| {
+            !reservation_control_matches(path, control)
+                || control.token != receipt.reservation_token
+        })
+    {
+        return Err("the completed recovery receipt does not match this request".into());
+    }
+
+    let main = open_regular_child(directory, MAIN_FILENAME)
+        .map_err(|_| "the completed main database is unavailable")?;
+    let media = open_regular_child(directory, MEDIA_FILENAME)
+        .map_err(|_| "the completed media database is unavailable")?;
+    for file in [&main, &media] {
+        let metadata = file
+            .metadata()
+            .map_err(|_| "the completed recovery database identity is unavailable")?;
+        if !is_private_owned_file(&metadata) || link_count(&metadata) != 1 {
+            return Err("the completed recovery database identity is invalid".into());
+        }
+    }
+    if ContentSha256::from_bytes(
+        sha256_file(&main).map_err(|_| "the completed main database could not be verified")?,
+    ) != receipt.main_sha256
+        || ContentSha256::from_bytes(
+            sha256_file(&media)
+                .map_err(|_| "the completed media database could not be verified")?,
+        ) != receipt.media_sha256
+        || !path_matches_open_file(path, directory)
+    {
+        return Err("the completed recovery databases do not match their receipt".into());
+    }
+    Ok(receipt.report)
+}
+
+fn read_completed_recovery(file: &mut File) -> std::io::Result<CompletedRecoveryReceipt> {
+    let length = file.metadata()?.len();
+    if length == 0 || length > MAX_COMPLETION_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid completed recovery receipt length",
+        ));
+    }
+    file.rewind()?;
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(MAX_COMPLETION_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unstable completed recovery receipt length",
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid completed recovery receipt",
+        )
+    })
 }
 
 fn prepare_new_or_abandoned_target(path: &Path) -> Result<(), String> {
@@ -564,6 +845,7 @@ fn reclaim_abandoned_reservation(path: &Path) -> Result<(), String> {
 
     let allowed = [
         RESERVATION_FILENAME,
+        COMPLETION_FILENAME,
         MAIN_TEMP_FILENAME,
         MEDIA_TEMP_FILENAME,
         MAIN_FILENAME,
@@ -1042,6 +1324,27 @@ fn usage() -> String {
 mod tests {
     use super::*;
 
+    fn completed_report(backup_set_id: &BackupSetId, target: &Path) -> RemoteRestoreReport {
+        RemoteRestoreReport {
+            schema_version: 1,
+            result: "PASSED".into(),
+            backup_set_id: backup_set_id.to_string(),
+            checkpoint_id: CheckpointId::new().to_string(),
+            target_data_directory: target.to_string_lossy().into_owned(),
+            restored_media_count: 0,
+            restored_media_bytes: 0,
+            active_tidbits: 0,
+            revisions: 0,
+            sources: 0,
+            attachments: 0,
+            media_blobs: 0,
+            search_documents_rebuilt: 0,
+            research_runs: 0,
+            research_citations: 0,
+            safety_snapshot_created: false,
+        }
+    }
+
     #[test]
     fn command_atomically_reserves_a_canonical_new_absolute_target() {
         let root = tempfile::tempdir().expect("recovery parent");
@@ -1142,10 +1445,10 @@ mod tests {
         reservation
             .install_validated_pair(&staged_paths)
             .expect("descriptor-bound install");
-        assert_eq!(
-            reservation.finish_after_staging_cleanup(&recovery_staging_root),
-            Err("the validated recovery staging pair could not be removed".into())
-        );
+        assert!(matches!(
+            remove_staging_root(&recovery_staging_root),
+            Err(super::super::restore::RestoreError::InvalidStaging)
+        ));
         drop(reservation);
 
         assert!(
@@ -1159,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_bound_install_publishes_a_valid_pair_without_control_residue() {
+    fn descriptor_bound_install_publishes_a_durable_retry_receipt() {
         let root = tempfile::tempdir().expect("recovery parent");
         let target = root.path().join("restored");
         let staged_root = tempfile::tempdir().expect("staged pair");
@@ -1174,10 +1477,15 @@ mod tests {
         reservation
             .verify_installed_pair_matches(&staged_paths)
             .expect("descriptor-bound byte verification");
-        reservation.finish().expect("finish reservation");
+        let backup_set_id = BackupSetId::new();
+        let report = completed_report(&backup_set_id, &target);
+        reservation
+            .publish_completed(&backup_set_id, LATEST, &report)
+            .expect("publish completed recovery");
 
         assert!(target.join(MAIN_FILENAME).is_file());
         assert!(target.join(MEDIA_FILENAME).is_file());
+        assert!(target.join(COMPLETION_FILENAME).is_file());
         for control in [
             RESERVATION_FILENAME,
             MAIN_TEMP_FILENAME,
@@ -1185,6 +1493,21 @@ mod tests {
         ] {
             assert!(!target.join(control).exists(), "{control} must be removed");
         }
+        assert_eq!(
+            load_completed_recovery(&target, &backup_set_id, LATEST)
+                .expect("load durable completed recovery"),
+            Some(report.clone())
+        );
+        assert_eq!(
+            run(vec![
+                OsString::from(REMOTE_RESTORE),
+                OsString::from(backup_set_id.to_string()),
+                OsString::from(LATEST),
+                target.as_os_str().to_owned(),
+            ])
+            .expect("retry exact completed command without remote credentials"),
+            report
+        );
         let restored =
             Database::initialize(DatabasePaths::new(&target)).expect("reopen installed pair");
         restored.shutdown().expect("close installed pair");
