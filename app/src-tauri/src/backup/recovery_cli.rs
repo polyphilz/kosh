@@ -1,7 +1,7 @@
 use std::{
     ffi::{CStr, CString, OsString},
     fs::{self, File, OpenOptions},
-    io::Seek,
+    io::{Read, Seek},
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{ffi::OsStringExt, fs::OpenOptionsExt},
@@ -11,6 +11,7 @@ use std::{
 };
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::database::{validate_restored_pair, Database, DatabasePaths};
@@ -160,27 +161,54 @@ fn restore_remote(
         .map_err(|_| "the isolated recovery runtime could not be removed")?;
     let restored_media_count = staged.restored_media_count;
     let restored_media_bytes = staged.restored_media_bytes;
-    reservation.install_validated_pair(&staged.paths)?;
-    remove_staged_checkpoint(&staged)
-        .map_err(|_| "the validated recovery staging pair could not be removed")?;
 
-    let database = Database::initialize(DatabasePaths::new(&target_root))
-        .map_err(|_| "the restored Kosh library did not reopen normally")?;
+    // Perform every write-capable reopen and search repair against the isolated
+    // staging pair. After publication, the target is touched only through its
+    // retained directory descriptor until the reservation is durably released.
+    let database = Database::initialize(staged.paths.clone())
+        .map_err(|_| "the independently staged Kosh library did not reopen normally")?;
     let search_documents_rebuilt = database
         .client()
         .rebuild_search()
-        .map_err(|_| "the restored lexical search projection could not be rebuilt")?;
+        .map_err(|_| "the staged lexical search projection could not be rebuilt")?;
     database
         .client()
         .full_integrity_check()
-        .map_err(|_| "the reopened Kosh library failed its full integrity check")?;
+        .map_err(|_| "the staged Kosh library failed its full integrity check")?;
     let main = database
         .open_main_read_only()
-        .map_err(|_| "the restored Kosh evidence could not be inspected")?;
+        .map_err(|_| "the staged Kosh evidence could not be inspected")?;
     let media = database
         .open_media_read_only()
-        .map_err(|_| "the restored Kosh media could not be inspected")?;
-    let report = RemoteRestoreReport {
+        .map_err(|_| "the staged Kosh media could not be inspected")?;
+    let active_tidbits = count(
+        &main,
+        "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL",
+    )?;
+    let revisions = count(&main, "SELECT count(*) FROM tidbit_revision")?;
+    let sources = count(&main, "SELECT count(*) FROM source")?;
+    let attachments = count(&main, "SELECT count(*) FROM attachment")?;
+    let media_blobs = count(&media, "SELECT count(*) FROM media_blob")?;
+    let research_runs = count(&main, "SELECT count(*) FROM research_run")?;
+    let research_citations = count(
+        &main,
+        "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0)
+         FROM research_run
+         WHERE final_answer_json IS NOT NULL",
+    )?;
+    drop(media);
+    drop(main);
+    database
+        .shutdown()
+        .map_err(|_| "the staged Kosh library did not close cleanly")?;
+
+    reservation.install_validated_pair(&staged.paths)?;
+    reservation.verify_installed_pair_matches(&staged.paths)?;
+    reservation.finish()?;
+    remove_staged_checkpoint(&staged)
+        .map_err(|_| "the validated recovery staging pair could not be removed")?;
+
+    Ok(RemoteRestoreReport {
         schema_version: 1,
         result: "PASSED",
         backup_set_id: backup_set_id.to_string(),
@@ -188,30 +216,16 @@ fn restore_remote(
         target_data_directory: target_root.to_string_lossy().into_owned(),
         restored_media_count,
         restored_media_bytes,
-        active_tidbits: count(
-            &main,
-            "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL",
-        )?,
-        revisions: count(&main, "SELECT count(*) FROM tidbit_revision")?,
-        sources: count(&main, "SELECT count(*) FROM source")?,
-        attachments: count(&main, "SELECT count(*) FROM attachment")?,
-        media_blobs: count(&media, "SELECT count(*) FROM media_blob")?,
+        active_tidbits,
+        revisions,
+        sources,
+        attachments,
+        media_blobs,
         search_documents_rebuilt,
-        research_runs: count(&main, "SELECT count(*) FROM research_run")?,
-        research_citations: count(
-            &main,
-            "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0)
-             FROM research_run
-             WHERE final_answer_json IS NOT NULL",
-        )?,
+        research_runs,
+        research_citations,
         safety_snapshot_created: false,
-    };
-    drop(media);
-    drop(main);
-    database
-        .shutdown()
-        .map_err(|_| "the restored Kosh library did not close cleanly")?;
-    Ok(report)
+    })
 }
 
 #[derive(Debug)]
@@ -219,6 +233,8 @@ struct RecoveryTargetReservation {
     root: PathBuf,
     directory: File,
     marker: File,
+    installed_main: Option<File>,
+    installed_media: Option<File>,
     active: bool,
 }
 
@@ -267,6 +283,8 @@ impl RecoveryTargetReservation {
             root: path.to_owned(),
             directory,
             marker,
+            installed_main: None,
+            installed_media: None,
             active: true,
         })
     }
@@ -343,14 +361,6 @@ impl RecoveryTargetReservation {
                     "the reserved recovery directory was replaced",
                 ));
             }
-            unlink_owned_child(&self.directory, RESERVATION_FILENAME, &self.marker)?;
-            self.directory.sync_all()?;
-            if !path_matches_open_file(&self.root, &self.directory) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "the reserved recovery directory was replaced",
-                ));
-            }
             Ok(())
         })();
         if publication.is_err() {
@@ -361,9 +371,71 @@ impl RecoveryTargetReservation {
             let _ = self.directory.sync_all();
             return Err(
                 "the clean recovery target changed during installation; no existing data was modified"
-                    .into(),
+                .into(),
             );
         }
+        self.installed_main = Some(main_temporary);
+        self.installed_media = Some(media_temporary);
+        Ok(())
+    }
+
+    fn verify_installed_pair_matches(&self, staged: &DatabasePaths) -> Result<(), String> {
+        if !path_matches_open_file(&self.root, &self.directory) {
+            return Err("the recovery target was replaced after installation".into());
+        }
+        let mut expected_entries = vec![
+            OsString::from(MAIN_FILENAME),
+            OsString::from(MEDIA_FILENAME),
+            OsString::from(RESERVATION_FILENAME),
+        ];
+        expected_entries.sort();
+        let entries = directory_entries(&self.directory)
+            .map_err(|_| "the installed recovery target could not be inspected")?;
+        if entries != expected_entries {
+            return Err("the installed recovery target contains unexpected data".into());
+        }
+        let installed_main = self
+            .installed_main
+            .as_ref()
+            .ok_or_else(|| "the installed main database identity is unavailable".to_owned())?;
+        let installed_media = self
+            .installed_media
+            .as_ref()
+            .ok_or_else(|| "the installed media database identity is unavailable".to_owned())?;
+        verify_owned_child_matches_source(
+            &self.directory,
+            MAIN_FILENAME,
+            installed_main,
+            &staged.main,
+        )
+        .map_err(|_| "the installed main database does not match its audited staging file")?;
+        verify_owned_child_matches_source(
+            &self.directory,
+            MEDIA_FILENAME,
+            installed_media,
+            &staged.media,
+        )
+        .map_err(|_| "the installed media database does not match its audited staging file")?;
+        if !path_matches_open_file(&self.root, &self.directory) {
+            return Err("the recovery target was replaced during installed-pair validation".into());
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        if !path_matches_open_file(&self.root, &self.directory) {
+            return Err("the recovery target was replaced before completion".into());
+        }
+        unlink_owned_child(&self.directory, RESERVATION_FILENAME, &self.marker)
+            .map_err(|_| "the recovery target reservation could not be removed")?;
+        self.directory
+            .sync_all()
+            .map_err(|_| "the recovery target reservation removal was not durable")?;
+        if !path_matches_open_file(&self.root, &self.directory) {
+            return Err("the recovery target was replaced during completion".into());
+        }
+        self.installed_main = None;
+        self.installed_media = None;
         self.active = false;
         Ok(())
     }
@@ -372,6 +444,12 @@ impl RecoveryTargetReservation {
 impl Drop for RecoveryTargetReservation {
     fn drop(&mut self) {
         if self.active {
+            if let Some(main) = self.installed_main.as_ref() {
+                let _ = unlink_owned_child(&self.directory, MAIN_FILENAME, main);
+            }
+            if let Some(media) = self.installed_media.as_ref() {
+                let _ = unlink_owned_child(&self.directory, MEDIA_FILENAME, media);
+            }
             let _ = unlink_owned_child(&self.directory, RESERVATION_FILENAME, &self.marker);
             let _ = self.directory.sync_all();
             let _ = remove_empty_open_directory(&self.root, &self.directory);
@@ -539,6 +617,46 @@ fn same_open_file(left: &File, right: &File) -> bool {
 fn same_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn verify_owned_child_matches_source(
+    directory: &File,
+    name: &str,
+    owned: &File,
+    source: &Path,
+) -> std::io::Result<()> {
+    let installed = open_regular_child(directory, name)?;
+    if !same_open_file(&installed, owned) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "installed recovery child identity changed",
+        ));
+    }
+    let source = open_regular_no_follow(source)?;
+    if source.metadata()?.len() != installed.metadata()?.len()
+        || sha256_file(&source)? != sha256_file(&installed)?
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "installed recovery child bytes changed",
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_file(file: &File) -> std::io::Result<[u8; 32]> {
+    let mut file = file.try_clone()?;
+    file.rewind()?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest.finalize().into())
 }
 
 fn directory_entries(directory: &File) -> std::io::Result<Vec<OsString>> {
@@ -735,6 +853,10 @@ mod tests {
         reservation
             .install_validated_pair(&staged_paths)
             .expect("descriptor-bound install");
+        reservation
+            .verify_installed_pair_matches(&staged_paths)
+            .expect("descriptor-bound byte verification");
+        reservation.finish().expect("finish reservation");
 
         assert!(target.join(MAIN_FILENAME).is_file());
         assert!(target.join(MEDIA_FILENAME).is_file());
@@ -748,6 +870,59 @@ mod tests {
         let restored =
             Database::initialize(DatabasePaths::new(&target)).expect("reopen installed pair");
         restored.shutdown().expect("close installed pair");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_bound_audit_refuses_a_raced_reopen_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("recovery parent");
+        let target = root.path().join("restored");
+        let displaced = root.path().join("displaced");
+        let staged_root = tempfile::tempdir().expect("staged pair");
+        let staged_paths = DatabasePaths::new(staged_root.path());
+        let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
+        staged.shutdown().expect("close staged pair");
+        let outside_parent = tempfile::tempdir().expect("outside parent");
+        let outside_root = outside_parent.path().join("existing-library");
+        let outside_paths = DatabasePaths::new(&outside_root);
+        let outside = Database::initialize(outside_paths.clone()).expect("outside database pair");
+        outside.shutdown().expect("close outside pair");
+        let outside_main = fs::read(&outside_paths.main).expect("outside main bytes");
+        let outside_media = fs::read(&outside_paths.media).expect("outside media bytes");
+        let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
+        reservation
+            .install_validated_pair(&staged_paths)
+            .expect("descriptor-bound install");
+
+        fs::rename(&target, &displaced).expect("displace installed reservation");
+        symlink(&outside_root, &target).expect("raced target symlink");
+        assert_eq!(
+            reservation.verify_installed_pair_matches(&staged_paths),
+            Err("the recovery target was replaced after installation".into())
+        );
+
+        drop(reservation);
+        assert!(fs::symlink_metadata(&target)
+            .expect("preserved target symlink")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(&outside_paths.main).expect("preserved outside main"),
+            outside_main
+        );
+        assert_eq!(
+            fs::read(&outside_paths.media).expect("preserved outside media"),
+            outside_media
+        );
+        assert_eq!(
+            fs::read_dir(&displaced)
+                .expect("descriptor-owned displaced directory")
+                .count(),
+            0,
+            "descriptor-bound audit cleanup must remove only owned installed children"
+        );
     }
 
     #[cfg(unix)]

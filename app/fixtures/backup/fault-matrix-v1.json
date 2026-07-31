@@ -310,6 +310,13 @@
       "invariants": ["authored-bytes", "citation-provenance", "search-rebuildability"]
     },
     {
+      "id": "reopen-clean-target-race",
+      "phase": "reopen",
+      "failureClass": "concurrency",
+      "test": "backup::recovery_cli::tests::descriptor_bound_audit_refuses_a_raced_reopen_without_touching_its_target",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
       "id": "reopen-snapshot-provenance",
       "phase": "reopen",
       "failureClass": "retry",
