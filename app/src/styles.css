@@ -1395,6 +1395,232 @@ button {
   line-height: 1.55;
 }
 
+.backup-settings__intro {
+  padding: 16px 18px;
+}
+
+.backup-settings__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backup-settings__intro > p {
+  max-width: 650px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.backup-settings__switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+}
+
+.backup-settings__switch strong,
+.backup-settings__switch small {
+  display: block;
+}
+
+.backup-settings__switch strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.backup-settings__switch small {
+  max-width: 570px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.backup-settings__form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+}
+
+.backup-settings__form > label {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding: 15px 18px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.backup-settings__form > label:nth-child(even) {
+  border-right: 0;
+}
+
+.backup-settings__form > label > span strong,
+.backup-settings__form > label > span small {
+  display: block;
+}
+
+.backup-settings__form > label > span strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.backup-settings__form > label > span small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.backup-settings__form .kosh-input,
+.backup-settings__form .kosh-select,
+.backup-settings__form .kosh-select select {
+  width: 100%;
+}
+
+.backup-settings__form-actions,
+.backup-settings__actions,
+.backup-settings__recovery-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 13px 18px;
+}
+
+.backup-settings__form-actions {
+  grid-column: 1 / -1;
+}
+
+.backup-settings__target > :nth-child(3) {
+  border-bottom: 0;
+}
+
+.backup-settings__target > :nth-child(4) {
+  border-bottom: 0;
+}
+
+.backup-settings__target .settings-diagnostic strong {
+  user-select: text;
+}
+
+.backup-settings__actions {
+  border-top: 1px solid var(--line);
+}
+
+.backup-settings__subhead {
+  padding: 15px 18px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.backup-settings__subhead h3,
+.backup-settings__subhead p {
+  margin: 0;
+}
+
+.backup-settings__subhead h3 {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.backup-settings__subhead p {
+  max-width: 620px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.backup-settings__subhead--recovery {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 15px;
+}
+
+.backup-settings__health {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.backup-settings__health > :last-child {
+  border-right: 0;
+}
+
+.backup-settings__recovery-controls {
+  justify-content: flex-start;
+  border-top: 1px solid var(--line);
+}
+
+.backup-settings__recovery-controls .kosh-select {
+  min-width: min(350px, 100%);
+}
+
+.backup-settings__preview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--success) 5%, transparent);
+}
+
+.backup-settings__preview strong,
+.backup-settings__preview span {
+  display: block;
+}
+
+.backup-settings__preview strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.backup-settings__preview span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.backup-settings__retention {
+  padding: 12px 18px 15px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.backup-settings__retention summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.backup-settings__retention p {
+  max-width: 680px;
+  margin: 10px 0 0;
+}
+
+.backup-settings__retry {
+  padding: 0 18px 15px;
+}
+
+.backup-settings__takeover-confirmation {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.backup-settings__takeover-confirmation > span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .settings-panel__header {
   display: flex;
   align-items: flex-start;
@@ -1579,6 +1805,34 @@ button {
 }
 
 @media (max-width: 760px) {
+  .backup-settings__form,
+  .backup-settings__health,
+  .backup-settings__preview {
+    grid-template-columns: 1fr;
+  }
+
+  .backup-settings__form > label,
+  .backup-settings__form > label:nth-child(even),
+  .backup-settings__health > * {
+    border-right: 0;
+  }
+
+  .backup-settings__form-actions,
+  .backup-settings__actions,
+  .backup-settings__recovery-controls,
+  .backup-settings__subhead--recovery,
+  .backup-settings__switch {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .backup-settings__form-actions .kosh-button,
+  .backup-settings__actions .kosh-button,
+  .backup-settings__recovery-controls .kosh-button,
+  .backup-settings__subhead--recovery .kosh-button {
+    width: 100%;
+  }
+
   .settings-diagnostics-grid {
     grid-template-columns: 1fr;
   }

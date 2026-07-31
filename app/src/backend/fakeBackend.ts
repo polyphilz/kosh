@@ -1,10 +1,15 @@
 import type {
   Backend,
+  BackupConnectionTestResult,
+  BackupRestoreDrill,
+  BackupRestorePreview,
+  BackupSettingsSnapshot,
   BeginResearchProcessInput,
   CitationResolution,
   ClaudeCliDefaults,
   ClaudeSetupStatus,
   ClearDraftInput,
+  ConfigureBackupInput,
   DeleteTidbitInput,
   DraftRecord,
   EditTidbitInput,
@@ -27,6 +32,7 @@ import type {
   ResearchProcessEvent,
   ResearchRunPage,
   ResearchRunRecord,
+  RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
   RestoreTidbitInput,
   PurgeTidbitInput,
@@ -36,6 +42,7 @@ import type {
   SearchPassagesResponse,
   SemanticRuntimeLogs,
   SemanticRuntimeStatus,
+  SetBackupEnabledInput,
   SetShortcutSettingsInput,
   ShortcutSettingsSnapshot,
   SourceDraft,
@@ -46,6 +53,9 @@ import type {
   TidbitRevisionRecord,
   TidbitSource,
   StartResearchProcessOutput,
+  TakeOverBackupInput,
+  TestBackupConnectionInput,
+  RestoreCheckpointInput,
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
 import { TIDBIT_PURGE_DELAY_MS } from "./contracts";
@@ -62,6 +72,9 @@ export const browserRuntimeProbe: RuntimeProbe = {
   startupSmokeCanary: null,
   startupSmokeCapture: false,
 };
+
+const FAKE_BACKUP_OWNER_WRITER_ID = "fixture-current-installation-writer";
+const FAKE_BACKUP_OWNER_VERSION = '"fixture-owner-v1"';
 
 export class FakeBackend implements Backend {
   private readonly probe: RuntimeProbe;
@@ -88,6 +101,43 @@ export class FakeBackend implements Backend {
     keyboardBindings: DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
     shortcutErrors: [],
   };
+  private backupSettings: BackupSettingsSnapshot = {
+    config: null,
+    credentialState: "MISSING",
+    credentialCleanupPending: false,
+    relational: {
+      phase: "OFF",
+      latestLocalTxid: null,
+      latestRemoteTxid: null,
+      lastRemoteConfirmedAtMs: null,
+      restartCount: 0,
+      lastErrorCode: null,
+    },
+    media: {
+      referenced: 0,
+      pending: 0,
+      running: 0,
+      retryWait: 0,
+      uploaded: 0,
+      failed: 0,
+      untracked: 0,
+      nextAttemptAtMs: null,
+    },
+    checkpoint: {
+      phase: "OFF",
+      contentRevision: null,
+      lastPublishedContentRevision: null,
+      lastPublishedAtMs: null,
+      lastErrorCode: null,
+    },
+    retention: {
+      exactTransactionDays: 30,
+      checkpointPolicy:
+        "Complete checkpoint manifests are immutable and are not automatically deleted in v1.",
+      mediaPolicy: "Content-addressed media is immutable and is not automatically deleted in v1.",
+    },
+  };
+  private backupCheckpoints: RemoteBackupCheckpoint[] = [];
   private sequence = 0;
 
   constructor(probe: RuntimeProbe = browserRuntimeProbe, tidbits: TidbitRecord[] = []) {
@@ -114,6 +164,195 @@ export class FakeBackend implements Backend {
 
   async runtimeProbe(): Promise<RuntimeProbe> {
     return { ...this.probe };
+  }
+
+  async loadBackupSettings(): Promise<BackupSettingsSnapshot> {
+    return cloneBackupSettings(this.backupSettings);
+  }
+
+  async testBackupConnection(
+    input: TestBackupConnectionInput,
+  ): Promise<BackupConnectionTestResult> {
+    validateFakeBackupTarget(input);
+    validateFakeCredentials(input, this.backupSettings.credentialState === "STORED");
+    return {
+      verified: true,
+      cleanupComplete: true,
+      testedAtMs: this.probe.nowMs,
+    };
+  }
+
+  async configureBackup(input: ConfigureBackupInput): Promise<BackupSettingsSnapshot> {
+    validateFakeBackupTarget(input);
+    if (input.expectedRevision !== (this.backupSettings.config?.revision ?? 0)) {
+      throw new Error("Backup settings changed. Refresh and try again.");
+    }
+    validateFakeCredentials(input, this.backupSettings.credentialState === "STORED");
+    const previous = this.backupSettings.config;
+    const backupSetId =
+      input.backupSetId ?? previous?.backupSetId ?? "019f547b-6200-7000-8000-000000000b01";
+    const sameSet = previous?.backupSetId === backupSetId;
+    this.backupSettings = {
+      ...this.backupSettings,
+      config: {
+        revision: input.expectedRevision + 1,
+        backupSetId,
+        replicaEpochId:
+          sameSet && previous ? previous.replicaEpochId : "019f547b-6200-7000-8000-000000000e01",
+        enabled: false,
+        provider: "R2",
+        jurisdiction: input.jurisdiction,
+        accountId: input.accountId,
+        bucket: input.bucket,
+        createdAtMs: previous?.createdAtMs ?? this.probe.nowMs,
+        updatedAtMs: this.probe.nowMs,
+      },
+      credentialState: "STORED",
+      relational: {
+        ...this.backupSettings.relational,
+        phase: "OFF",
+        lastErrorCode: null,
+      },
+      checkpoint: {
+        ...this.backupSettings.checkpoint,
+        phase: "OFF",
+        lastErrorCode: null,
+      },
+    };
+    if (!sameSet) this.backupCheckpoints = [];
+    return cloneBackupSettings(this.backupSettings);
+  }
+
+  async setBackupEnabled(input: SetBackupEnabledInput): Promise<BackupSettingsSnapshot> {
+    const config = this.backupSettings.config;
+    if (!config) throw new Error("Set up an R2 recovery target first.");
+    if (input.expectedRevision !== config.revision) {
+      throw new Error("Backup settings changed. Refresh and try again.");
+    }
+    if (input.enabled && this.backupSettings.credentialState !== "STORED") {
+      throw new Error("R2 credentials are not stored for this backup set.");
+    }
+    this.backupSettings = {
+      ...this.backupSettings,
+      config: {
+        ...config,
+        revision: config.revision + 1,
+        enabled: input.enabled,
+        updatedAtMs: this.probe.nowMs,
+      },
+      relational: {
+        ...this.backupSettings.relational,
+        phase: input.enabled ? "RUNNING" : "OFF",
+        lastErrorCode: null,
+      },
+      checkpoint: {
+        ...this.backupSettings.checkpoint,
+        phase: input.enabled ? "IDLE" : "OFF",
+        lastErrorCode: null,
+      },
+    };
+    return cloneBackupSettings(this.backupSettings);
+  }
+
+  async backupNow(): Promise<void> {
+    const config = this.backupSettings.config;
+    if (!config?.enabled) throw new Error("Turn on backup before creating a recovery point.");
+    const checkpoint: RemoteBackupCheckpoint = {
+      checkpointId: `019f547b-6200-7000-8000-${(this.backupCheckpoints.length + 1)
+        .toString()
+        .padStart(12, "0")}`,
+      replicaEpochId: config.replicaEpochId,
+      createdAt: "2026-07-27T18:00:00Z",
+      koshVersion: "0.1.0-fixture",
+      contentRevision: this.backupCheckpoints.length + 1,
+      referencedMediaCount: 0,
+      referencedMediaBytes: 0,
+    };
+    this.backupCheckpoints = [checkpoint, ...this.backupCheckpoints];
+    this.backupSettings = {
+      ...this.backupSettings,
+      relational: {
+        ...this.backupSettings.relational,
+        latestLocalTxid: "0000000000000001",
+        latestRemoteTxid: "0000000000000001",
+        lastRemoteConfirmedAtMs: this.probe.nowMs,
+      },
+      checkpoint: {
+        phase: "IDLE",
+        contentRevision: checkpoint.contentRevision,
+        lastPublishedContentRevision: checkpoint.contentRevision,
+        lastPublishedAtMs: this.probe.nowMs,
+        lastErrorCode: null,
+      },
+    };
+  }
+
+  async listBackupCheckpoints(): Promise<RemoteBackupCheckpoint[]> {
+    if (!this.backupSettings.config) throw new Error("Set up an R2 recovery target first.");
+    return this.backupCheckpoints.map((checkpoint) => ({ ...checkpoint }));
+  }
+
+  async previewBackupRestore(input: RestoreCheckpointInput): Promise<BackupRestorePreview> {
+    const config = this.backupSettings.config;
+    if (!config) throw new Error("Set up an R2 recovery target first.");
+    const checkpoint = this.backupCheckpoints.find(
+      (candidate) => candidate.checkpointId === input.checkpointId,
+    );
+    if (!checkpoint) throw new Error("That recovery point is no longer available.");
+    return {
+      checkpoint: { ...checkpoint },
+      owner: {
+        backupSetId: config.backupSetId,
+        replicaEpochId: config.replicaEpochId,
+        writerId: FAKE_BACKUP_OWNER_WRITER_ID,
+        version: FAKE_BACKUP_OWNER_VERSION,
+        isCurrentInstallation: true,
+      },
+      planFileCount: 3,
+      planTotalBytes: 12_288,
+    };
+  }
+
+  async drillBackupRestore(input: RestoreCheckpointInput): Promise<BackupRestoreDrill> {
+    const preview = await this.previewBackupRestore(input);
+    return {
+      checkpointId: preview.checkpoint.checkpointId,
+      restoredMediaCount: preview.checkpoint.referencedMediaCount,
+      restoredMediaBytes: preview.checkpoint.referencedMediaBytes,
+      completedAtMs: this.probe.nowMs,
+    };
+  }
+
+  async takeOverBackup(input: TakeOverBackupInput): Promise<BackupSettingsSnapshot> {
+    const config = this.backupSettings.config;
+    if (!config) throw new Error("Set up an R2 recovery target first.");
+    if (
+      config.enabled ||
+      this.backupSettings.relational.phase !== "OFF" ||
+      this.backupSettings.checkpoint.phase !== "OFF"
+    ) {
+      throw new Error("Turn off backup before takeover.");
+    }
+    if (
+      input.confirmation !== "TAKE OVER" ||
+      input.expectedRevision !== config.revision ||
+      input.expectedOwnerBackupSetId !== config.backupSetId ||
+      input.expectedOwnerReplicaEpochId !== config.replicaEpochId ||
+      input.expectedOwnerWriterId !== FAKE_BACKUP_OWNER_WRITER_ID ||
+      input.expectedOwnerVersion !== FAKE_BACKUP_OWNER_VERSION
+    ) {
+      throw new Error("The remote owner changed after preview.");
+    }
+    this.backupSettings = {
+      ...this.backupSettings,
+      config: {
+        ...config,
+        revision: config.revision + 1,
+        replicaEpochId: "019f547b-6200-7000-8000-000000000e02",
+        updatedAtMs: this.probe.nowMs,
+      },
+    };
+    return cloneBackupSettings(this.backupSettings);
   }
 
   async semanticRuntimeStatus(): Promise<SemanticRuntimeStatus> {
@@ -262,7 +501,7 @@ export class FakeBackend implements Backend {
         diskUsageBytes: 2_048,
       },
       semanticLogPaths: [`${dataRoot}/logs/llama-server.log`],
-      backupPhase: "COMING_LATER",
+      backupPhase: "AVAILABLE",
     };
   }
 
@@ -1195,6 +1434,56 @@ function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
     ...tidbit,
     sources: tidbit.sources.map((source) => ({ ...source })),
   };
+}
+
+function cloneBackupSettings(settings: BackupSettingsSnapshot): BackupSettingsSnapshot {
+  return {
+    ...settings,
+    config: settings.config ? { ...settings.config } : null,
+    relational: { ...settings.relational },
+    media: { ...settings.media },
+    checkpoint: { ...settings.checkpoint },
+    retention: { ...settings.retention },
+  };
+}
+
+function validateFakeBackupTarget(input: {
+  accountId: string;
+  bucket: string;
+  backupSetId: string | null;
+}) {
+  if (!/^[0-9a-f]{32}$/.test(input.accountId)) {
+    throw new Error("Enter a 32-character Cloudflare account ID.");
+  }
+  if (
+    input.bucket.length < 3 ||
+    input.bucket.length > 63 ||
+    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(input.bucket)
+  ) {
+    throw new Error("Enter a valid lowercase R2 bucket name.");
+  }
+  if (
+    input.backupSetId !== null &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.backupSetId)
+  ) {
+    throw new Error("Enter a canonical Kosh backup set ID.");
+  }
+}
+
+function validateFakeCredentials(
+  input: { accessKeyId: string | null; secretAccessKey: string | null },
+  stored: boolean,
+) {
+  if (input.accessKeyId === null && input.secretAccessKey === null && stored) return;
+  if (!input.accessKeyId || !input.secretAccessKey) {
+    throw new Error("Enter both the R2 access key ID and secret access key.");
+  }
+  if (!/^[0-9a-f]{32}$/.test(input.accessKeyId)) {
+    throw new Error("The R2 access key ID must be 32 lowercase hexadecimal characters.");
+  }
+  if (!/^[0-9a-f]{64}$/.test(input.secretAccessKey)) {
+    throw new Error("The R2 secret access key must be 64 lowercase hexadecimal characters.");
+  }
 }
 
 function revisionFromTidbit(tidbit: TidbitRecord): TidbitRevisionRecord {

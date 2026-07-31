@@ -52,6 +52,8 @@ test("library surface stays visually stable", async ({ page }) => {
 test("diagnostics and maintenance settings stay visually stable", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/#/settings");
+  const recovery = page.getByRole("region", { name: "Offsite recovery" });
+  await expect(recovery.getByRole("button", { name: "Save target off" })).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 0));
 
   await expect(page).toHaveScreenshot("settings-diagnostics.png", {
@@ -59,6 +61,13 @@ test("diagnostics and maintenance settings stay visually stable", async ({ page 
     caret: "hide",
     maxDiffPixelRatio: 0.04,
     threshold: 0.35,
+  });
+
+  await expect(recovery).toHaveScreenshot("settings-recovery.png", {
+    animations: "disabled",
+    caret: "hide",
+    maxDiffPixelRatio: 0.001,
+    threshold: 0.3,
   });
 
   await page.getByRole("heading", { name: "Maintenance" }).scrollIntoViewIfNeeded();

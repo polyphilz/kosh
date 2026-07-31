@@ -119,7 +119,198 @@ export interface MaintenanceDiagnostics {
     diskUsageBytes: number;
   };
   semanticLogPaths: string[];
-  backupPhase: "COMING_LATER";
+  backupPhase: "AVAILABLE";
+}
+
+export type BackupCredentialState = "STORED" | "MISSING" | "UNAVAILABLE" | "INVALID";
+
+export type BackupJurisdiction = "DEFAULT" | "EU" | "FEDRAMP";
+
+export interface BackupConfig {
+  revision: number;
+  backupSetId: string;
+  replicaEpochId: string;
+  enabled: boolean;
+  provider: "R2";
+  jurisdiction: BackupJurisdiction;
+  accountId: string;
+  bucket: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export type RelationalBackupPhase =
+  | "OFF"
+  | "STARTING"
+  | "RUNNING"
+  | "DEGRADED"
+  | "WAITING_FOR_CREDENTIALS"
+  | "UNAVAILABLE"
+  | "BLOCKED";
+
+export type RelationalBackupErrorCode =
+  | "CREDENTIALS_MISSING"
+  | "KEYCHAIN_UNAVAILABLE"
+  | "BINARY_UNAVAILABLE"
+  | "CONFIGURATION_INVALID"
+  | "LAUNCH_FAILED"
+  | "CONTROL_UNAVAILABLE"
+  | "PROCESS_EXITED"
+  | "REMOTE_SYNC_FAILED"
+  | "REMOTE_OWNER_CONFLICT"
+  | "REMOTE_OWNER_INVALID"
+  | "WRITER_IDENTITY_UNAVAILABLE"
+  | "WORKER_UNAVAILABLE";
+
+export interface RelationalBackupStatus {
+  phase: RelationalBackupPhase;
+  latestLocalTxid: string | null;
+  latestRemoteTxid: string | null;
+  lastRemoteConfirmedAtMs: number | null;
+  restartCount: number;
+  lastErrorCode: RelationalBackupErrorCode | null;
+}
+
+export interface MediaBackupStatus {
+  referenced: number;
+  pending: number;
+  running: number;
+  retryWait: number;
+  uploaded: number;
+  failed: number;
+  untracked: number;
+  nextAttemptAtMs: number | null;
+}
+
+export type CheckpointBackupPhase =
+  | "OFF"
+  | "WAITING_FOR_MEDIA"
+  | "FENCING"
+  | "WAITING_FOR_REPLICA"
+  | "VALIDATING"
+  | "PUBLISHING"
+  | "IDLE"
+  | "DEGRADED"
+  | "BLOCKED"
+  | "UNAVAILABLE";
+
+export type CheckpointBackupErrorCode =
+  | "NETWORK"
+  | "NETWORK_TIMEOUT"
+  | "RATE_LIMITED"
+  | "SERVICE_UNAVAILABLE"
+  | "CREDENTIALS_MISSING"
+  | "KEYCHAIN_UNAVAILABLE"
+  | "INVALID_CONFIGURATION"
+  | "AUTHENTICATION_REJECTED"
+  | "AUTHORIZATION_REJECTED"
+  | "OWNER_CONFLICT"
+  | "OWNER_INVALID"
+  | "IMMUTABLE_OBJECT_CONFLICT"
+  | "LOCAL_MEDIA_MISSING"
+  | "WORKER_UNAVAILABLE"
+  | "LITESTREAM_UNAVAILABLE"
+  | "FENCE_TIMEOUT"
+  | "REPLICA_BEHIND"
+  | "MALFORMED_MANIFEST"
+  | "REMOTE_MEDIA_MISSING"
+  | "REMOTE_MEDIA_CORRUPT";
+
+export interface CheckpointBackupStatus {
+  phase: CheckpointBackupPhase;
+  contentRevision: number | null;
+  lastPublishedContentRevision: number | null;
+  lastPublishedAtMs: number | null;
+  lastErrorCode: CheckpointBackupErrorCode | null;
+}
+
+export interface BackupSettingsSnapshot {
+  config: BackupConfig | null;
+  credentialState: BackupCredentialState;
+  credentialCleanupPending: boolean;
+  relational: RelationalBackupStatus;
+  media: MediaBackupStatus;
+  checkpoint: CheckpointBackupStatus;
+  retention: {
+    exactTransactionDays: number;
+    checkpointPolicy: string;
+    mediaPolicy: string;
+  };
+}
+
+export interface ConfigureBackupInput {
+  expectedRevision: number;
+  backupSetId: string | null;
+  accountId: string;
+  jurisdiction: BackupJurisdiction;
+  bucket: string;
+  accessKeyId: string | null;
+  secretAccessKey: string | null;
+}
+
+export interface TestBackupConnectionInput {
+  backupSetId: string | null;
+  accountId: string;
+  jurisdiction: BackupJurisdiction;
+  bucket: string;
+  accessKeyId: string | null;
+  secretAccessKey: string | null;
+}
+
+export interface SetBackupEnabledInput {
+  expectedRevision: number;
+  enabled: boolean;
+}
+
+export interface BackupConnectionTestResult {
+  verified: boolean;
+  cleanupComplete: boolean;
+  testedAtMs: number;
+}
+
+export interface RemoteBackupCheckpoint {
+  checkpointId: string;
+  replicaEpochId: string;
+  createdAt: string;
+  koshVersion: string;
+  contentRevision: number;
+  referencedMediaCount: number;
+  referencedMediaBytes: number;
+}
+
+export interface RestoreCheckpointInput {
+  checkpointId: string;
+}
+
+export interface BackupRestoreOwner {
+  backupSetId: string;
+  replicaEpochId: string;
+  writerId: string;
+  version: string;
+  isCurrentInstallation: boolean;
+}
+
+export interface BackupRestorePreview {
+  checkpoint: RemoteBackupCheckpoint;
+  owner: BackupRestoreOwner;
+  planFileCount: number;
+  planTotalBytes: number;
+}
+
+export interface BackupRestoreDrill {
+  checkpointId: string;
+  restoredMediaCount: number;
+  restoredMediaBytes: number;
+  completedAtMs: number;
+}
+
+export interface TakeOverBackupInput {
+  expectedRevision: number;
+  expectedOwnerBackupSetId: string;
+  expectedOwnerReplicaEpochId: string;
+  expectedOwnerWriterId: string;
+  expectedOwnerVersion: string;
+  confirmation: "TAKE OVER";
 }
 
 export interface MediaIntegrityReport {
@@ -687,6 +878,15 @@ export interface ResearchRunPage {
 
 export interface Backend {
   runtimeProbe(): Promise<RuntimeProbe>;
+  loadBackupSettings(): Promise<BackupSettingsSnapshot>;
+  testBackupConnection(input: TestBackupConnectionInput): Promise<BackupConnectionTestResult>;
+  configureBackup(input: ConfigureBackupInput): Promise<BackupSettingsSnapshot>;
+  setBackupEnabled(input: SetBackupEnabledInput): Promise<BackupSettingsSnapshot>;
+  backupNow(): Promise<void>;
+  listBackupCheckpoints(): Promise<RemoteBackupCheckpoint[]>;
+  previewBackupRestore(input: RestoreCheckpointInput): Promise<BackupRestorePreview>;
+  drillBackupRestore(input: RestoreCheckpointInput): Promise<BackupRestoreDrill>;
+  takeOverBackup(input: TakeOverBackupInput): Promise<BackupSettingsSnapshot>;
   semanticRuntimeStatus(): Promise<SemanticRuntimeStatus>;
   prepareSemanticRuntime(): Promise<SemanticRuntimeStatus>;
   retrySemanticRuntime(): Promise<SemanticRuntimeStatus>;

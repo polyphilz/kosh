@@ -3,11 +3,16 @@ import { listen } from "@tauri-apps/api/event";
 import { TauriCommand, TauriEvent } from "../tauriProtocol";
 import type {
   Backend,
+  BackupConnectionTestResult,
+  BackupRestoreDrill,
+  BackupRestorePreview,
+  BackupSettingsSnapshot,
   BeginResearchProcessInput,
   CitationResolution,
   ClaudeCliDefaults,
   ClaudeSetupStatus,
   ClearDraftInput,
+  ConfigureBackupInput,
   DeleteTidbitInput,
   DraftRecord,
   EditTidbitInput,
@@ -29,8 +34,10 @@ import type {
   ResearchProcessEvent,
   ResearchRunPage,
   ResearchRunRecord,
+  RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
   SetShortcutSettingsInput,
+  SetBackupEnabledInput,
   RestoreTidbitInput,
   PurgeTidbitInput,
   SaveDraftInput,
@@ -45,10 +52,28 @@ import type {
   TidbitRevisionPage,
   TidbitRevisionRecord,
   StartResearchProcessOutput,
+  TakeOverBackupInput,
+  TestBackupConnectionInput,
+  RestoreCheckpointInput,
 } from "./contracts";
 
 export const tauriBackend: Backend = {
   runtimeProbe: () => invoke<RuntimeProbe>(TauriCommand.RuntimeProbe),
+  loadBackupSettings: () => invoke<BackupSettingsSnapshot>(TauriCommand.LoadBackupSettings),
+  testBackupConnection: (input: TestBackupConnectionInput) =>
+    invoke<BackupConnectionTestResult>(TauriCommand.TestBackupConnection, { input }),
+  configureBackup: (input: ConfigureBackupInput) =>
+    invoke<BackupSettingsSnapshot>(TauriCommand.ConfigureBackup, { input }),
+  setBackupEnabled: (input: SetBackupEnabledInput) =>
+    invoke<BackupSettingsSnapshot>(TauriCommand.SetBackupEnabled, { input }),
+  backupNow: () => invoke<void>(TauriCommand.BackupNow),
+  listBackupCheckpoints: () => invoke<RemoteBackupCheckpoint[]>(TauriCommand.ListBackupCheckpoints),
+  previewBackupRestore: (input: RestoreCheckpointInput) =>
+    invoke<BackupRestorePreview>(TauriCommand.PreviewBackupRestore, { input }),
+  drillBackupRestore: (input: RestoreCheckpointInput) =>
+    invoke<BackupRestoreDrill>(TauriCommand.DrillBackupRestore, { input }),
+  takeOverBackup: (input: TakeOverBackupInput) =>
+    invoke<BackupSettingsSnapshot>(TauriCommand.TakeOverBackup, { input }),
   semanticRuntimeStatus: () => invoke<SemanticRuntimeStatus>(TauriCommand.SemanticRuntimeStatus),
   prepareSemanticRuntime: () => invoke<SemanticRuntimeStatus>(TauriCommand.PrepareSemanticRuntime),
   retrySemanticRuntime: () => invoke<SemanticRuntimeStatus>(TauriCommand.RetrySemanticRuntime),

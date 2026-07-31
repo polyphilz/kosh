@@ -22,7 +22,7 @@ describe("settings diagnostics and maintenance", () => {
 
     expect(await screen.findByText("1 active tidbits")).toBeInTheDocument();
     expect(screen.getByText("0 in Trash · 1 revisions retained")).toBeInTheDocument();
-    expect(screen.getByText("Coming later")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Offsite recovery" })).toBeInTheDocument();
     await user.click(screen.getByText("Local paths"));
     expect(screen.getByText("/tmp/kosh-browser-fixture/kosh.sqlite3")).toBeInTheDocument();
 

@@ -68,6 +68,16 @@ pub(crate) struct RemoteOwnerSnapshot {
     version: ObjectVersion,
 }
 
+impl RemoteOwnerSnapshot {
+    pub(crate) fn backup_set_id(&self) -> &BackupSetId {
+        &self.backup_set_id
+    }
+
+    pub(crate) fn version(&self) -> &str {
+        self.version.as_str()
+    }
+}
+
 pub(crate) fn inspect_remote_owner(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,

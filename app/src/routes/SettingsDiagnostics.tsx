@@ -11,7 +11,6 @@ import type {
 import { useBackend } from "../backend/context";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
-import { Status } from "../components/Status";
 
 type MaintenanceAction =
   | "INTEGRITY"
@@ -399,20 +398,6 @@ export function SettingsDiagnostics() {
             {operationError}
           </p>
         )}
-      </section>
-
-      <section aria-labelledby="backup-title" className="settings-panel settings-panel--muted">
-        <SettingsPanelHeader
-          description="Single-writer offsite replication will arrive in a later release."
-          title="Backup"
-        >
-          <Status tone="neutral">
-            {diagnostics.backupPhase === "COMING_LATER" ? "Coming later" : "Unavailable"}
-          </Status>
-        </SettingsPanelHeader>
-        <p>
-          Kosh remains fully local for now. There is no inactive toggle or partial backup state.
-        </p>
       </section>
 
       <Dialog

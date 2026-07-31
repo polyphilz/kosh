@@ -12,6 +12,7 @@ import { Select } from "../components/Select";
 import { ShortcutRecorder } from "../components/ShortcutRecorder";
 import { Status } from "../components/Status";
 import { bindingFor, useShortcutSettings } from "../shortcuts/context";
+import { BackupSettings } from "./BackupSettings";
 import { SettingsDiagnostics } from "./SettingsDiagnostics";
 
 const appearanceOptions = [
@@ -118,6 +119,7 @@ export function SettingsPage() {
           Reset shortcuts
         </Button>
       </section>
+      <BackupSettings />
       <SettingsDiagnostics />
     </main>
   );

@@ -1000,11 +1000,18 @@ pub(crate) fn checkpoint_backup_status(
 #[tauri::command]
 pub(crate) async fn backup_now(
     state: State<'_, crate::runtime::RuntimeState>,
-) -> Result<(), CheckpointErrorCode> {
+) -> Result<(), super::settings::BackupCommandError> {
     let handle = state.checkpoint_backup_handle();
-    tauri::async_runtime::spawn_blocking(move || handle.backup_now())
-        .await
-        .map_err(|_| CheckpointErrorCode::WorkerUnavailable)?
+    let gate = state.backup_operations_gate();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        handle.backup_now()
+    })
+    .await
+    .map_err(|_| {
+        super::settings::map_checkpoint_command_error(CheckpointErrorCode::WorkerUnavailable)
+    })?
+    .map_err(super::settings::map_checkpoint_command_error)
 }
 
 #[cfg(test)]
