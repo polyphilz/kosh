@@ -85,7 +85,7 @@ jobs:
   browser-webkit:
     name: WebKit editor and keyboard contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: app

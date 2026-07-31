@@ -109,6 +109,34 @@ pub(crate) struct StagedRestore {
 }
 
 #[derive(Debug)]
+pub(crate) struct StagedDatabasePair {
+    main: File,
+    media: File,
+}
+
+impl StagedDatabasePair {
+    pub(crate) const fn main(&self) -> &File {
+        &self.main
+    }
+
+    pub(crate) const fn media(&self) -> &File {
+        &self.media
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_test(paths: &DatabasePaths) -> Result<Self, RestoreError> {
+        let directory = open_directory_no_follow(&paths.root)?;
+        open_validated_database_pair(paths, &directory)
+    }
+}
+
+impl StagedRestore {
+    pub(crate) fn open_validated_database_pair(&self) -> Result<StagedDatabasePair, RestoreError> {
+        open_validated_database_pair(&self.paths, &self.cleanup.directory)
+    }
+}
+
+#[derive(Debug)]
 struct StagingOwnership {
     root: PathBuf,
     directory: File,
@@ -801,6 +829,39 @@ fn inspect_staging_children(directory: &File) -> Result<Vec<StagingChild>, Resto
         });
     }
     Ok(children)
+}
+
+fn open_validated_database_pair(
+    paths: &DatabasePaths,
+    directory: &File,
+) -> Result<StagedDatabasePair, RestoreError> {
+    if paths.main != paths.root.join("kosh.sqlite3")
+        || paths.media != paths.root.join("media.sqlite3")
+        || !path_matches_open_file(&paths.root, directory)
+    {
+        return Err(RestoreError::InvalidStaging);
+    }
+    let main = open_regular_child(directory, "kosh.sqlite3")?;
+    let media = open_regular_child(directory, "media.sqlite3")?;
+    if !is_current_user_file(&main)? || !is_current_user_file(&media)? {
+        return Err(RestoreError::InvalidStaging);
+    }
+
+    // SQLite's pair validator is path based. Keep descriptor-bound children
+    // open across that audit, then prove the audited paths still identify the
+    // retained directory and exact files. Every later copy and comparison uses
+    // these descriptors, so a same-UID rename/replacement after this point
+    // cannot substitute another library.
+    validate_restored_pair(paths)?;
+    let current_main = open_regular_child(directory, "kosh.sqlite3")?;
+    let current_media = open_regular_child(directory, "media.sqlite3")?;
+    if !path_matches_open_file(&paths.root, directory)
+        || !same_open_file(&main, &current_main)
+        || !same_open_file(&media, &current_media)
+    {
+        return Err(RestoreError::InvalidStaging);
+    }
+    Ok(StagedDatabasePair { main, media })
 }
 
 fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {

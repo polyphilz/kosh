@@ -324,6 +324,13 @@
       "invariants": ["authored-bytes", "bounded-cleanup"]
     },
     {
+      "id": "install-audited-staging-parent-substitution",
+      "phase": "install",
+      "failureClass": "concurrency",
+      "test": "backup::recovery_cli::tests::descriptor_bound_install_uses_the_audited_staging_pair_after_parent_replacement",
+      "invariants": ["authored-bytes", "bounded-cleanup", "citation-provenance"]
+    },
+    {
       "id": "install-interrupted-reservation-reclaim",
       "phase": "install",
       "failureClass": "crash-boundary",
@@ -364,6 +371,13 @@
       "failureClass": "retry",
       "test": "backup::litestream::tests::next_ephemeral_runtime_finishes_an_interrupted_quarantine_cleanup",
       "invariants": ["authored-bytes", "bounded-cleanup", "idempotency"]
+    },
+    {
+      "id": "restore-quarantine-parent-substitution",
+      "phase": "restore",
+      "failureClass": "concurrency",
+      "test": "backup::litestream::tests::quarantined_runtime_cleanup_never_unlinks_a_replacement_root",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
     },
     {
       "id": "reopen-search-and-citation-rebuild",

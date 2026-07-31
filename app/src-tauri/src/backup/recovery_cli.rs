@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-use crate::database::{validate_restored_pair, Database, DatabasePaths};
+use crate::database::Database;
+
+#[cfg(test)]
+use crate::database::DatabasePaths;
 
 use super::{
     credentials::R2Credentials,
@@ -26,7 +29,8 @@ use super::{
     object_store::R2ObjectStore,
     restore::{
         discover_checkpoints, remove_staged_checkpoint, remove_staging_root_at_identity,
-        stage_checkpoint_at_identity, RemoteCheckpoint, StagedRestore, StagingDirectoryIdentity,
+        stage_checkpoint_at_identity, RemoteCheckpoint, StagedDatabasePair, StagedRestore,
+        StagingDirectoryIdentity,
     },
 };
 
@@ -262,8 +266,11 @@ fn restore_remote(
         safety_snapshot_created: false,
     };
 
-    reservation.install_validated_pair(&staged.paths)?;
-    reservation.verify_installed_pair_matches(&staged.paths)?;
+    let staged_pair = staged
+        .open_validated_database_pair()
+        .map_err(|_| "the independently staged recovery pair is no longer valid")?;
+    reservation.install_validated_pair(&staged_pair)?;
+    reservation.verify_installed_pair_matches(&staged_pair)?;
     reservation.finish_after_staging_cleanup(&staged, backup_set_id, selector, &report)?;
 
     Ok(report)
@@ -432,31 +439,31 @@ impl RecoveryTargetReservation {
         Ok(())
     }
 
-    fn install_validated_pair(&mut self, staged: &DatabasePaths) -> Result<(), String> {
+    fn install_validated_pair(&mut self, staged: &StagedDatabasePair) -> Result<(), String> {
         self.install_validated_pair_with_hook(staged, || {})
     }
 
     fn install_validated_pair_with_hook(
         &mut self,
-        staged: &DatabasePaths,
+        staged: &StagedDatabasePair,
         before_publish: impl FnOnce(),
     ) -> Result<(), String> {
-        validate_restored_pair(staged)
-            .map_err(|_| "the independently staged recovery pair is no longer valid")?;
         self.verify_install_ready()?;
 
         let main_temporary =
-            copy_regular_into_child(&staged.main, &self.directory, MAIN_TEMP_FILENAME)
+            copy_open_regular_into_child(staged.main(), &self.directory, MAIN_TEMP_FILENAME)
                 .map_err(|_| "the recovered main database could not be privately staged")?;
-        let media_temporary =
-            match copy_regular_into_child(&staged.media, &self.directory, MEDIA_TEMP_FILENAME) {
-                Ok(file) => file,
-                Err(_) => {
-                    let _ =
-                        unlink_owned_child(&self.directory, MAIN_TEMP_FILENAME, &main_temporary);
-                    return Err("the recovered media database could not be privately staged".into());
-                }
-            };
+        let media_temporary = match copy_open_regular_into_child(
+            staged.media(),
+            &self.directory,
+            MEDIA_TEMP_FILENAME,
+        ) {
+            Ok(file) => file,
+            Err(_) => {
+                let _ = unlink_owned_child(&self.directory, MAIN_TEMP_FILENAME, &main_temporary);
+                return Err("the recovered media database could not be privately staged".into());
+            }
+        };
 
         before_publish();
         let publication = (|| {
@@ -501,7 +508,7 @@ impl RecoveryTargetReservation {
         Ok(())
     }
 
-    fn verify_installed_pair_matches(&self, staged: &DatabasePaths) -> Result<(), String> {
+    fn verify_installed_pair_matches(&self, staged: &StagedDatabasePair) -> Result<(), String> {
         if !path_matches_open_file(&self.root, &self.directory) {
             return Err("the recovery target was replaced after installation".into());
         }
@@ -528,14 +535,14 @@ impl RecoveryTargetReservation {
             &self.directory,
             MAIN_FILENAME,
             installed_main,
-            &staged.main,
+            staged.main(),
         )
         .map_err(|_| "the installed main database does not match its audited staging file")?;
         verify_owned_child_matches_source(
             &self.directory,
             MEDIA_FILENAME,
             installed_media,
-            &staged.media,
+            staged.media(),
         )
         .map_err(|_| "the installed media database does not match its audited staging file")?;
         if !path_matches_open_file(&self.root, &self.directory) {
@@ -1069,21 +1076,6 @@ fn open_directory_no_follow(path: &Path) -> std::io::Result<File> {
     Ok(directory)
 }
 
-fn open_regular_no_follow(path: &Path) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "recovery source is not a regular file",
-        ));
-    }
-    Ok(file)
-}
-
 fn create_private_child(directory: &File, name: &str) -> std::io::Result<File> {
     let name = child_name(name)?;
     let descriptor = unsafe {
@@ -1122,8 +1114,18 @@ fn open_regular_child(directory: &File, name: &str) -> std::io::Result<File> {
     Ok(file)
 }
 
-fn copy_regular_into_child(source: &Path, directory: &File, name: &str) -> std::io::Result<File> {
-    let mut source = open_regular_no_follow(source)?;
+fn copy_open_regular_into_child(
+    source: &File,
+    directory: &File,
+    name: &str,
+) -> std::io::Result<File> {
+    let mut source = source.try_clone()?;
+    if !source.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "recovery source is not a regular file",
+        ));
+    }
     let source_length = source.metadata()?.len();
     source.rewind()?;
     let mut target = create_private_child(directory, name)?;
@@ -1220,7 +1222,7 @@ fn verify_owned_child_matches_source(
     directory: &File,
     name: &str,
     owned: &File,
-    source: &Path,
+    source: &File,
 ) -> std::io::Result<()> {
     let installed = open_regular_child(directory, name)?;
     if !same_open_file(&installed, owned) {
@@ -1229,9 +1231,8 @@ fn verify_owned_child_matches_source(
             "installed recovery child identity changed",
         ));
     }
-    let source = open_regular_no_follow(source)?;
     if source.metadata()?.len() != installed.metadata()?.len()
-        || sha256_file(&source)? != sha256_file(&installed)?
+        || sha256_file(source)? != sha256_file(&installed)?
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1572,6 +1573,8 @@ mod tests {
         let staged_paths = DatabasePaths::new(&staged_root);
         let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
         staged.shutdown().expect("close staged pair");
+        let staged_pair =
+            StagedDatabasePair::open_for_test(&staged_paths).expect("bind staged pair");
         let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
         let recovery_staging_root = reservation.staging_root();
         fs::create_dir(&recovery_staging_root).expect("recovery staging root");
@@ -1579,7 +1582,7 @@ mod tests {
             .expect("unexpected staging data");
 
         reservation
-            .install_validated_pair(&staged_paths)
+            .install_validated_pair(&staged_pair)
             .expect("descriptor-bound install");
         assert!(matches!(
             remove_staging_root(&recovery_staging_root),
@@ -1605,13 +1608,15 @@ mod tests {
         let staged_paths = DatabasePaths::new(staged_root.path());
         let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
         staged.shutdown().expect("close staged pair");
+        let staged_pair =
+            StagedDatabasePair::open_for_test(&staged_paths).expect("bind staged pair");
         let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
 
         reservation
-            .install_validated_pair(&staged_paths)
+            .install_validated_pair(&staged_pair)
             .expect("descriptor-bound install");
         reservation
-            .verify_installed_pair_matches(&staged_paths)
+            .verify_installed_pair_matches(&staged_pair)
             .expect("descriptor-bound byte verification");
         let backup_set_id = BackupSetId::new();
         let report = completed_report(&backup_set_id, &target);
@@ -1649,6 +1654,59 @@ mod tests {
         restored.shutdown().expect("close installed pair");
     }
 
+    #[test]
+    fn descriptor_bound_install_uses_the_audited_staging_pair_after_parent_replacement() {
+        let root = tempfile::tempdir().expect("recovery parent");
+        let target = root.path().join("restored");
+        let staging_root = root.path().join("staging");
+        let displaced_staging = root.path().join("displaced-staging");
+        let staged_paths = DatabasePaths::new(&staging_root);
+        let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
+        staged.shutdown().expect("close staged pair");
+        let audited_main = fs::read(&staged_paths.main).expect("audited main bytes");
+        let audited_media = fs::read(&staged_paths.media).expect("audited media bytes");
+        let staged_pair =
+            StagedDatabasePair::open_for_test(&staged_paths).expect("bind audited staged pair");
+
+        fs::rename(&staging_root, &displaced_staging).expect("displace audited staging root");
+        let replacement_paths = DatabasePaths::new(&staging_root);
+        let replacement =
+            Database::initialize(replacement_paths.clone()).expect("replacement database pair");
+        replacement.shutdown().expect("close replacement pair");
+        let replacement_main = fs::read(&replacement_paths.main).expect("replacement main bytes");
+        let replacement_media =
+            fs::read(&replacement_paths.media).expect("replacement media bytes");
+        assert_ne!(
+            audited_main, replacement_main,
+            "the substitution fixture must contain a different valid Kosh library"
+        );
+
+        let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
+        reservation
+            .install_validated_pair(&staged_pair)
+            .expect("install descriptor-bound audited pair");
+        reservation
+            .verify_installed_pair_matches(&staged_pair)
+            .expect("verify descriptor-bound audited pair");
+
+        assert_eq!(
+            fs::read(target.join(MAIN_FILENAME)).expect("installed main bytes"),
+            audited_main
+        );
+        assert_eq!(
+            fs::read(target.join(MEDIA_FILENAME)).expect("installed media bytes"),
+            audited_media
+        );
+        assert_eq!(
+            fs::read(&replacement_paths.main).expect("preserved replacement main"),
+            replacement_main
+        );
+        assert_eq!(
+            fs::read(&replacement_paths.media).expect("preserved replacement media"),
+            replacement_media
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn descriptor_bound_audit_refuses_a_raced_reopen_without_touching_its_target() {
@@ -1661,6 +1719,8 @@ mod tests {
         let staged_paths = DatabasePaths::new(staged_root.path());
         let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
         staged.shutdown().expect("close staged pair");
+        let staged_pair =
+            StagedDatabasePair::open_for_test(&staged_paths).expect("bind staged pair");
         let outside_parent = tempfile::tempdir().expect("outside parent");
         let outside_root = outside_parent.path().join("existing-library");
         let outside_paths = DatabasePaths::new(&outside_root);
@@ -1670,13 +1730,13 @@ mod tests {
         let outside_media = fs::read(&outside_paths.media).expect("outside media bytes");
         let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
         reservation
-            .install_validated_pair(&staged_paths)
+            .install_validated_pair(&staged_pair)
             .expect("descriptor-bound install");
 
         fs::rename(&target, &displaced).expect("displace installed reservation");
         symlink(&outside_root, &target).expect("raced target symlink");
         assert_eq!(
-            reservation.verify_installed_pair_matches(&staged_paths),
+            reservation.verify_installed_pair_matches(&staged_pair),
             Err("the recovery target was replaced after installation".into())
         );
 
@@ -1714,6 +1774,8 @@ mod tests {
         let staged_paths = DatabasePaths::new(staged_root.path());
         let staged = Database::initialize(staged_paths.clone()).expect("staged database pair");
         staged.shutdown().expect("close staged pair");
+        let staged_pair =
+            StagedDatabasePair::open_for_test(&staged_paths).expect("bind staged pair");
         let outside_parent = tempfile::tempdir().expect("outside parent");
         let outside_root = outside_parent.path().join("existing-library");
         let outside_paths = DatabasePaths::new(&outside_root);
@@ -1723,7 +1785,7 @@ mod tests {
         let outside_media = fs::read(&outside_paths.media).expect("outside media bytes");
         let mut reservation = RecoveryTargetReservation::reserve(&target).expect("reserved target");
 
-        let result = reservation.install_validated_pair_with_hook(&staged_paths, || {
+        let result = reservation.install_validated_pair_with_hook(&staged_pair, || {
             fs::rename(&target, &displaced).expect("displace reservation");
             symlink(&outside_root, &target).expect("raced target symlink");
         });

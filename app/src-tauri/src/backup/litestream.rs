@@ -1361,6 +1361,21 @@ impl LitestreamRuntimePaths {
         data_root_directory: &File,
         ownership_marker: Option<&File>,
     ) -> std::io::Result<()> {
+        self.remove_ephemeral_recovery_runtime_bound_with_hook(
+            data_root,
+            data_root_directory,
+            ownership_marker,
+            || {},
+        )
+    }
+
+    fn remove_ephemeral_recovery_runtime_bound_with_hook(
+        &self,
+        data_root: &Path,
+        data_root_directory: &File,
+        ownership_marker: Option<&File>,
+        before_cleanup: impl FnOnce(),
+    ) -> std::io::Result<()> {
         let expected_directory = data_root.join("run").join("backup");
         if !data_root.is_absolute()
             || self.directory != expected_directory
@@ -1372,28 +1387,26 @@ impl LitestreamRuntimePaths {
                 "refusing to remove an unrecognized recovery runtime",
             ));
         }
-        remove_ephemeral_binary_stages(&self.directory.join("verified-litestream"))?;
-        remove_ephemeral_restore_config_stages(&self.directory.join("restore-configs"))?;
-        remove_known_runtime_file(&self.config)?;
-        remove_known_runtime_socket(&self.socket)?;
-        remove_known_runtime_file(&self.pid)?;
-        remove_known_runtime_file(&self.ownership_lock)?;
-        remove_known_runtime_file(&self.directory.join("ls.yml.tmp"))?;
-        remove_known_runtime_file(&data_root.join("remote-kosh.sqlite3"))?;
-        remove_known_runtime_file(&data_root.join("remote-kosh.sqlite3-wal"))?;
-        remove_known_runtime_file(&data_root.join("remote-kosh.sqlite3-shm"))?;
-        remove_empty_directory(&self.directory)?;
-        remove_empty_directory(
-            self.directory
-                .parent()
-                .ok_or_else(|| std::io::Error::other("recovery runtime has no run directory"))?,
-        )?;
+        let parent = data_root
+            .parent()
+            .ok_or_else(|| std::io::Error::other("ephemeral recovery root has no parent"))?;
+        let root_name = data_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| std::io::Error::other("ephemeral recovery root name is invalid"))?;
+        // macOS exposes `/tmp` through the trusted `/private/tmp` symlink.
+        // Follow only this already-selected parent; the UUID child itself is
+        // still reopened with `O_NOFOLLOW` and identity-matched before removal.
+        let parent_directory = File::open(parent)?;
+        if !parent_directory.metadata()?.is_dir() {
+            return Err(std::io::Error::other(
+                "ephemeral recovery parent is not a directory",
+            ));
+        }
+
+        before_cleanup();
+        remove_ephemeral_runtime_tree_bound(data_root_directory)?;
         if let Some(marker) = ownership_marker {
-            if !path_matches_open_directory(data_root, data_root_directory) {
-                return Err(std::io::Error::other(
-                    "ephemeral recovery root changed during cleanup",
-                ));
-            }
             unlink_owned_runtime_file(
                 data_root_directory,
                 EPHEMERAL_RUNTIME_CONTROL_FILENAME,
@@ -1401,7 +1414,7 @@ impl LitestreamRuntimePaths {
             )?;
             data_root_directory.sync_all()?;
         }
-        remove_empty_owned_runtime_directory(data_root, data_root_directory)
+        remove_owned_runtime_directory_child(&parent_directory, root_name, data_root_directory)
     }
 }
 
@@ -1597,6 +1610,289 @@ fn runtime_child_name(name: &str) -> std::io::Result<CString> {
         .map_err(|_| std::io::Error::other("invalid ephemeral runtime child name"))
 }
 
+fn remove_ephemeral_runtime_tree_bound(data_root: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(data_root)?;
+    if let Some(run) = open_owned_runtime_directory_child(data_root, "run")? {
+        make_runtime_directory_removable(&run)?;
+        if let Some(backup) = open_owned_runtime_directory_child(&run, "backup")? {
+            remove_ephemeral_backup_tree_bound(&backup)?;
+            remove_owned_runtime_directory_child(&run, "backup", &backup)?;
+        }
+        if !runtime_directory_entries(&run)?.is_empty() {
+            return Err(std::io::Error::other(
+                "ephemeral recovery run directory has unexpected contents",
+            ));
+        }
+        remove_owned_runtime_directory_child(data_root, "run", &run)?;
+    }
+
+    for name in [
+        "remote-kosh.sqlite3",
+        "remote-kosh.sqlite3-wal",
+        "remote-kosh.sqlite3-shm",
+    ] {
+        remove_optional_owned_runtime_file(data_root, name)?;
+    }
+    let remaining = runtime_directory_entries(data_root)?;
+    if remaining
+        .iter()
+        .any(|name| name != &OsString::from(EPHEMERAL_RUNTIME_CONTROL_FILENAME))
+    {
+        return Err(std::io::Error::other(
+            "ephemeral recovery root has unexpected contents",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_ephemeral_backup_tree_bound(backup: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(backup)?;
+    if let Some(stages) = open_owned_runtime_directory_child(backup, "verified-litestream")? {
+        remove_ephemeral_binary_stages_bound(&stages)?;
+        remove_owned_runtime_directory_child(backup, "verified-litestream", &stages)?;
+    }
+    if let Some(stages) = open_owned_runtime_directory_child(backup, "restore-configs")? {
+        remove_ephemeral_restore_config_stages_bound(&stages)?;
+        remove_owned_runtime_directory_child(backup, "restore-configs", &stages)?;
+    }
+    for name in ["ls.yml", "ls.pid.json", "ownership.lock", "ls.yml.tmp"] {
+        remove_optional_owned_runtime_file(backup, name)?;
+    }
+    remove_optional_owned_runtime_socket(backup, "ls.sock")?;
+    if !runtime_directory_entries(backup)?.is_empty() {
+        return Err(std::io::Error::other(
+            "ephemeral recovery runtime has unexpected contents",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_ephemeral_binary_stages_bound(stages: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(stages)?;
+    for entry in runtime_directory_entries(stages)? {
+        let name = entry
+            .to_str()
+            .ok_or_else(|| std::io::Error::other("invalid recovery binary stage name"))?;
+        let checksum = name
+            .strip_prefix('.')
+            .and_then(|value| value.strip_suffix(".tmp"))
+            .unwrap_or(name);
+        if !is_sha256(checksum) {
+            return Err(std::io::Error::other("unexpected recovery binary stage"));
+        }
+        remove_single_file_stage_bound(stages, name, "litestream")?;
+    }
+    Ok(())
+}
+
+fn remove_ephemeral_restore_config_stages_bound(stages: &File) -> std::io::Result<()> {
+    make_runtime_directory_removable(stages)?;
+    for entry in runtime_directory_entries(stages)? {
+        let name = entry
+            .to_str()
+            .ok_or_else(|| std::io::Error::other("invalid recovery config stage name"))?;
+        if let Some(checksum) = name
+            .strip_prefix('.')
+            .and_then(|value| value.strip_suffix(".lock"))
+        {
+            if !is_sha256(checksum) {
+                return Err(std::io::Error::other("unexpected recovery config lock"));
+            }
+            remove_optional_owned_runtime_file(stages, name)?;
+            continue;
+        }
+        let checksum = name.strip_prefix('.').unwrap_or(name);
+        let checksum = checksum
+            .split_once('.')
+            .map_or(checksum, |(checksum, _)| checksum);
+        if !is_sha256(checksum) {
+            return Err(std::io::Error::other("unexpected recovery config stage"));
+        }
+        remove_single_file_stage_bound(stages, name, "ls.yml")?;
+    }
+    Ok(())
+}
+
+fn remove_single_file_stage_bound(
+    parent: &File,
+    stage_name: &str,
+    filename: &str,
+) -> std::io::Result<()> {
+    let stage = open_owned_runtime_directory_child(parent, stage_name)?.ok_or_else(|| {
+        std::io::Error::other("ephemeral recovery stage disappeared during cleanup")
+    })?;
+    make_runtime_directory_removable(&stage)?;
+    remove_optional_owned_runtime_file(&stage, filename)?;
+    if !runtime_directory_entries(&stage)?.is_empty() {
+        return Err(std::io::Error::other(
+            "ephemeral recovery stage has unexpected contents",
+        ));
+    }
+    remove_owned_runtime_directory_child(parent, stage_name, &stage)
+}
+
+fn open_owned_runtime_directory_child(parent: &File, name: &str) -> std::io::Result<Option<File>> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let directory = unsafe { File::from_raw_fd(descriptor) };
+    use std::os::unix::fs::MetadataExt;
+    let metadata = directory.metadata()?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory is not privately owned",
+        ));
+    }
+    Ok(Some(directory))
+}
+
+fn open_owned_runtime_file_child(parent: &File, name: &str) -> std::io::Result<Option<File>> {
+    let name = runtime_child_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } || metadata.nlink() != 1
+    {
+        return Err(std::io::Error::other(
+            "ephemeral runtime file is not privately owned",
+        ));
+    }
+    Ok(Some(file))
+}
+
+fn make_runtime_directory_removable(directory: &File) -> std::io::Result<()> {
+    clear_user_immutable(directory)?;
+    use std::os::unix::fs::PermissionsExt;
+    directory.set_permissions(fs::Permissions::from_mode(0o700))
+}
+
+fn remove_optional_owned_runtime_file(parent: &File, name: &str) -> std::io::Result<()> {
+    let Some(owned) = open_owned_runtime_file_child(parent, name)? else {
+        return Ok(());
+    };
+    clear_user_immutable(&owned)?;
+    let current = open_owned_runtime_file_child(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("ephemeral runtime file disappeared during cleanup")
+    })?;
+    if !same_runtime_file(&current, &owned) {
+        return Err(std::io::Error::other(
+            "ephemeral runtime file identity changed",
+        ));
+    }
+    let name = runtime_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn remove_optional_owned_runtime_socket(parent: &File, name: &str) -> std::io::Result<()> {
+    let name = runtime_child_name(name)?;
+    let Some(identity) = runtime_socket_identity(parent, &name)? else {
+        return Ok(());
+    };
+    if runtime_socket_identity(parent, &name)? != Some(identity) {
+        return Err(std::io::Error::other(
+            "ephemeral runtime socket identity changed",
+        ));
+    }
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn runtime_socket_identity(parent: &File, name: &CString) -> std::io::Result<Option<(u64, u64)>> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFSOCK || stat.st_uid != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(
+            "ephemeral runtime socket is not privately owned",
+        ));
+    }
+    let device = stat
+        .st_dev
+        .try_into()
+        .map_err(|_| std::io::Error::other("ephemeral runtime socket device is invalid"))?;
+    let inode = stat.st_ino;
+    Ok(Some((device, inode)))
+}
+
+fn remove_owned_runtime_directory_child(
+    parent: &File,
+    name: &str,
+    owned: &File,
+) -> std::io::Result<()> {
+    make_runtime_directory_removable(owned)?;
+    if !runtime_directory_entries(owned)?.is_empty() {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory is not empty",
+        ));
+    }
+    let current = open_owned_runtime_directory_child(parent, name)?.ok_or_else(|| {
+        std::io::Error::other("ephemeral runtime directory disappeared during cleanup")
+    })?;
+    if !same_runtime_file(&current, owned) {
+        return Err(std::io::Error::other(
+            "ephemeral runtime directory identity changed",
+        ));
+    }
+    clear_user_immutable(&current)?;
+    owned.sync_all()?;
+    let name = runtime_child_name(name)?;
+    let result = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    if result == 0 {
+        parent.sync_all()
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 fn path_matches_open_directory(path: &Path, directory: &File) -> bool {
     let Ok(path_metadata) = fs::symlink_metadata(path) else {
         return false;
@@ -1643,125 +1939,11 @@ fn runtime_link_count(file: &File) -> std::io::Result<u64> {
     Ok(file.metadata()?.nlink())
 }
 
-fn remove_ephemeral_binary_stages(stage_root: &Path) -> std::io::Result<()> {
-    let entries = match read_real_directory(stage_root)? {
-        Some(entries) => entries,
-        None => return Ok(()),
-    };
-    for entry in entries {
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| std::io::Error::other("invalid recovery binary stage name"))?;
-        let checksum = name
-            .strip_prefix('.')
-            .and_then(|value| value.strip_suffix(".tmp"))
-            .unwrap_or(&name);
-        if !is_sha256(checksum) {
-            return Err(std::io::Error::other("unexpected recovery binary stage"));
-        }
-        remove_partial_stage(&entry.path())?;
-    }
-    remove_empty_directory(stage_root)
-}
-
-fn remove_ephemeral_restore_config_stages(stage_root: &Path) -> std::io::Result<()> {
-    let entries = match read_real_directory(stage_root)? {
-        Some(entries) => entries,
-        None => return Ok(()),
-    };
-    for entry in entries {
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| std::io::Error::other("invalid recovery config stage name"))?;
-        if let Some(checksum) = name
-            .strip_prefix('.')
-            .and_then(|value| value.strip_suffix(".lock"))
-        {
-            if !is_sha256(checksum) {
-                return Err(std::io::Error::other("unexpected recovery config lock"));
-            }
-            remove_known_runtime_file(&entry.path())?;
-            continue;
-        }
-        let checksum = name.strip_prefix('.').unwrap_or(&name);
-        let checksum = checksum
-            .split_once('.')
-            .map_or(checksum, |(checksum, _)| checksum);
-        if !is_sha256(checksum) {
-            return Err(std::io::Error::other("unexpected recovery config stage"));
-        }
-        remove_partial_restore_config(&entry.path())?;
-    }
-    remove_empty_directory(stage_root)
-}
-
-fn read_real_directory(path: &Path) -> std::io::Result<Option<Vec<fs::DirEntry>>> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(std::io::Error::other(
-            "recovery runtime entry is not a real directory",
-        ));
-    }
-    Ok(Some(fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?))
-}
-
 fn is_sha256(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn remove_known_runtime_file(path: &Path) -> std::io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(std::io::Error::other(
-            "recovery runtime file is not regular",
-        ));
-    }
-    fs::remove_file(path)
-}
-
-fn remove_known_runtime_socket(path: &Path) -> std::io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt;
-        if metadata.file_type().is_symlink() || !metadata.file_type().is_socket() {
-            return Err(std::io::Error::other(
-                "recovery runtime socket is not a socket",
-            ));
-        }
-    }
-    #[cfg(not(unix))]
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(std::io::Error::other(
-            "recovery runtime socket is not regular",
-        ));
-    }
-    fs::remove_file(path)
-}
-
-fn remove_empty_directory(path: &Path) -> std::io::Result<()> {
-    match fs::remove_dir(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
 }
 
 fn prepare_private_runtime_directory(path: &Path) -> std::io::Result<()> {
@@ -3371,6 +3553,74 @@ mod tests {
             "an authenticated cleanup quarantine must remain retryable"
         );
         retry.cleanup().expect("cleanup retry runtime");
+    }
+
+    #[test]
+    fn quarantined_runtime_cleanup_never_unlinks_a_replacement_root() {
+        let mut interrupted =
+            EphemeralLitestreamRuntime::create().expect("interrupted ephemeral runtime");
+        let original_root = interrupted.root.clone();
+        let quarantine_root =
+            original_root.with_file_name(format!("kosh-c-{}", interrupted.ownership.token));
+        let displaced_root =
+            original_root.with_file_name(format!("displaced-{}", interrupted.ownership.token));
+        interrupted
+            .paths()
+            .prepare()
+            .expect("prepare interrupted runtime");
+        fs::write(
+            interrupted.source_database_path(),
+            b"private recovery bytes",
+        )
+        .expect("write interrupted recovery database");
+        fs::rename(&original_root, &quarantine_root).expect("quarantine interrupted runtime");
+        let quarantined_runtime =
+            LitestreamRuntimePaths::new(&quarantine_root).expect("quarantined runtime paths");
+
+        let replacement_bytes = b"preserve replacement database";
+        let cleanup = quarantined_runtime.remove_ephemeral_recovery_runtime_bound_with_hook(
+            &quarantine_root,
+            &interrupted.ownership.directory,
+            Some(&interrupted.ownership.marker),
+            || {
+                fs::rename(&quarantine_root, &displaced_root)
+                    .expect("displace authenticated quarantine");
+                let mut builder = fs::DirBuilder::new();
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+                builder
+                    .create(&quarantine_root)
+                    .expect("replacement quarantine root");
+                fs::write(
+                    quarantine_root.join("remote-kosh.sqlite3"),
+                    replacement_bytes,
+                )
+                .expect("replacement database bytes");
+            },
+        );
+        assert!(
+            cleanup.is_err(),
+            "the final parent-bound removal must reject the replacement name"
+        );
+        assert_eq!(
+            fs::read(quarantine_root.join("remote-kosh.sqlite3"))
+                .expect("preserved replacement database"),
+            replacement_bytes
+        );
+        assert_eq!(
+            fs::read_dir(&displaced_root)
+                .expect("descriptor-owned displaced quarantine")
+                .count(),
+            0,
+            "cleanup must operate only through the authenticated directory descriptor"
+        );
+
+        interrupted.cleaned = true;
+        drop(interrupted);
+        fs::remove_dir(displaced_root).expect("remove displaced fixture");
+        fs::remove_file(quarantine_root.join("remote-kosh.sqlite3"))
+            .expect("remove replacement fixture");
+        fs::remove_dir(quarantine_root).expect("remove replacement root");
     }
 
     #[test]
