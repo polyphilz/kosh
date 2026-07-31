@@ -1023,6 +1023,70 @@ pub struct LitestreamRuntimePaths {
     ownership_lock: PathBuf,
 }
 
+pub(crate) struct EphemeralLitestreamRuntime {
+    root: PathBuf,
+    source_database_path: PathBuf,
+    runtime: LitestreamRuntimePaths,
+    cleaned: bool,
+}
+
+impl EphemeralLitestreamRuntime {
+    pub(crate) fn create() -> Result<Self, LitestreamError> {
+        #[cfg(unix)]
+        let parent = Path::new("/tmp");
+        #[cfg(not(unix))]
+        let parent = std::env::temp_dir().as_path();
+        let root = parent.join(format!("kosh-r-{}", uuid::Uuid::now_v7()));
+        fs::create_dir(&root).map_err(LitestreamError::PrepareRuntime)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(error) = fs::set_permissions(&root, fs::Permissions::from_mode(0o700)) {
+                let _ = fs::remove_dir(&root);
+                return Err(LitestreamError::PrepareRuntime(error));
+            }
+        }
+        let runtime = match LitestreamRuntimePaths::new(&root) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let _ = fs::remove_dir(&root);
+                return Err(error);
+            }
+        };
+        let source_database_path = root.join("remote-kosh.sqlite3");
+        Ok(Self {
+            root,
+            source_database_path,
+            runtime,
+            cleaned: false,
+        })
+    }
+
+    pub(crate) fn paths(&self) -> &LitestreamRuntimePaths {
+        &self.runtime
+    }
+
+    pub(crate) fn source_database_path(&self) -> &Path {
+        &self.source_database_path
+    }
+
+    pub(crate) fn cleanup(&mut self) -> Result<(), LitestreamError> {
+        self.runtime
+            .remove_ephemeral_recovery_runtime(&self.root)
+            .map_err(LitestreamError::PrepareRuntime)?;
+        self.cleaned = true;
+        Ok(())
+    }
+}
+
+impl Drop for EphemeralLitestreamRuntime {
+    fn drop(&mut self) {
+        if !self.cleaned {
+            let _ = self.runtime.remove_ephemeral_recovery_runtime(&self.root);
+        }
+    }
+}
+
 impl LitestreamRuntimePaths {
     pub fn new(data_root: &Path) -> Result<Self, LitestreamError> {
         let directory = data_root.join("run").join("backup");
@@ -1113,6 +1177,166 @@ impl LitestreamRuntimePaths {
             .and_then(|directory| directory.sync_all())
             .map_err(LitestreamError::WriteConfig)?;
         Ok(())
+    }
+
+    pub(crate) fn remove_ephemeral_recovery_runtime(
+        &self,
+        data_root: &Path,
+    ) -> std::io::Result<()> {
+        let expected_directory = data_root.join("run").join("backup");
+        if !data_root.is_absolute()
+            || self.directory != expected_directory
+            || !is_ephemeral_recovery_root(data_root)
+        {
+            return Err(std::io::Error::other(
+                "refusing to remove an unrecognized recovery runtime",
+            ));
+        }
+        remove_ephemeral_binary_stages(&self.directory.join("verified-litestream"))?;
+        remove_ephemeral_restore_config_stages(&self.directory.join("restore-configs"))?;
+        remove_known_runtime_file(&self.config)?;
+        remove_known_runtime_socket(&self.socket)?;
+        remove_known_runtime_file(&self.pid)?;
+        remove_known_runtime_file(&self.ownership_lock)?;
+        remove_known_runtime_file(&self.directory.join("ls.yml.tmp"))?;
+        remove_known_runtime_file(&data_root.join("remote-kosh.sqlite3"))?;
+        remove_known_runtime_file(&data_root.join("remote-kosh.sqlite3-wal"))?;
+        remove_known_runtime_file(&data_root.join("remote-kosh.sqlite3-shm"))?;
+        remove_empty_directory(&self.directory)?;
+        remove_empty_directory(
+            self.directory
+                .parent()
+                .ok_or_else(|| std::io::Error::other("recovery runtime has no run directory"))?,
+        )?;
+        remove_empty_directory(data_root)
+    }
+}
+
+fn is_ephemeral_recovery_root(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("kosh-r-"))
+        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+
+fn remove_ephemeral_binary_stages(stage_root: &Path) -> std::io::Result<()> {
+    let entries = match read_real_directory(stage_root)? {
+        Some(entries) => entries,
+        None => return Ok(()),
+    };
+    for entry in entries {
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| std::io::Error::other("invalid recovery binary stage name"))?;
+        let checksum = name
+            .strip_prefix('.')
+            .and_then(|value| value.strip_suffix(".tmp"))
+            .unwrap_or(&name);
+        if !is_sha256(checksum) {
+            return Err(std::io::Error::other("unexpected recovery binary stage"));
+        }
+        remove_partial_stage(&entry.path())?;
+    }
+    remove_empty_directory(stage_root)
+}
+
+fn remove_ephemeral_restore_config_stages(stage_root: &Path) -> std::io::Result<()> {
+    let entries = match read_real_directory(stage_root)? {
+        Some(entries) => entries,
+        None => return Ok(()),
+    };
+    for entry in entries {
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| std::io::Error::other("invalid recovery config stage name"))?;
+        if let Some(checksum) = name
+            .strip_prefix('.')
+            .and_then(|value| value.strip_suffix(".lock"))
+        {
+            if !is_sha256(checksum) {
+                return Err(std::io::Error::other("unexpected recovery config lock"));
+            }
+            remove_known_runtime_file(&entry.path())?;
+            continue;
+        }
+        let checksum = name.strip_prefix('.').unwrap_or(&name);
+        let checksum = checksum
+            .split_once('.')
+            .map_or(checksum, |(checksum, _)| checksum);
+        if !is_sha256(checksum) {
+            return Err(std::io::Error::other("unexpected recovery config stage"));
+        }
+        remove_partial_restore_config(&entry.path())?;
+    }
+    remove_empty_directory(stage_root)
+}
+
+fn read_real_directory(path: &Path) -> std::io::Result<Option<Vec<fs::DirEntry>>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(std::io::Error::other(
+            "recovery runtime entry is not a real directory",
+        ));
+    }
+    Ok(Some(fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?))
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn remove_known_runtime_file(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::other(
+            "recovery runtime file is not regular",
+        ));
+    }
+    fs::remove_file(path)
+}
+
+fn remove_known_runtime_socket(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_socket() {
+            return Err(std::io::Error::other(
+                "recovery runtime socket is not a socket",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::other(
+            "recovery runtime socket is not regular",
+        ));
+    }
+    fs::remove_file(path)
+}
+
+fn remove_empty_directory(path: &Path) -> std::io::Result<()> {
+    match fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -2593,6 +2817,75 @@ mod tests {
                 .expect("immutable config directory"),
         )
         .expect("remove immutable restore config");
+    }
+
+    #[test]
+    fn ephemeral_recovery_cleanup_removes_immutable_binary_and_config_stages() {
+        let source = tempfile::tempdir().expect("ephemeral recovery binary source");
+        let bytes = b"ephemeral recovery binary";
+        let source_path = source.path().join("litestream");
+        fs::write(&source_path, bytes).expect("write recovery binary");
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o700))
+            .expect("recovery binary permissions");
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let pin = BinaryPin {
+            sha256: sha256.clone(),
+            size: bytes.len() as u64,
+            code_signature_identifier: "com.rohan.kosh.litestream".into(),
+            code_signature_cdhash_by_architecture: BTreeMap::new(),
+        };
+        let verified = VerifiedLitestreamBinary {
+            path: source_path.clone(),
+            sha256,
+            size: bytes.len() as u64,
+            code_signature_cdhash: restore_test_process_cdhash(),
+            file: verify_binary(&source_path, &pin).expect("verify recovery binary"),
+        };
+        let root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
+        fs::create_dir(&root).expect("create ephemeral recovery root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("ephemeral recovery root permissions");
+        let runtime = LitestreamRuntimePaths::new(&root).expect("ephemeral recovery paths");
+        let binary = verified
+            .stage_immutable(&runtime)
+            .expect("stage recovery binary");
+        let (_, replica_path) = restore_test_target();
+        let config = stage_immutable_restore_config(
+            &runtime,
+            "dbs:\n  - path: /tmp/kosh.sqlite3\n",
+            &replica_path,
+        )
+        .expect("stage recovery config");
+        binary
+            .reverify_before_spawn()
+            .expect("immutable recovery binary");
+        config
+            .reverify_before_spawn()
+            .expect("immutable recovery config");
+        drop(config);
+        drop(binary);
+        runtime
+            .remove_ephemeral_recovery_runtime(&root)
+            .expect("remove ephemeral recovery runtime");
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn ephemeral_recovery_cleanup_refuses_unexpected_contents_without_removing_them() {
+        let root = PathBuf::from(format!("/tmp/kosh-r-{}", uuid::Uuid::now_v7()));
+        let runtime = LitestreamRuntimePaths::new(&root).expect("ephemeral recovery paths");
+        runtime.prepare().expect("prepare recovery runtime");
+        let unexpected = runtime.directory().join("operator-file");
+        fs::write(&unexpected, b"keep").expect("unexpected recovery file");
+        assert!(runtime.remove_ephemeral_recovery_runtime(&root).is_err());
+        assert_eq!(
+            fs::read(&unexpected).expect("preserved unexpected file"),
+            b"keep"
+        );
+        fs::remove_file(unexpected).expect("remove fixture");
+        runtime
+            .remove_ephemeral_recovery_runtime(&root)
+            .expect("cleanup fixture");
     }
 
     #[test]

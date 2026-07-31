@@ -124,6 +124,13 @@ grounded Research citations, restart, previous-release migration, a verified
 pre-migration snapshot, and restoration into a separate replacement profile.
 Do not claim a UI journey from database checks alone.
 
+If off-site recovery is configured for the release, also complete the packaged
+real-R2 lane in
+[`docs/OFFSITE_BACKUP.md`](OFFSITE_BACKUP.md). Its redacted receipt must name
+the exact clean source commit and prove a clean-directory restore through the
+packaged recovery command plus a hidden normal startup of that restored
+library.
+
 ## 4. Archive and install
 
 Set the version explicitly and archive outside the repository:
@@ -187,11 +194,12 @@ plus logs. Inspect the newest `safety-snapshots/migration-*` manifest before
 copying anything. The acceptance recovery command operates only on ignored
 test profiles; it is not authorization to overwrite production data.
 
-The package contains the pinned Litestream executable, verified protocol
-contracts, and an opt-in supervised runtime. End-user backup remains
-unavailable until the remaining checkpoint, restore, Settings, and packaged
-acceptance slices land. This release does not claim multi-device sync or
-off-site restore.
+The package contains the pinned Litestream executable, the opt-in
+single-writer backup runtime, exact checkpoint preview/drill controls, and the
+offline clean-directory recovery command documented in
+[`docs/OFFSITE_BACKUP.md`](OFFSITE_BACKUP.md). It is disaster recovery, not
+multi-device sync. Turning backup off preserves remote objects; v1 does not
+automatically delete immutable checkpoint manifests or media.
 
 ## Public distribution is future work
 

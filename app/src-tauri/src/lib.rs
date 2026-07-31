@@ -266,6 +266,10 @@ pub fn run_pdf_worker_if_requested() -> Option<i32> {
     pdf::run_worker_if_requested()
 }
 
+pub fn run_recovery_cli_if_requested() -> Option<i32> {
+    backup::recovery_cli::run_if_requested()
+}
+
 pub use database::{
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, AttachmentRecord,
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,

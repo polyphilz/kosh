@@ -410,6 +410,20 @@ impl R2ObjectStore {
         }
         Ok(GetObjectResult { metadata, bytes })
     }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn delete_canary_object(&self, key: &R2ObjectKey) -> Result<(), ObjectStoreError> {
+        if std::env::var("KOSH_RUN_R2_CANARY").as_deref() != Ok("1") {
+            return Err(ObjectStoreError::new(
+                ObjectStoreErrorCode::DeletionNotAuthorized,
+            ));
+        }
+        self.validate_key(key)?;
+        let credentials = self.credentials.clone();
+        let action = self.bucket.delete_object(Some(&credentials), key.as_str());
+        let response = self.send(self.client.delete(action.sign(SIGNED_URL_LIFETIME)))?;
+        ensure_success(response.status())
+    }
 }
 
 impl ObjectStore for R2ObjectStore {

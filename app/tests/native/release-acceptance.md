@@ -144,6 +144,23 @@ search/citation, normal quit, and reopen against the intended production
 profile. No development tools are required on the installed Mac; only the
 optional Claude CLI is external.
 
+## F. Packaged off-site recovery
+
+Follow `docs/OFFSITE_BACKUP.md` using a dedicated private test bucket. From a
+clean exact-HEAD checkout, build the candidate and run:
+
+```sh
+KOSH_R2_CANARY_REQUIRE_PACKAGED=1 ../scripts/run-litestream-r2-canary.sh
+```
+
+This is intentionally not a pull-request lane. Retain its bounded redacted
+`canary-report-v1.json`, `checkpoint-manifest-v1.json`, and
+`packaged-recovery-smoke-v1.json`. The report must say `PACKAGED`, name the
+exact clean commit, prove interrupted replication recovery and manifest-last
+publication, restore tidbits/revisions/media/search/Research citations, and
+show zero remote residue. The normal startup proof uses hidden app windows and
+an isolated home.
+
 ## Release record
 
 | Field                                       | Result  |
@@ -161,6 +178,7 @@ optional Claude CLI is external.
 | Normal quit, restart, and process cleanup   | pending |
 | V16/V2 upgrade and snapshot verification    | pending |
 | Separate-profile recovery proof             | pending |
+| Packaged real-R2 clean-directory recovery   | pending |
 | `/Applications` installed smoke             | pending |
 
 Preserve each profile and failure log until the record is reviewed. A green

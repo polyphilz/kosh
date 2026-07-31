@@ -1,0 +1,353 @@
+{
+  "schemaVersion": 1,
+  "description": "Deterministic off-site snapshot, replication, checkpoint, restore, and clean-reopen fault coverage.",
+  "cases": [
+    {
+      "id": "snapshot-before-migration",
+      "phase": "snapshot",
+      "failureClass": "crash-boundary",
+      "test": "database::safety_snapshot::tests::pending_migration_publishes_verified_pre_migration_pair_before_changes",
+      "invariants": ["authored-bytes", "citation-provenance", "idempotency"]
+    },
+    {
+      "id": "snapshot-retained-media-hash",
+      "phase": "snapshot",
+      "failureClass": "corruption",
+      "test": "database::safety_snapshot::tests::snapshot_creation_rejects_a_retained_blob_with_a_false_digest",
+      "invariants": ["media-immutability", "bounded-cleanup"]
+    },
+    {
+      "id": "snapshot-root-symlink",
+      "phase": "snapshot",
+      "failureClass": "filesystem",
+      "test": "database::safety_snapshot::tests::snapshot_creation_rejects_a_symlinked_snapshot_root",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
+      "id": "snapshot-interrupted-staging",
+      "phase": "snapshot",
+      "failureClass": "retry",
+      "test": "database::safety_snapshot::tests::snapshot_creation_removes_only_validated_interrupted_staging_directories",
+      "invariants": ["idempotency", "bounded-cleanup"]
+    },
+    {
+      "id": "snapshot-capacity-preserves-recovery",
+      "phase": "snapshot",
+      "failureClass": "capacity",
+      "test": "database::safety_snapshot::tests::capacity_preflight_rotates_owned_pairs_but_preserves_the_newest_recovery_point",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
+      "id": "config-intent-durable-boundary",
+      "phase": "configuration",
+      "failureClass": "crash-boundary",
+      "test": "database::backup_state_tests::recovery_target_intent_is_durable_and_commits_before_being_cleared",
+      "invariants": ["idempotency", "single-writer"]
+    },
+    {
+      "id": "config-clock-rollback",
+      "phase": "configuration",
+      "failureClass": "clock",
+      "test": "database::backup_state_tests::recovery_target_intent_clamps_a_rolled_back_clock_before_keychain_work",
+      "invariants": ["idempotency", "single-writer"]
+    },
+    {
+      "id": "config-change-revokes-checkpoint-lineage",
+      "phase": "configuration",
+      "failureClass": "concurrency",
+      "test": "database::offsite_checkpoint_tests::configuration_changes_wait_for_each_checkpoint_remote_operation_and_revoke_old_lineage",
+      "invariants": ["single-writer", "exact-txid"]
+    },
+    {
+      "id": "credential-save-verification-rollback",
+      "phase": "configuration",
+      "failureClass": "auth",
+      "test": "backup::credentials::tests::save_is_verified_and_failed_verification_rolls_back_keychain_state",
+      "invariants": ["secret-isolation", "idempotency"]
+    },
+    {
+      "id": "configuration-schema-excludes-secrets",
+      "phase": "configuration",
+      "failureClass": "security",
+      "test": "database::backup_state_tests::sqlite_schema_cannot_store_access_or_secret_credentials_or_custom_prefixes",
+      "invariants": ["secret-isolation", "single-writer"]
+    },
+    {
+      "id": "media-running-lease-restart",
+      "phase": "media",
+      "failureClass": "crash-boundary",
+      "test": "database::backup_media_tests::running_leases_recover_after_restart_and_stale_workers_cannot_mutate_them",
+      "invariants": ["media-immutability", "idempotency"]
+    },
+    {
+      "id": "media-offline-retry-restart",
+      "phase": "media",
+      "failureClass": "network",
+      "test": "backup::media_reconciler::tests::offline_retry_survives_database_restart",
+      "invariants": ["media-immutability", "local-availability", "idempotency"]
+    },
+    {
+      "id": "media-upload-crash-before-completion",
+      "phase": "media",
+      "failureClass": "retry",
+      "test": "backup::media_reconciler::tests::verified_upload_is_idempotent_after_crash_before_completion",
+      "invariants": ["media-immutability", "idempotency"]
+    },
+    {
+      "id": "media-stale-configuration-fence",
+      "phase": "media",
+      "failureClass": "stale-state",
+      "test": "backup::media_reconciler::tests::configuration_change_before_remote_write_fences_the_stale_claim",
+      "invariants": ["media-immutability", "single-writer"]
+    },
+    {
+      "id": "media-remote-metadata-mismatch",
+      "phase": "media",
+      "failureClass": "corruption",
+      "test": "backup::media_reconciler::tests::remote_metadata_mismatch_fails_closed",
+      "invariants": ["media-immutability", "citation-provenance"]
+    },
+    {
+      "id": "replication-child-crash",
+      "phase": "replication",
+      "failureClass": "process",
+      "test": "backup::litestream_runtime::tests::crashed_children_restart_without_blocking_database_writes",
+      "invariants": ["local-availability", "idempotency"]
+    },
+    {
+      "id": "replication-network-degradation",
+      "phase": "replication",
+      "failureClass": "network",
+      "test": "backup::litestream_runtime::tests::remote_sync_failure_degrades_backup_without_stopping_local_work",
+      "invariants": ["local-availability", "idempotency"]
+    },
+    {
+      "id": "replication-graceful-final-sync",
+      "phase": "replication",
+      "failureClass": "process",
+      "test": "backup::litestream_runtime::tests::service_shutdown_invokes_the_daemons_graceful_final_sync_path_once",
+      "invariants": ["exact-txid", "idempotency"]
+    },
+    {
+      "id": "replication-credential-release-boundary",
+      "phase": "replication",
+      "failureClass": "crash-boundary",
+      "test": "backup::litestream_runtime::tests::credentials_are_released_only_after_durable_ownership_record",
+      "invariants": ["secret-isolation", "single-writer"]
+    },
+    {
+      "id": "replication-control-timeout",
+      "phase": "replication",
+      "failureClass": "process",
+      "test": "backup::litestream::tests::timed_control_commands_are_killed_and_reaped",
+      "invariants": ["local-availability", "bounded-cleanup"]
+    },
+    {
+      "id": "replication-stale-daemon-upgrade",
+      "phase": "replication",
+      "failureClass": "stale-state",
+      "test": "backup::litestream_runtime::tests::stale_daemon_is_reaped_after_its_verified_binary_upgrades_and_relocates",
+      "invariants": ["single-writer", "bounded-cleanup"]
+    },
+    {
+      "id": "checkpoint-exact-remote-txid",
+      "phase": "checkpoint",
+      "failureClass": "stale-state",
+      "test": "backup::checkpoint::tests::exact_replica_txid_is_required_before_publication",
+      "invariants": ["exact-txid", "authored-bytes"]
+    },
+    {
+      "id": "checkpoint-manifest-last",
+      "phase": "checkpoint",
+      "failureClass": "crash-boundary",
+      "test": "backup::checkpoint::tests::every_media_head_precedes_immutable_manifest_put_and_exact_readback",
+      "invariants": ["exact-txid", "media-immutability", "citation-provenance"]
+    },
+    {
+      "id": "checkpoint-missing-or-corrupt-media",
+      "phase": "checkpoint",
+      "failureClass": "corruption",
+      "test": "backup::checkpoint::tests::absent_or_corrupt_remote_media_blocks_manifest_publication",
+      "invariants": ["media-immutability", "citation-provenance"]
+    },
+    {
+      "id": "checkpoint-manifest-readback-failure",
+      "phase": "checkpoint",
+      "failureClass": "network",
+      "test": "backup::checkpoint::tests::manifest_readback_transport_failure_is_not_recorded_as_published",
+      "invariants": ["exact-txid", "idempotency"]
+    },
+    {
+      "id": "checkpoint-timeout-versus-publication",
+      "phase": "checkpoint",
+      "failureClass": "concurrency",
+      "test": "backup::checkpoint::tests::manual_timeout_and_publication_commit_are_mutually_exclusive",
+      "invariants": ["idempotency", "single-writer"]
+    },
+    {
+      "id": "checkpoint-interrupted-startup",
+      "phase": "checkpoint",
+      "failureClass": "crash-boundary",
+      "test": "database::offsite_checkpoint_tests::startup_reclassifies_interrupted_checkpoint_attempts_as_failed",
+      "invariants": ["idempotency", "local-availability"]
+    },
+    {
+      "id": "discovery-duplicate-logical-manifest",
+      "phase": "discovery",
+      "failureClass": "corruption",
+      "test": "backup::restore::tests::discovery_rejects_duplicate_logical_checkpoint_ids_across_manifest_keys",
+      "invariants": ["citation-provenance", "single-writer"]
+    },
+    {
+      "id": "discovery-wrong-replica-epoch",
+      "phase": "discovery",
+      "failureClass": "stale-state",
+      "test": "backup::restore::tests::preview_rejects_the_same_txid_from_a_different_replica_epoch",
+      "invariants": ["exact-txid", "single-writer"]
+    },
+    {
+      "id": "restore-checkpoint-evidence-binding",
+      "phase": "restore",
+      "failureClass": "corruption",
+      "test": "backup::restore::tests::staging_rejects_manifest_evidence_not_bound_to_the_restored_txid",
+      "invariants": ["exact-txid", "citation-provenance"]
+    },
+    {
+      "id": "restore-media-pagination",
+      "phase": "restore",
+      "failureClass": "capacity",
+      "test": "backup::restore::tests::media_reference_loading_pages_without_a_restore_only_total_limit",
+      "invariants": ["media-immutability", "bounded-cleanup"]
+    },
+    {
+      "id": "restore-clean-directory",
+      "phase": "restore",
+      "failureClass": "retry",
+      "test": "backup::restore::tests::clean_directory_install_is_idempotent_and_restores_search_citations_and_media",
+      "invariants": [
+        "authored-bytes",
+        "citation-provenance",
+        "media-immutability",
+        "search-rebuildability",
+        "idempotency"
+      ]
+    },
+    {
+      "id": "restore-nonmutating-drill",
+      "phase": "restore",
+      "failureClass": "filesystem",
+      "test": "backup::restore::tests::discovery_preview_and_non_mutating_drill_verify_the_complete_checkpoint",
+      "invariants": ["authored-bytes", "bounded-cleanup", "exact-txid"]
+    },
+    {
+      "id": "restore-dangling-destination-symlink",
+      "phase": "restore",
+      "failureClass": "filesystem",
+      "test": "backup::litestream::tests::offline_restore_rejects_a_dangling_destination_symlink_without_spawning",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
+      "id": "restore-sandbox-symlink-escape",
+      "phase": "restore",
+      "failureClass": "security",
+      "test": "backup::litestream::tests::offline_restore_sandbox_blocks_a_private_output_symlink_escape",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
+      "id": "restore-credentials-stdin-only",
+      "phase": "restore",
+      "failureClass": "security",
+      "test": "backup::litestream::tests::offline_restore_supplies_credentials_only_through_stdin_and_checks_exact_results",
+      "invariants": ["secret-isolation", "exact-txid"]
+    },
+    {
+      "id": "install-partial-pair-rollback",
+      "phase": "install",
+      "failureClass": "crash-boundary",
+      "test": "database::restore_install::tests::recovery_rolls_back_a_partially_installed_pair_without_a_receipt",
+      "invariants": ["authored-bytes", "idempotency"]
+    },
+    {
+      "id": "install-complete-unreceipted-rollback",
+      "phase": "install",
+      "failureClass": "crash-boundary",
+      "test": "database::restore_install::tests::recovery_rolls_back_a_complete_installed_pair_without_a_receipt",
+      "invariants": ["authored-bytes", "idempotency"]
+    },
+    {
+      "id": "install-receipt-fsync-failure",
+      "phase": "install",
+      "failureClass": "filesystem",
+      "test": "database::restore_install::tests::receipt_persistence_failure_rolls_back_the_installed_pair",
+      "invariants": ["authored-bytes", "idempotency"]
+    },
+    {
+      "id": "install-receipted-reopen",
+      "phase": "install",
+      "failureClass": "retry",
+      "test": "database::restore_install::tests::recovery_keeps_a_receipted_pair_and_only_cleans_transaction_debris",
+      "invariants": ["authored-bytes", "idempotency", "bounded-cleanup"]
+    },
+    {
+      "id": "install-pre-restore-snapshot",
+      "phase": "install",
+      "failureClass": "filesystem",
+      "test": "backup::restore::tests::replacing_an_existing_pair_creates_a_verified_pre_restore_snapshot",
+      "invariants": ["authored-bytes", "idempotency"]
+    },
+    {
+      "id": "reopen-search-and-citation-rebuild",
+      "phase": "reopen",
+      "failureClass": "stale-state",
+      "test": "database::maintenance_tests::diagnostics_and_rebuilds_preserve_authored_history_and_citations",
+      "invariants": ["authored-bytes", "citation-provenance", "search-rebuildability"]
+    },
+    {
+      "id": "reopen-snapshot-provenance",
+      "phase": "reopen",
+      "failureClass": "retry",
+      "test": "database::safety_snapshot::tests::verified_snapshot_pair_reopens_with_search_and_citation_provenance",
+      "invariants": [
+        "authored-bytes",
+        "citation-provenance",
+        "search-rebuildability",
+        "media-immutability"
+      ]
+    },
+    {
+      "id": "reopen-historical-research-citation",
+      "phase": "reopen",
+      "failureClass": "stale-state",
+      "test": "database::research_runs_tests::durable_run_preserves_grounded_snapshot_and_reports_newer_revisions",
+      "invariants": ["authored-bytes", "citation-provenance"]
+    },
+    {
+      "id": "reopen-cli-refuses-existing-target",
+      "phase": "reopen",
+      "failureClass": "filesystem",
+      "test": "backup::recovery_cli::tests::command_requires_a_canonical_backup_set_selector_and_new_absolute_target",
+      "invariants": ["authored-bytes", "bounded-cleanup"]
+    },
+    {
+      "id": "ownership-copied-profile",
+      "phase": "configuration",
+      "failureClass": "concurrency",
+      "test": "backup::owner::tests::copied_configuration_and_r2_keys_cannot_claim_from_another_installation",
+      "invariants": ["single-writer", "authored-bytes"]
+    },
+    {
+      "id": "ownership-exact-preview-version",
+      "phase": "configuration",
+      "failureClass": "stale-state",
+      "test": "backup::owner::tests::explicit_takeover_requires_the_previewed_owner_version_and_advances_epoch",
+      "invariants": ["single-writer", "idempotency"]
+    },
+    {
+      "id": "ownership-journal-resume",
+      "phase": "configuration",
+      "failureClass": "crash-boundary",
+      "test": "backup::owner::tests::journaled_takeover_resumes_idempotently_after_the_remote_write",
+      "invariants": ["single-writer", "idempotency"]
+    }
+  ]
+}
