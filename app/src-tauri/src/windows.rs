@@ -29,6 +29,8 @@ use crate::{
 const MAIN_LABEL: &str = "main";
 const QUICK_ADD_LABEL: &str = "quick-add";
 const TRAY_ID: &str = "kosh-tray";
+#[cfg(test)]
+const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const QUICK_ADD_SHOWN_EVENT: &str = "kosh://quick-add-shown";
 const OPEN_SETTINGS_EVENT: &str = "kosh://open-settings";
@@ -979,6 +981,33 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use super::*;
+
+    #[test]
+    fn app_icon_uses_the_centered_macos_safe_geometry() {
+        let icon = image::load_from_memory(APP_ICON_BYTES)
+            .expect("app icon should decode")
+            .into_rgba8();
+        assert_eq!((icon.width(), icon.height()), (512, 512));
+
+        let occupied = icon
+            .enumerate_pixels()
+            .filter(|(_, _, pixel)| pixel[3] > 0)
+            .fold(None::<(u32, u32, u32, u32)>, |bounds, (x, y, _)| {
+                Some(match bounds {
+                    None => (x, y, x, y),
+                    Some((left, top, right, bottom)) => {
+                        (left.min(x), top.min(y), right.max(x), bottom.max(y))
+                    }
+                })
+            })
+            .expect("app icon should contain visible pixels");
+        assert_eq!(occupied, (50, 50, 461, 461));
+        assert_eq!(icon.get_pixel(0, 0)[3], 0);
+        assert_eq!(icon.get_pixel(511, 511)[3], 0);
+        assert_eq!(icon.get_pixel(100, 50)[3], 0);
+        assert!(icon.get_pixel(140, 50)[3] > 0);
+        assert_eq!(icon.get_pixel(256, 256)[3], 255);
+    }
 
     #[test]
     fn tray_icon_is_a_transparent_monochrome_template() {
