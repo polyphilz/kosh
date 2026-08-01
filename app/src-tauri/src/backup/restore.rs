@@ -15,9 +15,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::database::{
-    create_empty_restore_media_database_at, inspect_completed_restore_install,
-    install_restored_pair, open_restore_main_read_only_at, validate_restored_pair_at,
-    DatabasePaths, RestoreInstallReport,
+    create_empty_restore_media_database_at, open_restore_main_read_only_at,
+    validate_restored_pair_at, DatabasePaths,
+};
+
+#[cfg(test)]
+use crate::database::{
+    inspect_completed_restore_install, install_restored_pair, RestoreInstallReport,
 };
 
 use super::{
@@ -102,6 +106,7 @@ pub(crate) struct RestorePreview {
 
 #[derive(Debug)]
 pub(crate) struct StagedRestore {
+    #[cfg(test)]
     pub(crate) checkpoint: RemoteCheckpoint,
     pub(crate) paths: DatabasePaths,
     pub(crate) restored_media_count: u64,
@@ -477,6 +482,7 @@ fn stage_checkpoint_with_identity(
             return Err(RestoreError::InvalidStaging);
         }
         Ok(StagedRestore {
+            #[cfg(test)]
             checkpoint: checkpoint.clone(),
             paths,
             restored_media_count,
@@ -486,6 +492,7 @@ fn stage_checkpoint_with_identity(
     })()
 }
 
+#[cfg(test)]
 pub(crate) fn install_checkpoint(
     live_paths: &DatabasePaths,
     staged: &StagedRestore,
@@ -512,6 +519,7 @@ pub(crate) fn remove_staged_checkpoint(staged: &StagedRestore) -> Result<(), Res
     staged.cleanup.remove()
 }
 
+#[cfg(test)]
 pub(crate) fn remove_staging_root(root: &Path) -> Result<(), RestoreError> {
     let Some(mut cleanup) = StagingOwnership::open(root)? else {
         return Ok(());

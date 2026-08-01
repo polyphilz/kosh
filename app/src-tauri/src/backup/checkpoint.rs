@@ -226,6 +226,7 @@ impl CheckpointBackupCoordinator {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn disabled() -> Self {
         let (sender, receiver) = mpsc::channel();
         drop(receiver);

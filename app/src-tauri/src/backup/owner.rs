@@ -94,6 +94,7 @@ pub(crate) fn inspect_remote_owner(
 /// Explicitly transfers a backup set to this installation and a fresh replica
 /// epoch. The previewed owner document and object version form the takeover
 /// authorization; a concurrent owner change makes the conditional write fail.
+#[cfg(test)]
 pub(crate) fn take_over_remote_owner(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
@@ -179,6 +180,7 @@ pub(crate) fn resume_remote_takeover(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn claim_remote_owner(
     store: &dyn ObjectStore,
     keyspace: &R2Keyspace,
