@@ -232,7 +232,7 @@ pub fn run() {
         let shortcut_settings = runtime.database_client().load_shortcut_settings()?;
         app.manage(runtime);
         let startup_smoke = startup_smoke::run_if_requested(app)?;
-        windows::setup(app, shortcut_settings)?;
+        windows::setup(app, shortcut_settings, !startup_smoke)?;
         app.state::<RuntimeState>()
             .reconcile_backup_takeover_async();
         if !startup_smoke {

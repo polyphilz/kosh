@@ -224,8 +224,16 @@ pub(crate) struct ShortcutSettingsSnapshot {
     shortcut_errors: Vec<String>,
 }
 
-pub(crate) fn setup(app: &mut App, settings: ShortcutSettings) -> tauri::Result<()> {
-    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+pub(crate) fn setup(
+    app: &mut App,
+    settings: ShortcutSettings,
+    show_main_on_launch: bool,
+) -> tauri::Result<()> {
+    // Kosh stays a Regular application for its whole lifetime. macOS binds menu-bar ownership
+    // during activation from the policy the process already holds, so switching from Accessory
+    // after a tray action can leave the previously active application named in the menu bar.
+    // Remaining Regular costs a Dock icon and keeps activation and menu-bar ownership stable.
+    app.set_activation_policy(tauri::ActivationPolicy::Regular);
     app.manage(WindowState::default());
     create_quick_add_window(app.handle())?;
     install_tray(app, &settings.keyboard_bindings)?;
@@ -234,6 +242,11 @@ pub(crate) fn setup(app: &mut App, settings: ShortcutSettings) -> tauri::Result<
         .shortcut_errors
         .lock()
         .expect("shortcut errors poisoned") = errors;
+    if show_main_on_launch {
+        if let Err(error) = activate_main_window(app.handle()) {
+            log::error!("failed to show the main window on launch: {error}");
+        }
+    }
     Ok(())
 }
 
@@ -838,7 +851,7 @@ fn restore_previous_focus(app: &AppHandle, target: RestoreTarget) -> Result<(), 
                 }
             }
         }
-        enter_resident_mode(app);
+        enter_resident_mode();
     }
     Ok(())
 }
@@ -862,8 +875,6 @@ fn show_settings_inner(app: &AppHandle) -> Result<(), String> {
 fn activate_main_window(app: &AppHandle) -> Result<(), String> {
     let marker = ObjcMainThreadMarker::new()
         .ok_or_else(|| "main-window activation was not on the main thread".to_string())?;
-    app.set_activation_policy(tauri::ActivationPolicy::Regular)
-        .map_err(|error| format!("could not enter regular-app mode: {error}"))?;
     let window = app
         .get_webview_window(MAIN_LABEL)
         .ok_or_else(|| "main window is unavailable".to_string())?;
@@ -888,12 +899,11 @@ fn frontmost_application_pid() -> Option<i32> {
         .map(|application| application.processIdentifier())
 }
 
-fn enter_resident_mode(app: &AppHandle) {
+/// Steps out of the foreground while leaving Kosh running behind its menu-bar icon. The
+/// activation policy stays Regular so the next activation still owns the menu bar.
+fn enter_resident_mode() {
     if let Some(marker) = ObjcMainThreadMarker::new() {
         NSApplication::sharedApplication(marker).deactivate();
-    }
-    if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Accessory) {
-        log::error!("failed to restore Accessory mode: {error}");
     }
 }
 
@@ -932,7 +942,7 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
                 if let Err(error) = window.hide() {
                     log::error!("failed to hide the main window: {error}");
                 }
-                enter_resident_mode(window.app_handle());
+                enter_resident_mode();
             }
             QUICK_ADD_LABEL => {
                 api.prevent_close();

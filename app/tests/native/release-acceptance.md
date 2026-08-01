@@ -46,8 +46,8 @@ explicit flag also disables standard-location discovery, so an installed host
 Claude cannot leak into the core lane. Before preparing semantic search or
 invoking Research:
 
-1. Confirm the resident launch shows only the white Kosh mark in the menu bar.
-2. Open the main window from the menu and the configured global shortcut.
+1. Confirm launch opens the main window and shows Kosh in both the Dock and menu bar.
+2. Close the main window, reopen it from the menu-bar icon, and confirm Kosh owns the application menu without flicker; repeat from the Dock and configured global shortcut.
 3. Use Quick Add from another application, save, and confirm focus returns.
 4. Create a longer tidbit with a heading, fenced code block, inline/display
    math, and an HTTPS source URL.
