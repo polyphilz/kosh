@@ -982,17 +982,13 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn app_icon_uses_the_centered_macos_safe_geometry() {
-        let icon = image::load_from_memory(APP_ICON_BYTES)
-            .expect("app icon should decode")
-            .into_rgba8();
-        assert_eq!((icon.width(), icon.height()), (512, 512));
-
-        let occupied = icon
-            .enumerate_pixels()
-            .filter(|(_, _, pixel)| pixel[3] > 0)
-            .fold(None::<(u32, u32, u32, u32)>, |bounds, (x, y, _)| {
+    fn pixel_bounds(
+        icon: &image::RgbaImage,
+        predicate: impl Fn(&image::Rgba<u8>) -> bool,
+    ) -> Option<(u32, u32, u32, u32)> {
+        icon.enumerate_pixels()
+            .filter(|(_, _, pixel)| predicate(pixel))
+            .fold(None, |bounds, (x, y, _)| {
                 Some(match bounds {
                     None => (x, y, x, y),
                     Some((left, top, right, bottom)) => {
@@ -1000,8 +996,25 @@ mod tests {
                     }
                 })
             })
+    }
+
+    #[test]
+    fn app_icon_uses_the_centered_macos_safe_geometry() {
+        let icon = image::load_from_memory(APP_ICON_BYTES)
+            .expect("app icon should decode")
+            .into_rgba8();
+        assert_eq!((icon.width(), icon.height()), (512, 512));
+
+        let occupied = pixel_bounds(&icon, |pixel| pixel[3] > 0)
             .expect("app icon should contain visible pixels");
         assert_eq!(occupied, (50, 50, 461, 461));
+
+        let artwork = pixel_bounds(&icon, |pixel| {
+            pixel[3] > 0 && pixel.0[..3].iter().any(|channel| *channel > 80)
+        })
+        .expect("app icon should contain foreground artwork");
+        assert_eq!(artwork, (91, 88, 421, 422));
+
         assert_eq!(icon.get_pixel(0, 0)[3], 0);
         assert_eq!(icon.get_pixel(511, 511)[3], 0);
         assert_eq!(icon.get_pixel(100, 50)[3], 0);
