@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "tauri": "KOSH_DATA_DIR=\"$PWD/.data/local\" tauri",
     "lint": "oxlint",
+    "lint:native": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --no-default-features -- -D warnings",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "test": "vitest run",
@@ -47,7 +48,7 @@
     "backup:r2-canary": "../scripts/run-litestream-r2-canary.sh",
     "check:bundle": "pnpm build && ../scripts/check-bundle.sh",
     "check:frontend": "pnpm lint && pnpm fmt:check && pnpm build && pnpm test && pnpm test:browser",
-    "check:native": "pnpm backup:verify-fault-matrix && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support",
+    "check:native": "pnpm backup:verify-fault-matrix && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && pnpm lint:native && cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support",
     "check": "pnpm check:frontend && pnpm check:native"
   },
   "dependencies": {

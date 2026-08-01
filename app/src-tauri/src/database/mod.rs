@@ -84,9 +84,13 @@ pub(crate) use research_runs::{AppendResearchEventWrite, CreateResearchRunWrite}
 pub use research_runs::{ListResearchRunsInput, ResearchRunPage, ResearchRunRecord};
 pub(crate) use restore_install::{
     create_empty_media_at as create_empty_restore_media_database_at,
+    open_main_read_only_at as open_restore_main_read_only_at,
+    validate_pair_at as validate_restored_pair_at,
+};
+#[cfg(test)]
+pub(crate) use restore_install::{
     inspect_completed_install as inspect_completed_restore_install,
-    install as install_restored_pair, open_main_read_only_at as open_restore_main_read_only_at,
-    validate_pair_at as validate_restored_pair_at, RestoreInstallReport,
+    install as install_restored_pair, RestoreInstallReport,
 };
 pub(crate) use safety_snapshot::available_space_bytes as available_storage_bytes;
 pub(crate) use safety_snapshot::SafetySnapshotReason;

@@ -1,9 +1,16 @@
+//! Restored-pair validation and startup cleanup for the retired in-place
+//! installer. Production recovery publishes into a newly reserved directory;
+//! the test-only installer remains to exercise legacy transaction recovery.
+
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
-    io::{Read, Write},
-    os::{fd::AsRawFd, unix::fs::FileExt},
+    fs::{self, File, OpenOptions},
+    io::Read,
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
 };
+
+#[cfg(test)]
+use std::{fs::TryLockError, io::Write, os::unix::fs::FileExt};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +28,7 @@ const RECEIPT_FILENAME: &str = "restore-install-v1.json";
 const FORMAT_VERSION: u32 = 1;
 const MAX_CONTROL_BYTES: u64 = 64 * 1024;
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum RestoreInstallOutcome {
@@ -28,6 +36,7 @@ pub(crate) enum RestoreInstallOutcome {
     AlreadyInstalled,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RestoreInstallReport {
@@ -71,6 +80,7 @@ pub(super) fn recover_interrupted(paths: &DatabasePaths) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn install(
     paths: &DatabasePaths,
     staged_main: &File,
@@ -139,6 +149,7 @@ pub(crate) fn install(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn inspect_completed_install(
     paths: &DatabasePaths,
     checkpoint_id: &CheckpointId,
@@ -148,6 +159,7 @@ pub(crate) fn inspect_completed_install(
     completed_install(paths, checkpoint_id)
 }
 
+#[cfg(test)]
 fn acquire_restore_lock(paths: &DatabasePaths) -> Result<File> {
     fs::create_dir_all(&paths.root)?;
     let lock = OpenOptions::new()
@@ -165,6 +177,7 @@ fn acquire_restore_lock(paths: &DatabasePaths) -> Result<File> {
     }
 }
 
+#[cfg(test)]
 fn completed_install(
     paths: &DatabasePaths,
     checkpoint_id: &CheckpointId,
@@ -278,6 +291,7 @@ pub(crate) fn open_main_read_only_at(file: &File) -> Result<rusqlite::Connection
     connection::open_bound_read_only(file, DatabaseKind::Main)
 }
 
+#[cfg(test)]
 fn install_transaction(
     paths: &DatabasePaths,
     transaction: &Path,
@@ -301,6 +315,7 @@ fn install_transaction(
     Ok(())
 }
 
+#[cfg(test)]
 fn backup_existing_pair(paths: &DatabasePaths, transaction: &Path) -> Result<()> {
     copy_regular_synced(&paths.main, &transaction.join("old-main.sqlite3.tmp"))?;
     rename_regular(
@@ -321,6 +336,7 @@ fn backup_existing_pair(paths: &DatabasePaths, transaction: &Path) -> Result<()>
     sync_directory(&paths.root)
 }
 
+#[cfg(test)]
 fn finish_install(
     paths: &DatabasePaths,
     transaction: &Path,
@@ -337,6 +353,7 @@ fn finish_install(
     remove_owned_transaction(transaction)
 }
 
+#[cfg(test)]
 fn remove_receipt_artifacts(receipt: &Path) -> Result<()> {
     let temporary = receipt.with_extension("json.tmp");
     let mut first_error = None;
@@ -396,6 +413,7 @@ fn live_pair_matches(paths: &DatabasePaths, control: &InstallControl) -> Result<
         && hash_regular_file(&paths.media)? == control.media_sha256)
 }
 
+#[cfg(test)]
 fn create_private_transaction(path: &Path) -> Result<()> {
     match fs::create_dir(path) {
         Ok(()) => {}
@@ -446,6 +464,7 @@ fn read_control(path: &Path) -> Result<InstallControl> {
     Ok(control)
 }
 
+#[cfg(test)]
 fn write_control(path: &Path, control: &InstallControl) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     remove_regular_if_present(&temporary)?;
@@ -486,6 +505,7 @@ fn copy_regular_synced(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn copy_regular_descriptor_synced(source: &File, destination: &Path) -> Result<()> {
     if !source.metadata()?.file_type().is_file() {
         return Err(invalid("restore source descriptor is not a regular file"));
@@ -514,6 +534,7 @@ fn copy_regular_descriptor_synced(source: &File, destination: &Path) -> Result<(
     Ok(())
 }
 
+#[cfg(test)]
 fn open_regular_read_write_no_follow(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true);
@@ -529,6 +550,7 @@ fn open_regular_read_write_no_follow(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+#[cfg(test)]
 fn rename_regular(source: &Path, destination: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if !metadata.file_type().is_file() {
@@ -556,6 +578,7 @@ fn hash_regular_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+#[cfg(test)]
 fn hash_regular_descriptor(file: &File) -> Result<String> {
     if !file.metadata()?.file_type().is_file() {
         return Err(invalid("restore database descriptor is not a regular file"));

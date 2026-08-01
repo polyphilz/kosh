@@ -121,34 +121,6 @@ impl CheckpointErrorCode {
             Self::RemoteMediaCorrupt => "REMOTE_MEDIA_CORRUPT",
         }
     }
-
-    pub(crate) fn from_db(value: &str) -> Result<Self, BackupDomainError> {
-        match value {
-            "NETWORK" => Ok(Self::Network),
-            "NETWORK_TIMEOUT" => Ok(Self::NetworkTimeout),
-            "RATE_LIMITED" => Ok(Self::RateLimited),
-            "SERVICE_UNAVAILABLE" => Ok(Self::ServiceUnavailable),
-            "CREDENTIALS_MISSING" => Ok(Self::CredentialsMissing),
-            "KEYCHAIN_UNAVAILABLE" => Ok(Self::KeychainUnavailable),
-            "INVALID_CONFIGURATION" => Ok(Self::InvalidConfiguration),
-            "AUTHENTICATION_REJECTED" => Ok(Self::AuthenticationRejected),
-            "AUTHORIZATION_REJECTED" => Ok(Self::AuthorizationRejected),
-            "OWNER_CONFLICT" => Ok(Self::OwnerConflict),
-            "OWNER_INVALID" => Ok(Self::OwnerInvalid),
-            "IMMUTABLE_OBJECT_CONFLICT" => Ok(Self::ImmutableObjectConflict),
-            "LOCAL_MEDIA_MISSING" => Ok(Self::LocalMediaMissing),
-            "WORKER_UNAVAILABLE" => Ok(Self::WorkerUnavailable),
-            "LITESTREAM_UNAVAILABLE" => Ok(Self::LitestreamUnavailable),
-            "FENCE_TIMEOUT" => Ok(Self::FenceTimeout),
-            "REPLICA_BEHIND" => Ok(Self::ReplicaBehind),
-            "MALFORMED_MANIFEST" => Ok(Self::MalformedManifest),
-            "REMOTE_MEDIA_MISSING" => Ok(Self::RemoteMediaMissing),
-            "REMOTE_MEDIA_CORRUPT" => Ok(Self::RemoteMediaCorrupt),
-            _ => Err(BackupDomainError::InvalidStoredValue(
-                "checkpoint error code",
-            )),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -258,6 +230,7 @@ uuid_v7_id!(ProbeRunId, "probeRunId");
 pub(crate) struct BackupWriterId(String);
 
 impl BackupWriterId {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::derive_from_device_identifier(Uuid::now_v7().as_bytes())
     }
@@ -447,6 +420,7 @@ impl<'de> Deserialize<'de> for ContentSha256 {
 pub(crate) struct UtcTimestamp(String);
 
 impl UtcTimestamp {
+    #[cfg(test)]
     pub(crate) fn now() -> Result<Self, BackupDomainError> {
         let value = OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -554,6 +528,7 @@ impl R2Keyspace {
         R2ListPrefix(format!("{}/", self.root))
     }
 
+    #[cfg(test)]
     pub(crate) fn identity(&self) -> R2ObjectKey {
         self.fixed_key("identity/v1.json")
     }

@@ -212,6 +212,7 @@ pub(super) fn verify_restore_pair_connections(main: &Connection, media: &Connect
     verify_pair_connections(main, media, SafetySnapshotReason::Restore)
 }
 
+#[cfg(test)]
 pub(super) fn create_pre_restore(paths: &DatabasePaths) -> Result<SafetySnapshotReport> {
     let main_state = connection::inspect_file(&paths.main)?;
     let media_state = connection::inspect_file(&paths.media)?;
