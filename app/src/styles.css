@@ -241,6 +241,73 @@ button {
   min-width: 0;
 }
 
+.note-page {
+  min-height: 100vh;
+  background: var(--canvas);
+}
+
+.note-page__document {
+  width: min(760px, calc(100% - 56px));
+  min-height: 100vh;
+  padding: clamp(48px, 8vh, 88px) 0 64px;
+  margin: 0 auto;
+}
+
+.note-page__error {
+  position: sticky;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  margin-top: 16px;
+  color: var(--danger);
+  font-size: 11px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+}
+
+.note-page__error button {
+  padding: 4px 8px;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+.note-page--error {
+  display: grid;
+  padding: 32px;
+  color: var(--danger);
+  place-items: center;
+}
+
+.note-page--error div {
+  display: grid;
+  max-width: 520px;
+  gap: 6px;
+}
+
+.note-page--error p,
+.note-page--error span {
+  margin: 0;
+}
+
+.note-page--error span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .note-page__document {
+    width: calc(100% - 32px);
+    padding-top: 36px;
+  }
+}
+
 .page {
   width: min(1180px, 100%);
   min-height: 100vh;

@@ -119,7 +119,6 @@ export function TidbitPage() {
           throw new Error("The citation does not belong to this tidbit.");
         }
         setCitation(resolved);
-        window.requestAnimationFrame(() => citationRef.current?.focus());
       })
       .catch((reason: unknown) => {
         if (active) setCitationError(errorMessage(reason));
@@ -131,6 +130,12 @@ export function TidbitPage() {
       active = false;
     };
   }, [backend, citationRefresh, route.passage, tidbitId]);
+
+  useEffect(() => {
+    if (!citation || !route.passage) return;
+    const frame = window.requestAnimationFrame(() => citationRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [citation, route.passage]);
 
   if (loading) {
     return (
@@ -583,7 +588,7 @@ function BackLink({
 }) {
   if (from === "search") {
     return (
-      <Link className="search-citation-detail__link" search={{ exact, q }} to="/">
+      <Link className="search-citation-detail__link" search={{ exact, q }} to="/search">
         ← Back to search
       </Link>
     );

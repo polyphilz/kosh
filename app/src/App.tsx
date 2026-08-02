@@ -10,7 +10,8 @@ import { TauriEvent } from "./tauriProtocol";
 import { AppUpdater } from "./updater";
 
 const destinations = [
-  { label: "Search", to: "/" },
+  { label: "New note", to: "/" },
+  { label: "Search", to: "/search" },
   { label: "Add", to: "/add" },
   { label: "Library", to: "/library" },
   { label: "Research", to: "/research" },
@@ -62,7 +63,7 @@ function AppShell() {
           <nav aria-label="Primary">
             {destinations.map((destination) => (
               <Link
-                activeOptions={{ exact: destination.to === "/" }}
+                activeOptions={{ exact: true }}
                 activeProps={{ "aria-current": "page", className: "app-nav-link--active" }}
                 className="app-nav-link"
                 key={destination.to}

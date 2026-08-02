@@ -138,6 +138,39 @@ test("installs the checked update and relaunches after download", async () => {
   });
 });
 
+test("fences working copies before installing and relaunching", async () => {
+  const prepareForRestart = vi.fn(async () => undefined);
+  gateway.check.mockResolvedValue(availableUpdate);
+  const controller = new UpdateController(gateway, { prepareForRestart });
+
+  await controller.checkManually();
+  await controller.installAndRestart();
+
+  expect(prepareForRestart).toHaveBeenCalledOnce();
+  expect(prepareForRestart.mock.invocationCallOrder[0]).toBeLessThan(
+    gateway.downloadAndInstall.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+  );
+});
+
+test("does not install or relaunch when the working-copy fence fails", async () => {
+  gateway.check.mockResolvedValue(availableUpdate);
+  const controller = new UpdateController(gateway, {
+    prepareForRestart: async () => {
+      throw new Error("note could not be saved");
+    },
+  });
+
+  await controller.checkManually();
+  await controller.installAndRestart();
+
+  expect(gateway.downloadAndInstall).not.toHaveBeenCalled();
+  expect(gateway.relaunch).not.toHaveBeenCalled();
+  expect(controller.getSnapshot()).toEqual({
+    phase: UpdatePhase.Error,
+    message: "note could not be saved",
+  });
+});
+
 test("relaunches after an installed update even when the controller stops", async () => {
   let finishInstallation: (() => void) | undefined;
   gateway.check.mockResolvedValue(availableUpdate);
@@ -151,6 +184,7 @@ test("relaunches after an installed update even when the controller stops", asyn
 
   await controller.checkManually();
   const installation = controller.installAndRestart();
+  await vi.waitFor(() => expect(gateway.downloadAndInstall).toHaveBeenCalledOnce());
   controller.stop();
   finishInstallation?.();
   await installation;

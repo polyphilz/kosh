@@ -43,6 +43,7 @@ export interface UpdateControllerOptions {
   automaticChecksEnabled?: boolean;
   enabled?: boolean;
   now?: () => number;
+  prepareForRestart?: () => Promise<void>;
   scheduler?: TimerScheduler;
   storage?: UpdateStorage;
 }
@@ -55,6 +56,7 @@ export class UpdateController {
   private readonly listeners = new Set<Listener>();
   private readonly enabled: boolean;
   private readonly now: () => number;
+  private readonly prepareForRestart: () => Promise<void>;
   private readonly scheduler: TimerScheduler;
   private readonly storage: UpdateStorage;
   private automaticChecksEnabled: boolean;
@@ -68,6 +70,7 @@ export class UpdateController {
     this.automaticChecksEnabled = options.automaticChecksEnabled ?? true;
     this.enabled = options.enabled ?? true;
     this.now = options.now ?? Date.now;
+    this.prepareForRestart = options.prepareForRestart ?? (() => Promise.resolve());
     this.scheduler = options.scheduler ?? window;
     this.storage = options.storage ?? window.localStorage;
   }
@@ -163,6 +166,7 @@ export class UpdateController {
       totalBytes: null,
     });
     try {
+      await this.prepareForRestart();
       await this.gateway.downloadAndInstall((progress) => {
         if (operationId !== this.operationId) {
           return;

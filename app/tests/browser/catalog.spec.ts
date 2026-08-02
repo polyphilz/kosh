@@ -27,7 +27,7 @@ for (const theme of themes) {
 }
 
 test("primary destinations support keyboard navigation", async ({ page }) => {
-  await page.goto("/#/");
+  await page.goto("/#/search");
   const add = page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
     name: "Add",
   });
@@ -41,10 +41,10 @@ test("primary destinations support keyboard navigation", async ({ page }) => {
 
 test("supported compact windows retain visible navigation labels", async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 700 });
-  await page.goto("/#/");
+  await page.goto("/#/search");
 
   const links = page.getByRole("navigation", { name: "Primary" }).getByRole("link");
-  await expect(links).toHaveText(["Search", "Add", "Library", "Research", "Settings"]);
+  await expect(links).toHaveText(["New note", "Search", "Add", "Library", "Research", "Settings"]);
 
   for (const link of await links.all()) {
     await expect(link).not.toHaveCSS("color", "rgba(0, 0, 0, 0)");

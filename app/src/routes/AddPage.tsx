@@ -15,7 +15,7 @@ export function AddPage() {
         <Status>Draft stays local</Status>
       </header>
       <TidbitComposer
-        onCancel={() => void navigate({ to: "/" })}
+        onCancel={() => void navigate({ to: "/search" })}
         onSaved={(tidbit) =>
           navigate({
             to: "/tidbits/$tidbitId",

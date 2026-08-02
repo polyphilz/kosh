@@ -41,6 +41,51 @@
   color: var(--muted);
 }
 
+.kosh-blocknote-editor--page {
+  min-height: 100%;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  transition: none;
+}
+
+.kosh-blocknote-editor--page:focus-within {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.kosh-blocknote-editor--page .bn-container,
+.kosh-blocknote-editor--page .bn-editor {
+  min-height: calc(100vh - 128px);
+}
+
+.kosh-blocknote-editor--page .bn-editor {
+  padding: 0 0 40vh;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.kosh-blocknote-editor--page [data-kosh-block-type="heading-1"] {
+  font-size: 2.25em;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.04em;
+}
+
+.kosh-blocknote-editor--page [data-kosh-block-type="heading-2"] {
+  font-size: 1.65em;
+  font-weight: 680;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
+}
+
+.kosh-blocknote-editor--page [data-kosh-block-type="heading-3"] {
+  font-size: 1.3em;
+  font-weight: 660;
+  line-height: 1.4;
+}
+
 .kosh-math-editor {
   display: inline-flex;
   gap: 8px;
