@@ -108,4 +108,12 @@ describe("restricted BlockNote Markdown adapter", () => {
       expect(koshBlocksToMarkdown(markdownToKoshBlocks(canonical))).toBe(canonical);
     }
   });
+
+  it("retains styled or linked inline math without silently dropping its context", () => {
+    for (const markdown of ["**$x$**", "~~$x$~~", "[$x$](https://example.com)"]) {
+      const blocks = markdownToKoshBlocks(markdown);
+      expect(blocks).toEqual([{ type: "legacyMarkdown", props: { markdown } }]);
+      expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
+    }
+  });
 });

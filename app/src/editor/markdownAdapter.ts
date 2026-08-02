@@ -48,6 +48,7 @@ export function koshBlocksToMarkdown(
 }
 
 function blockFromMarkdown(node: RootContent, source: string): KoshBlockNotePartialBlock[] {
+  if (containsUnsupportedInlineMathContext(node)) return [legacyBlock(node)];
   switch (node.type) {
     case "paragraph":
       if (
@@ -378,4 +379,14 @@ function stringProp(value: unknown): string {
 function textFromMarkdownNode(node: Content): string {
   if ("value" in node && typeof node.value === "string") return node.value;
   return "children" in node ? (node.children as Content[]).map(textFromMarkdownNode).join("") : "";
+}
+
+function containsUnsupportedInlineMathContext(node: Content, decorated = false): boolean {
+  if (node.type === "inlineMath") return decorated;
+  if (!("children" in node)) return false;
+  const decoratesChildren =
+    decorated || ["delete", "emphasis", "link", "linkReference", "strong"].includes(node.type);
+  return (node.children as Content[]).some((child) =>
+    containsUnsupportedInlineMathContext(child, decoratesChildren),
+  );
 }
