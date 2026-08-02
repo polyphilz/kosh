@@ -166,9 +166,9 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
       try {
         await flushForNavigation();
         return false;
-      } catch (reason) {
+      } catch {
         leavingNoteRef.current = false;
-        throw reason;
+        return true;
       }
     },
   });

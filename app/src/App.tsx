@@ -1,9 +1,10 @@
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { DEFAULT_QUICK_ADD_ACCELERATOR, KoshCommand } from "./backend/contracts";
 import { ErrorBoundary } from "./components/States";
 import { Shortcut } from "./components/Shortcut";
+import { createUuidV7 } from "./notes/autosave";
 import { acceleratorKeys, describeAccelerator } from "./shortcuts/accelerator";
 import { bindingFor, ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
 import { TauriEvent } from "./tauriProtocol";
@@ -33,6 +34,14 @@ function AppShell() {
   const quickAddAccelerator =
     bindingFor(settings?.keyboardBindings ?? [], KoshCommand.QuickAdd)?.accelerator ??
     DEFAULT_QUICK_ADD_ACCELERATOR;
+  const openNewNote = useCallback(
+    () =>
+      navigate({
+        to: "/new/$noteId",
+        params: { noteId: createUuidV7() },
+      }),
+    [navigate],
+  );
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -49,6 +58,45 @@ function AppShell() {
       unlisten?.();
     };
   }, [navigate]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void listen<"BACK" | "FORWARD" | "NEW_NOTE">(TauriEvent.NavigationCommand, (event) => {
+      if (!active) return;
+      if (event.payload === "NEW_NOTE") void openNewNote();
+      else if (event.payload === "BACK") window.history.back();
+      else window.history.forward();
+    }).then((stop) => {
+      if (active) unlisten = stop;
+      else stop();
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [openNewNote]);
+
+  useEffect(() => {
+    if ("__TAURI_INTERNALS__" in window) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.key.toLowerCase() !== "n" ||
+        !event.metaKey
+      ) {
+        return;
+      }
+      event.preventDefault();
+      void openNewNote();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [openNewNote]);
 
   return (
     <ErrorBoundary>
