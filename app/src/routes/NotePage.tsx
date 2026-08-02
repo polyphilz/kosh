@@ -17,6 +17,7 @@ import {
   type NoteMediaReservation,
 } from "../notes/autosave";
 import { NoteActions } from "../notes/NoteActions";
+import { hasMeaningfulAuthoredContent } from "../notes/content";
 import { useNoteDeletion } from "../notes/deletion";
 import { projectLegacyTitle } from "../notes/legacyTitle";
 import { registerQuitParticipant } from "../lifecycle/quit";
@@ -410,6 +411,9 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
       <h1 className="visually-hidden">Note</h1>
       <NoteActions
+        canEditSources={
+          snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
+        }
         canDelete={snapshot.baseRevisionId !== null}
         deleteError={actionError}
         deleting={deleting}

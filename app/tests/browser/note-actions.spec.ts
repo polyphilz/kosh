@@ -54,7 +54,9 @@ test("the minimal sidebar persists and its commands leave editor shortcuts alone
 test("valid sources autosave while invalid partial edits remain local", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
+  await expect(page.getByRole("button", { name: "Sources" })).toBeDisabled();
   await editor.fill("# Matrix notes\n\nA source-backed observation.");
+  await expect(page.getByRole("button", { name: "Sources" })).toBeEnabled();
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
   const noteId = page.url().split("/").at(-1)!;
 

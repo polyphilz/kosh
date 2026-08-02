@@ -3,6 +3,7 @@ import type { SourceDraft } from "../backend/contracts";
 import { Dialog } from "../components/Dialog";
 
 interface NoteActionsProps {
+  canEditSources: boolean;
   canDelete: boolean;
   deleteError: string | null;
   deleting: boolean;
@@ -13,6 +14,7 @@ interface NoteActionsProps {
 }
 
 export function NoteActions({
+  canEditSources,
   canDelete,
   deleteError,
   deleting,
@@ -55,10 +57,10 @@ export function NoteActions({
         aria-expanded={sourcesOpen}
         aria-haspopup="dialog"
         className="note-actions__button"
-        disabled={disabled}
+        disabled={disabled || !canEditSources}
         onClick={() => (sourcesOpen ? closeSources() : openSources())}
         ref={sourcesTrigger}
-        title="Edit note sources"
+        title={canEditSources ? "Edit note sources" : "Write something before adding sources"}
         type="button"
       >
         <span aria-hidden="true">↗</span>
