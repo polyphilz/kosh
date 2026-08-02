@@ -148,6 +148,85 @@ test("a result edited after retrieval opens honest historical evidence", async (
   expect(page.url()).not.toContain("cobalt");
 });
 
+test("attachment results retain their exact page evidence after opening the owning note", async ({
+  page,
+}) => {
+  await page.goto("/#/");
+  const note = await seedTidbit(page, {
+    title: null,
+    bodyMarkdown: "# Vector chapter\n\n{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
+    sources: [],
+  });
+  await page.evaluate((seeded) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const passageId = "fake-pdf-passage:page-7";
+    const citation = {
+      passageId,
+      excerpt: "Page-seven matrix evidence remains exact.",
+      headingContext: ["Vector chapter"],
+      constructionVersion: "fake-pdf-pages-v1",
+      state: "CURRENT" as const,
+      locator: { kind: "PDF_PAGE" as const, page: 7 },
+      tidbit: null,
+      attachment: {
+        id: "019f547b-6200-7000-8000-00000000d001",
+        extractionId: "fake-pdf-extraction",
+        displayFilename: "vectors.pdf",
+        mediaType: "application/pdf",
+        deleted: false,
+      },
+      sources: [],
+    };
+    backend.pdfStatus = async (attachmentId) => ({
+      attachmentId,
+      displayFilename: "vectors.pdf",
+      pageCount: 9,
+      extractedPageCount: 9,
+      unavailablePageCount: 0,
+      extractionStatus: "READY",
+      extractionError: null,
+      nextAttemptAtMs: null,
+    });
+    backend.resolveCitation = async (requestedPassageId) => {
+      if (requestedPassageId !== passageId) throw new Error("unexpected passage");
+      return citation;
+    };
+    backend.searchPassages = async () => ({
+      executionMode: "LEXICAL_ONLY",
+      semanticReadiness: "WAITING_FOR_RUNTIME",
+      results: [
+        {
+          passageId,
+          score: 10,
+          matchedFields: ["EXTRACTED_TEXT"],
+          highlights: [],
+          note: {
+            id: seeded.id,
+            revisionId: seeded.currentRevisionId,
+            revisionNumber: seeded.revisionNumber,
+            title: seeded.title,
+            displayTitle: seeded.displayTitle,
+            deleted: false,
+          },
+          citation,
+        },
+      ],
+    });
+  }, note);
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
+  await page.getByRole("option", { name: /Vector chapter/u }).click();
+
+  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.locator(".note-search-focus span")).toHaveText("Vector chapter · page 7");
+  await expect(page.locator(".note-search-focus q")).toHaveText(
+    "Page-seven matrix evidence remains exact.",
+  );
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
+});
+
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {
   await page.addInitScript(() => {
     const nativeSetTimeout = window.setTimeout.bind(window);

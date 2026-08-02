@@ -327,7 +327,21 @@ function focusCitation(
   const root = editor.domElement?.closest<HTMLElement>(".kosh-blocknote-editor");
   if (!root) return false;
   focusedBlockIds.current = selectedBlocks.map((block) => block.id);
-  setSearchFocusBlocks(editor, focusedBlockIds.current);
+  const hasInlineLocator = citationHasInlineLocator(citation);
+  if (hasInlineLocator && selectedBlocks.length !== 1) {
+    clearSearchFocus(editor, focusedBlockIds);
+    return false;
+  }
+  const inlineRange =
+    selectedBlocks.length === 1 ? citationInlineRange(selectedBlocks[0]!, citation) : null;
+  if (hasInlineLocator && !inlineRange) {
+    clearSearchFocus(editor, focusedBlockIds);
+    return false;
+  }
+  if (!setSearchFocusBlocks(editor, focusedBlockIds.current, inlineRange)) {
+    clearSearchFocus(editor, focusedBlockIds);
+    return false;
+  }
   const element = root.querySelector<HTMLElement>('[data-kosh-search-hit="true"]');
   element?.scrollIntoView({ behavior: "instant", block: "center" });
   return element !== null;
@@ -379,53 +393,89 @@ function citationBlockRange(
     end: Math.min(blocks.length - 1, ordinalStart + span - 1),
   };
   const excerpt = normalizedSearchText(citation.excerpt);
-  if (!excerpt) return ordinalRange;
-
-  let best = ordinalRange;
-  let bestScore = blockRangeScore(blocks, ordinalRange, excerpt);
+  if (!excerpt) return null;
+  if (blockRangeContainsExcerpt(blocks, ordinalRange, excerpt)) return ordinalRange;
   for (let start = 0; start < blocks.length; start += 1) {
     const candidate = { start, end: Math.min(blocks.length - 1, start + span - 1) };
-    const score = blockRangeScore(blocks, candidate, excerpt);
-    if (score > bestScore) {
-      best = candidate;
-      bestScore = score;
-    }
+    if (blockRangeContainsExcerpt(blocks, candidate, excerpt)) return candidate;
   }
-  return bestScore > 0 ? best : ordinalRange;
+  return null;
 }
 
-function blockRangeScore(
+function blockRangeContainsExcerpt(
   blocks: readonly SearchableBlock[],
   range: { end: number; start: number },
   excerpt: string,
-): number {
+): boolean {
   const blockText = normalizedSearchText(
     blocks
       .slice(range.start, range.end + 1)
       .map(searchableBlockText)
       .join(" "),
   );
-  if (!blockText) return 0;
-  if (excerpt.includes(blockText) || blockText.includes(excerpt)) return Number.MAX_SAFE_INTEGER;
-  const excerptTokens = new Set(excerpt.split(" ").filter((token) => token.length > 1));
-  return blockText
-    .split(" ")
-    .filter((token) => excerptTokens.has(token))
-    .reduce((score, token) => score + token.length, 0);
+  return Boolean(blockText) && (excerpt.includes(blockText) || blockText.includes(excerpt));
+}
+
+function citationInlineRange(
+  block: SearchableBlock,
+  citation: CitationResolution,
+): { blockId: string; endChar: number; startChar: number } | null {
+  if (citation.locator.kind !== "MARKDOWN_BLOCKS") return null;
+  const { startChar, endChar, startLine, endLine } = citation.locator;
+  const text = searchableBlockPlainText(block);
+  const characterCount = [...text].length;
+  if (startChar !== null && endChar !== null) {
+    if (startChar < 0 || endChar <= startChar || endChar > characterCount) return null;
+    return citationRangeMatchesExcerpt(text, startChar, endChar, citation.excerpt)
+      ? { blockId: block.id, startChar, endChar }
+      : null;
+  }
+  if (startLine === null || endLine === null || startLine < 1 || endLine < startLine) return null;
+  const lines = text.split("\n");
+  if (endLine > lines.length) return null;
+  const start = lines
+    .slice(0, startLine - 1)
+    .reduce((total, line) => total + [...line].length + 1, 0);
+  const end = lines.slice(0, endLine).reduce((total, line) => total + [...line].length + 1, 0) - 1;
+  return end > start && citationRangeMatchesExcerpt(text, start, end, citation.excerpt)
+    ? { blockId: block.id, startChar: start, endChar: end }
+    : null;
+}
+
+function citationHasInlineLocator(citation: CitationResolution): boolean {
+  if (citation.locator.kind !== "MARKDOWN_BLOCKS") return false;
+  const { startChar, endChar, startLine, endLine } = citation.locator;
+  return [startChar, endChar, startLine, endLine].some((value) => value !== null);
+}
+
+function citationRangeMatchesExcerpt(
+  text: string,
+  start: number,
+  end: number,
+  excerpt: string,
+): boolean {
+  return (
+    normalizedSearchText([...text].slice(start, end).join("")) === normalizedSearchText(excerpt)
+  );
 }
 
 function searchableBlockText(block: SearchableBlock): string {
   return [textFromUnknown(block.content), textFromUnknown(block.props)].filter(Boolean).join(" ");
 }
 
-function textFromUnknown(value: unknown): string {
+function searchableBlockPlainText(block: SearchableBlock): string {
+  return textFromUnknown(block.content, "");
+}
+
+function textFromUnknown(value: unknown, separator = " "): string {
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(textFromUnknown).join(" ");
+  if (Array.isArray(value))
+    return value.map((item) => textFromUnknown(item, separator)).join(separator);
   if (!value || typeof value !== "object") return "";
   const object = value as Record<string, unknown>;
   return [object.text, object.latex, object.markdown, object.content]
-    .map(textFromUnknown)
-    .join(" ");
+    .map((item) => textFromUnknown(item, separator))
+    .join(separator);
 }
 
 function normalizedSearchText(value: string): string {

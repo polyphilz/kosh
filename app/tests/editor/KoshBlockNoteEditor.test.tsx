@@ -152,6 +152,93 @@ describe("production BlockNote editor", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="A recovered working copy replaced the cited paragraph."
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("A recovered working copy replaced the cited paragraph.");
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("focuses exact character and line slices within long authored blocks", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    const view = render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="zero αβ exact slice omega"
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("zero αβ exact slice omega");
+    const characterCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "exact slice",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startChar: 8,
+        endChar: 19,
+      },
+    };
+
+    expect(ref.current?.focusCitation(characterCitation)).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      "exact slice",
+    );
+
+    view.rerender(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"```python\nfirst\nsecond target\nthird\nfourth\n```\n"}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText(/second target/);
+    const lineCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "second target\nthird",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startLine: 2,
+        endLine: 3,
+      },
+    };
+
+    expect(ref.current?.focusCitation(lineCitation)).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')?.textContent).toBe(
+      "second target\nthird",
+    );
+
+    const mismatchedLocator: CitationResolution = {
+      ...characterCitation,
+      locator: {
+        ...characterCitation.locator,
+        kind: "MARKDOWN_BLOCKS",
+        startChar: 0,
+        endChar: 4,
+      },
+    };
+    expect(ref.current?.focusCitation(mismatchedLocator)).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
   it("makes disabled state explicit to assistive technology and BlockNote", async () => {
     const view = render(
       <AppearanceProvider>

@@ -472,7 +472,9 @@ function SearchFocusNotice({
       <div role="status">
         <strong>{focus.phase === "FOCUSED" ? "Search match" : "Historical search match"}</strong>
         <span>{searchFocusMessage(focus)}</span>
-        {focus.phase !== "FOCUSED" && citation && <q>{citation.excerpt}</q>}
+        {citation && (focus.phase !== "FOCUSED" || citation.attachment) && (
+          <q>{citation.excerpt}</q>
+        )}
       </div>
       <button aria-label="Clear search highlight" onClick={onDismiss} type="button">
         ×
