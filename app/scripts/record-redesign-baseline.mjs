@@ -16,10 +16,18 @@ const sampleCount = 10;
 const nativeSampleCount = 5;
 const baseUrl = "http://127.0.0.1:1422";
 
-const sourceRevision = (
-  await commandOutput("git", ["rev-parse", "origin/main"], repositoryRoot)
-).trim();
-const buildRevision = (await commandOutput("git", ["rev-parse", "HEAD"], repositoryRoot)).trim();
+const sourceRevision = (await commandOutput("git", ["rev-parse", "HEAD"], repositoryRoot)).trim();
+const buildRevision = sourceRevision;
+const worktreeStatus = await commandOutput(
+  "git",
+  ["status", "--porcelain=v1", "--untracked-files=all"],
+  repositoryRoot,
+);
+if (worktreeStatus.trim().length > 0) {
+  throw new Error(
+    `baseline recording requires a clean HEAD; commit or stash these changes first:\n${worktreeStatus}`,
+  );
+}
 const scale = JSON.parse(await readFile(scaleReportPath, "utf8"));
 const server = spawn(
   process.execPath,
