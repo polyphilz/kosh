@@ -38,7 +38,7 @@ import type {
   SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
-import { KoshEditorInteractionProvider } from "./interactionState";
+import { KoshEditorInteractionProvider, useKoshEditorDisabled } from "./interactionState";
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
@@ -399,6 +399,7 @@ function KoshSideMenu(properties: SideMenuProps) {
 function KoshDragHandleButton() {
   const Components = useComponentsContext()!;
   const editor = useBlockNoteEditor(koshBlockNoteSchema);
+  const disabled = useKoshEditorDisabled();
   const sideMenu = useExtension(SideMenuExtension, { editor });
   const hoveredBlock = useExtensionState(SideMenuExtension, {
     editor,
@@ -415,11 +416,12 @@ function KoshDragHandleButton() {
     >
       <Components.Generic.Menu.Trigger>
         <Components.SideMenu.Button
-          className="bn-button"
-          draggable
+          className={`bn-button${disabled ? " bn-button--disabled" : ""}`}
+          draggable={!disabled}
           icon={<span aria-hidden>⋮⋮</span>}
           label="Open block menu"
           onDragEnd={() => {
+            if (disabled) return;
             sideMenu.blockDragEnd();
             requestAnimationFrame(() => {
               const target = editor.getBlock(hoveredBlock.id) ?? editor.document[0];
@@ -427,13 +429,24 @@ function KoshDragHandleButton() {
               editor.focus();
             });
           }}
-          onDragStart={(event) => sideMenu.blockDragStart(event, hoveredBlock)}
+          onDragStart={(event) => {
+            if (!disabled) sideMenu.blockDragStart(event, hoveredBlock);
+          }}
+          onClick={(event) => {
+            if (!disabled) return;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
         />
       </Components.Generic.Menu.Trigger>
       <DragHandleMenu>
-        <KoshMoveBlockItem direction="up" />
-        <KoshMoveBlockItem direction="down" />
-        <KoshRemoveBlockItem />
+        {!disabled && (
+          <>
+            <KoshMoveBlockItem direction="up" />
+            <KoshMoveBlockItem direction="down" />
+            <KoshRemoveBlockItem />
+          </>
+        )}
       </DragHandleMenu>
     </Components.Generic.Menu.Root>
   );
@@ -442,6 +455,7 @@ function KoshDragHandleButton() {
 function KoshMoveBlockItem({ direction }: { direction: "down" | "up" }) {
   const Components = useComponentsContext()!;
   const editor = useBlockNoteEditor(koshBlockNoteSchema);
+  const disabled = useKoshEditorDisabled();
   const hoveredBlock = useExtensionState(SideMenuExtension, {
     editor,
     selector: (state) => state?.block,
@@ -451,6 +465,7 @@ function KoshMoveBlockItem({ direction }: { direction: "down" | "up" }) {
     <Components.Generic.Menu.Item
       className="bn-menu-item"
       onClick={() => {
+        if (disabled) return;
         if (direction === "up") editor.moveBlocksUp(hoveredBlock);
         else editor.moveBlocksDown(hoveredBlock);
         requestAnimationFrame(() => editor.focus());
@@ -464,6 +479,7 @@ function KoshMoveBlockItem({ direction }: { direction: "down" | "up" }) {
 function KoshRemoveBlockItem() {
   const Components = useComponentsContext()!;
   const editor = useBlockNoteEditor(koshBlockNoteSchema);
+  const disabled = useKoshEditorDisabled();
   const hoveredBlock = useExtensionState(SideMenuExtension, {
     editor,
     selector: (state) => state?.block,
@@ -473,6 +489,7 @@ function KoshRemoveBlockItem() {
     <Components.Generic.Menu.Item
       className="bn-menu-item"
       onClick={() => {
+        if (disabled) return;
         const selected = editor.getSelection()?.blocks;
         const blocks = selected?.some((block) => block.id === hoveredBlock.id)
           ? selected
