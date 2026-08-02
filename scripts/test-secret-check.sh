@@ -11,6 +11,7 @@ git -C "$temp_dir" config user.name "Kosh Tests"
 git -C "$temp_dir" config user.email "tests@kosh.invalid"
 mkdir -p "$temp_dir/scripts"
 cp "$checker" "$temp_dir/scripts/check-secrets.sh"
+cp "$repo_root/.gitignore" "$temp_dir/.gitignore"
 chmod +x "$temp_dir/scripts/check-secrets.sh"
 
 readonly access_key_name="KOSH_LITESTREAM_R2_ACCESS_KEY_ID"
@@ -24,6 +25,7 @@ printf '%s=\n%s=\n' \
   "TAURI_SIGNING_PRIVATE_KEY_PATH" \
   >"$temp_dir/.env.notarization.example"
 git -C "$temp_dir" add \
+  .gitignore \
   .env.example \
   .env.notarization.example \
   scripts/check-secrets.sh
@@ -38,7 +40,7 @@ printf '%s=%s\n' \
   "APPLE_API_KEY_PATH" \
   '/private/notarization-key.p8' \
   >"$temp_dir/.env.notarization"
-git -C "$temp_dir" add .env.notarization
+git -C "$temp_dir" add --force .env.notarization
 if (
   cd "$temp_dir"
   KOSH_DIFF_BASE='' scripts/check-secrets.sh >/dev/null 2>&1
