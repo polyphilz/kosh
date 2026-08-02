@@ -39,6 +39,7 @@ export const TauriCommand = {
   LoadTidbit: "load_tidbit",
   LoadTidbitRevision: "load_tidbit_revision",
   LoadWorkingCopy: "load_working_copy",
+  MarkQuickAddFrontendReady: "mark_quick_add_frontend_ready",
   MaintainMedia: "maintain_media",
   MediaIntegrityScan: "media_integrity_scan",
   MediaLimits: "media_limits",

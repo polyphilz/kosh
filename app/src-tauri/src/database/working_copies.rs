@@ -152,6 +152,7 @@ pub(super) fn save(
     if !write.allow_empty_ephemeral
         && write.input.base_revision_id.is_none()
         && !has_meaningful_authored_content(&write.input.body_markdown)
+        && write.input.sources.is_empty()
     {
         if existing.is_some() {
             media::abandon_draft_media_leases(&transaction, &context_key, write.now_ms)?;
@@ -911,6 +912,31 @@ mod tests {
                 .load_working_copy(NOTE_ID.into())
                 .expect("load empty working copy"),
             None
+        );
+        assert!(matches!(
+            library.database.client().load_tidbit(NOTE_ID.into()),
+            Err(DatabaseError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn source_only_ephemeral_working_copy_remains_recoverable() {
+        let library = TestLibrary::new();
+        let source = SourceDraft {
+            label: Some("Recovered source".into()),
+            url: Some("https://example.com/recovered".into()),
+        };
+        let result = library.save_with_sources(1, "", None, DRAFT_ID_1, vec![source.clone()]);
+
+        assert_eq!(result.status, WorkingCopySaveStatus::Saved);
+        assert_eq!(
+            library
+                .database
+                .client()
+                .load_working_copy(NOTE_ID.into())
+                .expect("load source-only working copy")
+                .map(|copy| copy.sources),
+            Some(vec![source])
         );
         assert!(matches!(
             library.database.client().load_tidbit(NOTE_ID.into()),

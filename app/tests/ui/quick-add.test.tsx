@@ -48,6 +48,16 @@ afterEach(() => {
 });
 
 describe("global quick add", () => {
+  it("announces readiness only after installing the dismissal listener", async () => {
+    const native = createNative();
+    renderQuickAdd(new FakeBackend(), native.controller);
+
+    await waitFor(() => expect(native.controller.markReady).toHaveBeenCalledOnce());
+    expect(native.controller.onDismissRequested.mock.invocationCallOrder[0]!).toBeLessThan(
+      native.controller.markReady.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("checkpoints a titleless note before Command-Enter dismisses it", async () => {
     const backend = new FakeBackend();
     const native = createNative();
@@ -512,11 +522,13 @@ function createNative() {
   let dismissRequested: ((request: QuickAddDismissRequest) => void) | undefined;
   const dismiss = vi.fn(async (_action: QuickAddDismissAction) => undefined);
   const cancelDismiss = vi.fn(async () => undefined);
+  const markReady = vi.fn(async () => undefined);
   const setFileDialogOpen = vi.fn(async (_open: boolean) => undefined);
   return {
     controller: {
       cancelDismiss,
       dismiss,
+      markReady,
       onDismissRequested: vi.fn(async (listener: (request: QuickAddDismissRequest) => void) => {
         dismissRequested = listener;
         return () => {

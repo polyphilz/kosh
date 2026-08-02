@@ -175,6 +175,7 @@ struct FocusContext {
     dismiss_requested: bool,
     dismissing: bool,
     file_dialog_open: bool,
+    frontend_ready: bool,
     previous_external_pid: Option<i32>,
     quick_add_visible: bool,
     restore_main: bool,
@@ -182,6 +183,7 @@ struct FocusContext {
 
 #[derive(Debug, PartialEq)]
 enum DismissRequestState {
+    Deferred,
     Emit,
     NotVisible,
     Pending,
@@ -203,13 +205,25 @@ impl FocusContext {
         if !self.quick_add_visible {
             return DismissRequestState::NotVisible;
         }
+        self.dismiss_action = Some(action);
+        if !self.frontend_ready {
+            return DismissRequestState::Deferred;
+        }
         if self.dismiss_requested || self.dismissing {
-            self.dismiss_action = Some(action);
             return DismissRequestState::Pending;
         }
-        self.dismiss_action = Some(action);
         self.dismiss_requested = true;
         DismissRequestState::Emit
+    }
+
+    fn mark_frontend_ready(&mut self) -> Option<QuickAddDismissAction> {
+        self.frontend_ready = true;
+        if !self.quick_add_visible || self.dismiss_requested || self.dismissing {
+            return None;
+        }
+        let action = self.dismiss_action?;
+        self.dismiss_requested = true;
+        Some(action)
     }
 
     fn cancel_dismiss_request(&mut self) {
@@ -1171,6 +1185,28 @@ pub(crate) fn cancel_quick_add_dismiss(state: State<'_, WindowState>) {
 }
 
 #[tauri::command]
+pub(crate) fn mark_quick_add_frontend_ready(app: AppHandle) -> Result<(), String> {
+    let pending_action = app
+        .state::<WindowState>()
+        .focus
+        .lock()
+        .expect("focus context poisoned")
+        .mark_frontend_ready();
+    let Some(action) = pending_action else {
+        return Ok(());
+    };
+    if let Err(error) = emit_quick_add_dismiss_request(&app, action) {
+        app.state::<WindowState>()
+            .focus
+            .lock()
+            .expect("focus context poisoned")
+            .cancel_dismiss_request();
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn complete_quick_add_dismiss(
     app: AppHandle,
     action: QuickAddDismissAction,
@@ -1223,14 +1259,13 @@ fn request_quick_add_dismiss(
         .lock()
         .expect("focus context poisoned")
         .begin_dismiss_request(action);
-    if request == DismissRequestState::NotVisible {
+    if matches!(
+        request,
+        DismissRequestState::Deferred | DismissRequestState::NotVisible
+    ) {
         return Ok(request);
     }
-    if let Err(error) = app.emit_to(
-        QUICK_ADD_LABEL,
-        QUICK_ADD_DISMISS_REQUESTED_EVENT,
-        QuickAddDismissRequest { action },
-    ) {
+    if let Err(error) = emit_quick_add_dismiss_request(app, action) {
         if request == DismissRequestState::Emit {
             app.state::<WindowState>()
                 .focus
@@ -1238,11 +1273,21 @@ fn request_quick_add_dismiss(
                 .expect("focus context poisoned")
                 .cancel_dismiss_request();
         }
-        return Err(format!(
-            "could not ask Quick Add to preserve its note: {error}"
-        ));
+        return Err(error);
     }
-    Ok(DismissRequestState::Emit)
+    Ok(request)
+}
+
+fn emit_quick_add_dismiss_request(
+    app: &AppHandle,
+    action: QuickAddDismissAction,
+) -> Result<(), String> {
+    app.emit_to(
+        QUICK_ADD_LABEL,
+        QUICK_ADD_DISMISS_REQUESTED_EVENT,
+        QuickAddDismissRequest { action },
+    )
+    .map_err(|error| format!("could not ask Quick Add to preserve its note: {error}"))
 }
 
 fn request_or_complete_quick_add_action(
@@ -1250,7 +1295,9 @@ fn request_or_complete_quick_add_action(
     action: QuickAddDismissAction,
 ) -> Result<(), String> {
     match request_quick_add_dismiss(app, action)? {
-        DismissRequestState::Emit | DismissRequestState::Pending => Ok(()),
+        DismissRequestState::Deferred
+        | DismissRequestState::Emit
+        | DismissRequestState::Pending => Ok(()),
         DismissRequestState::NotVisible => complete_quick_add_action(app, action),
     }
 }
@@ -1603,7 +1650,11 @@ mod tests {
         context.begin_show(100, Some(200), false);
         assert_eq!(
             context.begin_dismiss_request(QuickAddDismissAction::DismissPreserveFocus),
-            DismissRequestState::Emit
+            DismissRequestState::Deferred
+        );
+        assert_eq!(
+            context.mark_frontend_ready(),
+            Some(QuickAddDismissAction::DismissPreserveFocus)
         );
         assert_eq!(
             context.begin_dismiss_request(QuickAddDismissAction::NewNote),

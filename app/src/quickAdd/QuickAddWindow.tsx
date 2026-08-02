@@ -70,10 +70,12 @@ export function QuickAddWindow({ native = quickAddNative }: QuickAddWindowProps)
         requestDismiss(request.action),
       ),
     ])
-      .then(([shown, dismiss]) => {
+      .then(async ([shown, dismiss]) => {
         if (active) {
           stopShown = shown;
           stopDismiss = dismiss;
+          await native.markReady();
+          if (active) focusEditor();
         } else {
           shown();
           dismiss();
