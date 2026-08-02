@@ -138,23 +138,39 @@ test("installs the checked update and relaunches after download", async () => {
   });
 });
 
-test("fences working copies before installing and relaunching", async () => {
+test("fences working copies before download and again immediately before relaunching", async () => {
   const prepareForRestart = vi.fn(async () => undefined);
+  const cancelRestartPreparation = vi.fn();
   gateway.check.mockResolvedValue(availableUpdate);
-  const controller = new UpdateController(gateway, { prepareForRestart });
+  const controller = new UpdateController(gateway, {
+    cancelRestartPreparation,
+    prepareForRestart,
+  });
 
   await controller.checkManually();
   await controller.installAndRestart();
 
-  expect(prepareForRestart).toHaveBeenCalledOnce();
+  expect(prepareForRestart).toHaveBeenCalledTimes(2);
   expect(prepareForRestart.mock.invocationCallOrder[0]).toBeLessThan(
     gateway.downloadAndInstall.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+  );
+  expect(cancelRestartPreparation).toHaveBeenCalledOnce();
+  expect(cancelRestartPreparation.mock.invocationCallOrder[0]).toBeLessThan(
+    gateway.downloadAndInstall.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+  );
+  expect(gateway.downloadAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
+    prepareForRestart.mock.invocationCallOrder[1] ?? Number.MAX_SAFE_INTEGER,
+  );
+  expect(prepareForRestart.mock.invocationCallOrder[1]).toBeLessThan(
+    gateway.relaunch.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
   );
 });
 
 test("does not install or relaunch when the working-copy fence fails", async () => {
+  const cancelRestartPreparation = vi.fn();
   gateway.check.mockResolvedValue(availableUpdate);
   const controller = new UpdateController(gateway, {
+    cancelRestartPreparation,
     prepareForRestart: async () => {
       throw new Error("note could not be saved");
     },
@@ -165,9 +181,30 @@ test("does not install or relaunch when the working-copy fence fails", async () 
 
   expect(gateway.downloadAndInstall).not.toHaveBeenCalled();
   expect(gateway.relaunch).not.toHaveBeenCalled();
+  expect(cancelRestartPreparation).toHaveBeenCalledOnce();
   expect(controller.getSnapshot()).toEqual({
     phase: UpdatePhase.Error,
     message: "note could not be saved",
+  });
+});
+
+test("releases prepared editors when update installation fails", async () => {
+  const cancelRestartPreparation = vi.fn();
+  gateway.check.mockResolvedValue(availableUpdate);
+  gateway.downloadAndInstall.mockRejectedValue(new Error("download interrupted"));
+  const controller = new UpdateController(gateway, {
+    cancelRestartPreparation,
+    prepareForRestart: vi.fn(async () => undefined),
+  });
+
+  await controller.checkManually();
+  await controller.installAndRestart();
+
+  expect(cancelRestartPreparation).toHaveBeenCalledTimes(2);
+  expect(gateway.relaunch).not.toHaveBeenCalled();
+  expect(controller.getSnapshot()).toEqual({
+    phase: UpdatePhase.Error,
+    message: "download interrupted",
   });
 });
 

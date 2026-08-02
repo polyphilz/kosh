@@ -440,6 +440,13 @@ function scheduleWorkingCopyReconciliation(backend: Backend): void {
 
 async function reconcileWorkingCopy(backend: Backend, workingCopy: WorkingCopyRecord) {
   if (workingCopy.noteId === activeNoteIds.get(backend)) return;
+  if (workingCopy.mediaReservation) {
+    await backend.discardWorkingCopy({
+      noteId: workingCopy.noteId,
+      expectedEditGeneration: workingCopy.editGeneration,
+    });
+    return;
+  }
   const save = await backend.saveWorkingCopy({
     noteId: workingCopy.noteId,
     baseRevisionId: workingCopy.baseRevisionId,

@@ -1,7 +1,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { prepareLifecycleParticipants } from "../lifecycle/quit.tsx";
+import { cancelLifecycleParticipants, prepareLifecycleParticipants } from "../lifecycle/quit.tsx";
 import { useShortcutSettings } from "../shortcuts/context.tsx";
 import { TauriEvent } from "../tauriProtocol.ts";
 import { updaterIsEnabled } from "./contracts.ts";
@@ -17,6 +17,7 @@ export function AppUpdater() {
     () =>
       new UpdateController(tauriUpdateGateway, {
         automaticChecksEnabled: false,
+        cancelRestartPreparation: cancelLifecycleParticipants,
         enabled,
         prepareForRestart: () => prepareLifecycleParticipants("UPDATE_RESTART"),
       }),

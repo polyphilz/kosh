@@ -47,7 +47,7 @@ export async function prepareLifecycleParticipants(reason: LifecyclePrepareReaso
   await Promise.all([...participants].map((participant) => participant.prepare(reason)));
 }
 
-function cancelParticipants() {
+export function cancelLifecycleParticipants() {
   for (const participant of participants) participant.cancel();
 }
 
@@ -70,14 +70,14 @@ export function QuitCoordinator({ native = quitNative }: { native?: QuitNative }
                 await native.acknowledge(notice.requestId, error);
               } catch {
                 activeRequestId.current = null;
-                cancelParticipants();
+                cancelLifecycleParticipants();
               }
             });
         }),
         native.onCanceled((notice) => {
           if (activeRequestId.current !== notice.requestId) return;
           activeRequestId.current = null;
-          cancelParticipants();
+          cancelLifecycleParticipants();
         }),
       ]);
       if (active) {

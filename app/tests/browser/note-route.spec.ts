@@ -147,6 +147,45 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
   ).toEqual([staleNoteId]);
 });
 
+test("startup recovery discards an abandoned existing-note media reservation", async ({ page }) => {
+  await page.goto("/#/search");
+  const noteId = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const note = await backend.createTidbit({
+      title: null,
+      bodyMarkdown: "Do not create a phantom revision for this note.",
+      sources: [],
+    });
+    await backend.reserveWorkingCopyForMedia({
+      noteId: note.id,
+      baseRevisionId: note.currentRevisionId,
+      editGeneration: 1,
+      bodyMarkdown: note.bodyMarkdown,
+      sources: [],
+    });
+    window.location.hash = "/";
+    return note.id;
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(async (id) => {
+        const backend = window.__KOSH_FAKE_BACKEND__;
+        if (!backend) throw new Error("fake backend is unavailable");
+        return backend.loadWorkingCopy(id);
+      }, noteId),
+    )
+    .toBeNull();
+  expect(
+    await page.evaluate(async (id) => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      return (await backend.loadTidbit(id)).revisionNumber;
+    }, noteId),
+  ).toBe(1);
+});
+
 test("delayed reconciliation never checkpoints the note opened during its scan", async ({
   page,
 }) => {

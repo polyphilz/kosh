@@ -41,6 +41,7 @@ interface TimerScheduler {
 
 export interface UpdateControllerOptions {
   automaticChecksEnabled?: boolean;
+  cancelRestartPreparation?: () => void;
   enabled?: boolean;
   now?: () => number;
   prepareForRestart?: () => Promise<void>;
@@ -56,6 +57,7 @@ export class UpdateController {
   private readonly listeners = new Set<Listener>();
   private readonly enabled: boolean;
   private readonly now: () => number;
+  private readonly cancelRestartPreparation: () => void;
   private readonly prepareForRestart: () => Promise<void>;
   private readonly scheduler: TimerScheduler;
   private readonly storage: UpdateStorage;
@@ -70,6 +72,7 @@ export class UpdateController {
     this.automaticChecksEnabled = options.automaticChecksEnabled ?? true;
     this.enabled = options.enabled ?? true;
     this.now = options.now ?? Date.now;
+    this.cancelRestartPreparation = options.cancelRestartPreparation ?? (() => undefined);
     this.prepareForRestart = options.prepareForRestart ?? (() => Promise.resolve());
     this.scheduler = options.scheduler ?? window;
     this.storage = options.storage ?? window.localStorage;
@@ -167,6 +170,7 @@ export class UpdateController {
     });
     try {
       await this.prepareForRestart();
+      this.cancelRestartPreparation();
       await this.gateway.downloadAndInstall((progress) => {
         if (operationId !== this.operationId) {
           return;
@@ -180,8 +184,10 @@ export class UpdateController {
       if (operationId === this.operationId) {
         this.publish({ phase: UpdatePhase.Installing, update });
       }
+      await this.prepareForRestart();
       await this.gateway.relaunch();
     } catch (error) {
+      this.cancelRestartPreparation();
       if (operationId === this.operationId) {
         this.fail(error);
       }
