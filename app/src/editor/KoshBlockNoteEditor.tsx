@@ -354,8 +354,9 @@ function clearSearchFocus(
   editor: KoshBlockNoteEditorInstance,
   focusedBlockIds: MutableRefObject<string[]>,
 ): void {
-  if (focusedBlockIds.current.length > 0) setSearchFocusBlocks(editor, []);
+  const hadFocus = focusedBlockIds.current.length > 0;
   focusedBlockIds.current = [];
+  if (hadFocus) setSearchFocusBlocks(editor, []);
 }
 
 function revalidateCitationFocus(

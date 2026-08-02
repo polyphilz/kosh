@@ -213,6 +213,40 @@ describe("production BlockNote editor", () => {
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
   });
 
+  it("clears stale focus without re-entering the controlled change callback", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    const onChange = vi.fn();
+    function RevalidatingEditor() {
+      const [value, setValue] = useState("Slow simmering preserves brightness.");
+      return (
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={(nextValue) => {
+            onChange(nextValue);
+            setValue(nextValue);
+            ref.current?.revalidateCitationFocus(authoredCitation());
+          }}
+          ref={ref}
+          value={value}
+        />
+      );
+    }
+    render(
+      <AppearanceProvider>
+        <RevalidatingEditor />
+      </AppearanceProvider>,
+    );
+    const editor = await screen.findByRole("textbox", { name: "Body" });
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(true);
+    await user.clear(editor);
+    await user.type(editor, "Fast boiling changes everything.");
+
+    expect(onChange.mock.calls.length).toBeLessThan(40);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
   it("preserves punctuation while validating citation evidence", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(
