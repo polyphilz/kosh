@@ -137,6 +137,34 @@ test("delete flushes the latest note and Undo restores it immediately", async ({
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
 });
 
+test("history never reopens a deleted note as editable", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("A deleted note must become a history tombstone.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const deletedUrl = page.url();
+
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.evaluate((url) => {
+    window.location.hash = new URL(url).hash;
+  }, deletedUrl);
+  await expect(page).toHaveURL(deletedUrl);
+  await page.getByRole("button", { name: "Delete note" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete this note?" })
+    .getByRole("button", { name: "Delete note" })
+    .click();
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  expect(page.url()).not.toBe(deletedUrl);
+  await page.getByRole("textbox", { name: "Note" }).fill("A fresh note remains writable.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+});
+
 test("a failed Undo stays visible and can be retried", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

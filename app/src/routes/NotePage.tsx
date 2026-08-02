@@ -50,6 +50,7 @@ const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>
 
 export function NotePage({ mode, noteId, passageId }: NotePageProps) {
   const backend = useBackend();
+  const navigate = useNavigate();
   const [session, setSession] = useState<NoteSession | null>(null);
   const [loadError, setLoadError] = useState<{ message: string; noteId: string } | null>(null);
 
@@ -69,12 +70,21 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
         setSession(nextSession);
       })
       .catch((reason: unknown) => {
-        if (active) setLoadError({ message: errorMessage(reason), noteId });
+        if (!active) return;
+        if (reason instanceof DeletedNoteError) {
+          void navigate({
+            to: "/new/$noteId",
+            params: { noteId: createUuidV7() },
+            replace: true,
+          });
+          return;
+        }
+        setLoadError({ message: errorMessage(reason), noteId });
       });
     return () => {
       active = false;
     };
-  }, [backend, mode, noteId]);
+  }, [backend, mode, navigate, noteId]);
 
   if (loadError?.noteId === noteId) {
     return (
@@ -386,6 +396,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       await navigate({
         to: "/new/$noteId",
         params: { noteId: createUuidV7() },
+        replace: true,
       });
     } catch (reason) {
       setActionError(`Could not delete note: ${errorMessage(reason)}`);
@@ -580,12 +591,15 @@ async function loadNoteSession(
     backend.loadTidbit(noteId),
     backend.loadWorkingCopy(noteId),
   ]);
+  if (note.deletedAtMs !== null) throw new DeletedNoteError();
   return {
     coordinator: coordinatorForDurableNote(backend, note, workingCopy),
     noteId,
     note,
   };
 }
+
+class DeletedNoteError extends Error {}
 
 async function discardFailedReservation(
   coordinator: NoteAutosaveCoordinator,
