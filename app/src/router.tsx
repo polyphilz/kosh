@@ -16,7 +16,6 @@ const CatalogPage = lazyRouteComponent(() => import("./routes/CatalogPage"), "Ca
 const LibraryPage = lazyRouteComponent(() => import("./routes/LibraryPage"), "LibraryPage");
 const ResearchPage = lazyRouteComponent(() => import("./routes/ResearchPage"), "ResearchPage");
 const RuntimePage = lazyRouteComponent(() => import("./routes/RuntimePage"), "RuntimePage");
-const SearchPage = lazyRouteComponent(() => import("./routes/SearchPage"), "SearchPage");
 const SettingsPage = lazyRouteComponent(() => import("./routes/SettingsPage"), "SettingsPage");
 const TidbitPage = lazyRouteComponent(() => import("./routes/TidbitPage"), "TidbitPage");
 
@@ -41,12 +40,18 @@ const noteRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/notes/$noteId",
   component: DurableNoteRoute,
+  validateSearch: noteSearch,
 });
 const searchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/search",
-  component: SearchPage,
-  validateSearch: librarySearch,
+  beforeLoad: () => {
+    throw redirect({
+      to: "/new/$noteId",
+      params: { noteId: createUuidV7() },
+      replace: true,
+    });
+  },
 });
 const addRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -106,7 +111,8 @@ function NewNoteRoute() {
 
 function DurableNoteRoute() {
   const { noteId } = noteRoute.useParams();
-  return <NotePage key={`durable:${noteId}`} mode="durable" noteId={noteId} />;
+  const { passage } = noteRoute.useSearch();
+  return <NotePage key={`durable:${noteId}`} mode="durable" noteId={noteId} passageId={passage} />;
 }
 
 export function createAppRouter(history: RouterHistory = createHashHistory()) {
@@ -168,20 +174,9 @@ function libraryBrowseSearch(search: Record<string, unknown>): {
   return view && view !== "recent" ? { view } : {};
 }
 
-function librarySearch(search: Record<string, unknown>): {
-  exact?: true;
+function noteSearch(search: Record<string, unknown>): {
   passage?: string;
-  q?: string;
 } {
   const passage = passageSearch(search).passage;
-  const q =
-    typeof search.q === "string" && [...search.q].length <= 512 && search.q.trim()
-      ? search.q
-      : undefined;
-  const exact = search.exact === true || search.exact === "true" ? true : undefined;
-  return {
-    ...(q ? { q } : {}),
-    ...(exact ? { exact } : {}),
-    ...(passage ? { passage } : {}),
-  };
+  return passage ? { passage } : {};
 }

@@ -299,7 +299,7 @@
       "hits": [
         {
           "passageId": "passage-source-sqlite",
-          "score": 34.532786885245905,
+          "score": 32.532786885245905,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -455,7 +455,7 @@
       "hits": [
         {
           "passageId": "passage-heat-caloric",
-          "score": 43.532786885245905,
+          "score": 39.532786885245905,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -528,7 +528,7 @@
       "hits": [
         {
           "passageId": "passage-unicode-cafe",
-          "score": 32.032786885245905,
+          "score": 30.0327868852459,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -602,7 +602,7 @@
       "hits": [
         {
           "passageId": "passage-source-rust",
-          "score": 45.87163561076604,
+          "score": 41.87163561076604,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -624,7 +624,7 @@
         },
         {
           "passageId": "passage-heat-modern",
-          "score": 43.87122736418511,
+          "score": 41.87122736418511,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -646,7 +646,7 @@
         },
         {
           "passageId": "passage-synonym-automobile",
-          "score": 42.817212301587304,
+          "score": 38.817212301587304,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -666,7 +666,7 @@
         },
         {
           "passageId": "passage-prose-gardening",
-          "score": 39.31850117096019,
+          "score": 35.31850117096019,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -686,7 +686,7 @@
         },
         {
           "passageId": "passage-formula-fourier",
-          "score": 37.87327188940092,
+          "score": 33.87327188940092,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -706,7 +706,7 @@
         },
         {
           "passageId": "passage-heat-caloric",
-          "score": 37.871848739495796,
+          "score": 33.871848739495796,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -726,7 +726,7 @@
         },
         {
           "passageId": "passage-phrase-dough",
-          "score": 36.81771633384537,
+          "score": 32.81771633384537,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -746,7 +746,7 @@
         },
         {
           "passageId": "passage-formula-bayes",
-          "score": 26.372527472527473,
+          "score": 24.372527472527473,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -766,7 +766,7 @@
         },
         {
           "passageId": "passage-unicode-cafe",
-          "score": 23.872068230277186,
+          "score": 21.872068230277186,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -785,22 +785,15 @@
           ]
         },
         {
-          "passageId": "passage-misspelling-concurrency",
-          "score": 17.872294372294373,
+          "passageId": "passage-pdf-distributed-112",
+          "score": 17.371428571428574,
           "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 113,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
+            "kind": "PDF_PAGE",
+            "page": 112
           },
           "matchedFields": [
-            "title",
-            "body"
+            "attachmentName",
+            "extractedText"
           ]
         }
       ]
@@ -895,7 +888,7 @@
       "hits": [
         {
           "passageId": "passage-source-rust",
-          "score": 33.532786885245905,
+          "score": 31.5327868852459,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -933,7 +926,7 @@
       "hits": [
         {
           "passageId": "passage-heat-modern",
-          "score": 41.19945355191257,
+          "score": 35.19945355191257,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -1057,7 +1050,7 @@
       "hits": [
         {
           "passageId": "passage-authored-vector-clock",
-          "score": 43.532786885245905,
+          "score": 39.532786885245905,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -1189,7 +1182,7 @@
       "hits": [
         {
           "passageId": "passage-heat-modern",
-          "score": 17.5327868852459,
+          "score": 15.532786885245901,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -1261,7 +1254,7 @@
       "hits": [
         {
           "passageId": "passage-source-rust",
-          "score": 46.51538461538462,
+          "score": 44.51538461538462,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1283,7 +1276,7 @@
         },
         {
           "passageId": "passage-source-sqlite",
-          "score": 46.030309988518944,
+          "score": 44.030309988518944,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1305,7 +1298,7 @@
         },
         {
           "passageId": "passage-synonym-automobile",
-          "score": 31.015873015873016,
+          "score": 27.015873015873016,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1325,7 +1318,7 @@
         },
         {
           "passageId": "passage-heat-caloric",
-          "score": 27.532018442622952,
+          "score": 25.532018442622952,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1344,28 +1337,8 @@
           ]
         },
         {
-          "passageId": "passage-formula-fourier",
-          "score": 27.516129032258064,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 72,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "title",
-            "headingContext",
-            "body"
-          ]
-        },
-        {
           "passageId": "passage-unicode-cafe",
-          "score": 25.532522474881016,
+          "score": 23.532522474881016,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1384,8 +1357,28 @@
           ]
         },
         {
+          "passageId": "passage-formula-fourier",
+          "score": 23.516129032258064,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 10,
+            "sourceEndByte": 72,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "title",
+            "headingContext",
+            "body"
+          ]
+        },
+        {
           "passageId": "passage-misspelling-concurrency",
-          "score": 17.015625,
+          "score": 15.015625,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1494,7 +1487,7 @@
       "hits": [
         {
           "passageId": "passage-misspelling-concurrency",
-          "score": 21.2827868852459,
+          "score": 19.2827868852459,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,

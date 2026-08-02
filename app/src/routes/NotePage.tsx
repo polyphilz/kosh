@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { useBackend } from "../backend/context";
 import type {
   Backend,
+  CitationResolution,
   SelectedAttachmentRecord,
   TidbitRecord,
   WorkingCopyRecord,
@@ -13,6 +14,7 @@ import { KoshBlockNoteEditor, type KoshBlockNoteEditorHandle } from "../editor/K
 import { NoteAutosaveCoordinator, type NoteMediaReservation } from "../notes/autosave";
 import { projectLegacyTitle } from "../notes/legacyTitle";
 import { registerQuitParticipant } from "../lifecycle/quit";
+import { citationLocation } from "../search/presentation";
 import { TauriEvent } from "../tauriProtocol";
 
 interface FileDropNotice {
@@ -25,6 +27,7 @@ interface FileDropNotice {
 interface NotePageProps {
   mode: "durable" | "ephemeral";
   noteId: string;
+  passageId?: string;
 }
 
 interface NoteSession {
@@ -38,7 +41,7 @@ const reconciliationStarted = new WeakSet<Backend>();
 const activeNoteIds = new WeakMap<Backend, string>();
 const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>>();
 
-export function NotePage({ mode, noteId }: NotePageProps) {
+export function NotePage({ mode, noteId, passageId }: NotePageProps) {
   const backend = useBackend();
   const [session, setSession] = useState<NoteSession | null>(null);
   const [loadError, setLoadError] = useState<{ message: string; noteId: string } | null>(null);
@@ -89,6 +92,7 @@ export function NotePage({ mode, noteId }: NotePageProps) {
       key={session.coordinator.getSnapshot().editGeneration === 0 ? "clean" : "recovered"}
       mode={mode}
       noteId={noteId}
+      passageId={passageId}
     />
   );
 }
@@ -97,9 +101,10 @@ interface NoteEditorSessionProps {
   coordinator: NoteAutosaveCoordinator;
   mode: NotePageProps["mode"];
   noteId: string;
+  passageId?: string;
 }
 
-function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps) {
+function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorSessionProps) {
   const backend = useBackend();
   const navigate = useNavigate();
   const editorRef = useRef<KoshBlockNoteEditorHandle>(null);
@@ -113,6 +118,7 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
   const [lifecyclePreparing, setLifecyclePreparing] = useState(false);
   const [mediaPending, setMediaPending] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getSnapshot);
 
   const updatePendingState = useCallback(() => {
@@ -181,6 +187,68 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
     });
     return () => window.cancelAnimationFrame(frame);
   }, [backend, noteId]);
+
+  useEffect(() => {
+    editorRef.current?.clearSearchFocus();
+    if (!passageId) {
+      setSearchFocus(null);
+      return;
+    }
+    let active = true;
+    setSearchFocus({ phase: "LOADING" });
+    void backend
+      .resolveCitation(passageId)
+      .then((citation) => {
+        if (!active) return;
+        if (citation.tidbit && citation.tidbit.id !== noteId) {
+          setSearchFocus({
+            phase: "UNAVAILABLE",
+            message: "This search result belongs to a different note.",
+            citation,
+          });
+          return;
+        }
+        if (citation.state === "HISTORICAL") {
+          setSearchFocus({
+            phase: "HISTORICAL",
+            message: "This exact passage is from an older revision; the current note is open.",
+            citation,
+          });
+          return;
+        }
+        window.requestAnimationFrame(() => {
+          if (!active) return;
+          const focusCitation = () => editorRef.current?.focusCitation(citation) ?? false;
+          const focused = focusCitation();
+          setSearchFocus(
+            focused
+              ? { phase: "FOCUSED", citation }
+              : {
+                  phase: "UNAVAILABLE",
+                  message: "The cited passage is no longer present in this note.",
+                  citation,
+                },
+          );
+          if (focused) {
+            window.requestAnimationFrame(() => {
+              if (active) focusCitation();
+            });
+          }
+        });
+      })
+      .catch((reason: unknown) => {
+        if (active) {
+          setSearchFocus({
+            phase: "UNAVAILABLE",
+            message: `Could not resolve this passage: ${errorMessage(reason)}`,
+          });
+        }
+      });
+    return () => {
+      active = false;
+      editorRef.current?.clearSearchFocus();
+    };
+  }, [backend, noteId, passageId]);
 
   useEffect(() => {
     if (disposeTimerRef.current !== null) {
@@ -295,7 +363,21 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
   const error = snapshot.error ?? mediaError;
   return (
     <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
+      <h1 className="visually-hidden">Note</h1>
       <div className="note-page__document">
+        {searchFocus && searchFocus.phase !== "LOADING" && (
+          <SearchFocusNotice
+            focus={searchFocus}
+            onDismiss={() => {
+              void navigate({
+                to: "/notes/$noteId",
+                params: { noteId },
+                search: {},
+                replace: true,
+              });
+            }}
+          />
+        )}
         <KoshBlockNoteEditor
           ariaLabel="Note"
           attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
@@ -362,6 +444,45 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
       </div>
     </main>
   );
+}
+
+type SearchFocusState =
+  | { phase: "LOADING" }
+  | {
+      citation?: CitationResolution;
+      message: string;
+      phase: "HISTORICAL" | "UNAVAILABLE";
+    }
+  | { citation: CitationResolution; phase: "FOCUSED" };
+
+function SearchFocusNotice({
+  focus,
+  onDismiss,
+}: {
+  focus: Exclude<SearchFocusState, { phase: "LOADING" }>;
+  onDismiss: () => void;
+}) {
+  const citation = focus.citation;
+  return (
+    <section
+      aria-label="Search result location"
+      className="note-search-focus"
+      data-tone={focus.phase === "FOCUSED" ? "current" : "warning"}
+    >
+      <div role="status">
+        <strong>{focus.phase === "FOCUSED" ? "Search match" : "Historical search match"}</strong>
+        <span>{searchFocusMessage(focus)}</span>
+        {focus.phase !== "FOCUSED" && citation && <q>{citation.excerpt}</q>}
+      </div>
+      <button aria-label="Clear search highlight" onClick={onDismiss} type="button">
+        ×
+      </button>
+    </section>
+  );
+}
+
+function searchFocusMessage(focus: Exclude<SearchFocusState, { phase: "LOADING" }>): string {
+  return focus.phase === "FOCUSED" ? citationLocation(focus.citation) : focus.message;
 }
 
 function coordinatorForDurableNote(

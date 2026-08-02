@@ -12,6 +12,7 @@ for (const theme of themes) {
       document.documentElement.dataset.appearance = appearance;
       await document.fonts.ready;
     }, theme);
+    await expect(page.getByRole("heading", { name: "Shared primitives" })).toBeVisible();
 
     const catalogResults = await new AxeBuilder({ page }).analyze();
     expect(catalogResults.violations).toEqual([]);

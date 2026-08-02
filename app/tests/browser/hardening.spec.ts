@@ -2,7 +2,6 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
 const primaryRoutes = [
-  { path: "/#/search", heading: "Search" },
   { path: "/#/add", heading: "Add a tidbit" },
   { path: "/#/library", heading: "Library" },
   { path: "/#/research", heading: "Research" },
@@ -27,6 +26,19 @@ for (const appearance of ["LIGHT", "DARK"] as const) {
         [],
       );
     }
+    await page.goto("/#/");
+    await page.evaluate((value) => {
+      document.documentElement.dataset.appearance = value;
+    }, appearance);
+    await page.keyboard.press("Meta+k");
+    await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
+    const searchResults = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    expect(
+      searchResults.violations,
+      `${appearance} search overlay accessibility violations`,
+    ).toEqual([]);
   });
 }
 
@@ -56,7 +68,7 @@ test("minimum supported window reflows at 200 percent text without hidden contro
   page,
 }) => {
   await page.setViewportSize({ width: 720, height: 700 });
-  await page.goto("/#/search");
+  await page.goto("/#/");
   await page.evaluate(() => {
     document.documentElement.style.fontSize = "200%";
   });

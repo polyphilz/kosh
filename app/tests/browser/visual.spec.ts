@@ -62,6 +62,35 @@ for (const theme of ["LIGHT", "DARK"] as const) {
   });
 }
 
+for (const theme of ["LIGHT", "DARK"] as const) {
+  test(`search overlay stays visually stable in ${theme.toLowerCase()} mode`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/#/");
+    await page.evaluate(async (appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      await backend.createTidbit({
+        title: null,
+        bodyMarkdown: "# NumPy memory layout\n\nContiguous arrays make predictable strides.",
+        sources: [{ label: "Array notes", url: "https://example.com/numpy" }],
+      });
+      await document.fonts.ready;
+    }, theme);
+    await page.keyboard.press("Meta+k");
+    await page.getByRole("combobox", { name: "Search notes" }).fill("contiguous arrays");
+    const dialog = page.getByRole("dialog", { name: "Search notes" });
+    await expect(dialog.getByRole("option")).toBeVisible();
+
+    await expect(dialog).toHaveScreenshot(`search-overlay-${theme.toLowerCase()}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.04,
+      threshold: 0.35,
+    });
+  });
+}
+
 test("library surface stays visually stable", async ({ page }) => {
   await createTidbit(page, "Alpha note", "A compact thought.");
   await page.getByRole("link", { name: "Add" }).click();

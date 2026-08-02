@@ -28,8 +28,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type MutableRefObject,
 } from "react";
 import type {
+  CitationResolution,
   GenericAttachmentStatusRecord,
   ImageRecord,
   ImageStatusRecord,
@@ -42,6 +44,7 @@ import { KoshEditorInteractionProvider, useKoshEditorDisabled } from "./interact
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
+import { KoshSearchFocusExtension, setSearchFocusBlocks } from "./searchFocus";
 import {
   koshBlockNoteSchema,
   type KoshBlockNoteEditor as KoshBlockNoteEditorInstance,
@@ -50,7 +53,9 @@ import {
 import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
 
 export interface KoshBlockNoteEditorHandle {
+  clearSearchFocus: () => void;
   focus: () => void;
+  focusCitation: (citation: CitationResolution) => boolean;
   isSuggestionMenuOpen: () => boolean;
   insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
@@ -95,6 +100,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     const literalSlashPending = useRef(false);
     const slashCommandSelected = useRef(false);
     const suggestionMenuOpen = useRef(false);
+    const searchFocusBlockIds = useRef<string[]>([]);
     if (properties.value !== lastPropertyValue.current) {
       lastPropertyValue.current = properties.value;
       if (properties.value !== lastEmittedValue.current) {
@@ -120,6 +126,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       initialContent: markdownToKoshBlocks(initialValue),
       placeholders: { default: initialPlaceholder },
       tabBehavior: "prefer-indent",
+      extensions: [KoshSearchFocusExtension],
       domAttributes: {
         editor: {
           ...KOSH_WRITING_ASSISTANCE_ATTRIBUTES,
@@ -223,7 +230,9 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     useImperativeHandle(
       ref,
       () => ({
+        clearSearchFocus: () => clearSearchFocus(editor, searchFocusBlockIds),
         focus: () => editor.focus(),
+        focusCitation: (citation) => focusCitation(editor, citation, searchFocusBlockIds),
         isSuggestionMenuOpen: () => suggestionMenuOpen.current,
         insertAttachments: (attachments) => mediaController.insert(attachments),
         insertImages: (images) =>
@@ -233,6 +242,8 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       }),
       [editor, mediaController],
     );
+
+    useEffect(() => () => clearSearchFocus(editor, searchFocusBlockIds), [editor]);
 
     return (
       <MantineProvider forceColorScheme={theme}>
@@ -299,6 +310,130 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     );
   },
 );
+
+function focusCitation(
+  editor: KoshBlockNoteEditorInstance,
+  citation: CitationResolution,
+  focusedBlockIds: MutableRefObject<string[]>,
+): boolean {
+  clearSearchFocus(editor, focusedBlockIds);
+  const blocks = flattenBlocks(editor.document);
+  if (blocks.length === 0) return false;
+  const range = citationBlockRange(blocks, citation);
+  if (!range) return false;
+  const selectedBlocks = blocks.slice(range.start, range.end + 1);
+  editor.setTextCursorPosition(selectedBlocks[0]!, "start");
+  editor.focus();
+  const root = editor.domElement?.closest<HTMLElement>(".kosh-blocknote-editor");
+  if (!root) return false;
+  focusedBlockIds.current = selectedBlocks.map((block) => block.id);
+  setSearchFocusBlocks(editor, focusedBlockIds.current);
+  const element = root.querySelector<HTMLElement>('[data-kosh-search-hit="true"]');
+  element?.scrollIntoView({ behavior: "instant", block: "center" });
+  return element !== null;
+}
+
+function clearSearchFocus(
+  editor: KoshBlockNoteEditorInstance,
+  focusedBlockIds: MutableRefObject<string[]>,
+): void {
+  if (focusedBlockIds.current.length > 0) setSearchFocusBlocks(editor, []);
+  focusedBlockIds.current = [];
+}
+
+type SearchableBlock = {
+  children?: SearchableBlock[];
+  content?: unknown;
+  id: string;
+  props?: Record<string, unknown>;
+  type: string;
+};
+
+function flattenBlocks(blocks: readonly unknown[]): SearchableBlock[] {
+  const flattened: SearchableBlock[] = [];
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object" || !("id" in value) || !("type" in value)) return;
+    const block = value as SearchableBlock;
+    flattened.push(block);
+    for (const child of block.children ?? []) visit(child);
+  };
+  for (const block of blocks) visit(block);
+  return flattened;
+}
+
+function citationBlockRange(
+  blocks: readonly SearchableBlock[],
+  citation: CitationResolution,
+): { end: number; start: number } | null {
+  if (citation.attachment) {
+    const index = blocks.findIndex(
+      (block) => block.props?.attachmentId === citation.attachment?.id,
+    );
+    return index < 0 ? null : { start: index, end: index };
+  }
+  if (citation.locator.kind !== "MARKDOWN_BLOCKS") return null;
+  const span = Math.max(1, citation.locator.endBlock - citation.locator.startBlock + 1);
+  const ordinalStart = Math.min(citation.locator.startBlock, blocks.length - 1);
+  const ordinalRange = {
+    start: ordinalStart,
+    end: Math.min(blocks.length - 1, ordinalStart + span - 1),
+  };
+  const excerpt = normalizedSearchText(citation.excerpt);
+  if (!excerpt) return ordinalRange;
+
+  let best = ordinalRange;
+  let bestScore = blockRangeScore(blocks, ordinalRange, excerpt);
+  for (let start = 0; start < blocks.length; start += 1) {
+    const candidate = { start, end: Math.min(blocks.length - 1, start + span - 1) };
+    const score = blockRangeScore(blocks, candidate, excerpt);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return bestScore > 0 ? best : ordinalRange;
+}
+
+function blockRangeScore(
+  blocks: readonly SearchableBlock[],
+  range: { end: number; start: number },
+  excerpt: string,
+): number {
+  const blockText = normalizedSearchText(
+    blocks
+      .slice(range.start, range.end + 1)
+      .map(searchableBlockText)
+      .join(" "),
+  );
+  if (!blockText) return 0;
+  if (excerpt.includes(blockText) || blockText.includes(excerpt)) return Number.MAX_SAFE_INTEGER;
+  const excerptTokens = new Set(excerpt.split(" ").filter((token) => token.length > 1));
+  return blockText
+    .split(" ")
+    .filter((token) => excerptTokens.has(token))
+    .reduce((score, token) => score + token.length, 0);
+}
+
+function searchableBlockText(block: SearchableBlock): string {
+  return [textFromUnknown(block.content), textFromUnknown(block.props)].filter(Boolean).join(" ");
+}
+
+function textFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(textFromUnknown).join(" ");
+  if (!value || typeof value !== "object") return "";
+  const object = value as Record<string, unknown>;
+  return [object.text, object.latex, object.markdown, object.content]
+    .map(textFromUnknown)
+    .join(" ");
+}
+
+function normalizedSearchText(value: string): string {
+  return value
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}_]+/gu, " ")
+    .trim();
+}
 
 function KoshSlashMenuLifecycle({
   onClosed,

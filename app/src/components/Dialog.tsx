@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 interface DialogProps {
   children: ReactNode;
+  className?: string;
   description?: string;
   footer?: ReactNode;
   onClose: () => void;
@@ -13,7 +14,15 @@ interface DialogProps {
 const focusableSelector =
   'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])';
 
-export function Dialog({ children, description, footer, onClose, open, title }: DialogProps) {
+export function Dialog({
+  children,
+  className,
+  description,
+  footer,
+  onClose,
+  open,
+  title,
+}: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const descriptionId = useId();
@@ -77,7 +86,7 @@ export function Dialog({ children, description, footer, onClose, open, title }: 
         aria-describedby={description ? descriptionId : undefined}
         aria-labelledby={titleId}
         aria-modal="true"
-        className="kosh-dialog"
+        className={`kosh-dialog${className ? ` ${className}` : ""}`}
         onKeyDown={handleKeyDown}
         ref={panelRef}
         role="dialog"

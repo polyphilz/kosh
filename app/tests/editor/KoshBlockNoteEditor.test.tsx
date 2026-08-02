@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { SelectedAttachmentRecord } from "../../src/backend/contracts";
+import type { CitationResolution, SelectedAttachmentRecord } from "../../src/backend/contracts";
 import { AppearanceProvider } from "../../src/components/Appearance";
 import {
   KoshBlockNoteEditor,
@@ -119,6 +119,37 @@ describe("production BlockNote editor", () => {
       ),
     );
     expect(onChange.mock.calls.flat().join("\n")).not.toContain("private-lease");
+  });
+
+  it("focuses exact authored and media citation blocks without editing the note", async () => {
+    const onChange = vi.fn();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={onChange}
+          ref={ref}
+          value={
+            "# Slow recipe\n\nSlow simmering preserves brightness.\n\n{{kosh:image:019f547b-6200-7000-8000-000000000201;width=70%;alt=Diagram}}"
+          }
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("Slow simmering preserves brightness.");
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      "Slow simmering preserves brightness.",
+    );
+
+    expect(ref.current?.focusCitation(mediaCitation())).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toContainElement(
+      screen.getByLabelText("Image: Diagram"),
+    );
+    act(() => ref.current?.clearSearchFocus());
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("makes disabled state explicit to assistive technology and BlockNote", async () => {
@@ -241,4 +272,48 @@ function editorTree(value: string, onChange: (value: string) => void) {
       <KoshBlockNoteEditor ariaLabel="Body" onChange={onChange} value={value} />
     </AppearanceProvider>
   );
+}
+
+function authoredCitation(): CitationResolution {
+  return {
+    passageId: "passage-authored",
+    excerpt: "Slow simmering preserves brightness.",
+    headingContext: ["Slow recipe"],
+    constructionVersion: "test-v1",
+    state: "CURRENT",
+    locator: {
+      kind: "MARKDOWN_BLOCKS",
+      startBlock: 0,
+      endBlock: 0,
+      sourceStartByte: null,
+      sourceEndByte: null,
+      startChar: null,
+      endChar: null,
+      startLine: null,
+      endLine: null,
+    },
+    tidbit: null,
+    attachment: null,
+    sources: [],
+  };
+}
+
+function mediaCitation(): CitationResolution {
+  return {
+    passageId: "passage-image",
+    excerpt: "Diagram",
+    headingContext: ["Slow recipe"],
+    constructionVersion: "test-v1",
+    state: "CURRENT",
+    locator: { kind: "OCR_REGION", page: null, region: null },
+    tidbit: null,
+    attachment: {
+      id: "019f547b-6200-7000-8000-000000000201",
+      extractionId: "extraction-image",
+      displayFilename: "diagram.png",
+      mediaType: "image/png",
+      deleted: false,
+    },
+    sources: [],
+  };
 }
