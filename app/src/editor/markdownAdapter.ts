@@ -220,7 +220,7 @@ function blocksToMarkdown(
 function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionContent> {
   switch (block.type ?? "paragraph") {
     case "paragraph":
-      return [{ type: "paragraph", children: inlineToMarkdown(block.content) }];
+      return paragraphToMarkdown(block.content);
     case "heading":
       return [
         {
@@ -248,6 +248,11 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
       if (isListBlock(block)) return [listForChildren([block])];
       throw new Error(`Cannot serialize Kosh block ${String(block.type)}`);
   }
+}
+
+function paragraphToMarkdown(content: unknown): BlockContent[] {
+  const children = inlineToMarkdown(content);
+  return children.length > 0 ? [{ type: "paragraph", children }] : [];
 }
 
 function listItemToMarkdown(block: AdapterBlock): ListItem {

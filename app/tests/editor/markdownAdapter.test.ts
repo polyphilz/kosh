@@ -117,6 +117,16 @@ describe("restricted BlockNote Markdown adapter", () => {
     }
   });
 
+  it("omits structural empty cursor paragraphs from persisted Markdown", () => {
+    expect(
+      koshBlocksToMarkdown([
+        { type: "paragraph", content: "Before" },
+        { type: "paragraph" },
+        { type: "paragraph", content: "After" },
+      ]),
+    ).toBe("Before\n\nAfter");
+  });
+
   it("canonicalizes adjacent styled runs without ambiguous Markdown delimiters", () => {
     const blocks = [
       {
