@@ -323,7 +323,29 @@ function inlineToMarkdown(content: unknown): PhrasingContent[] {
 function styledTextToMarkdown(text: string, stylesValue: unknown): PhrasingContent[] {
   const styles =
     stylesValue && typeof stylesValue === "object" ? (stylesValue as Record<string, unknown>) : {};
-  return textWithBreaks(text, styles).map((node) => wrapStyles(node, styles));
+  const pieces = text.split("\n");
+  const nodes: PhrasingContent[] = [];
+  pieces.forEach((piece, index) => {
+    nodes.push(...styledLineToMarkdown(piece, styles));
+    if (index < pieces.length - 1) nodes.push({ type: "break" });
+  });
+  return nodes;
+}
+
+function styledLineToMarkdown(text: string, styles: Record<string, unknown>): PhrasingContent[] {
+  if (!text) return [];
+  if (!Object.values(styles).some(Boolean)) return [{ type: "text", value: text }];
+  if (styles.code) return [wrapStyles({ type: "inlineCode", value: text }, styles)];
+  const leading = text.match(/^[\p{P}\p{Z}\s]+/u)?.[0] ?? "";
+  const withoutLeading = text.slice(leading.length);
+  const trailing = withoutLeading.match(/[\p{P}\p{Z}\s]+$/u)?.[0] ?? "";
+  const core = withoutLeading.slice(0, withoutLeading.length - trailing.length);
+  if (!core) return [wrapStyles({ type: "text", value: text }, styles)];
+  return [
+    ...(leading ? [{ type: "text" as const, value: leading }] : []),
+    wrapStyles({ type: "text", value: core }, styles),
+    ...(trailing ? [{ type: "text" as const, value: trailing }] : []),
+  ];
 }
 
 function textWithBreaks(text: string, styles: Record<string, unknown>): PhrasingContent[] {

@@ -116,4 +116,22 @@ describe("restricted BlockNote Markdown adapter", () => {
       expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
     }
   });
+
+  it("canonicalizes adjacent styled runs without ambiguous Markdown delimiters", () => {
+    const blocks = [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "Bold", styles: { bold: true } },
+          { type: "text", text: ", italic", styles: { italic: true } },
+          { type: "text", text: ", strike", styles: { strike: true } },
+          { type: "text", text: ", and code", styles: { code: true } },
+        ],
+      },
+    ] as const;
+    const markdown = koshBlocksToMarkdown(blocks);
+
+    expect(markdown).toBe("**Bold**, *italic*, ~~strike~~`, and code`");
+    expect(koshBlocksToMarkdown(markdownToKoshBlocks(markdown))).toBe(markdown);
+  });
 });
