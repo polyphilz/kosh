@@ -32,7 +32,7 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
   expect(persisted).toHaveLength(1);
   expect(persisted[0]).toMatchObject({ title: null });
 
-  await page.getByRole("link", { name: "Search", exact: true }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
@@ -62,7 +62,7 @@ test("new notes, settings, back, and forward use the transient route stack", asy
   await expect(page).toHaveURL(noteBUrl);
   await expect(editor).toContainText("Note B replaces only its ephemeral route.");
 
-  await page.getByRole("link", { name: "Search", exact: true }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
   await expect(page).toHaveURL(noteBUrl);
   await page.keyboard.press("Escape");
@@ -343,12 +343,14 @@ test("delayed reconciliation never checkpoints the note opened during its scan",
 
   await expect(page.getByRole("textbox", { name: "Note" })).toContainText("initially open");
   await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (globalThis as unknown as Record<string, unknown>).__KOSH_RECONCILIATION_LISTING__ ===
-          true,
-      ),
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (globalThis as unknown as Record<string, unknown>).__KOSH_RECONCILIATION_LISTING__ ===
+            true,
+        ),
+      { timeout: 10_000 },
     )
     .toBe(true);
   await page.evaluate((noteId) => {

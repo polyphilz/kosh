@@ -28,27 +28,27 @@ for (const theme of themes) {
 }
 
 test("primary destinations support keyboard navigation", async ({ page }) => {
-  await page.goto("/#/search");
-  const add = page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
-    name: "Add",
+  await page.goto("/#/");
+  const settings = page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
+    name: "Settings",
   });
 
-  await add.focus();
+  await settings.focus();
   await page.keyboard.press("Enter");
 
-  await expect(page).toHaveURL(/#\/add$/);
-  await expect(page.getByRole("heading", { name: "Add a tidbit" })).toBeVisible();
+  await expect(page).toHaveURL(/#\/settings$/);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 });
 
 test("supported compact windows retain visible navigation labels", async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 700 });
   await page.goto("/#/search");
 
-  const links = page.getByRole("navigation", { name: "Primary" }).getByRole("link");
-  await expect(links).toHaveText(["New note", "Search", "Add", "Library", "Research", "Settings"]);
+  const destinations = page.getByRole("navigation", { name: "Primary" }).locator(".app-nav-link");
+  await expect(destinations).toHaveText(["＋New note", "⌕Search", "⚙Settings"]);
 
-  for (const link of await links.all()) {
-    await expect(link).not.toHaveCSS("color", "rgba(0, 0, 0, 0)");
+  for (const destination of await destinations.all()) {
+    await expect(destination).not.toHaveCSS("color", "rgba(0, 0, 0, 0)");
   }
 });
 
@@ -59,7 +59,7 @@ test("fixed appearance survives navigation and reload", async ({ page }) => {
 
   await page
     .getByRole("navigation", { name: "Primary" })
-    .getByRole("link", {
+    .getByRole("button", {
       name: "Search",
       exact: true,
     })

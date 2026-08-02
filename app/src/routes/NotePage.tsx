@@ -11,7 +11,13 @@ import type {
   WorkingCopyRecord,
 } from "../backend/contracts";
 import { KoshBlockNoteEditor, type KoshBlockNoteEditorHandle } from "../editor/KoshBlockNoteEditor";
-import { NoteAutosaveCoordinator, type NoteMediaReservation } from "../notes/autosave";
+import {
+  createUuidV7,
+  NoteAutosaveCoordinator,
+  type NoteMediaReservation,
+} from "../notes/autosave";
+import { NoteActions } from "../notes/NoteActions";
+import { useNoteDeletion } from "../notes/deletion";
 import { projectLegacyTitle } from "../notes/legacyTitle";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { citationLocation } from "../search/presentation";
@@ -107,6 +113,7 @@ interface NoteEditorSessionProps {
 
 function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorSessionProps) {
   const backend = useBackend();
+  const announceDeletedNote = useNoteDeletion();
   const navigate = useNavigate();
   const editorRef = useRef<KoshBlockNoteEditorHandle>(null);
   const editorMediaPendingRef = useRef(false);
@@ -119,6 +126,8 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [lifecyclePreparing, setLifecyclePreparing] = useState(false);
   const [mediaPending, setMediaPending] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getSnapshot);
 
@@ -363,10 +372,45 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     [coordinator],
   );
 
-  const error = snapshot.error ?? mediaError;
+  const deleteCurrentNote = useCallback(async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setActionError(null);
+    try {
+      await flushForNavigation();
+      const expectedRevisionId = coordinator.getSnapshot().baseRevisionId;
+      if (!expectedRevisionId) throw new Error("This note has not been saved yet.");
+      const deleted = await backend.deleteTidbit({ id: noteId, expectedRevisionId });
+      announceDeletedNote(deleted);
+      leavingNoteRef.current = true;
+      await navigate({
+        to: "/new/$noteId",
+        params: { noteId: createUuidV7() },
+      });
+    } catch (reason) {
+      setActionError(`Could not delete note: ${errorMessage(reason)}`);
+    } finally {
+      setDeleting(false);
+    }
+  }, [announceDeletedNote, backend, coordinator, deleting, flushForNavigation, navigate, noteId]);
+
+  const error = snapshot.error ?? mediaError ?? actionError;
   return (
     <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
       <h1 className="visually-hidden">Note</h1>
+      <NoteActions
+        canDelete={snapshot.baseRevisionId !== null}
+        deleteError={actionError}
+        deleting={deleting}
+        disabled={mediaPending || lifecyclePreparing}
+        onDelete={() => void deleteCurrentNote()}
+        onSourcesChange={(sources) => {
+          setActionError(null);
+          const current = coordinator.getSnapshot();
+          coordinator.update(current.bodyMarkdown, sources);
+        }}
+        sources={snapshot.sources}
+      />
       <div className="note-page__document">
         {searchFocus && searchFocus.phase !== "LOADING" && (
           <SearchFocusNotice
@@ -384,7 +428,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         <KoshBlockNoteEditor
           ariaLabel="Note"
           attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
-          disabled={lifecyclePreparing}
+          disabled={lifecyclePreparing || deleting}
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(bodyMarkdown) => {
             coordinator.update(bodyMarkdown);

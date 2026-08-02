@@ -1,24 +1,18 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_QUICK_ADD_ACCELERATOR, KoshCommand } from "./backend/contracts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { TidbitRecord } from "./backend/contracts";
+import { useBackend } from "./backend/context";
 import { ErrorBoundary } from "./components/States";
-import { Shortcut } from "./components/Shortcut";
 import { createUuidV7 } from "./notes/autosave";
+import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
-import { acceleratorKeys, describeAccelerator } from "./shortcuts/accelerator";
-import { bindingFor, ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
+import { ShortcutSettingsProvider } from "./shortcuts/context";
 import { TauriEvent } from "./tauriProtocol";
 import { AppUpdater } from "./updater";
 
-const destinations = [
-  { label: "New note", to: "/" },
-  { label: "Search", to: "/search" },
-  { label: "Add", to: "/add" },
-  { label: "Library", to: "/library" },
-  { label: "Research", to: "/research" },
-  { label: "Settings", to: "/settings" },
-] as const;
+const NOTE_UNDO_DURATION_MS = 10_000;
+const SIDEBAR_OPEN_STORAGE_KEY = "kosh.sidebar.open.v1";
 
 export function App() {
   return (
@@ -30,14 +24,16 @@ export function App() {
 }
 
 function AppShell() {
+  const backend = useBackend();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRouteOpen = pathname === "/search";
-  const { settings } = useShortcutSettings();
-  const quickAddAccelerator =
-    bindingFor(settings?.keyboardBindings ?? [], KoshCommand.QuickAdd)?.accelerator ??
-    DEFAULT_QUICK_ADD_ACCELERATOR;
+  const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpen);
+  const [deletedNote, setDeletedNote] = useState<TidbitRecord | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
+  const undoTimer = useRef<number | null>(null);
   const openNewNote = useCallback(
     () =>
       navigate({
@@ -46,6 +42,42 @@ function AppShell() {
       }),
     [navigate],
   );
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>("[data-kosh-search-input]")?.focus();
+    });
+  }, []);
+  const toggleSidebar = useCallback(() => setSidebarOpen((current) => !current), []);
+  const clearUndoTimer = useCallback(() => {
+    if (undoTimer.current === null) return;
+    window.clearTimeout(undoTimer.current);
+    undoTimer.current = null;
+  }, []);
+  const announceDeletedNote = useCallback(
+    (note: TidbitRecord) => {
+      clearUndoTimer();
+      setDeletedNote(note);
+      setUndoError(null);
+      setUndoing(false);
+      undoTimer.current = window.setTimeout(() => {
+        undoTimer.current = null;
+        setDeletedNote(null);
+        setUndoError(null);
+      }, NOTE_UNDO_DURATION_MS);
+    },
+    [clearUndoTimer],
+  );
+
+  useEffect(() => () => clearUndoTimer(), [clearUndoTimer]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, sidebarOpen ? "true" : "false");
+    } catch {
+      // Sidebar persistence is optional; navigation must remain available.
+    }
+  }, [sidebarOpen]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -67,12 +99,17 @@ function AppShell() {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let active = true;
     let unlisten: (() => void) | undefined;
-    void listen<"BACK" | "FORWARD" | "NEW_NOTE">(TauriEvent.NavigationCommand, (event) => {
-      if (!active) return;
-      if (event.payload === "NEW_NOTE") void openNewNote();
-      else if (event.payload === "BACK") window.history.back();
-      else window.history.forward();
-    }).then((stop) => {
+    void listen<"BACK" | "FORWARD" | "NEW_NOTE" | "SEARCH" | "TOGGLE_SIDEBAR">(
+      TauriEvent.NavigationCommand,
+      (event) => {
+        if (!active) return;
+        if (event.payload === "NEW_NOTE") void openNewNote();
+        else if (event.payload === "SEARCH") openSearch();
+        else if (event.payload === "TOGGLE_SIDEBAR") toggleSidebar();
+        else if (event.payload === "BACK") window.history.back();
+        else window.history.forward();
+      },
+    ).then((stop) => {
       if (active) unlisten = stop;
       else stop();
     });
@@ -80,7 +117,7 @@ function AppShell() {
       active = false;
       unlisten?.();
     };
-  }, [openNewNote]);
+  }, [openNewNote, openSearch, toggleSidebar]);
 
   useEffect(() => {
     if ("__TAURI_INTERNALS__" in window) return;
@@ -116,64 +153,158 @@ function AppShell() {
       }
       event.preventDefault();
       event.stopPropagation();
-      setSearchOpen(true);
-      window.requestAnimationFrame(() => {
-        document.querySelector<HTMLInputElement>("[data-kosh-search-input]")?.focus();
-      });
+      openSearch();
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+  }, [openSearch]);
+
+  useEffect(() => {
+    if ("__TAURI_INTERNALS__" in window) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        !event.metaKey ||
+        (event.key !== "/" && event.code !== "Slash")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSidebar();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [toggleSidebar]);
+
+  const undoDelete = useCallback(async () => {
+    if (!deletedNote || undoing) return;
+    clearUndoTimer();
+    setUndoing(true);
+    setUndoError(null);
+    try {
+      const restored = await backend.restoreTidbit({
+        id: deletedNote.id,
+        expectedRevisionId: deletedNote.currentRevisionId,
+      });
+      clearUndoTimer();
+      setDeletedNote(null);
+      await navigate({
+        to: "/notes/$noteId",
+        params: { noteId: restored.id },
+        search: {},
+      });
+    } catch (reason) {
+      setUndoError(errorMessage(reason));
+    } finally {
+      setUndoing(false);
+    }
+  }, [backend, clearUndoTimer, deletedNote, navigate, undoing]);
 
   return (
     <ErrorBoundary>
-      <div className="app-shell">
-        <aside className="app-sidebar">
-          <Link aria-label="Kosh home" className="app-brand" to="/">
-            <span aria-hidden="true">
-              <img alt="" src="/icon.svg" />
-            </span>
-            <strong>Kosh</strong>
-          </Link>
-          <nav aria-label="Primary">
-            {destinations.map((destination) => (
+      <NoteDeletionContext.Provider value={announceDeletedNote}>
+        <div className="app-shell" data-sidebar={sidebarOpen ? "open" : "closed"}>
+          <button
+            aria-controls="kosh-sidebar"
+            aria-expanded={sidebarOpen}
+            aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+            className="app-sidebar-toggle"
+            onClick={toggleSidebar}
+            title={`${sidebarOpen ? "Hide" : "Show"} sidebar (⌘/)`}
+            type="button"
+          >
+            <span aria-hidden="true">{sidebarOpen ? "‹" : "›"}</span>
+          </button>
+          <aside className="app-sidebar" hidden={!sidebarOpen} id="kosh-sidebar">
+            <div className="app-brand">
+              <span aria-hidden="true">
+                <img alt="" src="/icon.svg" />
+              </span>
+              <strong>Kosh</strong>
+            </div>
+            <nav aria-label="Primary">
+              <button
+                className="app-nav-link"
+                onClick={() => void openNewNote()}
+                title="New note (⌘N)"
+                type="button"
+              >
+                <span aria-hidden="true">＋</span>
+                New note
+              </button>
+              <button
+                className="app-nav-link"
+                onClick={openSearch}
+                title="Search notes (⌘K)"
+                type="button"
+              >
+                <span aria-hidden="true">⌕</span>
+                Search
+              </button>
               <Link
                 activeOptions={{ exact: true }}
                 activeProps={{ "aria-current": "page", className: "app-nav-link--active" }}
                 className="app-nav-link"
-                key={destination.to}
-                onClick={(event) => {
-                  if (destination.to !== "/search") return;
-                  event.preventDefault();
-                  setSearchOpen(true);
-                }}
-                to={destination.to}
+                title="Settings (⌘,)"
+                to="/settings"
               >
-                <span aria-hidden="true" />
-                {destination.label}
+                <span aria-hidden="true">⚙</span>
+                Settings
               </Link>
-            ))}
-          </nav>
-          <p className="app-sidebar__hint">
-            Quick add
-            <Shortcut
-              keys={acceleratorKeys(quickAddAccelerator)}
-              label={describeAccelerator(quickAddAccelerator)}
-            />
-          </p>
-        </aside>
-        <div className="app-content">
-          <Outlet />
+            </nav>
+          </aside>
+          <div className="app-content">
+            <Outlet />
+          </div>
+          <SearchOverlay
+            onClose={() => {
+              setSearchOpen(false);
+              if (searchRouteOpen) void navigate({ to: "/", replace: true });
+            }}
+            onResultOpen={() => setSearchOpen(false)}
+            open={searchOpen || searchRouteOpen}
+          />
+          {deletedNote && (
+            <div className="note-undo" role={undoError ? "alert" : "status"}>
+              <span>
+                {undoError
+                  ? `Could not restore note: ${undoError}`
+                  : `Deleted “${deletedNote.displayTitle}”`}
+              </span>
+              <button disabled={undoing} onClick={() => void undoDelete()} type="button">
+                {undoing ? "Restoring…" : "Undo"}
+              </button>
+              <button
+                aria-label="Dismiss deleted note notice"
+                onClick={() => {
+                  clearUndoTimer();
+                  setDeletedNote(null);
+                  setUndoError(null);
+                }}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+          )}
         </div>
-        <SearchOverlay
-          onClose={() => {
-            setSearchOpen(false);
-            if (searchRouteOpen) void navigate({ to: "/", replace: true });
-          }}
-          onResultOpen={() => setSearchOpen(false)}
-          open={searchOpen || searchRouteOpen}
-        />
-      </div>
+      </NoteDeletionContext.Provider>
     </ErrorBoundary>
   );
+}
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
+function readSidebarOpen(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_OPEN_STORAGE_KEY) !== "false";
+  } catch {
+    return true;
+  }
 }
