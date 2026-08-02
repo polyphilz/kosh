@@ -392,12 +392,12 @@ function citationBlockRange(
     start: ordinalStart,
     end: Math.min(blocks.length - 1, ordinalStart + span - 1),
   };
-  const excerpt = normalizedSearchText(citation.excerpt);
-  if (!excerpt) return null;
-  if (blockRangeContainsExcerpt(blocks, ordinalRange, excerpt)) return ordinalRange;
+  const excerptCandidates = citationExcerptCandidates(citation.excerpt);
+  if (excerptCandidates.length === 0) return null;
+  if (blockRangeContainsExcerpt(blocks, ordinalRange, excerptCandidates)) return ordinalRange;
   for (let start = 0; start < blocks.length; start += 1) {
     const candidate = { start, end: Math.min(blocks.length - 1, start + span - 1) };
-    if (blockRangeContainsExcerpt(blocks, candidate, excerpt)) return candidate;
+    if (blockRangeContainsExcerpt(blocks, candidate, excerptCandidates)) return candidate;
   }
   return null;
 }
@@ -405,15 +405,20 @@ function citationBlockRange(
 function blockRangeContainsExcerpt(
   blocks: readonly SearchableBlock[],
   range: { end: number; start: number },
-  excerpt: string,
+  excerptCandidates: readonly string[],
 ): boolean {
-  const blockText = normalizedSearchText(
+  const blockText = comparableCitationText(
     blocks
       .slice(range.start, range.end + 1)
-      .map(searchableBlockText)
+      .map(searchableBlockEvidenceText)
       .join(" "),
   );
-  return Boolean(blockText) && (excerpt.includes(blockText) || blockText.includes(excerpt));
+  return (
+    Boolean(blockText) &&
+    excerptCandidates.some(
+      (candidate) => candidate.includes(blockText) || blockText.includes(candidate),
+    )
+  );
 }
 
 function citationInlineRange(
@@ -423,6 +428,7 @@ function citationInlineRange(
   if (citation.locator.kind !== "MARKDOWN_BLOCKS") return null;
   const { startChar, endChar, startLine, endLine } = citation.locator;
   const text = searchableBlockPlainText(block);
+  if (text !== searchableBlockEvidenceText(block)) return null;
   const characterCount = [...text].length;
   if (startChar !== null && endChar !== null) {
     if (startChar < 0 || endChar <= startChar || endChar > characterCount) return null;
@@ -454,17 +460,55 @@ function citationRangeMatchesExcerpt(
   end: number,
   excerpt: string,
 ): boolean {
-  return (
-    normalizedSearchText([...text].slice(start, end).join("")) === normalizedSearchText(excerpt)
-  );
+  const selectedText = comparableCitationText([...text].slice(start, end).join(""));
+  return citationExcerptCandidates(excerpt).some((candidate) => selectedText === candidate);
 }
 
-function searchableBlockText(block: SearchableBlock): string {
-  return [textFromUnknown(block.content), textFromUnknown(block.props)].filter(Boolean).join(" ");
+function searchableBlockEvidenceText(block: {
+  content?: unknown;
+  props?: unknown;
+  type?: string;
+}): string {
+  const props = recordFromUnknown(block.props);
+  if (block.type === "displayMath") {
+    const latex = stringFromRecord(props, "latex");
+    return latex ? `$$${latex}$$` : "";
+  }
+  if (block.type === "legacyMarkdown") return "";
+  if (block.type === "koshImage") {
+    return [stringFromRecord(props, "altText"), stringFromRecord(props, "caption")]
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (block.type === "koshFileAttachment") return stringFromRecord(props, "caption");
+  if (block.type === "koshPdf") return "";
+  return inlineEvidenceText(block.content);
 }
 
 function searchableBlockPlainText(block: SearchableBlock): string {
   return textFromUnknown(block.content, "");
+}
+
+function inlineEvidenceText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(inlineEvidenceText).join("");
+  if (!value || typeof value !== "object") return "";
+  const object = value as Record<string, unknown>;
+  if (object.type === "text") return typeof object.text === "string" ? object.text : "";
+  if (object.type === "inlineMath") {
+    const props = object.props as Record<string, unknown> | undefined;
+    const latex = stringFromRecord(props, "latex");
+    return latex ? `$${latex}$` : "";
+  }
+  return inlineEvidenceText(object.content);
+}
+
+function stringFromRecord(record: Record<string, unknown> | undefined, key: string): string {
+  return typeof record?.[key] === "string" ? record[key] : "";
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
 function textFromUnknown(value: unknown, separator = " "): string {
@@ -478,11 +522,16 @@ function textFromUnknown(value: unknown, separator = " "): string {
     .join(separator);
 }
 
-function normalizedSearchText(value: string): string {
-  return value
-    .toLocaleLowerCase()
-    .replace(/[^\p{L}\p{N}_]+/gu, " ")
-    .trim();
+function comparableCitationText(value: string): string {
+  return value.normalize("NFC").replace(/\s+/gu, " ").trim();
+}
+
+function citationExcerptCandidates(excerpt: string): string[] {
+  const candidates = new Set([comparableCitationText(excerpt)]);
+  const rendered = markdownToKoshBlocks(excerpt).map(searchableBlockEvidenceText).join(" ");
+  candidates.add(comparableCitationText(rendered));
+  candidates.delete("");
+  return [...candidates];
 }
 
 function KoshSlashMenuLifecycle({

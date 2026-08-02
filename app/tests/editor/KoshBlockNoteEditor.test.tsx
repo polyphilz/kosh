@@ -170,6 +170,61 @@ describe("production BlockNote editor", () => {
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
   });
 
+  it("preserves punctuation while validating citation evidence", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="The budget must remain > 5."
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("The budget must remain > 5.");
+    const exactCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "budget must remain > 5",
+    };
+
+    expect(ref.current?.focusCitation(exactCitation)).toBe(true);
+    act(() => ref.current?.clearSearchFocus());
+    expect(
+      ref.current?.focusCitation({ ...exactCitation, excerpt: "budget must remain < 5" }),
+    ).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("validates authored math with its citation delimiters", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"Use `code` and $x < y$ when bounded.\n\n$$\na_i > 0\n$$"}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText(/Use/);
+    const inlineCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "Use `code` and $x < y$ when bounded.",
+    };
+
+    expect(ref.current?.focusCitation(inlineCitation)).toBe(true);
+    act(() => ref.current?.clearSearchFocus());
+    expect(
+      ref.current?.focusCitation({
+        ...inlineCitation,
+        excerpt: "$$a_i > 0$$",
+        locator: { ...inlineCitation.locator, kind: "MARKDOWN_BLOCKS", startBlock: 1, endBlock: 1 },
+      }),
+    ).toBe(true);
+  });
+
   it("focuses exact character and line slices within long authored blocks", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     const view = render(
