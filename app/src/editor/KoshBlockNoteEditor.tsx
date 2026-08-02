@@ -1,5 +1,6 @@
 import {
   filterSuggestionItems,
+  HistoryExtension,
   insertOrUpdateBlockForSlashMenu,
   SideMenuExtension,
 } from "@blocknote/core/extensions";
@@ -28,6 +29,7 @@ import type {
   SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
+import { KoshEditorInteractionProvider } from "./interactionState";
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
@@ -78,6 +80,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     const lastPropertyValue = useRef(initialValue);
     const pendingExternalValue = useRef<string | undefined>(undefined);
     const replacingValue = useRef(false);
+    const literalSlashPending = useRef(false);
     if (properties.value !== lastPropertyValue.current) {
       lastPropertyValue.current = properties.value;
       if (properties.value !== lastEmittedValue.current) {
@@ -139,7 +142,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
           ? (attachmentId) => propertiesRef.current.pdfStatus!(attachmentId)
           : undefined,
         pickReplacement: capabilities.pickAttachment
-          ? () => propertiesRef.current.pickAttachment!()
+          ? () => mediaController.track(() => propertiesRef.current.pickAttachment!())
           : undefined,
         revealAttachmentInFinder: capabilities.revealAttachmentInFinder
           ? (attachmentId) => propertiesRef.current.revealAttachmentInFinder!(attachmentId)
@@ -151,7 +154,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
           ? (attachmentId) => propertiesRef.current.retryPdfExtraction!(attachmentId)
           : undefined,
       }),
-      [capabilities],
+      [capabilities, mediaController],
     );
     const slashItems = useMemo(
       () => restrictedSlashItems(editor, mediaController, propertiesRef, capabilities),
@@ -176,7 +179,11 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       if (current !== nextValue) {
         replacingValue.current = true;
         try {
-          editor.replaceBlocks(editor.document, markdownToKoshBlocks(nextValue));
+          editor.transact((transaction) => {
+            editor.replaceBlocks(editor.document, markdownToKoshBlocks(nextValue));
+            transaction.setMeta("addToHistory", false);
+          });
+          editor.replaceExtension("history", HistoryExtension());
         } finally {
           replacingValue.current = false;
         }
@@ -200,47 +207,65 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
 
     return (
       <MantineProvider forceColorScheme={theme}>
-        <KoshMediaActionsProvider actions={mediaActions}>
-          <div
-            aria-disabled={properties.disabled || undefined}
-            className="kosh-rich-text-editor kosh-blocknote-editor"
-            data-testid={`${properties.ariaLabel.toLowerCase().replace(/\s+/gu, "-")}-editor`}
-            onPasteCapture={(event) => {
-              if (properties.disabled || !capabilities.pasteImage) return;
-              mediaController.handleImagePaste(event.nativeEvent, async () => ({
-                recordKind: "IMAGE",
-                record: await propertiesRef.current.pasteImage!(),
-              }));
-            }}
-          >
-            <BlockNoteView
-              comments={false}
-              editor={editor}
-              emojiPicker={false}
-              filePanel={false}
-              formattingToolbar
-              onChange={() => {
-                if (replacingValue.current || pendingExternalValue.current !== undefined) return;
-                const markdown = koshBlocksToMarkdown(editor.document);
-                if (markdown.trim() === "/" && !propertiesRef.current.value.trim()) return;
-                lastEmittedValue.current = markdown;
-                if (markdown !== propertiesRef.current.value) {
-                  propertiesRef.current.onChange(markdown);
-                }
+        <KoshEditorInteractionProvider disabled={Boolean(properties.disabled)}>
+          <KoshMediaActionsProvider actions={mediaActions}>
+            <div
+              aria-disabled={properties.disabled || undefined}
+              className="kosh-rich-text-editor kosh-blocknote-editor"
+              data-testid={`${properties.ariaLabel.toLowerCase().replace(/\s+/gu, "-")}-editor`}
+              onPasteCapture={(event) => {
+                if (properties.disabled || !capabilities.pasteImage) return;
+                mediaController.handleImagePaste(event.nativeEvent, async () => ({
+                  recordKind: "IMAGE",
+                  record: await propertiesRef.current.pasteImage!(),
+                }));
               }}
-              slashMenu={false}
-              sideMenu={false}
-              tableHandles={false}
-              theme={theme}
+              onKeyDownCapture={(event) => {
+                if (event.key !== "Escape" || !literalSlashPending.current) return;
+                window.requestAnimationFrame(() => {
+                  const markdown = koshBlocksToMarkdown(editor.document);
+                  if (markdown.trim() !== "/") return;
+                  literalSlashPending.current = false;
+                  lastEmittedValue.current = markdown;
+                  if (markdown !== propertiesRef.current.value) {
+                    propertiesRef.current.onChange(markdown);
+                  }
+                });
+              }}
             >
-              <SuggestionMenuController
-                getItems={async (query) => filterSuggestionItems(slashItems, query)}
-                triggerCharacter="/"
-              />
-              <SideMenuController sideMenu={KoshSideMenu} />
-            </BlockNoteView>
-          </div>
-        </KoshMediaActionsProvider>
+              <BlockNoteView
+                comments={false}
+                editor={editor}
+                emojiPicker={false}
+                filePanel={false}
+                formattingToolbar
+                onChange={() => {
+                  if (replacingValue.current || pendingExternalValue.current !== undefined) return;
+                  const markdown = koshBlocksToMarkdown(editor.document);
+                  if (markdown.trim() === "/" && !propertiesRef.current.value.trim()) {
+                    literalSlashPending.current = true;
+                    return;
+                  }
+                  literalSlashPending.current = false;
+                  lastEmittedValue.current = markdown;
+                  if (markdown !== propertiesRef.current.value) {
+                    propertiesRef.current.onChange(markdown);
+                  }
+                }}
+                slashMenu={false}
+                sideMenu={false}
+                tableHandles={false}
+                theme={theme}
+              >
+                <SuggestionMenuController
+                  getItems={async (query) => filterSuggestionItems(slashItems, query)}
+                  triggerCharacter="/"
+                />
+                <SideMenuController sideMenu={KoshSideMenu} />
+              </BlockNoteView>
+            </div>
+          </KoshMediaActionsProvider>
+        </KoshEditorInteractionProvider>
       </MantineProvider>
     );
   },

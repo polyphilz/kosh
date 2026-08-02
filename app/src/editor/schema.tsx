@@ -8,6 +8,7 @@ import {
 import { createReactBlockSpec, createReactInlineContentSpec } from "@blocknote/react";
 import { renderToString } from "katex";
 import { codeLanguageDefinitions } from "../markdown/languages";
+import { useKoshEditorDisabled } from "./interactionState";
 import { koshMediaBlockSpecs } from "./mediaBlocks";
 
 const heading = createReactBlockSpec(
@@ -36,22 +37,12 @@ const displayMath = createReactBlockSpec(
   },
   {
     render: ({ block, editor }) => (
-      <span className="kosh-math-editor kosh-math-editor--display" contentEditable={false}>
-        <MathPreview display latex={block.props.latex} />
-        <textarea
-          aria-label="Display math source"
-          className="kosh-math-editor__source"
-          onChange={(event) =>
-            editor.updateBlock(block, {
-              props: { latex: event.currentTarget.value },
-            })
-          }
-          onKeyDown={(event) => event.stopPropagation()}
-          rows={1}
-          spellCheck={false}
-          value={block.props.latex}
-        />
-      </span>
+      <MathSource
+        display
+        label="Display math source"
+        latex={block.props.latex}
+        onChange={(latex) => editor.updateBlock(block, { props: { latex } })}
+      />
     ),
   },
 );
@@ -66,22 +57,16 @@ const inlineMath = createReactInlineContentSpec(
   },
   {
     render: ({ inlineContent, updateInlineContent }) => (
-      <span className="kosh-math-editor kosh-math-editor--inline" contentEditable={false}>
-        <MathPreview latex={inlineContent.props.latex} />
-        <input
-          aria-label="Inline math source"
-          className="kosh-math-editor__source"
-          onChange={(event) =>
-            updateInlineContent({
-              type: "inlineMath",
-              props: { latex: event.currentTarget.value },
-            })
-          }
-          onKeyDown={(event) => event.stopPropagation()}
-          spellCheck={false}
-          value={inlineContent.props.latex}
-        />
-      </span>
+      <MathSource
+        label="Inline math source"
+        latex={inlineContent.props.latex}
+        onChange={(latex) =>
+          updateInlineContent({
+            type: "inlineMath",
+            props: { latex },
+          })
+        }
+      />
     ),
   },
 );
@@ -96,20 +81,10 @@ const legacyMarkdown = createReactBlockSpec(
   },
   {
     render: ({ block, editor }) => (
-      <label className="kosh-legacy-markdown" contentEditable={false}>
-        <span className="kosh-legacy-markdown__label">Legacy Markdown</span>
-        <textarea
-          aria-label="Legacy Markdown source"
-          onChange={(event) =>
-            editor.updateBlock(block, {
-              props: { markdown: event.currentTarget.value },
-            })
-          }
-          onKeyDown={(event) => event.stopPropagation()}
-          spellCheck={false}
-          value={block.props.markdown}
-        />
-      </label>
+      <LegacyMarkdownSource
+        markdown={block.props.markdown}
+        onChange={(markdown) => editor.updateBlock(block, { props: { markdown } })}
+      />
     ),
   },
 );
@@ -161,6 +136,79 @@ export const supportedKoshInlineTypes = Object.freeze(
   Object.keys(koshBlockNoteSchema.inlineContentSchema),
 );
 export const supportedKoshStyleTypes = Object.freeze(Object.keys(koshBlockNoteSchema.styleSchema));
+
+function MathSource({
+  display = false,
+  label,
+  latex,
+  onChange,
+}: {
+  display?: boolean;
+  label: string;
+  latex: string;
+  onChange: (latex: string) => void;
+}) {
+  const disabled = useKoshEditorDisabled();
+  return (
+    <span
+      className={`kosh-math-editor kosh-math-editor--${display ? "display" : "inline"}`}
+      contentEditable={false}
+    >
+      <MathPreview display={display} latex={latex} />
+      {display ? (
+        <textarea
+          aria-label={label}
+          className="kosh-math-editor__source"
+          disabled={disabled}
+          onChange={(event) => {
+            if (!disabled) onChange(event.currentTarget.value);
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+          rows={1}
+          spellCheck={false}
+          value={latex}
+        />
+      ) : (
+        <input
+          aria-label={label}
+          className="kosh-math-editor__source"
+          disabled={disabled}
+          onChange={(event) => {
+            if (!disabled) onChange(event.currentTarget.value);
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+          spellCheck={false}
+          value={latex}
+        />
+      )}
+    </span>
+  );
+}
+
+function LegacyMarkdownSource({
+  markdown,
+  onChange,
+}: {
+  markdown: string;
+  onChange: (markdown: string) => void;
+}) {
+  const disabled = useKoshEditorDisabled();
+  return (
+    <label className="kosh-legacy-markdown" contentEditable={false}>
+      <span className="kosh-legacy-markdown__label">Legacy Markdown</span>
+      <textarea
+        aria-label="Legacy Markdown source"
+        disabled={disabled}
+        onChange={(event) => {
+          if (!disabled) onChange(event.currentTarget.value);
+        }}
+        onKeyDown={(event) => event.stopPropagation()}
+        spellCheck={false}
+        value={markdown}
+      />
+    </label>
+  );
+}
 
 function MathPreview({ display = false, latex }: { display?: boolean; latex: string }) {
   const html = renderToString(latex || "\\square", {
