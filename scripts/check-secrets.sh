@@ -8,7 +8,7 @@ secret_pattern='(cfat_[A-Za-z0-9_-]{20,}|gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[
 
 find_env_paths() {
   awk '
-    /(^|\/)\.env($|\.)/ && $0 !~ /(^|\/)\.env\.example$/ {
+    /(^|\/)\.env($|\.)/ && $0 !~ /(^|\/)\.env(\.[A-Za-z0-9_-]+)?\.example$/ {
       print
     }
   '
