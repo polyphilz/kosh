@@ -49,12 +49,14 @@ function workingCopy(
   generation: number,
   bodyMarkdown: string,
   baseRevisionId: string | null = null,
+  mediaReservation = false,
 ): WorkingCopyRecord {
   return {
     id: `draft-${generation}`,
     noteId: NOTE_ID,
     baseRevisionId,
     editGeneration: generation,
+    mediaReservation,
     bodyMarkdown,
     sources: [],
     createdAtMs: 1,
@@ -286,27 +288,54 @@ describe("note autosave coordinator", () => {
 
   it("clears an abandoned blank media reservation before lifecycle checkpoint", async () => {
     const backend = gateway();
-    backend.saveWorkingCopy.mockResolvedValue({
-      status: "CLEARED",
-      acceptedEditGeneration: 8,
-      workingCopy: null,
-    });
-    const coordinator = NoteAutosaveCoordinator.recovered(backend, workingCopy(7, ""));
+    const coordinator = NoteAutosaveCoordinator.recovered(backend, workingCopy(7, "", null, true));
 
     await expect(coordinator.flush("QUIT")).resolves.toBeNull();
 
-    expect(backend.saveWorkingCopy).toHaveBeenCalledWith({
+    expect(backend.discardWorkingCopy).toHaveBeenCalledWith({
       noteId: NOTE_ID,
-      baseRevisionId: null,
-      editGeneration: 8,
-      bodyMarkdown: "",
-      sources: [],
+      expectedEditGeneration: 7,
     });
     expect(backend.checkpointWorkingCopy).not.toHaveBeenCalled();
     expect(coordinator.getSnapshot()).toMatchObject({
-      editGeneration: 8,
-      durableGeneration: 8,
+      editGeneration: 7,
+      durableGeneration: 7,
       phase: "EPHEMERAL",
+    });
+  });
+
+  it("discards an abandoned media reservation for an unchanged existing note", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.recovered(
+      backend,
+      workingCopy(7, "alpha", REVISION_1, true),
+    );
+
+    await expect(coordinator.flush("QUIT")).resolves.toBeNull();
+
+    expect(backend.discardWorkingCopy).toHaveBeenCalledWith({
+      noteId: NOTE_ID,
+      expectedEditGeneration: 7,
+    });
+    expect(backend.saveWorkingCopy).not.toHaveBeenCalled();
+    expect(backend.checkpointWorkingCopy).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot()).toMatchObject({ phase: "CLEAN" });
+  });
+
+  it("restores the idle checkpoint after canceling media on a durable working copy", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
+    coordinator.update("alpha");
+    await coordinator.persistWorkingCopy();
+
+    const reservation = await coordinator.prepareMedia();
+    expect(reservation.discardable).toBe(false);
+    await expect(coordinator.discardMediaReservation(reservation)).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(CHECKPOINT_IDLE_MS);
+
+    expect(backend.checkpointWorkingCopy).toHaveBeenCalledWith({
+      noteId: NOTE_ID,
+      expectedEditGeneration: 1,
     });
   });
 

@@ -72,7 +72,7 @@ export class NoteAutosaveCoordinator {
   private workingCopyTimer: number | null = null;
   private checkpointTimer: number | null = null;
   private workingCopyId: string | null;
-  private requiresRecoveryClassification: boolean;
+  private recoveredMediaReservationGeneration: number | null;
   private disposed = false;
 
   constructor(
@@ -86,14 +86,14 @@ export class NoteAutosaveCoordinator {
       >,
     options: NoteAutosaveOptions = {},
     workingCopyId: string | null = null,
-    requiresRecoveryClassification = false,
+    recoveredMediaReservationGeneration: number | null = null,
   ) {
     this.gateway = gateway;
     this.scheduler = options.scheduler ?? window;
     this.workingCopyDelayMs = options.workingCopyDelayMs ?? WORKING_COPY_DEBOUNCE_MS;
     this.checkpointDelayMs = options.checkpointDelayMs ?? CHECKPOINT_IDLE_MS;
     this.workingCopyId = workingCopyId;
-    this.requiresRecoveryClassification = requiresRecoveryClassification;
+    this.recoveredMediaReservationGeneration = recoveredMediaReservationGeneration;
     const editGeneration = initial.editGeneration ?? 0;
     const durableGeneration = initial.durableGeneration ?? 0;
     const checkpointedGeneration = initial.checkpointedGeneration ?? 0;
@@ -144,7 +144,7 @@ export class NoteAutosaveCoordinator {
       },
       options,
       workingCopy.id,
-      workingCopy.baseRevisionId === null,
+      workingCopy.mediaReservation ? workingCopy.editGeneration : null,
     );
   }
 
@@ -240,7 +240,10 @@ export class NoteAutosaveCoordinator {
   }
 
   async discardMediaReservation(reservation: NoteMediaReservation): Promise<boolean> {
-    if (!reservation.discardable) return false;
+    if (!reservation.discardable) {
+      this.scheduleCheckpoint();
+      return false;
+    }
     return this.enqueue(async () => {
       if (this.state.editGeneration !== reservation.generation) return false;
       let discarded: boolean;
@@ -296,19 +299,38 @@ export class NoteAutosaveCoordinator {
         this.publish({ ...this.state, phase: "EPHEMERAL", error: null });
         return null;
       }
-      if (this.requiresRecoveryClassification) {
-        const editGeneration = nextGeneration(this.state.editGeneration);
-        const classificationTarget = {
-          ...authoredSnapshot(this.state),
-          editGeneration,
-        };
-        this.publish({
-          ...this.state,
-          editGeneration,
-          phase: "DIRTY",
-          error: null,
-        });
-        await this.saveTarget(classificationTarget);
+      const reservationGeneration = this.recoveredMediaReservationGeneration;
+      if (reservationGeneration !== null) {
+        if (target.editGeneration === reservationGeneration) {
+          let discarded: boolean;
+          try {
+            discarded = await this.gateway.discardWorkingCopy({
+              noteId: target.noteId,
+              expectedEditGeneration: reservationGeneration,
+            });
+          } catch (reason) {
+            this.fail(reason);
+            throw reason;
+          }
+          if (!discarded) {
+            const error = new Error("recovered media reservation changed before reconciliation");
+            this.fail(error);
+            throw error;
+          }
+          this.workingCopyId = null;
+          this.recoveredMediaReservationGeneration = null;
+          this.publish({
+            ...this.state,
+            checkpointedGeneration: Math.max(
+              this.state.checkpointedGeneration,
+              reservationGeneration,
+            ),
+            phase: this.state.baseRevisionId === null ? "EPHEMERAL" : "CLEAN",
+            error: null,
+          });
+          return null;
+        }
+        await this.saveTarget(target);
         continue;
       }
       if (target.editGeneration > this.state.durableGeneration) {
@@ -390,7 +412,7 @@ export class NoteAutosaveCoordinator {
       return result;
     }
     this.workingCopyId = result.workingCopy?.id ?? null;
-    this.requiresRecoveryClassification = false;
+    this.recoveredMediaReservationGeneration = null;
     const durableGeneration = Math.max(this.state.durableGeneration, result.acceptedEditGeneration);
     const unchanged = this.state.editGeneration === target.editGeneration;
     this.publish({
@@ -408,6 +430,12 @@ export class NoteAutosaveCoordinator {
       this.workingCopyTimer = null;
       void this.persistWorkingCopy().catch(() => undefined);
     }, this.workingCopyDelayMs);
+    this.scheduleCheckpoint();
+  }
+
+  private scheduleCheckpoint(): void {
+    if (this.disposed || this.state.editGeneration <= this.state.checkpointedGeneration) return;
+    if (this.checkpointTimer !== null) this.scheduler.clearTimeout(this.checkpointTimer);
     this.checkpointTimer = this.scheduler.setTimeout(() => {
       this.checkpointTimer = null;
       void this.flush("IDLE").catch(() => undefined);

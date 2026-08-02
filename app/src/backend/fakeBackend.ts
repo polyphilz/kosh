@@ -1065,10 +1065,15 @@ export class FakeBackend implements Backend {
       if (!sameWorkingCopy(existing, input)) {
         throw new Error("an edit generation cannot be reused for different content");
       }
+      const classified =
+        existing.mediaReservation && !allowEmptyEphemeral
+          ? { ...existing, mediaReservation: false }
+          : existing;
+      this.workingCopies.set(input.noteId, classified);
       return {
         status: "SAVED",
         acceptedEditGeneration: existing.editGeneration,
-        workingCopy: cloneWorkingCopy(existing),
+        workingCopy: cloneWorkingCopy(classified),
       };
     }
     if (
@@ -1086,6 +1091,7 @@ export class FakeBackend implements Backend {
     const sequence = this.nextSequence();
     const saved: WorkingCopyRecord = {
       ...input,
+      mediaReservation: allowEmptyEphemeral,
       sources: input.sources.map((source) => ({ ...source })),
       id: existing?.id ?? `fake-working-copy-${sequence}`,
       createdAtMs: existing?.createdAtMs ?? this.probe.nowMs + sequence,

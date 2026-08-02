@@ -547,6 +547,7 @@ export interface SaveWorkingCopyInput {
 
 export interface WorkingCopyRecord extends SaveWorkingCopyInput {
   id: string;
+  mediaReservation: boolean;
   createdAtMs: number;
   updatedAtMs: number;
 }

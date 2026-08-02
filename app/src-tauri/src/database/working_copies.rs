@@ -42,6 +42,7 @@ pub struct WorkingCopy {
     pub note_id: String,
     pub base_revision_id: Option<String>,
     pub edit_generation: i64,
+    pub media_reservation: bool,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub body_markdown: String,
@@ -118,6 +119,23 @@ pub(super) fn save(
         }
         if write.input.edit_generation == existing.edit_generation {
             if same_authored_state(existing, &write.input) {
+                if existing.media_reservation && !write.allow_empty_ephemeral {
+                    transaction.execute(
+                        "UPDATE draft_context SET media_reservation = 0 WHERE draft_id = ?1",
+                        params![&existing.id],
+                    )?;
+                    let working_copy = load_in_transaction(&transaction, &write.input.note_id)?
+                        .ok_or_else(|| {
+                            DatabaseError::InvalidInput(
+                                "working copy disappeared after reservation classification".into(),
+                            )
+                        })?;
+                    transaction.commit()?;
+                    return Ok(save_result(
+                        WorkingCopySaveStatus::Saved,
+                        Some(working_copy),
+                    ));
+                }
                 transaction.rollback()?;
                 return Ok(save_result(
                     WorkingCopySaveStatus::Saved,
@@ -162,9 +180,13 @@ pub(super) fn save(
         )?;
         transaction.execute(
             "UPDATE draft_context
-             SET edit_generation = ?1
-             WHERE draft_id = ?2",
-            params![write.input.edit_generation, &existing.id],
+             SET edit_generation = ?1, media_reservation = ?2
+             WHERE draft_id = ?3",
+            params![
+                write.input.edit_generation,
+                write.allow_empty_ephemeral,
+                &existing.id
+            ],
         )?;
         existing.id
     } else {
@@ -180,8 +202,9 @@ pub(super) fn save(
                 tidbit_id,
                 base_revision_id,
                 note_id,
-                edit_generation
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                edit_generation,
+                media_reservation
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 &write.draft_id,
                 &context_key,
@@ -193,6 +216,7 @@ pub(super) fn save(
                 &write.input.base_revision_id,
                 &write.input.note_id,
                 write.input.edit_generation,
+                write.allow_empty_ephemeral,
             ],
         )?;
         write.draft_id
@@ -551,6 +575,7 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
                 context.note_id,
                 context.base_revision_id,
                 context.edit_generation,
+                context.media_reservation,
                 draft.created_at,
                 draft.updated_at,
                 draft.body_markdown
@@ -564,9 +589,10 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
                     note_id: row.get(1)?,
                     base_revision_id: row.get(2)?,
                     edit_generation: row.get(3)?,
-                    created_at_ms: row.get(4)?,
-                    updated_at_ms: row.get(5)?,
-                    body_markdown: row.get(6)?,
+                    media_reservation: row.get(4)?,
+                    created_at_ms: row.get(5)?,
+                    updated_at_ms: row.get(6)?,
+                    body_markdown: row.get(7)?,
                     sources: Vec::new(),
                 })
             },
@@ -815,6 +841,13 @@ mod tests {
             reservation
                 .working_copy
                 .as_ref()
+                .map(|copy| copy.media_reservation),
+            Some(true)
+        );
+        assert_eq!(
+            reservation
+                .working_copy
+                .as_ref()
                 .map(|copy| copy.id.as_str()),
             Some(DRAFT_ID_1)
         );
@@ -839,6 +872,15 @@ mod tests {
                 .expect("load preserved copy")
                 .map(|copy| copy.body_markdown),
             Some("newer authored text".into())
+        );
+        assert_eq!(
+            library
+                .database
+                .client()
+                .load_working_copy(NOTE_ID.into())
+                .expect("load classified copy")
+                .map(|copy| copy.media_reservation),
+            Some(false)
         );
         assert!(library
             .database
