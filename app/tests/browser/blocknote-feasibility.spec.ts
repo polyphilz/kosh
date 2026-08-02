@@ -76,7 +76,8 @@ test("the restricted BlockNote schema rejects the plain-editor approximation", a
 
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.appendParagraph());
   await page.keyboard.type("/");
-  const options = page.getByRole("option");
+  const slashMenu = page.getByRole("listbox");
+  const options = slashMenu.getByRole("option");
   await expect(options).toHaveText([
     "Paragraph",
     "Heading 1",
@@ -88,7 +89,7 @@ test("the restricted BlockNote schema rejects the plain-editor approximation", a
     "Display math",
     "Inline math",
   ]);
-  await page.getByRole("option", { name: "Display math" }).click();
+  await slashMenu.getByRole("option", { name: "Display math" }).click();
   await expect.poll(async () => (await readSnapshot(page)).blocks.at(-1)?.type).toBe("displayMath");
 });
 
@@ -114,7 +115,7 @@ test("real keyboard input covers undo, redo, IME, and list nesting", async ({ pa
   await page.keyboard.insertText("かな");
   await imeBlock.dispatchEvent("compositionend", { data: "かな" });
   await expect.poll(async () => blockText(await readSnapshot(page), imeBlockId)).toBe("かな");
-  await expect(page.getByRole("option")).toHaveCount(0);
+  await expect(page.getByRole("listbox")).toHaveCount(0);
 
   const listIds = await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.installListPair());
   await page.keyboard.press("Tab");

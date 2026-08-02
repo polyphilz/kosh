@@ -1,4 +1,5 @@
 import type { KoshSpikeEditor, KoshSpikePartialBlock } from "./schema";
+import { koshBlocksToMarkdown, markdownToKoshBlocks } from "../../editor/markdownAdapter";
 
 export interface BlockNoteSpikeSnapshot {
   blocks: unknown[];
@@ -11,6 +12,8 @@ export interface BlockNoteSpikeBridge {
   capability: "blocknote";
   installLongDocument(blockCount: number): void;
   installListPair(): { firstId: string; secondId: string };
+  loadMarkdown(markdown: string): void;
+  markdown(): string;
   schema: {
     blocks: readonly string[];
     inlineContent: readonly string[];
@@ -76,6 +79,14 @@ export function installSpikeBridge(
       editor.setTextCursorPosition(second, "end");
       editor.focus();
       return { firstId: first.id, secondId: second.id };
+    },
+    loadMarkdown(markdown) {
+      editor.replaceBlocks(editor.document, markdownToKoshBlocks(markdown));
+      editor.setTextCursorPosition(editor.document[0]!, "start");
+      editor.focus();
+    },
+    markdown() {
+      return koshBlocksToMarkdown(editor.document);
     },
     selectBlocks(startId, endId) {
       editor.setSelection(startId, endId);
