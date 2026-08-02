@@ -139,8 +139,8 @@ pnpm release:build
 ```
 
 See [docs/RELEASE.md](docs/RELEASE.md) for universal artifact verification,
-packaged-app acceptance, installation, rollback, and the notarization
-boundary.
+packaged-app acceptance, Developer ID signing, notarization, signed GitHub
+updater releases, installation, and rollback.
 
 ## Litestream protocol foundation
 

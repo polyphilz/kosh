@@ -49,6 +49,7 @@ pub struct KeyboardBinding {
 #[serde(rename_all = "camelCase")]
 pub struct ShortcutSettings {
     pub revision: i64,
+    pub automatic_update_checks_enabled: bool,
     pub keyboard_bindings: Vec<KeyboardBinding>,
 }
 
@@ -59,11 +60,19 @@ pub struct SetShortcutSettingsInput {
     pub keyboard_bindings: Vec<KeyboardBinding>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAutomaticUpdateChecksInput {
+    pub expected_revision: i64,
+    pub enabled: bool,
+}
+
 pub(super) fn load_shortcut_settings(connection: &Connection) -> Result<ShortcutSettings> {
-    let revision = connection.query_row(
-        "SELECT revision FROM shortcut_settings WHERE singleton_id = 1",
+    let (revision, automatic_update_checks_enabled) = connection.query_row(
+        "SELECT revision, automatic_update_checks_enabled
+         FROM shortcut_settings WHERE singleton_id = 1",
         [],
-        |row| row.get::<_, i64>(0),
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?)),
     )?;
     let mut statement = connection.prepare(
         "SELECT command, accelerator
@@ -88,8 +97,32 @@ pub(super) fn load_shortcut_settings(connection: &Connection) -> Result<Shortcut
     validate_complete_bindings(&keyboard_bindings)?;
     Ok(ShortcutSettings {
         revision,
+        automatic_update_checks_enabled,
         keyboard_bindings,
     })
+}
+
+pub(super) fn set_automatic_update_checks(
+    connection: &mut Connection,
+    input: SetAutomaticUpdateChecksInput,
+) -> Result<ShortcutSettings> {
+    if input.expected_revision <= 0 {
+        return Err(DatabaseError::InvalidInput(
+            "expectedRevision must be positive".into(),
+        ));
+    }
+    let changed = connection.execute(
+        "UPDATE shortcut_settings
+         SET automatic_update_checks_enabled = ?1, revision = revision + 1
+         WHERE singleton_id = 1 AND revision = ?2",
+        params![input.enabled, input.expected_revision],
+    )?;
+    if changed != 1 {
+        return Err(DatabaseError::InvalidInput(
+            "settings changed before this update".into(),
+        ));
+    }
+    load_shortcut_settings(connection)
 }
 
 pub(super) fn set_shortcut_settings(

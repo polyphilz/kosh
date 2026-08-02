@@ -39,6 +39,7 @@ export const TauriCommand = {
   OpenAttachmentExternal: "open_attachment_external",
   OpenPdfExternal: "open_pdf_external",
   OpenSourceUrl: "open_source_url",
+  PrepareUpdateRelaunch: "prepare_update_relaunch",
   PassageEmbeddingIndexStatus: "passage_embedding_index_status",
   PdfStatus: "pdf_status",
   PrepareSemanticRuntime: "prepare_semantic_runtime",
@@ -68,6 +69,7 @@ export const TauriCommand = {
   SemanticRuntimeStatus: "semantic_runtime_status",
   SetFileDropConsumerActive: "set_file_drop_consumer_active",
   SetBackupEnabled: "set_backup_enabled",
+  SetAutomaticUpdateChecks: "set_automatic_update_checks",
   SetQuickAddFileDialogOpen: "set_quick_add_file_dialog_open",
   SetShortcutSettings: "set_shortcut_settings",
   ShowMain: "show_main",
@@ -78,6 +80,7 @@ export const TauriCommand = {
 } as const;
 
 export const TauriEvent = {
+  CheckForUpdates: "kosh://check-for-updates",
   FileDrop: "kosh://file-drop",
   OpenSettings: "kosh://open-settings",
   PrepareQuit: "kosh://prepare-quit",

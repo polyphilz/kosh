@@ -11,6 +11,7 @@ import { Button } from "../components/Button";
 import { Select } from "../components/Select";
 import { ShortcutRecorder } from "../components/ShortcutRecorder";
 import { Status } from "../components/Status";
+import { Toggle } from "../components/Toggle";
 import { bindingFor, useShortcutSettings } from "../shortcuts/context";
 import { BackupSettings } from "./BackupSettings";
 import { SettingsDiagnostics } from "./SettingsDiagnostics";
@@ -24,7 +25,7 @@ const appearanceOptions = [
 export function SettingsPage() {
   const { appearance, setAppearance } = useAppearance();
   const [shortcutResetToken, setShortcutResetToken] = useState(0);
-  const { error, loading, settings, update } = useShortcutSettings();
+  const { error, loading, settings, update, updateAutomaticChecks } = useShortcutSettings();
   const bindings = settings?.keyboardBindings ?? DEFAULT_KEYBOARD_BINDINGS;
 
   const setBinding = (command: KeyboardBinding["command"], accelerator: string) => {
@@ -56,7 +57,7 @@ export function SettingsPage() {
           <p>Keep the interface quiet and the evidence visible.</p>
         </div>
         <Status tone={error ? "danger" : "success"}>
-          {error ? "Shortcut needs attention" : loading ? "Loading…" : "Saved locally"}
+          {error ? "Settings need attention" : loading ? "Loading…" : "Saved locally"}
         </Status>
       </header>
       <section className="settings-list">
@@ -70,6 +71,20 @@ export function SettingsPage() {
             onValueChange={setAppearance}
             options={appearanceOptions}
             value={appearance}
+          />
+        </label>
+        <label>
+          <span>
+            <strong>Automatically check for updates</strong>
+            <small>
+              Ask GitHub shortly after launch and every 6 hours. Manual checks remain available.
+            </small>
+          </span>
+          <Toggle
+            checked={settings?.automaticUpdateChecksEnabled ?? true}
+            disabled={loading || !settings}
+            label="Automatically check for updates"
+            onChange={(enabled) => void updateAutomaticChecks(enabled).catch(() => undefined)}
           />
         </label>
         <label>

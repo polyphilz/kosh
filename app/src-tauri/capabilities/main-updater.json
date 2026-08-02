@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-updater",
+  "description": "Production-only updater access for Kosh's main window",
+  "windows": ["main"],
+  "platforms": ["macOS"],
+  "permissions": [
+    "process:allow-restart",
+    "updater:allow-check",
+    "updater:allow-download-and-install"
+  ]
+}

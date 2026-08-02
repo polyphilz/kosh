@@ -1094,6 +1094,10 @@ fn map_litestream_start_error(error: LitestreamError) -> RuntimeFailure {
         | LitestreamError::OversizedControlResponse => {
             RuntimeFailure::new(RelationalBackupErrorCode::RemoteSyncFailed, false)
         }
+        #[cfg(target_os = "macos")]
+        LitestreamError::InvalidDistributionSignature => {
+            RuntimeFailure::new(RelationalBackupErrorCode::BinaryUnavailable, false)
+        }
         LitestreamError::InvalidEmbeddedManifest(_)
         | LitestreamError::MissingReleaseManifest(_)
         | LitestreamError::InvalidReleaseManifest(_)
@@ -1717,7 +1721,7 @@ fn sweep_stale_runtime(
     };
     let expected_database = utf8_path(expected_database_path)
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ConfigurationInvalid, false))?;
-    if !trusted_binary_sha256s.contains(&record.executable_sha256)
+    if !stale_binary_is_trusted(runtime, &record, trusted_binary_sha256s)
         || record.config != runtime.config().to_string_lossy()
         || record.socket != runtime.socket().to_string_lossy()
         || record.database != expected_database
@@ -1759,6 +1763,33 @@ fn sweep_stale_runtime(
         .map_err(|_| RuntimeFailure::new(RelationalBackupErrorCode::ControlUnavailable, true))?;
     remove_pid_record_if_owned(runtime, record.pid);
     Ok(())
+}
+
+fn stale_binary_is_trusted(
+    runtime: &LitestreamRuntimePaths,
+    record: &LitestreamPidRecord,
+    trusted_binary_sha256s: &[String],
+) -> bool {
+    if trusted_binary_sha256s.contains(&record.executable_sha256) {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let expected_path = runtime
+            .directory()
+            .join("verified-litestream")
+            .join(&record.executable_sha256)
+            .join("litestream");
+        Path::new(&record.executable) == expected_path
+            && VerifiedLitestreamBinary::is_authorized_distribution_cleanup_binary(
+                &expected_path,
+                &record.executable_sha256,
+            )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 fn read_private_bounded_config(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -3191,6 +3222,51 @@ mod tests {
         )
         .expect("sweep dead owned runtime");
         assert!(!runtime.pid().exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn distribution_cleanup_fallback_rejects_unsigned_and_unscoped_binaries() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("temporary runtime root");
+        let runtime = LitestreamRuntimePaths::new(root.path()).expect("runtime paths");
+        runtime.prepare().expect("prepare runtime");
+        let sha256 = sha256_hex(b"unsigned binary");
+        let staged_directory = runtime
+            .directory()
+            .join("verified-litestream")
+            .join(&sha256);
+        fs::create_dir_all(&staged_directory).expect("staged binary directory");
+        let staged_binary = staged_directory.join("litestream");
+        fs::write(&staged_binary, b"unsigned binary").expect("unsigned binary fixture");
+        fs::set_permissions(&staged_binary, fs::Permissions::from_mode(0o500))
+            .expect("executable fixture");
+        let mut record = LitestreamPidRecord {
+            format_version: PID_RECORD_FORMAT_VERSION,
+            pid: u32::MAX,
+            executable: staged_binary.to_string_lossy().into_owned(),
+            executable_sha256: sha256.clone(),
+            config: runtime.config().to_string_lossy().into_owned(),
+            socket: runtime.socket().to_string_lossy().into_owned(),
+            database: root
+                .path()
+                .join("kosh.sqlite3")
+                .to_string_lossy()
+                .into_owned(),
+            backup_set_id: BackupSetId::new().to_string(),
+            replica_epoch_id: ReplicaEpochId::new().to_string(),
+            config_sha256: sha256_hex(b"safe config"),
+        };
+
+        assert!(!stale_binary_is_trusted(&runtime, &record, &[]));
+        record.executable = root
+            .path()
+            .join("unscoped-litestream")
+            .to_string_lossy()
+            .into_owned();
+        assert!(!stale_binary_is_trusted(&runtime, &record, &[]));
+        assert!(stale_binary_is_trusted(&runtime, &record, &[sha256]));
     }
 
     #[cfg(unix)]

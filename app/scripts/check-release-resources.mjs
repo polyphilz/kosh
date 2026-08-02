@@ -15,6 +15,16 @@ const litestreamManifest = readJson(litestreamManifestPath);
 const litestreamBinary = resolve(stage, litestreamPin.stagingPaths.binary);
 const litestreamLicense = resolve(stage, litestreamPin.stagingPaths.license);
 const litestreamNotice = resolve(stage, litestreamPin.stagingPaths.notice);
+const sourceProvenance = readJson(resolve(stage, "source.json"));
+
+assertEqual(
+  sourceProvenance,
+  {
+    commit: run("git", ["rev-parse", "HEAD"]),
+    dirty: run("git", ["status", "--porcelain"]).length > 0,
+  },
+  "release source provenance",
+);
 
 assertEqual(stripGeneratedFields(manifest), pin, "release inputs");
 assertEqual(manifest.verification.modelBundled, false, "model bundle policy");
@@ -124,6 +134,7 @@ assertEqual(
     "licenses/llama.cpp-LICENSE",
     "litestream.json",
     "llama-server.json",
+    "source.json",
   ],
   "staged release files",
 );

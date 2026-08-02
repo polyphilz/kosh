@@ -863,7 +863,9 @@ mod tests {
                 |row| row.get::<_, i32>(0),
             )
             .expect("main head"),
-            22
+            migrations::expected_heads()
+                .main
+                .expect("embedded main migration head")
         );
         assert_eq!(
             media
@@ -873,7 +875,9 @@ mod tests {
                     |row| row.get::<_, i32>(0),
                 )
                 .expect("media head"),
-            2
+            migrations::expected_heads()
+                .media
+                .expect("embedded media migration head")
         );
     }
 }

@@ -1307,6 +1307,48 @@ button {
   background: var(--surface);
 }
 
+.update-notification {
+  position: fixed;
+  z-index: 40;
+  bottom: 18px;
+  left: 18px;
+  display: grid;
+  width: min(360px, calc(100vw - 36px));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: 0 16px 38px rgba(30, 24, 20, 0.16);
+}
+
+.update-notification > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.update-notification strong,
+.update-notification span {
+  margin: 0;
+}
+
+.update-notification strong {
+  font-size: 11px;
+}
+
+.update-notification span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.update-notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
 .settings-list > label {
   display: flex;
   align-items: center;

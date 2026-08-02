@@ -43,6 +43,7 @@ import type {
   SemanticRuntimeLogs,
   SemanticRuntimeStatus,
   SetBackupEnabledInput,
+  SetAutomaticUpdateChecksInput,
   SetShortcutSettingsInput,
   ShortcutSettingsSnapshot,
   SourceDraft,
@@ -98,6 +99,7 @@ export class FakeBackend implements Backend {
   private readonly researchTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private shortcutSettings: ShortcutSettingsSnapshot = {
     revision: 1,
+    automaticUpdateChecksEnabled: true,
     keyboardBindings: DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
     shortcutErrors: [],
   };
@@ -1029,6 +1031,22 @@ export class FakeBackend implements Backend {
     return cloneShortcutSettings(this.shortcutSettings);
   }
 
+  async setAutomaticUpdateChecks(
+    input: SetAutomaticUpdateChecksInput,
+  ): Promise<ShortcutSettingsSnapshot> {
+    if (input.expectedRevision !== this.shortcutSettings.revision) {
+      throw new Error(
+        `settings changed before this update: revision is ${this.shortcutSettings.revision}, expected ${input.expectedRevision}`,
+      );
+    }
+    this.shortcutSettings = {
+      ...this.shortcutSettings,
+      revision: this.shortcutSettings.revision + 1,
+      automaticUpdateChecksEnabled: input.enabled,
+    };
+    return cloneShortcutSettings(this.shortcutSettings);
+  }
+
   async setShortcutSettings(input: SetShortcutSettingsInput): Promise<ShortcutSettingsSnapshot> {
     if (input.expectedRevision !== this.shortcutSettings.revision) {
       throw new Error(
@@ -1049,6 +1067,7 @@ export class FakeBackend implements Backend {
       throw new Error("two Kosh commands cannot use the same shortcut");
     }
     this.shortcutSettings = {
+      ...this.shortcutSettings,
       revision: this.shortcutSettings.revision + 1,
       keyboardBindings: input.keyboardBindings.map((binding) => ({ ...binding })),
       shortcutErrors: [],

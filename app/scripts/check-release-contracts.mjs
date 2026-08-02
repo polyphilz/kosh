@@ -7,8 +7,11 @@ const release = readJson("src-tauri/tauri.release.conf.json");
 const packageJson = readJson("package.json");
 const pin = readJson("src-tauri/resources/sidecars/llama-server-v1.json");
 const litestreamPin = readJson("src-tauri/resources/sidecars/litestream-v1.json");
+const distributionPolicy = readJson("src-tauri/distribution-signing.json");
 const cargo = readFileSync("src-tauri/Cargo.toml", "utf8");
 const main = readFileSync("src-tauri/src/main.rs", "utf8");
+const distributionBuild = readFileSync("scripts/build-notarized-distribution.mjs", "utf8");
+const releaseArtifacts = readFileSync("scripts/create-release-artifacts.mjs", "utf8");
 
 assertEqual(local.productName, "Kosh", "product name");
 assertEqual(local.identifier, "com.rohan.kosh", "bundle identifier");
@@ -22,6 +25,15 @@ assertEqual(local.bundle, { active: false }, "development bundle policy");
 assertEqual(local.app.macOSPrivateApi, true, "macOS private API policy");
 assertEqual(local.app.security.freezePrototype, true, "prototype freeze");
 assertEqual(local.app.security.capabilities, ["default", "quick-add"], "capability allowlist");
+assertEqual(
+  local.plugins.updater.endpoints,
+  ["https://github.com/polyphilz/kosh/releases/latest/download/latest.json"],
+  "updater endpoint",
+);
+assert(
+  typeof local.plugins.updater.pubkey === "string" && local.plugins.updater.pubkey.length > 80,
+  "updater public key must be embedded",
+);
 assertEqual(
   local.app.security.csp,
   {
@@ -114,12 +126,70 @@ assertEqual(
   },
   "quick-add capability",
 );
+assertEqual(
+  readJson("src-tauri/capabilities/main-updater.json"),
+  {
+    $schema: "../gen/schemas/desktop-schema.json",
+    identifier: "main-updater",
+    description: "Production-only updater access for Kosh's main window",
+    windows: ["main"],
+    platforms: ["macOS"],
+    permissions: [
+      "process:allow-restart",
+      "updater:allow-check",
+      "updater:allow-download-and-install",
+    ],
+  },
+  "production updater capability",
+);
+
+assertEqual(distributionPolicy.formatVersion, 1, "distribution policy version");
+assertEqual(
+  distributionPolicy.application,
+  {
+    bundleIdentifier: "com.rohan.kosh",
+    signingIdentity: "Developer ID Application: SILO77 LLC (PMZH6ULML8)",
+    teamIdentifier: "PMZH6ULML8",
+  },
+  "distribution publisher identity",
+);
+assertEqual(
+  Object.keys(distributionPolicy.sidecars).sort(),
+  ["litestream", "llamaServer"],
+  "distribution sidecars",
+);
+assertEqual(
+  packageJson.scripts["release:build:distribution"],
+  "node scripts/build-notarized-distribution.mjs",
+  "distribution build command",
+);
+assertEqual(
+  packageJson.scripts["release:publish:draft"],
+  "node scripts/publish-draft-release.mjs",
+  "draft release command",
+);
+assert(
+  !packageJson.scripts["release:build:app"].includes("VITE_KOSH_UPDATER_ENABLED"),
+  "local app builds must not enable the updater",
+);
+for (const contract of [
+  'VITE_KOSH_UPDATER_ENABLED: "true"',
+  'capabilities: ["default", "quick-add", "main-updater"]',
+  '"universal-apple-darwin"',
+  "hardenedRuntime: true",
+]) {
+  assert(distributionBuild.includes(contract), `distribution build omits ${contract}`);
+}
+for (const platform of ['"darwin-aarch64"', '"darwin-x86_64"']) {
+  assert(releaseArtifacts.includes(platform), `updater manifest omits ${platform}`);
+}
 
 const expectedResources = {
   "resources/release/bin/llama-server": "bin/llama-server",
   "resources/release/bin/litestream": "bin/litestream",
   "resources/release/llama-server.json": "release/llama-server.json",
   "resources/release/litestream.json": "release/litestream.json",
+  "resources/release/source.json": "release/source.json",
   "resources/release/licenses/llama.cpp-LICENSE": "licenses/llama.cpp-LICENSE",
   "resources/release/licenses/litestream-LICENSE": "licenses/litestream-LICENSE",
   "resources/release/licenses/litestream-NOTICE": "licenses/litestream-NOTICE",

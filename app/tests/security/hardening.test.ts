@@ -70,6 +70,7 @@ describe("desktop security boundary", () => {
       "resources/release/licenses/llama.cpp-LICENSE",
       "resources/release/litestream.json",
       "resources/release/llama-server.json",
+      "resources/release/source.json",
     ]);
     expect(JSON.stringify(release.bundle.resources)).not.toMatch(
       /\.env|\.sqlite|\.gguf|\.onnx|\.safetensors|test-results|\.kosh-loop/u,

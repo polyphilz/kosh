@@ -12,6 +12,7 @@ import type {
   RestoreTidbitInput,
   SaveDraftInput,
   SearchPassagesInput,
+  SetAutomaticUpdateChecksInput,
   SetShortcutSettingsInput,
   TakeOverBackupInput,
   TestBackupConnectionInput,
@@ -82,6 +83,10 @@ describe("tauriBackend tidbit gateway", () => {
         { command: "MAIN_WINDOW", accelerator: "control+alt+super+KeyO" },
       ],
     };
+    const automaticUpdates: SetAutomaticUpdateChecksInput = {
+      enabled: false,
+      expectedRevision: 1,
+    };
 
     await tauriBackend.createTidbit(draft);
     await tauriBackend.loadTidbit("tidbit-1");
@@ -99,6 +104,7 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.loadDraft("capture");
     await tauriBackend.clearDraft(clearDraft);
     await tauriBackend.loadShortcutSettings();
+    await tauriBackend.setAutomaticUpdateChecks(automaticUpdates);
     await tauriBackend.setShortcutSettings(shortcuts);
     await tauriBackend.selectImage();
     await tauriBackend.ingestSelectedImage("selection-1", "draft-1");
@@ -138,6 +144,7 @@ describe("tauriBackend tidbit gateway", () => {
       ["load_draft", { contextKey: "capture" }],
       ["clear_draft", { input: clearDraft }],
       ["load_shortcut_settings"],
+      ["set_automatic_update_checks", { input: automaticUpdates }],
       ["set_shortcut_settings", { input: shortcuts }],
       ["select_image"],
       ["ingest_selected_image", { selectionId: "selection-1", draftId: "draft-1" }],

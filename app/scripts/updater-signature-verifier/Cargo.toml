@@ -1,0 +1,11 @@
+[package]
+name = "kosh-updater-signature-verifier"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97.0"
+publish = false
+
+[dependencies]
+base64 = "0.22.1"
+minisign-verify = "=0.2.5"
+serde_json = "1.0"

@@ -7,6 +7,7 @@ import { Shortcut } from "./components/Shortcut";
 import { acceleratorKeys, describeAccelerator } from "./shortcuts/accelerator";
 import { bindingFor, ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
 import { TauriEvent } from "./tauriProtocol";
+import { AppUpdater } from "./updater";
 
 const destinations = [
   { label: "Search", to: "/" },
@@ -19,6 +20,7 @@ const destinations = [
 export function App() {
   return (
     <ShortcutSettingsProvider>
+      <AppUpdater />
       <AppShell />
     </ShortcutSettingsProvider>
   );

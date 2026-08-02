@@ -2,6 +2,8 @@ mod attachments;
 pub mod backup;
 mod claude;
 mod database;
+#[cfg(target_os = "macos")]
+mod distribution_signing;
 mod embedding;
 mod embedding_runtime;
 mod maintenance;
@@ -112,8 +114,10 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         database::commands::load_draft,
         database::commands::clear_draft,
         windows::acknowledge_quit,
+        windows::prepare_update_relaunch,
         windows::dismiss_quick_add,
         windows::load_shortcut_settings,
+        windows::set_automatic_update_checks,
         windows::set_quick_add_file_dialog_open,
         windows::set_shortcut_settings,
         windows::show_main,
@@ -203,6 +207,8 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
 pub fn run() {
     let app = with_commands(
         tauri::Builder::default()
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_single_instance::init(
                 |app, _arguments, _working_directory| {
                     if let Err(error) = windows::show_main(app.clone()) {
@@ -280,10 +286,11 @@ pub use database::{
     MediaCleanupResult, MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
     PassageSearchResult, PdfExtractionStatus, PdfRecord, PdfStatusRecord, PurgeTidbitInput,
     RestoreTidbitInput, SaveDraftInput, SearchExecutionMode, SearchField, SearchHighlight,
-    SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness, SetShortcutSettingsInput,
-    ShortcutSettings, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor, TidbitListItem,
-    TidbitListPage, TidbitListScope, TidbitRevision, TidbitRevisionAttachment, TidbitRevisionPage,
-    TidbitRevisionSummary, TidbitSource, TIDBIT_PURGE_DELAY_MS,
+    SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
+    SetAutomaticUpdateChecksInput, SetShortcutSettingsInput, ShortcutSettings, SourceDraft, Tidbit,
+    TidbitDraft, TidbitListCursor, TidbitListItem, TidbitListPage, TidbitListScope, TidbitRevision,
+    TidbitRevisionAttachment, TidbitRevisionPage, TidbitRevisionSummary, TidbitSource,
+    TIDBIT_PURGE_DELAY_MS,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
 pub use embedding_runtime::{
