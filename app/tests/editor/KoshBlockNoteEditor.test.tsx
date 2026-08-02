@@ -195,6 +195,26 @@ describe("production BlockNote editor", () => {
     expect(await screen.findByText("replacement.txt")).toBeInTheDocument();
     await waitFor(() => expect(onPendingImagesChange).toHaveBeenLastCalledWith(false));
   });
+
+  it("rejects keyboard image resizing while locked", async () => {
+    const onChange = vi.fn();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          disabled
+          onChange={onChange}
+          value="{{kosh:image:019f547b-6200-7000-8000-000000000201;width=70%;alt=Diagram}}"
+        />
+      </AppearanceProvider>,
+    );
+
+    fireEvent.keyDown(await screen.findByLabelText("Image: Diagram"), {
+      altKey: true,
+      key: "ArrowRight",
+    });
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
 
 function ControlledEditor({ onChange }: { onChange: (value: string) => void }) {
