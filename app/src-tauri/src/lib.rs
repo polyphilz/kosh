@@ -1,6 +1,5 @@
 mod attachments;
 pub mod backup;
-mod claude;
 mod database;
 #[cfg(target_os = "macos")]
 mod distribution_signing;
@@ -12,7 +11,6 @@ mod native_log;
 mod passage_embedding_indexer;
 mod pdf;
 pub mod relevance;
-pub mod research;
 mod runtime;
 mod startup_smoke;
 mod windows;
@@ -55,11 +53,6 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         backup::settings::preview_backup_restore,
         backup::settings::drill_backup_restore,
         backup::settings::take_over_backup,
-        claude::claude_setup_status,
-        claude::claude_cli_defaults,
-        claude::start_research_process,
-        claude::rerun_research_process,
-        claude::cancel_research_process,
         runtime::semantic_runtime_status,
         runtime::passage_embedding_index_status,
         runtime::prepare_semantic_runtime,
@@ -105,9 +98,6 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         database::commands::delete_tidbit,
         database::commands::restore_tidbit,
         database::commands::purge_tidbit,
-        database::commands::list_research_runs,
-        database::commands::load_research_run,
-        database::commands::save_research_answer_as_tidbit,
         database::commands::resolve_citation,
         database::commands::search_passages,
         database::commands::save_draft,
@@ -151,11 +141,6 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         backup::settings::preview_backup_restore,
         backup::settings::drill_backup_restore,
         backup::settings::take_over_backup,
-        claude::claude_setup_status,
-        claude::claude_cli_defaults,
-        claude::start_research_process,
-        claude::rerun_research_process,
-        claude::cancel_research_process,
         runtime::semantic_runtime_status,
         runtime::passage_embedding_index_status,
         runtime::prepare_semantic_runtime,
@@ -201,9 +186,6 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         database::commands::delete_tidbit,
         database::commands::restore_tidbit,
         database::commands::purge_tidbit,
-        database::commands::list_research_runs,
-        database::commands::load_research_run,
-        database::commands::save_research_answer_as_tidbit,
         database::commands::resolve_citation,
         database::commands::search_passages,
         database::commands::save_draft,
@@ -256,11 +238,6 @@ pub fn run() {
         windows::setup(app, shortcut_settings, !startup_smoke)?;
         app.state::<RuntimeState>()
             .reconcile_backup_takeover_async();
-        if !startup_smoke {
-            app.state::<RuntimeState>()
-                .claude_processes()
-                .recover_work_directories_async();
-        }
         Ok(())
     })
     .build(tauri::generate_context!())

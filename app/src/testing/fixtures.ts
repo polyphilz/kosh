@@ -1,17 +1,9 @@
-import type {
-  Attachment,
-  Passage,
-  ResearchRun,
-  Source,
-  Tidbit,
-  TidbitRevision,
-} from "../domain/types";
+import type { Attachment, Passage, Source, Tidbit, TidbitRevision } from "../domain/types";
 import { FixedClock, SequenceIdGenerator, type Clock, type IdGenerator } from "../lib/determinism";
 
 export interface FixtureFactory {
   attachment(overrides?: Partial<Attachment>): Attachment;
   passage(overrides?: Partial<Passage>): Passage;
-  researchRun(overrides?: Partial<ResearchRun>): ResearchRun;
   source(overrides?: Partial<Source>): Source;
   tidbit(overrides?: Partial<Tidbit>): Tidbit;
   tidbitRevision(overrides?: Partial<TidbitRevision>): TidbitRevision;
@@ -48,14 +40,6 @@ export function createFixtureFactory(
         startBlock: 0,
         endBlock: 0,
       },
-      ...overrides,
-    }),
-    researchRun: (overrides = {}) => ({
-      id: ids.nextId("research-run"),
-      query: "What supports this claim?",
-      status: "completed",
-      startedAtMs: clock.nowMs(),
-      completedAtMs: clock.nowMs(),
       ...overrides,
     }),
     source: (overrides = {}) => ({

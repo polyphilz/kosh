@@ -3,14 +3,11 @@ import {
   closeSync,
   copyFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
@@ -77,27 +74,15 @@ function prepareClean(values) {
 
 function launch(values) {
   assert(
-    values.length >= 1 && values.length <= 3,
-    "launch accepts a profile name, optional Kosh.app path, and optional --without-claude",
+    values.length >= 1 && values.length <= 2,
+    "launch accepts a profile name and optional Kosh.app path",
   );
   const profile = existingProfile(values[0]);
-  let appArgument;
-  let claudeMode = "auto";
-  for (const value of values.slice(1)) {
-    if (value === "--without-claude") {
-      assert(claudeMode === "auto", "--without-claude may be provided only once");
-      claudeMode = "disabled";
-    } else {
-      assert(appArgument === undefined, "launch accepts only one Kosh.app path");
-      appArgument = value;
-    }
-  }
-  const app = packagedApp(appArgument);
+  const app = packagedApp(values[1]);
   assertStopped(profile);
-  if (claudeMode === "auto") installClaudeShim(profile);
 
   const log = join(profile.root, "packaged-app.log");
-  const environment = packagedEnvironment(profile, claudeMode);
+  const environment = packagedEnvironment(profile);
   const descriptor = openSync(log, "a");
   const child = spawn(app.executable, [], {
     detached: true,
@@ -116,8 +101,6 @@ function launch(values) {
     home: profile.home,
     dataDirectory: profile.data,
     guiPath: environment.PATH,
-    claudeMode,
-    claudeShim: existsSync(join(profile.home, ".local/bin/claude")),
   });
   console.info(
     `Launched packaged Kosh (pid ${child.pid}) against ${profile.data}. Quit with Cmd+Q before running a check.`,
@@ -157,7 +140,7 @@ function launchHidden(values) {
     `hidden-smoke-${headSha.slice(0, 12)}-${expectation}.json`,
   );
   assert(!existsSync(receiptPath), `hidden receipt already exists: ${receiptPath}`);
-  const environment = packagedEnvironment(profile, "disabled");
+  const environment = packagedEnvironment(profile);
   environment.KOSH_STARTUP_SMOKE_RECEIPT = receiptPath;
   environment.KOSH_STARTUP_SMOKE_HEAD = headSha;
   environment.KOSH_STARTUP_SMOKE_EXPECT = expectation;
@@ -182,8 +165,6 @@ function launchHidden(values) {
     home: profile.home,
     dataDirectory: profile.data,
     guiPath: environment.PATH,
-    claudeMode: "disabled",
-    claudeShim: existsSync(join(profile.home, ".local/bin/claude")),
     executionMode: "hidden-smoke",
     receipt: receiptPath,
   });
@@ -211,7 +192,7 @@ function verifyHiddenReceipt(receipt, profile, headSha, expectation) {
   }
 }
 
-function packagedEnvironment(profile, claudeMode) {
+function packagedEnvironment(profile) {
   const environment = {
     ...process.env,
     HOME: profile.home,
@@ -232,12 +213,9 @@ function packagedEnvironment(profile, claudeMode) {
     "KOSH_STARTUP_SMOKE_RECEIPT",
     "KOSH_STARTUP_SMOKE_HEAD",
     "KOSH_STARTUP_SMOKE_EXPECT",
-    "KOSH_CLAUDE_DISABLED",
-    "CLAUDE_CONFIG_DIR",
   ]) {
     delete environment[name];
   }
-  if (claudeMode === "disabled") environment.KOSH_CLAUDE_DISABLED = "1";
   return environment;
 }
 
@@ -246,9 +224,6 @@ function checkCore(values) {
   const profile = existingProfile(values[0]);
   assertStopped(profile);
   verifyDatabasePair(profile);
-  const launchRecord = readJson(join(profile.root, "launch.json"));
-  assertEqual(launchRecord.claudeMode, "disabled", "clean-core Claude mode");
-  assertEqual(launchRecord.claudeShim, false, "clean-core Claude shim");
   assert(
     numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL") >= 1,
     "create at least one active tidbit before checking core acceptance",
@@ -258,7 +233,7 @@ function checkCore(values) {
     "lexical search projection is empty",
   );
   console.info(
-    `Core packaged acceptance passed: ${logicalEvidence(profile).activeTidbits} active tidbits, healthy WAL databases, current migrations, and lexical search available without Claude or a semantic model.`,
+    `Core packaged acceptance passed: ${logicalEvidence(profile).activeTidbits} active notes, healthy WAL databases, current migrations, and lexical search available without a semantic model.`,
   );
 }
 
@@ -293,12 +268,6 @@ function checkJourneys(values) {
       "SELECT count(*) FROM passage_search_document WHERE length(extracted_text) > 0",
     ],
     ["a semantic passage embedding", "SELECT count(*) FROM passage_embedding"],
-    [
-      "a completed grounded research answer",
-      `SELECT count(*) FROM research_run
-       WHERE status = 'COMPLETED'
-         AND json_array_length(json_extract(final_answer_json, '$.citations')) > 0`,
-    ],
   ];
   for (const [label, statement] of requirements) {
     assert(
@@ -306,19 +275,8 @@ function checkJourneys(values) {
       `packaged journey evidence is missing ${label}`,
     );
   }
-  assert(
-    numberSql(
-      profile.main,
-      `SELECT count(*)
-       FROM research_run, json_each(research_run.final_answer_json, '$.citations') AS citation
-       WHERE research_run.status = 'COMPLETED'
-         AND json_type(citation.value, '$.evidence.passageId') = 'text'`,
-    ) >= 1,
-    "grounded research has no passage-addressable citation",
-  );
-
   console.info(
-    "Packaged journey acceptance passed: rich capture, source citations, image OCR, PDF extraction/search, semantic indexing, and grounded Research evidence are durable.",
+    "Packaged journey acceptance passed: rich capture, source citations, image OCR, PDF extraction/search, and semantic indexing are durable.",
   );
 }
 
@@ -345,7 +303,7 @@ function checkRestart(values) {
   const checkpoint = readJson(join(profile.root, "restart-checkpoint.json"));
   assertEqual(logicalEvidence(profile), checkpoint.evidence, "logical restart evidence");
   console.info(
-    "Packaged restart passed: authored, attachment, search, semantic, and research row counts survived unchanged.",
+    "Packaged restart passed: authored, attachment, search, semantic, and legacy row counts survived unchanged.",
   );
 }
 
@@ -445,35 +403,6 @@ function initializeProfile(profile) {
   mkdirSync(profile.temporary);
 }
 
-function installClaudeShim(profile) {
-  const claude = discoverClaude();
-  if (!claude) return;
-  const bin = join(profile.home, ".local/bin");
-  mkdirSync(bin, { recursive: true });
-  const shim = join(bin, "claude");
-  if (!existsSync(shim)) symlinkSync(realpathSync(claude), shim);
-}
-
-function discoverClaude() {
-  const candidates = [];
-  if (process.env.HOME) {
-    candidates.push(join(process.env.HOME, ".local/bin/claude"));
-    candidates.push(join(process.env.HOME, ".claude/local/claude"));
-  }
-  candidates.push("/opt/homebrew/bin/claude", "/usr/local/bin/claude");
-  for (const directory of (process.env.PATH ?? "").split(":")) {
-    if (directory) candidates.push(join(directory, "claude"));
-  }
-  return candidates.find((path) => {
-    try {
-      const metadata = lstatSync(realpathSync(path));
-      return metadata.isFile() && (metadata.mode & 0o111) !== 0;
-    } catch {
-      return false;
-    }
-  });
-}
-
 function verifyDatabasePair(profile) {
   assertRegularFile(profile.main, "main database");
   assertRegularFile(profile.media, "media database");
@@ -504,7 +433,7 @@ function logicalEvidence(profile) {
     passages: numberSql(profile.main, "SELECT count(*) FROM passage"),
     searchDocuments: numberSql(profile.main, "SELECT count(*) FROM passage_search_document"),
     embeddings: numberSql(profile.main, "SELECT count(*) FROM passage_embedding"),
-    researchRuns: numberSql(profile.main, "SELECT count(*) FROM research_run"),
+    legacyResearchRows: numberSql(profile.main, "SELECT count(*) FROM research_run"),
   };
 }
 
@@ -687,7 +616,7 @@ function assert(condition, message) {
 function printUsage() {
   console.info(`Usage:
   pnpm release:acceptance prepare-clean <profile>
-  pnpm release:acceptance launch <profile> [Kosh.app] [--without-claude]
+  pnpm release:acceptance launch <profile> [Kosh.app]
   pnpm release:acceptance launch-hidden <profile> <absent|present> [Kosh.app]
   pnpm release:acceptance check-core <profile>
   pnpm release:acceptance check-journeys <profile>

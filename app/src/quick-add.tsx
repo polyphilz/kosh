@@ -16,7 +16,6 @@ import { AppearanceProvider } from "./components/Appearance";
 import { StartupSmokeReady } from "./components/StartupSmokeReady";
 import { QuitCoordinator } from "./lifecycle/quit";
 import "./components/components.css";
-import "./markdown/markdown.css";
 import "./editor/editor.css";
 import { QuickAddWindow } from "./quickAdd/QuickAddWindow";
 import "./styles.css";

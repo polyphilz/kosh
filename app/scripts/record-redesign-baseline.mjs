@@ -60,14 +60,14 @@ try {
     const coldShellMs = [];
     const editorInitializationMs = [];
     for (let index = 0; index < sampleCount; index += 1) {
-      coldShellMs.push(await measureColdSearch(browser));
+      coldShellMs.push(await measureColdNote(browser));
       editorInitializationMs.push(await measureEditorInitialization(browser));
     }
 
     const context = await browser.newContext({ locale: "en-US", timezoneId: "UTC" });
     const page = await context.newPage();
-    await page.goto(`${baseUrl}/#/add`);
-    const editor = page.getByRole("textbox", { name: "Tidbit" });
+    await page.goto(`${baseUrl}/#/`);
+    const editor = page.getByRole("textbox", { name: "Note" });
     await editor.waitFor({ state: "visible" });
     await editor.focus();
     const inputPaintMs = [];
@@ -83,7 +83,7 @@ try {
     for (let index = 0; index < sampleCount; index += 1) {
       const searchContext = await browser.newContext({ locale: "en-US", timezoneId: "UTC" });
       const searchPage = await searchContext.newPage();
-      await searchPage.goto(`${baseUrl}/#/add`);
+      await searchPage.goto(`${baseUrl}/#/`);
       searchNavigationMs.push(await measureSearchNavigation(searchPage));
       firstSearchResultMs.push(await measureFirstSearchResult(searchPage, index));
       await searchContext.close();
@@ -92,7 +92,7 @@ try {
 
     const report = {
       schemaVersion: 1,
-      baseline: "pre-redesign-current-ui",
+      baseline: "note-first-redesign",
       sourceRevision,
       recordedAt: new Date().toISOString(),
       environment: {
@@ -108,10 +108,11 @@ try {
         samplesPerInteractiveMetric: sampleCount,
         samplesPerNativeMetric: nativeSampleCount,
         browserMode: "headless Chromium against the deterministic fake backend",
-        coldShell: "new browser context to focused current Search input",
-        editorInitialization: "new browser context to visible current ProseMirror editor",
+        coldShell: "new browser context to the focused titleless note editor",
+        editorInitialization: "new browser context to the visible BlockNote editor",
         inputPaint: "beforeinput event through the next animation frame",
-        searchNavigation: "Playwright wall time from current Add route to focused Search route",
+        searchNavigation:
+          "Playwright wall time from the note editor to the focused Command-K overlay",
         firstSearchResult: "Playwright wall time from fill to first deterministic result option",
         lexicalScale: "existing release-mode 10,000-note / 200-query benchmark",
         nativeStartup:
@@ -141,14 +142,14 @@ try {
   });
 }
 
-async function measureColdSearch(browser) {
+async function measureColdNote(browser) {
   const context = await browser.newContext({ locale: "en-US", timezoneId: "UTC" });
   const page = await context.newPage();
   const started = performance.now();
   await page.goto(`${baseUrl}/#/`);
-  const search = page.getByRole("searchbox", { name: "Search tidbits" });
-  await search.waitFor({ state: "visible" });
-  await search.focus();
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.waitFor({ state: "visible" });
+  await editor.focus();
   const duration = performance.now() - started;
   await context.close();
   return duration;
@@ -158,8 +159,8 @@ async function measureEditorInitialization(browser) {
   const context = await browser.newContext({ locale: "en-US", timezoneId: "UTC" });
   const page = await context.newPage();
   const started = performance.now();
-  await page.goto(`${baseUrl}/#/add`);
-  await page.getByRole("textbox", { name: "Tidbit" }).waitFor({ state: "visible" });
+  await page.goto(`${baseUrl}/#/`);
+  await page.getByRole("textbox", { name: "Note" }).waitFor({ state: "visible" });
   const duration = performance.now() - started;
   await context.close();
   return duration;
@@ -169,7 +170,7 @@ async function measureNextInputPaint(page) {
   return page.evaluate(
     () =>
       new Promise((resolvePaint) => {
-        const editor = document.querySelector("[role='textbox'][aria-label='Tidbit']");
+        const editor = document.querySelector("[role='textbox'][aria-label='Note']");
         if (!editor) throw new Error("editor is unavailable");
         let started = 0;
         editor.addEventListener(
@@ -192,8 +193,8 @@ async function measureNextInputPaint(page) {
 
 async function measureSearchNavigation(page) {
   const started = performance.now();
-  await page.getByRole("link", { name: "Search", exact: true }).click();
-  const search = page.getByRole("searchbox", { name: "Search tidbits" });
+  await page.keyboard.press("Meta+k");
+  const search = page.getByRole("combobox", { name: "Search notes" });
   await search.waitFor({ state: "visible" });
   await search.focus();
   return performance.now() - started;
@@ -214,7 +215,7 @@ async function measureFirstSearchResult(page, index) {
     { query, index },
   );
   const started = performance.now();
-  await page.getByRole("searchbox", { name: "Search tidbits" }).fill(query);
+  await page.getByRole("combobox", { name: "Search notes" }).fill(query);
   await page.getByRole("option", { name: new RegExp(query, "u") }).waitFor({ state: "visible" });
   return performance.now() - started;
 }

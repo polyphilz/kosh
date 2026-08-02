@@ -23,7 +23,6 @@ use super::{
         MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
         PDF_RECOVERY_BATCH_SIZE,
     },
-    research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     working_copies::CheckpointWorkingCopyWrite,
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput,
@@ -2734,80 +2733,65 @@ fn durable_research_citation_retains_draft_only_attachment_media() {
     );
     let run_id = id(0x743);
     let client = library.database.client();
-    client
-        .create_research_run(CreateResearchRunWrite {
-            id: run_id.clone(),
-            rerun_of_id: None,
-            query: "What does the attachment say?".into(),
-            requested_model: None,
-            requested_effort: None,
-            now_ms: 12,
-        })
-        .expect("create attachment research run");
-    let append = |sequence, kind: &str, fields: serde_json::Value| {
-        let mut payload = fields.as_object().cloned().expect("event object");
-        payload.insert("runId".into(), json!(run_id));
-        payload.insert("sequence".into(), json!(sequence));
-        payload.insert("kind".into(), json!(kind));
-        client
-            .append_research_event(AppendResearchEventWrite {
-                run_id: run_id.clone(),
-                sequence,
-                kind: kind.into(),
-                payload: payload.into(),
-                now_ms: 12 + i64::from(sequence),
-            })
-            .expect("append attachment research event");
-    };
-    append(1, "STARTED", json!({}));
     let markdown = "The retained evidence is durable.【1】";
     let marker_start = markdown.find('【').expect("citation marker");
-    append(
-        2,
-        "GROUNDED_FINAL_OUTPUT",
-        json!({
-            "answer": {
-                "markdown": markdown,
-                "citations": [{
-                    "number": 1,
-                    "label": "research.txt, lines 1–1",
-                    "evidenceKind": "TEXT_LINES",
-                    "evidence": {
-                        "passageId": id(0x744),
-                        "excerpt": "durable research evidence",
-                        "headingContext": [],
-                        "constructionVersion": "test",
-                        "state": "CURRENT",
-                        "locator": {
-                            "kind": "TEXT_LINES",
-                            "startLine": 1,
-                            "endLine": 1
-                        },
-                        "tidbit": null,
-                        "attachment": {
-                            "id": attachment.id,
-                            "extractionId": id(0x745),
-                            "displayFilename": "research.txt",
-                            "mediaType": "text/plain",
-                            "deleted": false
-                        },
-                        "sources": []
-                    }
-                }],
-                "mentions": [{
-                    "citationNumber": 1,
-                    "startByte": marker_start,
-                    "endByte": markdown.len()
-                }],
-                "issues": []
+    let answer = json!({
+        "markdown": markdown,
+        "citations": [{
+            "number": 1,
+            "label": "research.txt, lines 1–1",
+            "evidenceKind": "TEXT_LINES",
+            "evidence": {
+                "passageId": id(0x744),
+                "excerpt": "durable research evidence",
+                "headingContext": [],
+                "constructionVersion": "test",
+                "state": "CURRENT",
+                "locator": {
+                    "kind": "TEXT_LINES",
+                    "startLine": 1,
+                    "endLine": 1
+                },
+                "tidbit": null,
+                "attachment": {
+                    "id": attachment.id,
+                    "extractionId": id(0x745),
+                    "displayFilename": "research.txt",
+                    "mediaType": "text/plain",
+                    "deleted": false
+                },
+                "sources": []
             }
-        }),
-    );
-    append(
-        3,
-        "FINISHED",
-        json!({"outcome": "SUCCEEDED", "stderrTruncated": false}),
-    );
+        }],
+        "mentions": [{
+            "citationNumber": 1,
+            "startByte": marker_start,
+            "endByte": markdown.len()
+        }],
+        "issues": []
+    });
+    let mut legacy = Connection::open(&library.paths.main).expect("legacy research writer");
+    legacy
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("legacy research foreign keys");
+    let transaction = legacy.transaction().expect("legacy research transaction");
+    transaction
+        .execute(
+            "INSERT INTO research_run(
+                id, query, status, created_at, started_at, completed_at,
+                updated_at, final_answer_json
+             ) VALUES(?1, 'What does the attachment say?', 'COMPLETED', 12, 13, 15, 15, ?2)",
+            params![run_id, answer.to_string()],
+        )
+        .expect("legacy research row");
+    transaction
+        .execute(
+            "INSERT INTO research_run_attachment(research_run_id, attachment_id)
+             VALUES(?1, ?2)",
+            params![run_id, attachment.id],
+        )
+        .expect("legacy research media reference");
+    transaction.commit().expect("legacy research commit");
 
     let main = library.database.open_main_read_only().expect("main reader");
     assert_eq!(

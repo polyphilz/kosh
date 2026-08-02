@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ClearDraftInput,
@@ -23,14 +22,10 @@ import { tauriBackend } from "../../src/backend/tauriBackend";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(),
-}));
 
 describe("tauriBackend tidbit gateway", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
-    vi.mocked(listen).mockReset();
   });
 
   it("uses typed command names and payload envelopes", async () => {
@@ -252,43 +247,5 @@ describe("tauriBackend tidbit gateway", () => {
       ["retry_failed_extractions"],
       ["reclaim_eligible_media"],
     ]);
-  });
-
-  it("uses durable research commands and the process event channel", async () => {
-    vi.mocked(invoke).mockResolvedValue({});
-    const unlisten = vi.fn();
-    vi.mocked(listen).mockResolvedValue(unlisten);
-    const handler = vi.fn();
-    const input = {
-      prompt: "What do I know?",
-      model: "sonnet",
-      effort: "high",
-      timeoutSeconds: null,
-    };
-    const page = { limit: 50, cursor: null };
-
-    await tauriBackend.claudeSetupStatus();
-    await tauriBackend.claudeCliDefaults();
-    await tauriBackend.startResearchProcess(input);
-    await tauriBackend.rerunResearchProcess("run-1");
-    await tauriBackend.cancelResearchProcess("run-2");
-    await tauriBackend.listResearchRuns(page);
-    await tauriBackend.loadResearchRun("run-1");
-    await tauriBackend.saveResearchAnswerAsTidbit("run-1");
-    const stop = await tauriBackend.onResearchProcessEvent(handler);
-
-    expect(vi.mocked(invoke).mock.calls).toEqual([
-      ["claude_setup_status"],
-      ["claude_cli_defaults"],
-      ["start_research_process", { input }],
-      ["rerun_research_process", { runId: "run-1" }],
-      ["cancel_research_process", { runId: "run-2" }],
-      ["list_research_runs", { input: page }],
-      ["load_research_run", { id: "run-1" }],
-      ["save_research_answer_as_tidbit", { runId: "run-1" }],
-    ]);
-    expect(listen).toHaveBeenCalledWith("kosh://research-process", expect.any(Function));
-    stop();
-    expect(unlisten).toHaveBeenCalledOnce();
   });
 });

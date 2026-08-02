@@ -68,11 +68,14 @@ export class NoteAutosaveCoordinator {
   private readonly checkpointDelayMs: number;
   private readonly listeners = new Set<Listener>();
   private state: NoteAutosaveSnapshot;
+  private renderedState: NoteAutosaveSnapshot;
   private queue: Promise<void> = Promise.resolve();
   private workingCopyTimer: number | null = null;
   private checkpointTimer: number | null = null;
   private workingCopyId: string | null;
   private recoveredMediaReservationGeneration: number | null;
+  private notificationTimer: number | null = null;
+  private notificationPending = false;
   private disposed = false;
 
   constructor(
@@ -108,6 +111,7 @@ export class NoteAutosaveCoordinator {
       phase: phaseForInitialState(initial.baseRevisionId, editGeneration),
       error: null,
     };
+    this.renderedState = this.state;
   }
 
   static ephemeral(
@@ -149,6 +153,8 @@ export class NoteAutosaveCoordinator {
   }
 
   readonly getSnapshot = (): NoteAutosaveSnapshot => this.state;
+
+  readonly getRenderedSnapshot = (): NoteAutosaveSnapshot => this.renderedState;
 
   readonly subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);
@@ -281,6 +287,11 @@ export class NoteAutosaveCoordinator {
   dispose(): void {
     this.disposed = true;
     this.clearTimers();
+    if (this.notificationTimer !== null) {
+      this.scheduler.clearTimeout(this.notificationTimer);
+      this.notificationTimer = null;
+    }
+    this.notificationPending = false;
     this.listeners.clear();
   }
 
@@ -461,6 +472,22 @@ export class NoteAutosaveCoordinator {
 
   private publish(state: NoteAutosaveSnapshot): void {
     this.state = state;
+    if (this.notificationTimer !== null) {
+      this.notificationPending = true;
+      return;
+    }
+    this.notificationPending = false;
+    this.notificationTimer = this.scheduler.setTimeout(() => {
+      this.notificationTimer = null;
+      if (this.disposed || !this.notificationPending) return;
+      this.notificationPending = false;
+      this.notifyListeners();
+    }, 0);
+    this.notifyListeners();
+  }
+
+  private notifyListeners(): void {
+    this.renderedState = this.state;
     this.listeners.forEach((listener) => listener());
   }
 

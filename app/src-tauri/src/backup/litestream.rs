@@ -30,6 +30,7 @@ use crate::distribution_signing::{
 };
 
 const EMBEDDED_MANIFEST: &str = include_str!("../../resources/sidecars/litestream-v1.json");
+#[cfg(debug_assertions)]
 const DEVELOPMENT_BINARY_OVERRIDE_ENV: &str = "KOSH_LITESTREAM_PATH";
 pub(crate) const AWS_SHARED_CREDENTIALS_FILE_ENV: &str = "AWS_SHARED_CREDENTIALS_FILE";
 pub(crate) const AWS_SHARED_CREDENTIALS_FILE_FD: &str = "/dev/fd/0";

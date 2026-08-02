@@ -1,12 +1,10 @@
 import { expect, test } from "./fixtures";
 
 test("editor and search keyboard contracts hold in WebKit", async ({ page }) => {
-  await page.goto("/#/add");
-  await page.getByRole("textbox", { name: /^Title/u }).fill("WebKit contract");
-  const editor = page.getByRole("textbox", { name: "Tidbit" });
-  await editor.fill("A portable editor passage with `code` and $x^2$.");
-  await page.getByRole("button", { name: "Save tidbit" }).click();
-  await expect(page.getByRole("heading", { name: "WebKit contract" })).toBeVisible();
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("WebKit contract: a portable editor passage with `code` and $x^2$.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
 
   await page
     .getByRole("navigation", { name: "Primary" })
@@ -24,7 +22,7 @@ test("editor and search keyboard contracts hold in WebKit", async ({ page }) => 
   await search.press("Enter");
   await expect(page.getByText("Search match", { exact: true })).toBeVisible();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(
-    "A portable editor passage",
+    "a portable editor passage",
   );
 });
 

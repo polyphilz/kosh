@@ -48,7 +48,6 @@ for (const name of Object.keys(environment)) {
       "KOSH_STARTUP_SMOKE_RECEIPT",
       "KOSH_STARTUP_SMOKE_HEAD",
       "KOSH_STARTUP_SMOKE_EXPECT",
-      "CLAUDE_CONFIG_DIR",
     ].includes(name)
   ) {
     delete environment[name];
@@ -57,7 +56,6 @@ for (const name of Object.keys(environment)) {
 environment.KOSH_STARTUP_SMOKE_RECEIPT = receiptPath;
 environment.KOSH_STARTUP_SMOKE_HEAD = headSha;
 environment.KOSH_STARTUP_SMOKE_EXPECT = "present";
-environment.KOSH_CLAUDE_DISABLED = "1";
 
 const child = spawn(executable, [], {
   env: environment,
@@ -105,7 +103,7 @@ const evidence = {
   attachments: numberSql(main, "SELECT count(*) FROM attachment"),
   mediaBlobs: numberSql(media, "SELECT count(*) FROM media_blob"),
   searchDocuments: numberSql(main, "SELECT count(*) FROM passage_search_document"),
-  researchCitations: numberSql(
+  legacyResearchCitations: numberSql(
     main,
     "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0) FROM research_run WHERE final_answer_json IS NOT NULL",
   ),
@@ -114,7 +112,7 @@ assert(evidence.activeTidbits >= 2, "restored package lost tidbits");
 assert(evidence.revisions >= 3, "restored package lost immutable revisions");
 assert(evidence.attachments >= 1 && evidence.mediaBlobs >= 1, "restored package lost media");
 assert(evidence.searchDocuments >= 2, "restored package lost rebuilt lexical search");
-assert(evidence.researchCitations >= 1, "restored package lost research citations");
+assert(evidence.legacyResearchCitations >= 1, "restored package lost legacy citation history");
 writeFileSync(
   reportPath,
   `${JSON.stringify(

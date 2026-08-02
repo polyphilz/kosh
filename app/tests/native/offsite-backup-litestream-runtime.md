@@ -72,11 +72,10 @@ cancels the active owner/readiness operation. A daemon returned across that
 boundary is killed without a graceful remote sync before the queued
 configuration can be applied.
 
-On application exit, Kosh first stops Claude and gives its monitor a bounded
-window to persist the terminal research event, then closes and joins the sole
-SQLite writer. That writer fence makes every completed local transaction
-visible and prevents any later transaction before Litestream receives SIGTERM
-for its final remote sync. On disable, retarget, application exit, or
+On application exit, Kosh closes and joins the sole SQLite writer. That writer
+fence makes every completed local transaction visible and prevents any later
+transaction before Litestream receives SIGTERM for its final remote sync. On
+disable, retarget, application exit, or
 supervisor drop, Kosh sends SIGTERM to the owned process group. The pinned
 Litestream configuration then performs its graceful final remote sync for at
 most 30 seconds. Kosh allows a bounded
@@ -158,8 +157,8 @@ The focused native suite proves:
   waiting for the startup timeout;
 - shutdown escalates a verified stale daemon that ignores SIGTERM without
   waiting for the graceful timeout;
-- application exit persists the Claude terminal event and closes the sole
-  SQLite writer before the final Litestream sync;
+- application exit closes the sole SQLite writer before the final Litestream
+  sync;
 - disabling and service shutdown invoke exactly one graceful child shutdown;
 - credential errors map to bounded redacted status;
 - PID records are private and an owned dead runtime is swept; and

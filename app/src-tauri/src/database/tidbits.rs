@@ -222,22 +222,6 @@ pub(super) fn create_tidbit(
     connection: &mut Connection,
     write: CreateTidbitWrite,
 ) -> Result<Tidbit> {
-    create_tidbit_with_research(connection, write, None)
-}
-
-pub(super) fn create_tidbit_from_research(
-    connection: &mut Connection,
-    write: CreateTidbitWrite,
-    run_id: &str,
-) -> Result<Tidbit> {
-    create_tidbit_with_research(connection, write, Some(run_id))
-}
-
-fn create_tidbit_with_research(
-    connection: &mut Connection,
-    write: CreateTidbitWrite,
-    research_run_id: Option<&str>,
-) -> Result<Tidbit> {
     validate_timestamp(write.now_ms, "nowMs")?;
     validate_uuid_v7(&write.tidbit_id, "tidbitId")?;
     validate_uuid_v7(&write.revision_id, "revisionId")?;
@@ -278,14 +262,6 @@ fn create_tidbit_with_research(
         write.now_ms,
     )?;
     passages::replace_active_author_passages(&transaction, &write.tidbit_id, &write.revision_id)?;
-    if let Some(run_id) = research_run_id {
-        super::research_runs::link_saved_tidbit(
-            &transaction,
-            run_id,
-            &write.tidbit_id,
-            write.now_ms,
-        )?;
-    }
     transaction.commit()?;
 
     load_tidbit(connection, &write.tidbit_id)

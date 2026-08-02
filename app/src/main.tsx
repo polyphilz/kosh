@@ -12,7 +12,6 @@ import { QuitCoordinator } from "./lifecycle/quit";
 import { router } from "./router";
 import "./components/components.css";
 import "katex/dist/katex.min.css";
-import "./markdown/markdown.css";
 import "./editor/editor.css";
 import "./styles.css";
 

@@ -159,6 +159,35 @@ describe("note autosave coordinator", () => {
     expect(coordinator.getSnapshot()).toMatchObject({ phase: "DURABLE", durableGeneration: 2 });
   });
 
+  it("coalesces rapid render notifications around the newest edit", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
+    const listener = vi.fn();
+    coordinator.subscribe(listener);
+
+    for (let index = 1; index <= 100; index += 1) {
+      coordinator.update("a".repeat(index));
+    }
+
+    expect(coordinator.getSnapshot()).toMatchObject({
+      bodyMarkdown: "a".repeat(100),
+      editGeneration: 100,
+    });
+    expect(coordinator.getRenderedSnapshot()).toMatchObject({
+      bodyMarkdown: "a",
+      editGeneration: 1,
+    });
+    expect(listener).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(coordinator.getRenderedSnapshot()).toMatchObject({
+      bodyMarkdown: "a".repeat(100),
+      editGeneration: 100,
+    });
+  });
+
   it("turns an idle durable copy into one titleless revision", async () => {
     const backend = gateway();
     const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });

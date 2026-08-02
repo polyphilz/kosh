@@ -6,13 +6,11 @@ use crate::runtime::RuntimeState;
 
 use super::{
     drafts::SaveDraftWrite,
-    research_runs::SaveResearchAnswerWrite,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     CheckpointWorkingCopyInput, CitationResolution, ClearDraftInput, DatabaseError,
-    DeleteTidbitInput, DiscardWorkingCopyInput, Draft, EditTidbitInput, ListResearchRunsInput,
-    ListTidbitRevisionsInput, ListTidbitsInput, PurgeTidbitInput, ResearchRunPage,
-    ResearchRunRecord, RestoreTidbitInput, SaveDraftInput, SaveWorkingCopyInput,
+    DeleteTidbitInput, DiscardWorkingCopyInput, Draft, EditTidbitInput, ListTidbitRevisionsInput,
+    ListTidbitsInput, PurgeTidbitInput, RestoreTidbitInput, SaveDraftInput, SaveWorkingCopyInput,
     SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness, Tidbit, TidbitDraft,
     TidbitListPage, TidbitRevision, TidbitRevisionPage, WorkingCopy, WorkingCopyCheckpointResult,
     WorkingCopySaveResult,
@@ -170,41 +168,6 @@ pub(crate) async fn purge_tidbit(
     let client = state.database_client();
     let now_ms = state.now_ms();
     run_writer(move || client.purge_tidbit(input, now_ms)).await
-}
-
-#[tauri::command]
-pub(crate) async fn list_research_runs(
-    state: State<'_, RuntimeState>,
-    input: ListResearchRunsInput,
-) -> CommandResult<ResearchRunPage> {
-    let client = state.database_client();
-    run_writer(move || client.list_research_runs(input)).await
-}
-
-#[tauri::command]
-pub(crate) async fn load_research_run(
-    state: State<'_, RuntimeState>,
-    id: String,
-) -> CommandResult<ResearchRunRecord> {
-    let client = state.database_client();
-    run_writer(move || client.load_research_run(id)).await
-}
-
-#[tauri::command]
-pub(crate) async fn save_research_answer_as_tidbit(
-    state: State<'_, RuntimeState>,
-    run_id: String,
-) -> CommandResult<Tidbit> {
-    let client = state.database_client();
-    let now_ms = state.now_ms();
-    let mut ids = state.next_ids(2).into_iter();
-    let write = SaveResearchAnswerWrite {
-        run_id,
-        tidbit_id: ids.next().expect("requested tidbit ID"),
-        revision_id: ids.next().expect("requested revision ID"),
-        now_ms,
-    };
-    run_writer(move || client.save_research_answer_as_tidbit(write)).await
 }
 
 #[tauri::command]

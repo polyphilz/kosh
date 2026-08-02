@@ -430,7 +430,7 @@
       "id": "reopen-historical-research-citation",
       "phase": "reopen",
       "failureClass": "stale-state",
-      "test": "database::research_runs_tests::durable_run_preserves_grounded_snapshot_and_reports_newer_revisions",
+      "test": "database::tests::durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_tables",
       "invariants": ["authored-bytes", "citation-provenance"]
     },
     {

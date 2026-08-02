@@ -6,7 +6,6 @@ use std::{
 
 use super::{
     drafts::{SaveDraftInput, SaveDraftWrite},
-    research_runs::CreateResearchRunWrite,
     AttachmentIngestInput, Database, DatabasePaths, LexicalSearchMode, MediaLimits,
     SearchPassagesInput, SourceDraft, TidbitDraft,
 };
@@ -16,7 +15,6 @@ const NOTES_PER_CAPTURE_THREAD: usize = 25;
 const SEARCH_THREADS: usize = 2;
 const SEARCHES_PER_THREAD: usize = 50;
 const ATTACHMENTS: usize = 10;
-const RESEARCH_RUNS: usize = 20;
 const DRAFT_ID: &str = "019f547b-6200-7000-8000-00000000f001";
 
 #[test]
@@ -41,7 +39,7 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
         })
         .expect("attachment draft");
 
-    let worker_count = CAPTURE_THREADS + SEARCH_THREADS + 3;
+    let worker_count = CAPTURE_THREADS + SEARCH_THREADS + 2;
     let start = Arc::new(Barrier::new(worker_count));
     let mut workers = Vec::new();
 
@@ -122,26 +120,6 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
         let start = Arc::clone(&start);
         workers.push(thread::spawn(move || {
             start.wait();
-            for ordinal in 0..RESEARCH_RUNS {
-                client
-                    .create_research_run(CreateResearchRunWrite {
-                        id: uuid::Uuid::now_v7().to_string(),
-                        rerun_of_id: None,
-                        query: format!("Research the stress evidence item {ordinal:02}"),
-                        requested_model: None,
-                        requested_effort: None,
-                        now_ms: 30_000 + ordinal as i64,
-                    })
-                    .expect("concurrent research enqueue");
-            }
-        }));
-    }
-
-    {
-        let client = database.client();
-        let start = Arc::clone(&start);
-        workers.push(thread::spawn(move || {
-            start.wait();
             for ordinal in 0..6 {
                 client.rebuild_search().expect("concurrent search rebuild");
                 client
@@ -167,7 +145,6 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
         (CAPTURE_THREADS * NOTES_PER_CAPTURE_THREAD) as u64
     );
     assert_eq!(before.attachments, ATTACHMENTS as u64);
-    assert_eq!(before.research.queued, RESEARCH_RUNS as u64);
 
     let exact = setup_client
         .search_passages(SearchPassagesInput {

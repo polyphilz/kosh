@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    claude::ClaudeProcessManager,
     database::{Database, DatabaseClient, DatabasePaths, MediaLimits},
     embedding_runtime::{
         EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimeStatus,
@@ -47,7 +46,6 @@ impl IdGenerator for UuidV7Generator {
 pub(crate) struct RuntimeState {
     data_dir: PathBuf,
     resource_dir: Option<PathBuf>,
-    claude_processes: ClaudeProcessManager,
     passage_embedding_indexer: PassageEmbeddingIndexer,
     litestream_backup: crate::backup::litestream_runtime::LitestreamRuntimeService,
     media_backup: crate::backup::media_reconciler::MediaBackupCoordinator,
@@ -143,12 +141,6 @@ impl RuntimeState {
         }
         if let Err(error) = database
             .client()
-            .interrupt_active_research_runs(startup_now_ms)
-        {
-            log::warn!("startup research interruption recovery could not complete: {error}");
-        }
-        if let Err(error) = database
-            .client()
             .schedule_media_lifecycle_recovery(startup_now_ms, media_limits)
         {
             log::warn!("startup media lifecycle recovery could not complete: {error}");
@@ -177,7 +169,6 @@ impl RuntimeState {
             media_backup.wake_handle(),
         );
         let state = Self {
-            claude_processes: ClaudeProcessManager::production(&data_dir),
             data_dir,
             resource_dir,
             passage_embedding_indexer,
@@ -226,8 +217,7 @@ impl RuntimeState {
     ) -> Self {
         let database =
             Database::initialize(DatabasePaths::new(&data_dir)).expect("temporary Kosh database");
-        let state = Self {
-            claude_processes: ClaudeProcessManager::production(&data_dir),
+        Self {
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
             resource_dir: None,
@@ -248,12 +238,7 @@ impl RuntimeState {
             file_drop_consumers: Mutex::new(HashSet::new()),
             maintenance_gate: Arc::new(Mutex::new(())),
             backup_operations_gate: Arc::new(Mutex::new(())),
-        };
-        let _ = state
-            .database
-            .client()
-            .interrupt_active_research_runs(state.clock.now_ms());
-        state
+        }
     }
 
     pub(crate) fn database_client(&self) -> DatabaseClient {
@@ -327,16 +312,11 @@ impl RuntimeState {
     }
 
     pub(crate) fn shutdown_for_exit(&self) {
-        self.claude_processes.shutdown();
         self.checkpoint_backup.shutdown();
         if let Err(error) = self.database.shutdown() {
             log::error!("could not quiesce the database writer before backup shutdown: {error}");
         }
         self.litestream_backup.shutdown();
-    }
-
-    pub(crate) fn claude_processes(&self) -> &ClaudeProcessManager {
-        &self.claude_processes
     }
 
     pub(crate) fn embedding_runtime(&self) -> Arc<EmbeddingRuntime> {
@@ -355,10 +335,6 @@ impl RuntimeState {
 
     pub(crate) fn now_ms(&self) -> i64 {
         self.clock.now_ms()
-    }
-
-    pub(crate) fn clock(&self) -> Arc<dyn Clock> {
-        Arc::clone(&self.clock)
     }
 
     pub(crate) fn next_ids(&self, count: usize) -> Vec<String> {

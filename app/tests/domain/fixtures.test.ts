@@ -11,7 +11,6 @@ describe("fixture factory", () => {
       source: fixtures.source(),
       attachment: fixtures.attachment(),
       passage: fixtures.passage(),
-      researchRun: fixtures.researchRun(),
     }).toMatchInlineSnapshot(`
       {
         "attachment": {
@@ -30,13 +29,6 @@ describe("fixture factory", () => {
             "startBlock": 0,
           },
           "revisionId": "revision-1",
-        },
-        "researchRun": {
-          "completedAtMs": 1785201600000,
-          "id": "research-run-6",
-          "query": "What supports this claim?",
-          "startedAtMs": 1785201600000,
-          "status": "completed",
         },
         "revision": {
           "bodyMarkdown": "Fixture body",
