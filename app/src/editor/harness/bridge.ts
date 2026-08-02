@@ -1,24 +1,24 @@
-import type { KoshSpikeEditor, KoshSpikePartialBlock } from "./schema";
-import { koshBlocksToMarkdown, markdownToKoshBlocks } from "../../editor/markdownAdapter";
-import type { BlockNoteMediaController } from "../../editor/mediaController";
+import type { KoshHarnessEditor, KoshHarnessPartialBlock } from "./schema";
+import { koshBlocksToMarkdown, markdownToKoshBlocks } from "../markdownAdapter";
+import type { BlockNoteMediaController } from "../mediaController";
 import type { SelectedAttachmentRecord } from "../../backend/contracts";
 
-export interface BlockNoteSpikeSnapshot {
+export interface BlockNoteHarnessSnapshot {
   blocks: unknown[];
   focused: boolean;
   selectedBlockIds: string[];
 }
 
-export interface BlockNoteSpikeBridge {
+export interface BlockNoteHarnessBridge {
   appendParagraph(text?: string): string;
   beginDeferredMedia(): string;
   capability: "blocknote";
   installLongDocument(blockCount: number): void;
   installListPair(): { firstId: string; secondId: string };
-  installRetryMediaFixture(kind: BlockNoteSpikeMediaKind): void;
+  installRetryMediaFixture(kind: BlockNoteHarnessMediaKind): void;
   loadMarkdown(markdown: string): void;
   markdown(): string;
-  mediaStatusCalls(kind: BlockNoteSpikeMediaKind): number;
+  mediaStatusCalls(kind: BlockNoteHarnessMediaKind): number;
   insertMediaFixture(): void;
   resolveDeferredMedia(requestId: string, outcome: "cancel" | "failure" | "success"): void;
   schema: {
@@ -30,27 +30,27 @@ export interface BlockNoteSpikeBridge {
   setTextSelectionOffsets(from: number, to: number): void;
   selectBlocks(startId: string, endId: string): void;
   setEditable(editable: boolean): void;
-  snapshot(): BlockNoteSpikeSnapshot;
+  snapshot(): BlockNoteHarnessSnapshot;
 }
 
-export type BlockNoteSpikeMediaKind = "image" | "pdf";
+export type BlockNoteHarnessMediaKind = "image" | "pdf";
 
-export interface BlockNoteSpikeMediaHarness {
-  prepareRetry(kind: BlockNoteSpikeMediaKind): void;
-  statusCalls(kind: BlockNoteSpikeMediaKind): number;
+export interface BlockNoteHarnessMediaHarness {
+  prepareRetry(kind: BlockNoteHarnessMediaKind): void;
+  statusCalls(kind: BlockNoteHarnessMediaKind): number;
 }
 
 declare global {
   interface Window {
-    __KOSH_BLOCKNOTE_SPIKE__?: BlockNoteSpikeBridge;
+    __KOSH_BLOCKNOTE_HARNESS__?: BlockNoteHarnessBridge;
   }
 }
 
-export function installSpikeBridge(
-  editor: KoshSpikeEditor,
-  schema: BlockNoteSpikeBridge["schema"],
+export function installHarnessBridge(
+  editor: KoshHarnessEditor,
+  schema: BlockNoteHarnessBridge["schema"],
   mediaController: BlockNoteMediaController,
-  mediaHarness: BlockNoteSpikeMediaHarness,
+  mediaHarness: BlockNoteHarnessMediaHarness,
 ): () => void {
   const deferredMedia = new Map<
     string,
@@ -59,7 +59,7 @@ export function installSpikeBridge(
       resolve: (record: SelectedAttachmentRecord | null) => void;
     }
   >();
-  const bridge: BlockNoteSpikeBridge = {
+  const bridge: BlockNoteHarnessBridge = {
     capability: "blocknote",
     schema,
     appendParagraph(text = "") {
@@ -89,9 +89,9 @@ export function installSpikeBridge(
       if (!Number.isSafeInteger(blockCount) || blockCount < 1 || blockCount > 1_000) {
         throw new Error("blockCount must be between 1 and 1000");
       }
-      const blocks: KoshSpikePartialBlock[] = Array.from(
+      const blocks: KoshHarnessPartialBlock[] = Array.from(
         { length: blockCount },
-        (_, index): KoshSpikePartialBlock =>
+        (_, index): KoshHarnessPartialBlock =>
           index % 11 === 0
             ? {
                 type: "heading",
@@ -176,12 +176,12 @@ export function installSpikeBridge(
       };
     },
   };
-  window.__KOSH_BLOCKNOTE_SPIKE__ = bridge;
+  window.__KOSH_BLOCKNOTE_HARNESS__ = bridge;
   return () => {
     for (const deferred of deferredMedia.values()) deferred.resolve(null);
     deferredMedia.clear();
-    if (window.__KOSH_BLOCKNOTE_SPIKE__ === bridge) {
-      delete window.__KOSH_BLOCKNOTE_SPIKE__;
+    if (window.__KOSH_BLOCKNOTE_HARNESS__ === bridge) {
+      delete window.__KOSH_BLOCKNOTE_HARNESS__;
     }
   };
 }
@@ -192,7 +192,7 @@ export function mediaFixtureRecords(): SelectedAttachmentRecord[] {
       recordKind: "IMAGE",
       record: {
         id: "019f547b-6200-7000-8000-000000000101",
-        ingestLeaseId: "spike-image-lease",
+        ingestLeaseId: "harness-image-lease",
         displayFilename: "diagram.png",
         mediaType: "image/png",
         byteLength: 1_024,
@@ -207,7 +207,7 @@ export function mediaFixtureRecords(): SelectedAttachmentRecord[] {
       recordKind: "PDF",
       record: {
         id: "019f547b-6200-7000-8000-000000000102",
-        ingestLeaseId: "spike-pdf-lease",
+        ingestLeaseId: "harness-pdf-lease",
         displayFilename: "chapter.pdf",
         mediaType: "application/pdf",
         byteLength: 4_096,
@@ -221,7 +221,7 @@ export function mediaFixtureRecords(): SelectedAttachmentRecord[] {
       recordKind: "GENERIC",
       record: {
         id: "019f547b-6200-7000-8000-000000000103",
-        ingestLeaseId: "spike-file-lease",
+        ingestLeaseId: "harness-file-lease",
         displayFilename: "appendix.txt",
         mediaType: "text/plain",
         byteLength: 2_048,
@@ -232,13 +232,4 @@ export function mediaFixtureRecords(): SelectedAttachmentRecord[] {
       },
     },
   ];
-}
-
-export function isBlockNoteCapability(value: unknown): value is BlockNoteSpikeBridge {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Reflect.get(value, "capability") === "blocknote" &&
-    typeof Reflect.get(value, "snapshot") === "function"
-  );
 }

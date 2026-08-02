@@ -2,7 +2,7 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    Draft, SearchExecutionMode, SearchPassagesResponse, SemanticSearchReadiness, Tidbit,
+    SearchExecutionMode, SearchPassagesResponse, SemanticSearchReadiness, Tidbit,
 };
 
 fn invoke(
@@ -26,7 +26,7 @@ fn invoke(
 }
 
 #[test]
-fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
+fn note_autosave_checkpoint_and_search_cross_the_typed_ipc_boundary() {
     let data_root = TestDataRoot::new();
     let app = mock_app(
         &data_root,
@@ -42,12 +42,15 @@ fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
         .build()
         .expect("mock main window");
 
-    let created = invoke(
+    let note_id = "019f547b-6200-7000-8000-000000002010";
+    let saved = invoke(
         &window,
-        "create_tidbit",
+        "save_working_copy",
         serde_json::json!({
             "input": {
-                "title": null,
+                "noteId": note_id,
+                "baseRevisionId": null,
+                "editGeneration": 1,
                 "bodyMarkdown": "# IPC thought\n\nExact body.",
                 "sources": [{
                     "label": "Reference",
@@ -56,8 +59,27 @@ fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
             }
         }),
     )
-    .deserialize::<Tidbit>()
-    .expect("created tidbit payload");
+    .deserialize::<serde_json::Value>()
+    .expect("saved working-copy payload");
+    assert_eq!(saved["status"], "SAVED");
+
+    let checkpointed = invoke(
+        &window,
+        "checkpoint_working_copy",
+        serde_json::json!({
+            "input": {
+                "noteId": note_id,
+                "expectedEditGeneration": 1
+            }
+        }),
+    )
+    .deserialize::<serde_json::Value>()
+    .expect("checkpointed working-copy payload");
+    assert_eq!(checkpointed["status"], "CHECKPOINTED");
+
+    let created = invoke(&window, "load_tidbit", serde_json::json!({ "id": note_id }))
+        .deserialize::<Tidbit>()
+        .expect("loaded tidbit payload");
     assert_eq!(created.display_title, "IPC thought");
     assert_eq!(
         created.sources[0].url.as_deref(),
@@ -104,43 +126,6 @@ fn tidbit_create_and_load_cross_the_typed_ipc_boundary() {
         Some(created.id.as_str())
     );
 
-    let draft = invoke(
-        &window,
-        "save_draft",
-        serde_json::json!({
-            "input": {
-                "contextKey": "capture",
-                "tidbitId": null,
-                "baseRevisionId": null,
-                "title": "Recovered",
-                "bodyMarkdown": "",
-                "sources": [{ "label": null, "url": "" }]
-            }
-        }),
-    )
-    .deserialize::<Draft>()
-    .expect("saved draft payload");
-    let loaded_draft = invoke(
-        &window,
-        "load_draft",
-        serde_json::json!({ "contextKey": "capture" }),
-    )
-    .deserialize::<Option<Draft>>()
-    .expect("loaded draft payload");
-    assert_eq!(loaded_draft, Some(draft.clone()));
-    let cleared = invoke(
-        &window,
-        "clear_draft",
-        serde_json::json!({
-            "input": {
-                "contextKey": "capture",
-                "expectedUpdatedAtMs": draft.updated_at_ms
-            }
-        }),
-    )
-    .deserialize::<bool>()
-    .expect("cleared draft payload");
-    assert!(cleared);
     assert!(!data_root
         .path()
         .to_string_lossy()

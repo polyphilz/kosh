@@ -19,11 +19,6 @@ use crate::database::{
     validate_restored_pair_at, DatabasePaths,
 };
 
-#[cfg(test)]
-use crate::database::{
-    inspect_completed_restore_install, install_restored_pair, RestoreInstallReport,
-};
-
 use super::{
     domain::{
         BackupSetId, CheckpointId, CheckpointManifestV1, ContentSha256, R2Keyspace, ReplicaEpochId,
@@ -106,8 +101,6 @@ pub(crate) struct RestorePreview {
 
 #[derive(Debug)]
 pub(crate) struct StagedRestore {
-    #[cfg(test)]
-    pub(crate) checkpoint: RemoteCheckpoint,
     pub(crate) paths: DatabasePaths,
     pub(crate) restored_media_count: u64,
     pub(crate) restored_media_bytes: u64,
@@ -482,37 +475,12 @@ fn stage_checkpoint_with_identity(
             return Err(RestoreError::InvalidStaging);
         }
         Ok(StagedRestore {
-            #[cfg(test)]
-            checkpoint: checkpoint.clone(),
             paths,
             restored_media_count,
             restored_media_bytes,
             cleanup,
         })
     })()
-}
-
-#[cfg(test)]
-pub(crate) fn install_checkpoint(
-    live_paths: &DatabasePaths,
-    staged: &StagedRestore,
-) -> Result<RestoreInstallReport, RestoreError> {
-    if let Some(report) =
-        inspect_completed_restore_install(live_paths, staged.checkpoint.checkpoint_id())?
-    {
-        staged.cleanup.remove()?;
-        return Ok(report);
-    }
-    let staged_pair = staged.open_validated_database_pair()?;
-    let report = install_restored_pair(
-        live_paths,
-        staged_pair.main(),
-        staged_pair.media(),
-        staged.checkpoint.checkpoint_id().clone(),
-    )
-    .map_err(RestoreError::Database)?;
-    staged.cleanup.remove()?;
-    Ok(report)
 }
 
 pub(crate) fn remove_staged_checkpoint(staged: &StagedRestore) -> Result<(), RestoreError> {
@@ -782,10 +750,6 @@ fn load_referenced_media_page(
                         SELECT 1 FROM tidbit_revision_attachment
                         WHERE attachment_id = attachment.id
                    )
-                   OR EXISTS (
-                        SELECT 1 FROM research_run_attachment
-                        WHERE attachment_id = attachment.id
-                   )
                 UNION ALL
                 SELECT image.preview_sha256, image.preview_byte_length
                 FROM attachment_image AS image
@@ -793,10 +757,6 @@ fn load_referenced_media_page(
                 WHERE attachment.deleted_at IS NULL
                    OR EXISTS (
                         SELECT 1 FROM tidbit_revision_attachment
-                        WHERE attachment_id = attachment.id
-                   )
-                   OR EXISTS (
-                        SELECT 1 FROM research_run_attachment
                         WHERE attachment_id = attachment.id
                    )
              )
@@ -1188,9 +1148,8 @@ mod tests {
             owner::claim_remote_owner,
         },
         database::{
-            drafts::SaveDraftWrite, tidbits::CreateTidbitWrite, AttachmentIngestInput, Database,
-            LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput, SaveDraftInput,
-            SaveOffsiteBackupConfigInput, SearchPassagesInput, SourceDraft, TidbitDraft,
+            tidbits::CreateTidbitWrite, AttachmentIngestInput, Database, MediaLimits,
+            PrepareOffsiteCheckpointInput, SaveOffsiteBackupConfigInput, SourceDraft, TidbitDraft,
         },
     };
 
@@ -1344,7 +1303,6 @@ mod tests {
                 .client()
                 .create_tidbit(CreateTidbitWrite {
                     input: TidbitDraft {
-                        title: Some("Remote recovery".into()),
                         body_markdown: "Exact citrine recovery evidence.".into(),
                         sources: vec![SourceDraft {
                             label: Some("Recovery source".into()),
@@ -1359,20 +1317,16 @@ mod tests {
                 .expect("source tidbit");
             database
                 .client()
-                .save_draft(SaveDraftWrite {
-                    input: SaveDraftInput {
-                        context_key: "capture".into(),
-                        tidbit_id: None,
-                        base_revision_id: None,
-                        title: None,
-                        body_markdown: String::new(),
-                        sources: Vec::new(),
-                    },
-                    now_ms: 11,
-                    draft_id: DRAFT_ID.into(),
-                    media_limits: MediaLimits::default(),
-                })
-                .expect("source draft");
+                .save_working_copy_for_test(
+                    DRAFT_ID.into(),
+                    None,
+                    1,
+                    String::new(),
+                    Vec::new(),
+                    11,
+                    true,
+                )
+                .expect("source working copy");
             let media_bytes = b"remote attachment evidence".to_vec();
             let attachment = database
                 .ingest_attachment(
@@ -1938,64 +1892,6 @@ mod tests {
     }
 
     #[test]
-    fn clean_directory_install_is_idempotent_and_restores_search_citations_and_media() {
-        let fixture = Fixture::new();
-        let staging_parent = tempfile::tempdir().expect("staging parent");
-        let staged = stage_checkpoint(
-            &fixture.store,
-            &fixture.keyspace,
-            &fixture.checkpoint,
-            &fixture.engine,
-            &fixture.source_paths.main,
-            &staging_parent.path().join("restore"),
-        )
-        .expect("staged restore");
-        let clean_root = tempfile::tempdir().expect("clean destination");
-        let live_paths = DatabasePaths::new(clean_root.path());
-        let first = install_checkpoint(&live_paths, &staged).expect("first install");
-        assert!(first.safety_snapshot_id.is_none());
-        assert!(
-            !staged.paths.root.exists(),
-            "successful install must remove its staging pair"
-        );
-        let second = install_checkpoint(&live_paths, &staged).expect("idempotent install");
-        assert_eq!(
-            format!("{:?}", second.outcome),
-            "AlreadyInstalled",
-            "same checkpoint must not replace the pair twice"
-        );
-
-        let restored = Database::initialize(live_paths.clone()).expect("restored Kosh library");
-        let results = restored
-            .client()
-            .search_passages(SearchPassagesInput {
-                query: "citrine".into(),
-                mode: LexicalSearchMode::Exact,
-                limit: 10,
-            })
-            .expect("restored exact search");
-        assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0]
-                .citation
-                .tidbit
-                .as_ref()
-                .expect("tidbit citation")
-                .id,
-            TIDBIT_ID
-        );
-        let media = restored.open_media_read_only().expect("restored media");
-        assert_eq!(
-            media
-                .query_row("SELECT count(*) FROM media_blob", [], |row| row
-                    .get::<_, i64>(0))
-                .expect("media count"),
-            1
-        );
-        restored.shutdown().expect("close restored library");
-    }
-
-    #[test]
     fn staged_restore_lifetime_removes_an_uninstalled_owned_pair() {
         let fixture = Fixture::new();
         let staging_parent = tempfile::tempdir().expect("staging parent");
@@ -2098,38 +1994,6 @@ mod tests {
     }
 
     #[test]
-    fn replacing_an_existing_pair_creates_a_verified_pre_restore_snapshot() {
-        let fixture = Fixture::new();
-        let staging_parent = tempfile::tempdir().expect("staging parent");
-        let staged = stage_checkpoint(
-            &fixture.store,
-            &fixture.keyspace,
-            &fixture.checkpoint,
-            &fixture.engine,
-            &fixture.source_paths.main,
-            &staging_parent.path().join("restore"),
-        )
-        .expect("staged restore");
-        let destination = tempfile::tempdir().expect("existing destination");
-        let live_paths = DatabasePaths::new(destination.path());
-        let existing =
-            Database::initialize(live_paths.clone()).expect("existing local database pair");
-        existing.shutdown().expect("close existing pair");
-
-        let installed = install_checkpoint(&live_paths, &staged).expect("replacement install");
-        let snapshot_id = installed
-            .safety_snapshot_id
-            .expect("pre-restore safety snapshot");
-        assert!(snapshot_id.starts_with("restore-"));
-        assert!(live_paths
-            .root
-            .join("safety-snapshots")
-            .join(snapshot_id)
-            .join("manifest.json")
-            .is_file());
-    }
-
-    #[test]
     fn media_reference_loading_pages_without_a_restore_only_total_limit() {
         let main = rusqlite::Connection::open_in_memory().expect("reference fixture");
         main.execute_batch(
@@ -2140,7 +2004,6 @@ mod tests {
                 deleted_at INTEGER
              );
              CREATE TABLE tidbit_revision_attachment(attachment_id TEXT NOT NULL);
-             CREATE TABLE research_run_attachment(attachment_id TEXT NOT NULL);
              CREATE TABLE attachment_image(
                 attachment_id TEXT NOT NULL,
                 preview_sha256 BLOB NOT NULL,

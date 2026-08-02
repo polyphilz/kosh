@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 [--bootstrap-persistent | --ci]" >&2
+  echo "usage: $0 [--ci]" >&2
 }
 
 fail() {
@@ -11,12 +11,8 @@ fail() {
 }
 
 mode="local"
-bootstrap_persistent="false"
 if (($# == 1)); then
   case "$1" in
-    --bootstrap-persistent)
-      bootstrap_persistent="true"
-      ;;
     --ci)
       mode="ci"
       ;;
@@ -57,15 +53,9 @@ loop_root="${KOSH_LOOP_STATE_ROOT:-$repo_root/.kosh-loop}"
 
 runtime_root="$loop_root/runtime"
 launch_root="$runtime_root/launches/$head_sha"
-persistent_root="$loop_root/progressive-profile"
-persistent_data="$persistent_root/data"
-persistent_marker="$persistent_root/established.json"
 aggregate_receipt="$loop_root/runtime-gate.json"
-[[ ! -L "$runtime_root" && ! -L "$persistent_root" && ! -L "$persistent_data" ]] ||
-  fail "runtime gate directories must not be symlinks"
-[[ ! -L "$persistent_marker" ]] ||
-  fail "the preserved-profile marker must not be a symlink"
-mkdir -p "$launch_root" "$persistent_root"
+[[ ! -L "$runtime_root" ]] || fail "the runtime gate directory must not be a symlink"
+mkdir -p "$launch_root"
 
 fresh_data="$(mktemp -d "$runtime_root/fresh.XXXXXX")"
 frontend_pid=""
@@ -232,152 +222,23 @@ jq -e -n \
   ' >/dev/null ||
   fail "the fresh restart silently retargeted the startup canary citation"
 
-if [[ "$mode" == "ci" ]]; then
-  temporary="$aggregate_receipt.$$.tmp"
-  jq -n \
-    --arg head "$head_sha" \
-    --slurpfile seed "$fresh_seed_receipt" \
-    --slurpfile restart "$fresh_restart_receipt" \
-    '{
-      schemaVersion: 1,
-      scope: "ci",
-      result: "pass",
-      headSha: $head,
-      fresh: {seed: $seed[0], restart: $restart[0]}
-    }' >"$temporary"
-  mv "$temporary" "$aggregate_receipt"
-  echo "CI runtime gate passed for $head_sha"
-  exit 0
-fi
-
-if [[ ! -f "$persistent_marker" ]]; then
-  [[ "$bootstrap_persistent" == "true" ]] ||
-    fail "the preserved profile is not established; run once with --bootstrap-persistent"
-  bootstrap_staging="$persistent_root/bootstrap-incomplete"
-  bootstrap_owner="$persistent_root/bootstrap-owned.json"
-  [[ ! -L "$bootstrap_staging" && ! -L "$bootstrap_owner" ]] ||
-    fail "bootstrap recovery state must not use symlinks"
-  if [[ ! -f "$bootstrap_owner" ]]; then
-    [[ ! -e "$bootstrap_staging" && ! -e "$persistent_data" ]] ||
-      fail "unowned preserved-profile bootstrap data already exists"
-    owner_temporary="$bootstrap_owner.$$.tmp"
-    jq -n \
-      --arg head "$head_sha" \
-      --arg staging "$bootstrap_staging" \
-      --arg data "$persistent_data" \
-      '{
-        schemaVersion: 1,
-        establishedAtHead: $head,
-        stagingDir: $staging,
-        dataDir: $data
-      }' >"$owner_temporary"
-    mv "$owner_temporary" "$bootstrap_owner"
-  fi
-  [[ -f "$bootstrap_owner" && ! -L "$bootstrap_owner" ]] ||
-    fail "the preserved-profile bootstrap owner is invalid"
-  jq -e \
-    --arg staging "$bootstrap_staging" \
-    --arg data "$persistent_data" \
-    '
-      .schemaVersion == 1
-      and .stagingDir == $staging
-      and .dataDir == $data
-    ' \
-    "$bootstrap_owner" >/dev/null ||
-    fail "the preserved-profile bootstrap owner does not match this repository"
-  [[ ! ( -e "$bootstrap_staging" && -e "$persistent_data" ) ]] ||
-    fail "both staged and promoted bootstrap profiles exist"
-
-  if [[ ! -e "$persistent_data" ]]; then
-    bootstrap_receipt="$launch_root/persistent-bootstrap.json"
-    run_launch \
-      "$bootstrap_staging" \
-      "$bootstrap_receipt" \
-      "ensure" \
-      "$launch_root/persistent-bootstrap.log"
-    mv "$bootstrap_staging" "$persistent_data"
-  fi
-elif [[ "$bootstrap_persistent" == "true" ]]; then
-  fail "the preserved profile is already established; bootstrap cannot run again"
-fi
-
-persistent_receipt="$launch_root/persistent.json"
-run_launch \
-  "$persistent_data" \
-  "$persistent_receipt" \
-  "present" \
-  "$launch_root/persistent.log"
-
-if [[ ! -f "$persistent_marker" ]]; then
-  marker_temporary="$persistent_marker.$$.tmp"
-  jq -n \
-    --arg head "$head_sha" \
-    --arg data "$(cd "$persistent_data" && pwd -P)" \
-    --arg tidbit "$(jq -r '.canary.tidbitId' "$persistent_receipt")" \
-    --arg revision "$(jq -r '.canary.revisionId' "$persistent_receipt")" \
-    --arg passage "$(jq -r '.canary.passageId' "$persistent_receipt")" \
-    '{
-      schemaVersion: 2,
-      establishedAtHead: $head,
-      citationBaselineAtHead: $head,
-      dataDir: $data,
-      canaryTidbitId: $tidbit,
-      canaryRevisionId: $revision,
-      canaryPassageId: $passage
-    }' >"$marker_temporary"
-  mv "$marker_temporary" "$persistent_marker"
-  unlink "$bootstrap_owner"
-elif jq -e '.schemaVersion == 1' "$persistent_marker" >/dev/null; then
-  marker_data="$(cd "$persistent_data" && pwd -P)"
-  marker_tidbit="$(jq -r '.canary.tidbitId' "$persistent_receipt")"
-  marker_revision="$(jq -r '.canary.revisionId' "$persistent_receipt")"
-  marker_passage="$(jq -r '.canary.passageId' "$persistent_receipt")"
-  jq -e \
-    --arg data "$marker_data" \
-    --arg tidbit "$marker_tidbit" \
-    --arg revision "$marker_revision" \
-    '
-      .schemaVersion == 1
-      and (.establishedAtHead | type) == "string"
-      and (.establishedAtHead | length) > 0
-      and .dataDir == $data
-      and .canaryTidbitId == $tidbit
-      and .canaryRevisionId == $revision
-    ' \
-    "$persistent_marker" >/dev/null ||
-    fail "the legacy preserved-profile marker does not match the live receipt"
-  marker_temporary="$persistent_marker.$$.tmp"
-  jq \
-    --arg baseline "$head_sha" \
-    --arg passage "$marker_passage" \
-    '
-      .schemaVersion = 2
-      | .citationBaselineAtHead = $baseline
-      | .canaryPassageId = $passage
-    ' \
-    "$persistent_marker" >"$marker_temporary"
-  mv "$marker_temporary" "$persistent_marker"
-fi
-
 temporary="$aggregate_receipt.$$.tmp"
 jq -n \
   --arg head "$head_sha" \
-  --argjson bootstrap "$bootstrap_persistent" \
+  --arg scope "$mode" \
   --slurpfile seed "$fresh_seed_receipt" \
   --slurpfile restart "$fresh_restart_receipt" \
-  --slurpfile persistent "$persistent_receipt" \
   '{
     schemaVersion: 1,
-    scope: "local",
+    scope: $scope,
     result: "pass",
     headSha: $head,
-    fresh: {seed: $seed[0], restart: $restart[0]},
-    persistent: {
-      bootstrap: $bootstrap,
-      expectation: "present",
-      receipt: $persistent[0]
-    }
+    fresh: {seed: $seed[0], restart: $restart[0]}
   }' >"$temporary"
 mv "$temporary" "$aggregate_receipt"
 
-"$repo_root/scripts/loop/verify-runtime-gate.sh" "$head_sha" "$aggregate_receipt"
+if [[ "$mode" == "ci" ]]; then
+  echo "CI runtime gate passed for $head_sha"
+else
+  "$repo_root/scripts/loop/verify-runtime-gate.sh" "$head_sha" "$aggregate_receipt"
+fi

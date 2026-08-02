@@ -2,13 +2,13 @@ import { emit } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { useBackend } from "../backend/context";
 import type { Backend } from "../backend/contracts";
+import { createUuidV7, NoteAutosaveCoordinator } from "../notes/autosave";
 import { TauriEvent } from "../tauriProtocol";
 
 interface StartupSmokeReadyProps {
   surface: "main" | "quick-add";
 }
 
-const CANARY_TITLE = "Kosh progressive startup canary";
 const CANARY_SOURCE_LABEL = "Kosh startup smoke";
 const CANARY_SOURCE_URL = "https://example.invalid/kosh-progressive-operability";
 let startupCapture: Promise<boolean> | undefined;
@@ -70,11 +70,10 @@ async function captureCanary(backend: Backend, query: string): Promise<boolean> 
     limit: 10,
   });
   if (existing.results.some(({ citation }) => citation.excerpt.includes(query))) return false;
-  await backend.createTidbit({
-    title: CANARY_TITLE,
-    bodyMarkdown: query,
-    sources: [{ label: CANARY_SOURCE_LABEL, url: CANARY_SOURCE_URL }],
-  });
+  const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: createUuidV7() });
+  coordinator.update(query, [{ label: CANARY_SOURCE_LABEL, url: CANARY_SOURCE_URL }]);
+  await coordinator.flush("IDLE");
+  coordinator.dispose();
   return true;
 }
 

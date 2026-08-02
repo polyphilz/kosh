@@ -1,4 +1,3 @@
-use refinery::Target;
 use rusqlite::params;
 use tempfile::TempDir;
 
@@ -7,8 +6,8 @@ use super::{
     embedding_index::{
         self, InstallEmbeddingDisposition, PassageEmbeddingIndexState, JINA_V1_VEC_TABLE,
     },
-    migrations, Database, DatabasePaths, EditTidbitInput, LexicalSearchMode, SearchExecutionMode,
-    SearchPassagesInput, SemanticSearchReadiness, Tidbit, TidbitDraft,
+    Database, DatabasePaths, LexicalSearchMode, SearchExecutionMode, SearchPassagesInput,
+    SemanticSearchReadiness, Tidbit, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -131,19 +130,19 @@ fn semantic_retrieval_falls_back_when_fresh_content_invalidates_the_active_index
     assert!(punctuation.results.is_empty());
 
     client
-        .edit_tidbit(super::tidbits::EditTidbitWrite {
-            input: EditTidbitInput {
-                id: semantic_tidbit.id,
-                expected_revision_id: semantic_tidbit.current_revision_id,
-                title: None,
-                body_markdown: "Updated automobile service intervals".into(),
-                sources: Vec::new(),
-            },
-            now_ms: 40,
-            revision_id: uuid_v7(),
-            source_ids: Vec::new(),
-        })
-        .expect("edit invalidates active vectors");
+        .save_working_copy_for_test(
+            semantic_tidbit.id.clone(),
+            Some(semantic_tidbit.current_revision_id),
+            1,
+            "Updated automobile service intervals".into(),
+            Vec::new(),
+            40,
+            false,
+        )
+        .expect("save edit that invalidates active vectors");
+    client
+        .checkpoint_working_copy_for_test(semantic_tidbit.id, 1, 41, uuid_v7(), Vec::new())
+        .expect("checkpoint edit that invalidates active vectors");
     assert_eq!(
         client
             .passage_embedding_search_readiness()
@@ -324,23 +323,25 @@ fn edits_and_deletes_invalidate_vectors_and_reject_stale_worker_results() {
         .pop()
         .expect("one pending passage");
 
+    client
+        .save_working_copy_for_test(
+            original.id.clone(),
+            Some(original.current_revision_id),
+            1,
+            "second version".into(),
+            Vec::new(),
+            20,
+            false,
+        )
+        .expect("save edit");
     let edited = client
-        .edit_tidbit(super::tidbits::EditTidbitWrite {
-            input: EditTidbitInput {
-                id: original.id.clone(),
-                expected_revision_id: original.current_revision_id,
-                title: None,
-                body_markdown: "second version".into(),
-                sources: Vec::new(),
-            },
-            now_ms: 20,
-            revision_id: uuid_v7(),
-            source_ids: Vec::new(),
-        })
-        .expect("edit tidbit");
+        .checkpoint_working_copy_for_test(original.id, 1, 21, uuid_v7(), Vec::new())
+        .expect("checkpoint edit")
+        .note
+        .expect("edited note");
     assert_eq!(
         client
-            .install_passage_embedding(stale, unit_vector(), 21)
+            .install_passage_embedding(stale, unit_vector(), 22)
             .expect("stale result handled"),
         InstallEmbeddingDisposition::Stale
     );
@@ -409,111 +410,6 @@ fn interrupted_and_partial_work_is_requeued_after_restart() {
         .load_embedding_reconciliation_batch(1)
         .expect("requeued batch");
     assert_eq!(retried[0].passage_id, pending.passage_id);
-}
-
-#[test]
-fn upgrading_from_an_active_legacy_index_waits_for_the_complete_current_corpus() {
-    let library = TestLibrary::new();
-    let database = Database::initialize(library.paths.clone()).expect("database");
-    create_tidbit(&database.client(), "one passage", 10);
-    create_tidbit(&database.client(), "two passage", 20);
-    database.shutdown().expect("shutdown database");
-
-    let main =
-        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
-            .expect("main writer");
-    main.execute(
-        "INSERT INTO passage_embedding_index(
-            id, created_at, index_key, model_name, model_revision,
-            model_file_sha256, dimension, distance_metric, normalized,
-            index_schema_version, config_json
-         )
-         SELECT
-            '019f547b-6200-7000-8000-000000000099', 1, 'legacy_v0',
-            model_name, model_revision, model_file_sha256, dimension,
-            distance_metric, normalized, index_schema_version, config_json
-         FROM passage_embedding_index WHERE index_key = 'jina_v1'",
-        [],
-    )
-    .expect("legacy index definition");
-    main.execute(
-        "UPDATE passage_embedding_settings
-         SET active_embedding_index_id = '019f547b-6200-7000-8000-000000000099',
-             updated_at = 1",
-        [],
-    )
-    .expect("legacy active pointer");
-    drop(main);
-
-    let reopened = Database::initialize(library.paths.clone()).expect("reopened database");
-    let client = reopened.client();
-    let first = client
-        .load_embedding_reconciliation_batch(1)
-        .expect("first passage")
-        .pop()
-        .expect("pending passage");
-    client
-        .install_passage_embedding(first, unit_vector(), 30)
-        .expect("partial new index");
-    assert!(!client
-        .activate_passage_embedding_index_if_complete(31)
-        .expect("partial activation"));
-    assert_eq!(
-        active_index_id(&reopened),
-        "019f547b-6200-7000-8000-000000000099"
-    );
-    install_all(&client, 40);
-    assert!(client
-        .activate_passage_embedding_index_if_complete(50)
-        .expect("new activation"));
-    assert_eq!(
-        active_index_id(&reopened),
-        "019f547b-6200-7000-8000-000000000002"
-    );
-}
-
-#[test]
-fn v5_required_migration_preserves_authored_data_without_materializing_vec() {
-    let library = TestLibrary::new();
-    let mut main =
-        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Fresh)
-            .expect("main writer");
-    migrations::main_runner()
-        .set_target(Target::Version(4))
-        .run(&mut main)
-        .expect("schema through v4");
-    let vec_version: String = main
-        .query_row("SELECT vec_version()", [], |row| row.get(0))
-        .expect("sqlite-vec version");
-    assert_eq!(vec_version, "v0.1.9");
-    main.execute(
-        "INSERT INTO source(id, created_at, label)
-         VALUES('019f547b-6200-7000-8000-000000000090', 10, 'authored source')",
-        [],
-    )
-    .expect("authored v4 data");
-
-    migrations::run_main(&mut main).expect("required v5 migration");
-    assert_eq!(
-        main.query_row(
-            "SELECT label FROM source
-             WHERE id = '019f547b-6200-7000-8000-000000000090'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("authored data survives"),
-        "authored source"
-    );
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*) FROM sqlite_schema
-             WHERE type = 'table' AND name = 'passage_embedding_vec_jina_v1'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("optional table count"),
-        0
-    );
 }
 
 #[test]
@@ -751,7 +647,6 @@ fn create_tidbit(client: &super::DatabaseClient, body: &str, now_ms: i64) -> Tid
     client
         .create_tidbit_with_ids(
             TidbitDraft {
-                title: None,
                 body_markdown: body.into(),
                 sources: Vec::new(),
             },
@@ -787,19 +682,6 @@ fn axis_vector(axis: usize) -> Vec<f32> {
     let mut vector = vec![0.0; 768];
     vector[axis] = 1.0;
     vector
-}
-
-fn active_index_id(database: &Database) -> String {
-    database
-        .open_main_read_only()
-        .expect("read connection")
-        .query_row(
-            "SELECT active_embedding_index_id
-             FROM passage_embedding_settings WHERE singleton_id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .expect("active index")
 }
 
 fn derived_row_count(database: &Database, table: &str) -> i64 {

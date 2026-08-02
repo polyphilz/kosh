@@ -45,9 +45,9 @@ after connectivity returns.
 
 ## Privacy and retention
 
-R2 objects contain the authored database history, source URLs, research
-answers and citations, attachment metadata, and the bytes of referenced
-images, PDFs, and other attachments. Kosh v1 does not add client-side
+R2 objects contain authored note history, source URLs, attachment metadata,
+and the bytes of referenced images, PDFs, and other attachments. Kosh v1 does
+not add client-side
 encryption. R2 access control and the private token are therefore the privacy
 boundary; use a dedicated private bucket.
 
@@ -120,8 +120,8 @@ The packaged command:
 - emits a bounded JSON receipt with counts, never credentials.
 
 After a `PASSED` receipt, clear the shell variables, launch Kosh normally, and
-inspect tidbits, revision history, attachments, Exact search results, source
-links, and Research citations before declaring recovery complete:
+inspect notes, revision history, attachments, Exact search results, and source
+links before declaring recovery complete:
 
 ```sh
 unset KOSH_LITESTREAM_R2_ACCOUNT_ID
@@ -173,6 +173,6 @@ KOSH_R2_CANARY_REQUIRE_PACKAGED=1 ../scripts/run-litestream-r2-canary.sh
 This non-PR lane interrupts and resumes real replication, publishes the
 manifest last, drills it, restores through the packaged command into a clean
 isolated home, launches the recovered package with hidden windows, rebuilds
-search, verifies authored and historical Research citations, and removes the
+search, verifies authored citations, and removes the
 unique R2 prefix. Its retained reports are redacted; the restored profile and
 credentials are never uploaded.

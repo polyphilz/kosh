@@ -484,9 +484,8 @@ mod tests {
             },
         },
         database::{
-            drafts::SaveDraftWrite,
             media::{IngestAttachmentMetadata, StagedAttachment},
-            Database, DatabasePaths, MediaLimits, SaveDraftInput, SaveOffsiteBackupConfigInput,
+            Database, DatabasePaths, MediaLimits, SaveOffsiteBackupConfigInput,
         },
     };
     use sha2::Digest as _;
@@ -511,20 +510,16 @@ mod tests {
             let database = Database::initialize(paths.clone()).expect("database");
             let client = database.client();
             client
-                .save_draft(SaveDraftWrite {
-                    input: SaveDraftInput {
-                        context_key: "capture".into(),
-                        tidbit_id: None,
-                        base_revision_id: None,
-                        title: None,
-                        body_markdown: String::new(),
-                        sources: Vec::new(),
-                    },
-                    now_ms: 10,
-                    draft_id: DRAFT_ID.into(),
-                    media_limits: MediaLimits::default(),
-                })
-                .expect("draft");
+                .save_working_copy_for_test(
+                    DRAFT_ID.into(),
+                    None,
+                    1,
+                    String::new(),
+                    Vec::new(),
+                    10,
+                    true,
+                )
+                .expect("working copy");
             let backup_set_id = BackupSetId::new();
             let target = target();
             client

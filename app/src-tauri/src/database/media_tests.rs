@@ -7,12 +7,10 @@ use std::{
 };
 
 use rusqlite::{params, Connection, MAIN_DB};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{
-    drafts::SaveDraftWrite,
     media::{
         media_blob_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
         split_pdf_page_passages, validate_filename, AttachmentDisplayRole, CanonicalImage,
@@ -23,12 +21,11 @@ use super::{
         MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
         PDF_RECOVERY_BATCH_SIZE,
     },
-    tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    working_copies::CheckpointWorkingCopyWrite,
+    working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput,
-    CitationLocator, ClearDraftInput, Database, DatabaseClient, DatabaseError, DatabasePaths,
-    EditTidbitInput, LexicalSearchMode, MediaLimits, MediaMaintenanceReport, SaveDraftInput,
-    SearchPassagesInput, SourceDraft, TidbitDraft,
+    CitationLocator, Database, DatabaseClient, DatabaseError, DatabasePaths,
+    DiscardWorkingCopyInput, LexicalSearchMode, MediaLimits, MediaMaintenanceReport,
+    SaveWorkingCopyInput, SearchPassagesInput, SourceDraft, Tidbit,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -95,23 +92,49 @@ impl TestLibrary {
         library
     }
 
-    fn save_capture(&self, body_markdown: &str, now_ms: i64) -> super::Draft {
+    fn save_capture(&self, body_markdown: &str, now_ms: i64) -> super::WorkingCopy {
+        self.save_capture_with_sources(body_markdown, Vec::new(), now_ms)
+    }
+
+    fn save_capture_with_sources(
+        &self,
+        body_markdown: &str,
+        sources: Vec<SourceDraft>,
+        now_ms: i64,
+    ) -> super::WorkingCopy {
         self.database
             .client()
-            .save_draft(SaveDraftWrite {
-                input: SaveDraftInput {
-                    context_key: "capture".into(),
-                    tidbit_id: None,
-                    base_revision_id: None,
-                    title: None,
-                    body_markdown: body_markdown.into(),
-                    sources: Vec::new(),
-                },
+            .save_working_copy_for_test(
+                CAPTURE_DRAFT_ID.into(),
+                None,
                 now_ms,
-                draft_id: CAPTURE_DRAFT_ID.into(),
-                media_limits: MediaLimits::default(),
-            })
-            .expect("save capture draft")
+                body_markdown.into(),
+                sources,
+                now_ms,
+                true,
+            )
+            .expect("save capture working copy")
+    }
+
+    fn checkpoint_capture(
+        &self,
+        expected_edit_generation: i64,
+        now_ms: i64,
+        revision_id: String,
+        source_ids: Vec<String>,
+    ) -> Tidbit {
+        self.database
+            .client()
+            .checkpoint_working_copy_for_test(
+                CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation,
+                now_ms,
+                revision_id,
+                source_ids,
+            )
+            .expect("checkpoint capture working copy")
+            .note
+            .expect("checkpointed note")
     }
 
     fn ingest(
@@ -362,25 +385,15 @@ fn text_attachments_create_exact_line_evidence_with_revision_bound_sources() {
         "Course notes.\n\n{{{{kosh:attachment:{};caption=Useful%20appendix}}}}",
         attachment.attachment.id
     );
-    library.save_capture(&body, 12);
-    library
-        .database
-        .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("Text attachment".into()),
-                body_markdown: body,
-                sources: vec![SourceDraft {
-                    label: Some("Course source".into()),
-                    url: Some("https://example.com/text".into()),
-                }],
-            },
-            now_ms: 13,
-            tidbit_id: id(0x724),
-            revision_id: id(0x725),
-            source_ids: vec![id(0x726)],
-        })
-        .expect("create text-backed tidbit");
+    library.save_capture_with_sources(
+        &body,
+        vec![SourceDraft {
+            label: Some("Course source".into()),
+            url: Some("https://example.com/text".into()),
+        }],
+        12,
+    );
+    library.checkpoint_capture(12, 13, id(0x725), vec![id(0x726)]);
 
     let client = library.database.client();
     let results = client
@@ -465,21 +478,7 @@ fn opaque_and_failed_text_attachments_remain_available_without_false_evidence() 
         opaque.attachment.id, failed.attachment.id
     );
     library.save_capture(&body, 13);
-    library
-        .database
-        .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("Opaque files".into()),
-                body_markdown: body,
-                sources: Vec::new(),
-            },
-            now_ms: 14,
-            tidbit_id: id(0x72f),
-            revision_id: id(0x730),
-            source_ids: Vec::new(),
-        })
-        .expect("create opaque-backed tidbit");
+    library.checkpoint_capture(13, 14, id(0x730), Vec::new());
     let client = library.database.client();
     assert!(client
         .search_passages(SearchPassagesInput {
@@ -582,25 +581,15 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
     );
     assert_eq!(pdf.extraction_status, PdfExtractionStatus::Pending);
     let body = format!("Chapter notes.\n\n{{{{kosh:pdf:{}}}}}", pdf.attachment.id);
-    library.save_capture(&body, 12);
-    let created = library
-        .database
-        .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("PDF knowledge".into()),
-                body_markdown: body,
-                sources: vec![SourceDraft {
-                    label: Some("Course reader".into()),
-                    url: Some("https://example.com/reader".into()),
-                }],
-            },
-            now_ms: 13,
-            tidbit_id: id(0x904),
-            revision_id: id(0x905),
-            source_ids: vec![id(0x906)],
-        })
-        .expect("create PDF-backed tidbit");
+    library.save_capture_with_sources(
+        &body,
+        vec![SourceDraft {
+            label: Some("Course reader".into()),
+            url: Some("https://example.com/reader".into()),
+        }],
+        12,
+    );
+    let created = library.checkpoint_capture(12, 13, id(0x905), vec![id(0x906)]);
 
     let client = library.database.client();
     let job = client
@@ -688,25 +677,25 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
         .is_empty());
 
     client
-        .edit_tidbit(EditTidbitWrite {
-            input: EditTidbitInput {
-                id: created.id,
-                expected_revision_id: created.current_revision_id,
-                title: Some("PDF knowledge, revised".into()),
-                body_markdown: format!(
-                    "Revised chapter notes.\n\n{{{{kosh:pdf:{}}}}}",
-                    pdf.attachment.id
-                ),
-                sources: vec![SourceDraft {
-                    label: Some("Unrelated later source".into()),
-                    url: Some("https://example.com/later".into()),
-                }],
-            },
-            now_ms: 16,
-            revision_id: id(0x907),
-            source_ids: vec![id(0x908)],
-        })
-        .expect("edit PDF-backed tidbit");
+        .save_working_copy_for_test(
+            created.id.clone(),
+            Some(created.current_revision_id),
+            1,
+            format!(
+                "Revised chapter notes.\n\n{{{{kosh:pdf:{}}}}}",
+                pdf.attachment.id
+            ),
+            vec![SourceDraft {
+                label: Some("Unrelated later source".into()),
+                url: Some("https://example.com/later".into()),
+            }],
+            16,
+            false,
+        )
+        .expect("save PDF-backed edit");
+    client
+        .checkpoint_working_copy_for_test(created.id, 1, 17, id(0x907), vec![id(0x908)])
+        .expect("checkpoint PDF-backed edit");
     let result = client
         .search_passages(SearchPassagesInput {
             query: "first_page_exact_evidence".into(),
@@ -1007,21 +996,7 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
         image.attachment.id
     );
     library.save_capture(&body, 12);
-    let tidbit = library
-        .database
-        .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("Image knowledge".into()),
-                body_markdown: body,
-                sources: Vec::new(),
-            },
-            now_ms: 13,
-            tidbit_id: id(0x784),
-            revision_id: id(0x785),
-            source_ids: Vec::new(),
-        })
-        .expect("create image-backed tidbit");
+    let tidbit = library.checkpoint_capture(12, 13, id(0x785), Vec::new());
     let original_revision_id = tidbit.current_revision_id.clone();
 
     let client = library.database.client();
@@ -1188,10 +1163,10 @@ fn draft_only_image_ocr_never_enters_search_and_remains_hidden_after_discard() {
     };
     assert!(search().is_empty());
     assert!(client
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: draft.updated_at_ms,
+        .discard_working_copy(
+            DiscardWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: draft.edit_generation,
             },
             15,
         )
@@ -1215,10 +1190,10 @@ fn retiring_a_draft_only_image_terminally_fails_in_flight_ocr() {
         .expect("draft-only OCR job");
     assert_eq!(job.attachment_id, image.attachment.id);
     assert!(client
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: 10,
+        .discard_working_copy(
+            DiscardWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: 10,
             },
             13,
         )
@@ -1297,19 +1272,7 @@ fn completed_draft_image_ocr_is_indexed_when_a_revision_takes_ownership() {
         .expect("search pre-save OCR")
         .is_empty());
 
-    client
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("Promoted image".into()),
-                body_markdown: body,
-                sources: Vec::new(),
-            },
-            now_ms: 15,
-            tidbit_id: id(0x79a),
-            revision_id: id(0x79b),
-            source_ids: Vec::new(),
-        })
-        .expect("save revision-owned image");
+    library.checkpoint_capture(12, 15, id(0x79b), Vec::new());
     assert_eq!(
         client
             .search_passages(SearchPassagesInput {
@@ -1890,20 +1853,16 @@ fn concurrent_ingestion_serializes_before_reading_attachment_bytes() {
     );
     database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: String::new(),
-                sources: Vec::new(),
-            },
-            now_ms: 10,
-            draft_id: CAPTURE_DRAFT_ID.into(),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("concurrent staging draft");
+        .save_working_copy_for_test(
+            CAPTURE_DRAFT_ID.into(),
+            None,
+            1,
+            String::new(),
+            Vec::new(),
+            10,
+            true,
+        )
+        .expect("concurrent staging working copy");
 
     let (first_started_tx, first_started_rx) = mpsc::channel();
     let (first_release_tx, first_release_rx) = mpsc::channel();
@@ -2068,19 +2027,21 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
     );
     let body = format!("{{{{kosh:image:{};width=90%}}}}", attachment.id);
     let save = |now_ms| {
-        library.database.client().save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: body.clone(),
-                sources: Vec::new(),
-            },
-            now_ms,
-            draft_id: CAPTURE_DRAFT_ID.into(),
-            media_limits: limits,
-        })
+        library
+            .database
+            .client()
+            .save_working_copy(SaveWorkingCopyWrite {
+                input: SaveWorkingCopyInput {
+                    note_id: CAPTURE_DRAFT_ID.into(),
+                    base_revision_id: None,
+                    edit_generation: now_ms,
+                    body_markdown: body.clone(),
+                    sources: Vec::new(),
+                },
+                now_ms,
+                media_limits: limits,
+                allow_empty_ephemeral: true,
+            })
     };
     save(12).expect("save short-lived media draft");
 
@@ -2118,61 +2079,53 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
 }
 
 #[test]
-fn quick_add_media_lease_and_draft_survive_restart() {
+fn working_copy_media_and_note_survive_restart() {
     let library = TestLibrary::new();
-    let draft_id = id(0x731);
+    let note_id = id(0x731);
     let initial = library
         .database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "quick-add".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: String::new(),
-                sources: Vec::new(),
-            },
-            now_ms: 11,
-            draft_id: draft_id.clone(),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("create quick-add draft");
-    assert_eq!(initial.id, draft_id);
+        .save_working_copy_for_test(
+            note_id.clone(),
+            None,
+            1,
+            String::new(),
+            Vec::new(),
+            11,
+            true,
+        )
+        .expect("create working copy");
+    assert_eq!(initial.id, note_id);
     let attachment = library
         .database
         .ingest_attachment(
             AttachmentIngestInput {
-                draft_id: draft_id.clone(),
+                draft_id: note_id.clone(),
                 display_filename: "quick-note.txt".into(),
                 media_type: "text/plain".into(),
                 now_ms: 12,
                 limits: MediaLimits::default(),
             },
-            Cursor::new(b"quick add attachment"),
+            Cursor::new(b"working-copy attachment"),
         )
-        .expect("ingest quick-add attachment");
+        .expect("ingest working-copy attachment");
     let body = format!("{{{{kosh:attachment:{}}}}}", attachment.id);
     let saved = library
         .database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "quick-add".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: Some("Quick *attachment*".into()),
-                body_markdown: body,
-                sources: vec![SourceDraft {
-                    label: Some("Recovered source".into()),
-                    url: Some("https://example.com/quick-add".into()),
-                }],
-            },
-            now_ms: 13,
-            draft_id: id(0x732),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("save quick-add media draft");
+        .save_working_copy_for_test(
+            note_id.clone(),
+            None,
+            2,
+            body.clone(),
+            vec![SourceDraft {
+                label: Some("Recovered source".into()),
+                url: Some("https://example.com/working-copy".into()),
+            }],
+            13,
+            false,
+        )
+        .expect("save media working copy");
     assert_eq!(
         library
             .database
@@ -2180,10 +2133,10 @@ fn quick_add_media_lease_and_draft_survive_restart() {
             .expect("main reader")
             .query_row(
                 "SELECT count(*) FROM draft_media_lease WHERE draft_id = ?1",
-                params![draft_id],
+                params![note_id],
                 |row| row.get::<_, i64>(0),
             )
-            .expect("quick-add draft lease count"),
+            .expect("working-copy lease count"),
         1
     );
 
@@ -2192,66 +2145,42 @@ fn quick_add_media_lease_and_draft_survive_restart() {
     assert_eq!(
         reopened
             .client()
-            .load_draft("quick-add".into())
-            .expect("recovered quick-add draft"),
-        Some(saved.clone())
+            .load_working_copy(note_id.clone())
+            .expect("recovered working copy"),
+        Some(saved)
     );
     assert_eq!(
         reopened
             .client()
             .load_media_payload(attachment.id.clone(), 14, None, 64)
-            .expect("recovered quick-add attachment")
+            .expect("recovered attachment")
             .bytes,
-        b"quick add attachment"
-    );
-    let recovered = reopened
-        .client()
-        .adopt_legacy_quick_add_draft(14)
-        .expect("adopt legacy Quick Add draft")
-        .expect("legacy Quick Add working copy");
-    assert_eq!(recovered.note_id, draft_id);
-    assert_eq!(recovered.edit_generation, 1);
-    assert_eq!(
-        recovered.body_markdown,
-        format!(
-            "# Quick \\*attachment\\*\n\n{{{{kosh:attachment:{}}}}}",
-            attachment.id
-        )
-    );
-    assert_eq!(recovered.sources, saved.sources);
-    assert_eq!(
-        reopened
-            .client()
-            .load_draft("quick-add".into())
-            .expect("retired Quick Add draft lookup"),
-        None
+        b"working-copy attachment"
     );
 
     let checkpoint = reopened
         .client()
         .checkpoint_working_copy(CheckpointWorkingCopyWrite {
             input: CheckpointWorkingCopyInput {
-                note_id: draft_id.clone(),
-                expected_edit_generation: 1,
+                note_id: note_id.clone(),
+                expected_edit_generation: 2,
             },
             now_ms: 15,
             revision_id: id(0x733),
             source_ids: vec![id(0x734)],
         })
-        .expect("checkpoint recovered Quick Add note");
+        .expect("checkpoint recovered working copy");
     let note = checkpoint.note.expect("recovered note");
-    assert_eq!(note.id, draft_id);
-    assert_eq!(note.title, None);
-    assert_eq!(note.body_markdown, recovered.body_markdown);
+    assert_eq!(note.id, note_id);
+    assert_eq!(note.body_markdown, body);
     assert_eq!(note.sources.len(), 1);
     assert_eq!(note.sources[0].label.as_deref(), Some("Recovered source"));
     assert_eq!(
         reopened
             .client()
-            .load_media_payload(attachment.id, 16, None, 64)
-            .expect("checkpointed Quick Add attachment")
-            .bytes,
-        b"quick add attachment"
+            .load_working_copy(note.id)
+            .expect("consumed working copy"),
+        None
     );
 }
 
@@ -2275,36 +2204,34 @@ fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
     library
         .database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
+        .save_working_copy(SaveWorkingCopyWrite {
+            input: SaveWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
                 base_revision_id: None,
-                title: None,
+                edit_generation: 12,
                 body_markdown: canonical,
                 sources: Vec::new(),
             },
             now_ms: 12,
-            draft_id: CAPTURE_DRAFT_ID.into(),
             media_limits: limits,
+            allow_empty_ephemeral: true,
         })
         .expect("save canonical media token");
     let malformed = format!("{{{{kosh:image:{};width=garbage", attachment.id);
     library
         .database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
+        .save_working_copy(SaveWorkingCopyWrite {
+            input: SaveWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
                 base_revision_id: None,
-                title: None,
+                edit_generation: 13,
                 body_markdown: malformed,
                 sources: Vec::new(),
             },
             now_ms: 13,
-            draft_id: CAPTURE_DRAFT_ID.into(),
             media_limits: limits,
+            allow_empty_ephemeral: true,
         })
         .expect("save malformed media text");
 
@@ -2343,18 +2270,17 @@ fn startup_recovery_renews_expired_media_still_referenced_by_a_saved_draft() {
     library
         .database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
+        .save_working_copy(SaveWorkingCopyWrite {
+            input: SaveWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
                 base_revision_id: None,
-                title: None,
+                edit_generation: 12,
                 body_markdown: body,
                 sources: Vec::new(),
             },
             now_ms: 12,
-            draft_id: CAPTURE_DRAFT_ID.into(),
             media_limits: limits,
+            allow_empty_ephemeral: true,
         })
         .expect("save expiring media draft");
 
@@ -2406,10 +2332,10 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     assert!(!library
         .database
         .client()
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: 9,
+        .discard_working_copy(
+            DiscardWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: 9,
             },
             12,
         )
@@ -2426,10 +2352,10 @@ fn canceled_draft_requires_grace_and_explicit_authorization_before_reaping() {
     assert!(library
         .database
         .client()
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: 10,
+        .discard_working_copy(
+            DiscardWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: 10,
             },
             12,
         )
@@ -2604,10 +2530,10 @@ fn attachment_eligibility_is_rechecked_after_candidate_preflight_yields() {
         .enqueue_media_maintenance_for_test(20, limits)
         .expect("queue maintenance");
     let clear = client
-        .enqueue_clear_draft_for_test(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: 12,
+        .enqueue_discard_working_copy_for_test(
+            DiscardWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: 12,
             },
             20,
         )
@@ -2648,10 +2574,10 @@ fn startup_lifecycle_recovery_never_reaps_without_a_verified_snapshot() {
     assert!(library
         .database
         .client()
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: 10,
+        .discard_working_copy(
+            DiscardWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: 10,
             },
             12,
         )
@@ -2713,124 +2639,6 @@ fn startup_lifecycle_recovery_never_reaps_without_a_verified_snapshot() {
     assert!(snapshot.directory.join("manifest.json").is_file());
     assert_eq!(maintenance.cleanup.deleted_blob_count, 1);
     assert_eq!(blob_count(&restarted), 0);
-}
-
-#[test]
-fn durable_research_citation_retains_draft_only_attachment_media() {
-    let library = TestLibrary::new();
-    let limits = MediaLimits {
-        draft_lease_duration_ms: 10,
-        orphan_grace_period_ms: 5,
-        ..MediaLimits::default()
-    };
-    let attachment = library.ingest(
-        (0x740, 0x741, 0x742),
-        "research.txt",
-        "text/plain",
-        b"durable research evidence",
-        11,
-        limits,
-    );
-    let run_id = id(0x743);
-    let client = library.database.client();
-    let markdown = "The retained evidence is durable.【1】";
-    let marker_start = markdown.find('【').expect("citation marker");
-    let answer = json!({
-        "markdown": markdown,
-        "citations": [{
-            "number": 1,
-            "label": "research.txt, lines 1–1",
-            "evidenceKind": "TEXT_LINES",
-            "evidence": {
-                "passageId": id(0x744),
-                "excerpt": "durable research evidence",
-                "headingContext": [],
-                "constructionVersion": "test",
-                "state": "CURRENT",
-                "locator": {
-                    "kind": "TEXT_LINES",
-                    "startLine": 1,
-                    "endLine": 1
-                },
-                "tidbit": null,
-                "attachment": {
-                    "id": attachment.id,
-                    "extractionId": id(0x745),
-                    "displayFilename": "research.txt",
-                    "mediaType": "text/plain",
-                    "deleted": false
-                },
-                "sources": []
-            }
-        }],
-        "mentions": [{
-            "citationNumber": 1,
-            "startByte": marker_start,
-            "endByte": markdown.len()
-        }],
-        "issues": []
-    });
-    let mut legacy = Connection::open(&library.paths.main).expect("legacy research writer");
-    legacy
-        .pragma_update(None, "foreign_keys", "ON")
-        .expect("legacy research foreign keys");
-    let transaction = legacy.transaction().expect("legacy research transaction");
-    transaction
-        .execute(
-            "INSERT INTO research_run(
-                id, query, status, created_at, started_at, completed_at,
-                updated_at, final_answer_json
-             ) VALUES(?1, 'What does the attachment say?', 'COMPLETED', 12, 13, 15, 15, ?2)",
-            params![run_id, answer.to_string()],
-        )
-        .expect("legacy research row");
-    transaction
-        .execute(
-            "INSERT INTO research_run_attachment(research_run_id, attachment_id)
-             VALUES(?1, ?2)",
-            params![run_id, attachment.id],
-        )
-        .expect("legacy research media reference");
-    transaction.commit().expect("legacy research commit");
-
-    let main = library.database.open_main_read_only().expect("main reader");
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*)
-             FROM research_run_attachment
-             WHERE research_run_id = ?1 AND attachment_id = ?2",
-            params![run_id, attachment.id],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("durable research media reference"),
-        1
-    );
-    drop(main);
-    assert!(client
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: 10,
-            },
-            16,
-        )
-        .expect("clear attachment draft"));
-
-    let after_expiry = client
-        .maintain_media(22, limits)
-        .expect("maintain research-cited media");
-    assert_eq!(after_expiry.cleanup.retired_attachment_count, 0);
-    let after_grace = client
-        .maintain_media(28, limits)
-        .expect("recheck research-cited media");
-    assert_eq!(after_grace.cleanup.deleted_blob_count, 0);
-    assert_eq!(
-        client
-            .load_media_payload(attachment.id, 28, None, 64)
-            .expect("research-cited media remains readable")
-            .bytes,
-        b"durable research evidence"
-    );
 }
 
 #[test]
@@ -2930,32 +2738,23 @@ fn revision_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
     );
     let body = format!("evidence {{{{kosh:attachment:{}}}}}", first.id);
     let saved = library.save_capture(&body, 13);
-    library
+    let checkpoint = library
         .database
         .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("Shared media".into()),
-                body_markdown: body,
-                sources: Vec::new(),
+        .checkpoint_working_copy(CheckpointWorkingCopyWrite {
+            input: CheckpointWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: saved.edit_generation,
             },
             now_ms: 14,
-            tidbit_id: id(0x746),
             revision_id: id(0x747),
             source_ids: Vec::new(),
         })
-        .expect("create revision with attachment");
-    library
-        .database
-        .client()
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: saved.updated_at_ms,
-            },
-            15,
-        )
-        .expect("clear committed draft");
+        .expect("checkpoint revision with attachment");
+    assert_eq!(
+        checkpoint.note.expect("checkpoint note").body_markdown,
+        body
+    );
 
     let maintenance = library
         .database
@@ -2999,31 +2798,19 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
     let tidbit = library
         .database
         .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("Illustrated note".into()),
-                body_markdown: body.clone(),
-                sources: Vec::new(),
+        .checkpoint_working_copy(CheckpointWorkingCopyWrite {
+            input: CheckpointWorkingCopyInput {
+                note_id: CAPTURE_DRAFT_ID.into(),
+                expected_edit_generation: capture.edit_generation,
             },
             now_ms: 13,
-            tidbit_id: id(0x74b),
             revision_id: id(0x74c),
             source_ids: Vec::new(),
         })
-        .expect("create revision with media");
-    assert!(library
-        .database
-        .client()
-        .clear_draft_at(
-            ClearDraftInput {
-                context_key: "capture".into(),
-                expected_updated_at_ms: capture.updated_at_ms,
-            },
-            14,
-        )
-        .expect("clear capture lease"));
+        .expect("checkpoint revision with media")
+        .note
+        .expect("checkpointed note");
 
-    let edit_context = format!("edit:{}", tidbit.id);
     let edit_limits = MediaLimits {
         max_attachments_per_draft: 1,
         ..MediaLimits::default()
@@ -3031,22 +2818,23 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
     let edit_draft = library
         .database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: edit_context.clone(),
-                tidbit_id: Some(tidbit.id.clone()),
+        .save_working_copy(SaveWorkingCopyWrite {
+            input: SaveWorkingCopyInput {
+                note_id: tidbit.id.clone(),
                 base_revision_id: Some(tidbit.current_revision_id.clone()),
-                title: Some("Illustrated note".into()),
+                edit_generation: 14,
                 body_markdown: body.clone(),
                 sources: Vec::new(),
             },
-            now_ms: 15,
-            draft_id: id(0x74d),
+            now_ms: 14,
             media_limits: edit_limits,
+            allow_empty_ephemeral: false,
         })
-        .expect("save edit draft with base-revision media");
+        .expect("save edit working copy with base-revision media")
+        .working_copy
+        .expect("saved edit working copy");
 
-    assert_eq!(edit_draft.id, id(0x74d));
+    assert_eq!(edit_draft.id, tidbit.id);
     assert_eq!(
         library
             .database
@@ -3077,18 +2865,17 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
     let over_capacity = library
         .database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: edit_context.clone(),
-                tidbit_id: Some(tidbit.id),
-                base_revision_id: Some(tidbit.current_revision_id),
-                title: Some("Illustrated note".into()),
+        .save_working_copy(SaveWorkingCopyWrite {
+            input: SaveWorkingCopyInput {
+                note_id: tidbit.id.clone(),
+                base_revision_id: Some(tidbit.current_revision_id.clone()),
+                edit_generation: 15,
                 body_markdown: format!("{body}\n{{{{kosh:attachment:{}}}}}", added.id),
                 sources: Vec::new(),
             },
-            now_ms: 17,
-            draft_id: id(0x74e),
+            now_ms: 15,
             media_limits: edit_limits,
+            allow_empty_ephemeral: false,
         })
         .expect_err("cap inherited and newly leased attachment references together");
     assert!(matches!(over_capacity, DatabaseError::InvalidInput(_)));
@@ -3096,9 +2883,9 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
         library
             .database
             .client()
-            .load_draft(edit_context)
-            .expect("load unchanged edit draft")
-            .expect("edit draft remains")
+            .load_working_copy(tidbit.id)
+            .expect("load unchanged edit working copy")
+            .expect("edit working copy remains")
             .body_markdown,
         body
     );
@@ -3112,20 +2899,16 @@ fn integrity_scan_reports_missing_corrupt_and_extra_blobs() {
     let database = Database::initialize(paths.clone()).expect("integrity database");
     let draft = database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: String::new(),
-                sources: Vec::new(),
-            },
-            now_ms: 10,
-            draft_id: CAPTURE_DRAFT_ID.into(),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("capture draft");
+        .save_working_copy_for_test(
+            CAPTURE_DRAFT_ID.into(),
+            None,
+            1,
+            String::new(),
+            Vec::new(),
+            10,
+            true,
+        )
+        .expect("capture working copy");
     assert_eq!(draft.id, CAPTURE_DRAFT_ID);
     let first_bytes = b"corrupt me";
     let second_bytes = b"remove me";

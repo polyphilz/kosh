@@ -11,7 +11,6 @@ use super::{
 
 const MAIN_TABLES: &[&str] = &[
     "active_passage",
-    "app_settings",
     "attachment",
     "attachment_extraction",
     "attachment_extractor_config",
@@ -20,7 +19,6 @@ const MAIN_TABLES: &[&str] = &[
     "attachment_passage_revision",
     "attachment_segment",
     "draft",
-    "draft_context",
     "draft_media_lease",
     "draft_source",
     "index_state",
@@ -47,13 +45,9 @@ const MAIN_TABLES: &[&str] = &[
     "pdf_extraction_queue",
     "pdf_page_extraction",
     "image_ocr_queue",
-    "research_run",
-    "research_run_attachment",
-    "research_run_event",
     "shortcut_settings",
     "source",
     "tidbit",
-    "tidbit_purge_authorization",
     "tidbit_revision",
     "tidbit_revision_attachment",
     "tidbit_revision_source",
@@ -64,8 +58,7 @@ const MEDIA_TABLES: &[&str] = &[
     "media_blob_lease",
     "media_blob_reap_authorization",
 ];
-const CONTENT_CLOCK_MIGRATION: &str =
-    include_str!("migrations/main/V20__complete_offsite_checkpoints.sql");
+const CONTENT_CLOCK_MIGRATION: &str = include_str!("migrations/main/V1__note_first_schema.sql");
 
 pub fn validate_migrated_pair(
     main: &mut Connection,
@@ -493,12 +486,11 @@ fn rebuild_normalized_fts(
     transaction.execute(
         &format!(
             "INSERT INTO {index}(
-                rowid, title, heading_context, body, source_labels,
+                rowid, heading_context, body, source_labels,
                 source_domains, attachment_names, extracted_text
              )
              SELECT
                 rowid,
-                {projection}(title),
                 {projection}(heading_context),
                 {projection}(body),
                 {projection}(source_labels),
@@ -522,11 +514,6 @@ fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<
                 SELECT 1
                 FROM tidbit_revision_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
-            )
-            OR EXISTS (
-                SELECT 1
-                FROM research_run_attachment AS research_membership
-                WHERE research_membership.attachment_id = attachment.id
             )
          ORDER BY id",
     )?;

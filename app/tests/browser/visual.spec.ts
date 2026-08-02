@@ -7,8 +7,7 @@ for (const theme of ["LIGHT", "DARK"] as const) {
     const note = await page.evaluate(async () => {
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
-      return backend.createTidbit({
-        title: null,
+      return backend.seedNote({
         bodyMarkdown:
           "# NumPy scrap notes\n\nArrays keep shape and dtype together.\n\n- contiguous memory\n  - predictable strides\n- vectorized operations\n\n```python\na = np.array([[1, 2], [3, 4]])\n```\n\n$$a_{ij} = i + j$$",
         sources: [],
@@ -42,8 +41,7 @@ for (const theme of ["LIGHT", "DARK"] as const) {
       document.documentElement.dataset.appearance = appearance;
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
-      await backend.createTidbit({
-        title: null,
+      await backend.seedNote({
         bodyMarkdown: "# NumPy memory layout\n\nContiguous arrays make predictable strides.",
         sources: [{ label: "Array notes", url: "https://example.com/numpy" }],
       });

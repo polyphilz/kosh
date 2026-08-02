@@ -1,6 +1,5 @@
 use std::io::Cursor;
 
-use refinery::Target;
 use rusqlite::params;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -13,9 +12,8 @@ use super::{
     backup_media::{self, OffsiteMediaUploadFailureCode},
     backup_state::SaveOffsiteBackupConfigInput,
     connection::{self, DatabaseKind, FileState},
-    drafts::SaveDraftWrite,
     media::{CanonicalImage, IngestAttachmentMetadata, IngestImageWrite, StagedAttachment},
-    migrations, Database, DatabasePaths, MediaLimits, SaveDraftInput,
+    migrations, Database, DatabasePaths, MediaLimits,
 };
 
 const ACCOUNT_ID: &str = "0123456789abcdef0123456789abcdef";
@@ -36,20 +34,16 @@ impl TestLibrary {
         let database = Database::initialize(paths.clone()).expect("database");
         database
             .client()
-            .save_draft(SaveDraftWrite {
-                input: SaveDraftInput {
-                    context_key: "capture".into(),
-                    tidbit_id: None,
-                    base_revision_id: None,
-                    title: None,
-                    body_markdown: String::new(),
-                    sources: Vec::new(),
-                },
-                now_ms: 10,
-                draft_id: DRAFT_ID.into(),
-                media_limits: MediaLimits::default(),
-            })
-            .expect("capture draft");
+            .save_working_copy_for_test(
+                DRAFT_ID.into(),
+                None,
+                1,
+                String::new(),
+                Vec::new(),
+                10,
+                true,
+            )
+            .expect("capture working copy");
         Self {
             _root: root,
             paths,
@@ -367,7 +361,6 @@ fn running_leases_recover_after_restart_and_stale_workers_cannot_mutate_them() {
     assert_eq!(progress.uploaded, 1);
     assert_eq!(progress.running + progress.retry_wait + progress.failed, 0);
 }
-
 #[test]
 fn remote_write_authorization_cancels_a_claim_after_its_last_reference_is_removed() {
     let root = tempfile::tempdir().expect("temporary retention fence root");
@@ -426,87 +419,5 @@ fn remote_write_authorization_cancels_a_claim_after_its_last_reference_is_remove
             })
             .expect("canceled queue count"),
         0
-    );
-}
-
-#[test]
-fn v19_migration_seeds_media_referenced_by_an_enabled_v18_config() {
-    let root = tempfile::tempdir().expect("temporary V18 root");
-    let paths = DatabasePaths::new(root.path());
-    let mut connection = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("V18 writer");
-    migrations::main_runner()
-        .set_target(Target::Version(18))
-        .run(&mut connection)
-        .expect("migrate through V18");
-    let attachment_id = id(500);
-    let hash = Sha256::digest(b"preexisting media").to_vec();
-    connection
-        .execute(
-            "INSERT INTO attachment(
-                id, created_at, updated_at, deleted_at, sha256, display_filename,
-                media_type, byte_length, kind, extraction_state
-             ) VALUES(?1, 10, 10, NULL, ?2, 'legacy.bin',
-                      'application/octet-stream', 17, 'BINARY', 'NOT_APPLICABLE')",
-            params![&attachment_id, &hash],
-        )
-        .expect("legacy attachment");
-    let backup_set_id = BackupSetId::new();
-    connection
-        .execute(
-            "INSERT INTO offsite_backup_config(
-                singleton_id, revision, backup_set_id, replica_epoch_id, enabled,
-                provider, jurisdiction, account_id, bucket, created_at, updated_at
-             ) VALUES(1, 1, ?1, ?2, 1, 'R2', 'DEFAULT', ?3, 'kosh-local', 20, 20)",
-            params![
-                backup_set_id.as_str(),
-                ReplicaEpochId::new().as_str(),
-                ACCOUNT_ID,
-            ],
-        )
-        .expect("legacy config");
-
-    migrations::main_runner()
-        .run(&mut connection)
-        .expect("migrate through V19");
-    let queued: (String, Vec<u8>, String) = connection
-        .query_row(
-            "SELECT backup_set_id, sha256, state FROM offsite_media_upload",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("seeded upload");
-    assert_eq!(queued.0, backup_set_id.to_string());
-    assert_eq!(queued.1, hash);
-    assert_eq!(queued.2, "PENDING");
-
-    let rolled_back_hash = Sha256::digest(b"rolled back media").to_vec();
-    let transaction = connection.transaction().expect("reference transaction");
-    transaction
-        .execute(
-            "INSERT INTO attachment(
-                id, created_at, updated_at, deleted_at, sha256, display_filename,
-                media_type, byte_length, kind, extraction_state
-             ) VALUES(?1, 30, 30, NULL, ?2, 'rollback.bin',
-                      'application/octet-stream', 17, 'BINARY', 'NOT_APPLICABLE')",
-            params![id(501), &rolled_back_hash],
-        )
-        .expect("transactional attachment");
-    assert_eq!(
-        transaction
-            .query_row("SELECT count(*) FROM offsite_media_upload", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("in-transaction queue count"),
-        2
-    );
-    transaction.rollback().expect("rollback reference");
-    assert_eq!(
-        connection
-            .query_row("SELECT count(*) FROM offsite_media_upload", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("post-rollback queue count"),
-        1
     );
 }

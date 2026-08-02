@@ -8,9 +8,6 @@ use super::{
     DatabaseError, Result, SourceDraft, Tidbit,
 };
 
-const NOTE_CONTEXT_PREFIX: &str = "note:";
-const QUICK_ADD_CONTEXT: &str = "quick-add";
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveWorkingCopyInput {
@@ -85,7 +82,6 @@ pub struct WorkingCopyCheckpointResult {
 pub(crate) struct SaveWorkingCopyWrite {
     pub input: SaveWorkingCopyInput,
     pub now_ms: i64,
-    pub draft_id: String,
     pub media_limits: media::MediaLimits,
     pub allow_empty_ephemeral: bool,
 }
@@ -103,9 +99,7 @@ pub(super) fn save(
 ) -> Result<WorkingCopySaveResult> {
     validate_save_input(&write.input)?;
     tidbits::validate_timestamp(write.now_ms, "nowMs")?;
-    tidbits::validate_uuid_v7(&write.draft_id, "draftId")?;
     let limits = write.media_limits.validate()?;
-    let context_key = note_context(&write.input.note_id);
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     validate_base_revision(&transaction, &write.input)?;
     let existing = load_in_transaction(&transaction, &write.input.note_id)?;
@@ -122,7 +116,7 @@ pub(super) fn save(
             if same_authored_state(existing, &write.input) {
                 if existing.media_reservation && !write.allow_empty_ephemeral {
                     transaction.execute(
-                        "UPDATE draft_context SET media_reservation = 0 WHERE draft_id = ?1",
+                        "UPDATE draft SET media_reservation = 0 WHERE id = ?1",
                         params![&existing.id],
                     )?;
                     let working_copy = load_in_transaction(&transaction, &write.input.note_id)?
@@ -154,12 +148,9 @@ pub(super) fn save(
         && !has_meaningful_authored_content(&write.input.body_markdown)
     {
         if existing.is_some() {
-            media::abandon_draft_media_leases(&transaction, &context_key, write.now_ms)?;
+            media::abandon_draft_media_leases(&transaction, &write.input.note_id, write.now_ms)?;
             transaction.execute(
-                "DELETE FROM draft
-                 WHERE id = (
-                    SELECT draft_id FROM draft_context WHERE note_id = ?1
-                 )",
+                "DELETE FROM draft WHERE id = ?1",
                 params![&write.input.note_id],
             )?;
         }
@@ -175,52 +166,41 @@ pub(super) fn save(
         let updated_at_ms = tidbits::next_timestamp(existing.updated_at_ms, write.now_ms)?;
         transaction.execute(
             "UPDATE draft
-             SET updated_at = ?1, title = NULL, body_markdown = ?2
-             WHERE id = ?3",
-            params![updated_at_ms, &write.input.body_markdown, &existing.id],
-        )?;
-        transaction.execute(
-            "UPDATE draft_context
-             SET edit_generation = ?1, media_reservation = ?2
-             WHERE draft_id = ?3",
+             SET updated_at = ?1,
+                 body_markdown = ?2,
+                 edit_generation = ?3,
+                 media_reservation = ?4
+             WHERE id = ?5",
             params![
+                updated_at_ms,
+                &write.input.body_markdown,
                 write.input.edit_generation,
                 write.allow_empty_ephemeral,
-                &existing.id
+                &existing.id,
             ],
         )?;
         existing.id
     } else {
         transaction.execute(
-            "INSERT INTO draft(id, created_at, updated_at, title, body_markdown)
-             VALUES(?1, ?2, ?2, NULL, ?3)",
-            params![&write.draft_id, write.now_ms, &write.input.body_markdown],
-        )?;
-        transaction.execute(
-            "INSERT INTO draft_context(
-                draft_id,
-                context_key,
-                tidbit_id,
+            "INSERT INTO draft(
+                id,
                 base_revision_id,
-                note_id,
                 edit_generation,
-                media_reservation
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                media_reservation,
+                created_at,
+                updated_at,
+                body_markdown
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6)",
             params![
-                &write.draft_id,
-                &context_key,
-                write
-                    .input
-                    .base_revision_id
-                    .as_ref()
-                    .map(|_| write.input.note_id.as_str()),
-                &write.input.base_revision_id,
                 &write.input.note_id,
+                &write.input.base_revision_id,
                 write.input.edit_generation,
                 write.allow_empty_ephemeral,
+                write.now_ms,
+                &write.input.body_markdown,
             ],
         )?;
-        write.draft_id
+        write.input.note_id.clone()
     };
 
     transaction.execute(
@@ -280,7 +260,7 @@ pub(super) fn discard(
         transaction.rollback()?;
         return Ok(false);
     }
-    media::abandon_draft_media_leases(&transaction, &note_context(&input.note_id), now_ms)?;
+    media::abandon_draft_media_leases(&transaction, &input.note_id, now_ms)?;
     let deleted =
         transaction.execute("DELETE FROM draft WHERE id = ?1", params![&working_copy.id])?;
     transaction.commit()?;
@@ -292,81 +272,10 @@ pub(super) fn load(connection: &Connection, note_id: &str) -> Result<Option<Work
     load_from_connection(connection, note_id)
 }
 
-pub(super) fn adopt_legacy_quick_add(
-    connection: &mut Connection,
-    now_ms: i64,
-) -> Result<Option<WorkingCopy>> {
-    tidbits::validate_timestamp(now_ms, "nowMs")?;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let legacy = transaction
-        .query_row(
-            "SELECT draft.id, draft.updated_at, draft.title, draft.body_markdown
-             FROM draft
-             JOIN draft_context AS context ON context.draft_id = draft.id
-             WHERE context.context_key = ?1
-               AND context.note_id IS NULL",
-            params![QUICK_ADD_CONTEXT],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((draft_id, previous_updated_at_ms, title, body_markdown)) = legacy else {
-        transaction.rollback()?;
-        return Ok(None);
-    };
-    tidbits::validate_uuid_v7(&draft_id, "legacy quick-add draft ID")?;
-    let updated_at_ms = tidbits::next_timestamp(previous_updated_at_ms, now_ms)?;
-    let projected_body = project_legacy_title(title.as_deref(), &body_markdown);
-    let context_key = note_context(&draft_id);
-    transaction.execute(
-        "UPDATE draft
-         SET updated_at = ?1, title = NULL, body_markdown = ?2
-         WHERE id = ?3",
-        params![updated_at_ms, &projected_body, &draft_id],
-    )?;
-    let adopted = transaction.execute(
-        "UPDATE draft_context
-         SET context_key = ?1,
-             note_id = ?2,
-             edit_generation = 1,
-             media_reservation = 0
-         WHERE draft_id = ?2
-           AND context_key = ?3
-           AND note_id IS NULL",
-        params![&context_key, &draft_id, QUICK_ADD_CONTEXT],
-    )?;
-    if adopted != 1 {
-        return Err(DatabaseError::InvalidInput(
-            "legacy Quick Add draft changed while it was being recovered".into(),
-        ));
-    }
-    transaction.commit()?;
-    load_from_connection(connection, &draft_id)?.map_or_else(
-        || {
-            Err(DatabaseError::InvalidInput(
-                "legacy Quick Add draft disappeared after recovery".into(),
-            ))
-        },
-        |working_copy| Ok(Some(working_copy)),
-    )
-}
-
 pub(super) fn list(connection: &Connection) -> Result<Vec<WorkingCopy>> {
     let note_ids = {
-        let mut statement = connection.prepare(
-            "SELECT note_id
-             FROM draft_context
-             WHERE note_id IS NOT NULL
-             ORDER BY (
-                SELECT updated_at FROM draft WHERE draft.id = draft_context.draft_id
-             ) DESC, note_id",
-        )?;
+        let mut statement =
+            connection.prepare("SELECT id FROM draft ORDER BY updated_at DESC, id")?;
         let note_ids = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -419,7 +328,6 @@ pub(super) fn checkpoint(
         ));
     }
     let prepared = tidbits::prepare_revision_with_empty(
-        None,
         working_copy.body_markdown.clone(),
         working_copy.sources.clone(),
         allow_empty_body,
@@ -484,7 +392,7 @@ fn checkpoint_new(
         transaction,
         &write.revision_id,
         None,
-        &note_context(&working_copy.note_id),
+        &working_copy.id,
         &prepared.body_markdown,
         write.now_ms,
     )?;
@@ -535,7 +443,7 @@ fn checkpoint_existing(
         transaction,
         &write.revision_id,
         Some(base_revision_id),
-        &note_context(&working_copy.note_id),
+        &working_copy.id,
         &prepared.body_markdown,
         updated_at_ms,
     )?;
@@ -638,16 +546,15 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
         .query_row(
             "SELECT
                 draft.id,
-                context.note_id,
-                context.base_revision_id,
-                context.edit_generation,
-                context.media_reservation,
+                draft.id,
+                draft.base_revision_id,
+                draft.edit_generation,
+                draft.media_reservation,
                 draft.created_at,
                 draft.updated_at,
                 draft.body_markdown
              FROM draft
-             JOIN draft_context AS context ON context.draft_id = draft.id
-             WHERE context.note_id = ?1",
+             WHERE draft.id = ?1",
             params![note_id],
             |row| {
                 Ok(WorkingCopy {
@@ -701,51 +608,6 @@ fn save_result(
         status,
         accepted_edit_generation,
         working_copy,
-    }
-}
-
-fn note_context(note_id: &str) -> String {
-    format!("{NOTE_CONTEXT_PREFIX}{note_id}")
-}
-
-fn project_legacy_title(title: Option<&str>, body_markdown: &str) -> String {
-    let Some(title) = title
-        .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|title| !title.is_empty())
-    else {
-        return body_markdown.to_owned();
-    };
-    let mut escaped = String::with_capacity(title.len());
-    for character in title.chars() {
-        if matches!(
-            character,
-            '\\' | '`'
-                | '*'
-                | '_'
-                | '['
-                | ']'
-                | '{'
-                | '}'
-                | '('
-                | ')'
-                | '<'
-                | '>'
-                | '#'
-                | '+'
-                | '-'
-                | '.'
-                | '!'
-                | '|'
-        ) {
-            escaped.push('\\');
-        }
-        escaped.push(character);
-    }
-    let heading = format!("# {escaped}");
-    if body_markdown.trim().is_empty() {
-        heading
-    } else {
-        format!("{heading}\n\n{body_markdown}")
     }
 }
 
@@ -829,7 +691,7 @@ mod tests {
             generation: i64,
             body: &str,
             base_revision_id: Option<String>,
-            draft_id: &str,
+            _draft_id: &str,
             sources: Vec<SourceDraft>,
         ) -> WorkingCopySaveResult {
             self.database
@@ -843,7 +705,6 @@ mod tests {
                         sources,
                     },
                     now_ms: 100 + generation,
-                    draft_id: draft_id.into(),
                     media_limits: media::MediaLimits::default(),
                     allow_empty_ephemeral: false,
                 })
@@ -888,7 +749,7 @@ mod tests {
             "** **",
             "- [ ]",
             "{{kosh:image:019f547b-6200-7000-8000-000000007099}}",
-            "<span>legacy text</span>",
+            "<span>formatted text</span>",
         ] {
             assert!(
                 has_meaningful_authored_content(contentful),
@@ -999,7 +860,6 @@ mod tests {
                     sources: Vec::new(),
                 },
                 now_ms: 101,
-                draft_id: DRAFT_ID_1.into(),
                 media_limits: media::MediaLimits::default(),
                 allow_empty_ephemeral: true,
             })
@@ -1017,7 +877,7 @@ mod tests {
                 .working_copy
                 .as_ref()
                 .map(|copy| copy.id.as_str()),
-            Some(DRAFT_ID_1)
+            Some(NOTE_ID)
         );
 
         library.save(2, "newer authored text", None, DRAFT_ID_2);
@@ -1086,7 +946,6 @@ mod tests {
                     sources: Vec::new(),
                 },
                 now_ms: 101,
-                draft_id: DRAFT_ID_1.into(),
                 media_limits: media::MediaLimits::default(),
                 allow_empty_ephemeral: true,
             })
@@ -1095,7 +954,7 @@ mod tests {
             .database
             .ingest_attachment(
                 AttachmentIngestInput {
-                    draft_id: DRAFT_ID_1.into(),
+                    draft_id: NOTE_ID.into(),
                     display_filename: "shower-thought.txt".into(),
                     media_type: "text/plain".into(),
                     now_ms: 102,
@@ -1109,10 +968,6 @@ mod tests {
         assert_eq!(saved.status, WorkingCopySaveStatus::Saved);
         let checkpoint = library.checkpoint(2, REVISION_ID_1);
         assert_eq!(checkpoint.status, WorkingCopyCheckpointStatus::Checkpointed);
-        assert_eq!(
-            checkpoint.note.as_ref().map(|note| note.title.as_ref()),
-            Some(None)
-        );
         assert_eq!(
             checkpoint
                 .note
@@ -1162,7 +1017,6 @@ mod tests {
                     sources: Vec::new(),
                 },
                 now_ms: 103,
-                draft_id: DRAFT_ID_2.into(),
                 media_limits: media::MediaLimits::default(),
                 allow_empty_ephemeral: false,
             });
@@ -1189,7 +1043,6 @@ mod tests {
         assert_eq!(note.id, NOTE_ID);
         assert_eq!(note.current_revision_id, REVISION_ID_1);
         assert_eq!(note.revision_number, 1);
-        assert_eq!(note.title, None);
         assert_eq!(note.body_markdown, "Remember the blue hour.");
         assert_eq!(note.sources.len(), 1);
         assert_eq!(note.sources[0].id, SOURCE_ID_1);
@@ -1248,16 +1101,6 @@ mod tests {
         assert_eq!(cleared.revision_number, 2);
         assert_eq!(cleared.body_markdown, "");
         assert_eq!(cleared.deleted_at_ms, None);
-        library
-            .database
-            .client()
-            .reconcile_author_passages()
-            .expect("empty revision reconciles");
-        library
-            .database
-            .client()
-            .reconcile_author_passages()
-            .expect("empty revision reconciliation is idempotent");
         let connection = library
             .database
             .open_main_read_only()
@@ -1272,20 +1115,10 @@ mod tests {
                 .expect("active passage count"),
             0
         );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT status FROM index_state WHERE name = 'PASSAGE_BUILD'",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
-                .expect("passage build status"),
-            "IDLE"
-        );
     }
 
     #[test]
-    fn interrupted_copy_survives_restart_and_becomes_searchable_after_reconciliation() {
+    fn interrupted_copy_survives_restart_and_becomes_searchable_after_checkpoint() {
         let root = tempfile::tempdir().expect("restart working-copy root");
         let paths = DatabasePaths::new(root.path());
         let database = Database::initialize(paths.clone()).expect("initial database");
@@ -1300,7 +1133,6 @@ mod tests {
                     sources: Vec::new(),
                 },
                 now_ms: 300,
-                draft_id: DRAFT_ID_1.into(),
                 media_limits: media::MediaLimits::default(),
                 allow_empty_ephemeral: false,
             })
@@ -1339,7 +1171,7 @@ mod tests {
                 revision_id: REVISION_ID_1.into(),
                 source_ids: Vec::new(),
             })
-            .expect("reconcile recovered copy");
+            .expect("checkpoint recovered copy");
         let response = reopened
             .client()
             .search_passages_with_semantics(
@@ -1371,8 +1203,7 @@ mod tests {
             .client()
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
-                    title: Some("Legacy title".into()),
-                    body_markdown: "legacy body".into(),
+                    body_markdown: "existing body".into(),
                     sources: Vec::new(),
                 },
                 now_ms: 400,
@@ -1380,7 +1211,7 @@ mod tests {
                 revision_id: REVISION_ID_1.into(),
                 source_ids: Vec::new(),
             })
-            .expect("legacy note");
+            .expect("existing note");
         let stale = library
             .database
             .client()
@@ -1393,7 +1224,6 @@ mod tests {
                     sources: Vec::new(),
                 },
                 now_ms: 401,
-                draft_id: DRAFT_ID_1.into(),
                 media_limits: media::MediaLimits::default(),
                 allow_empty_ephemeral: false,
             });

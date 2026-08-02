@@ -105,14 +105,13 @@ jq -e \
     and .normalDatabaseReopen == "PASSED"
     and .searchRebuild == "PASSED"
     and .citationResolution == "PASSED"
-    and .researchCitationResolution == "PASSED"
+    and .historicalCitationResolution == "PASSED"
     and .restored.activeTidbits >= 2
     and .restored.revisions >= 3
     and .restored.attachments >= 1
     and .restored.mediaBlobs >= 1
-    and .restored.researchCitations >= 1
-    and .restored.historicalResearchCitations >= 1
-    and .restored.interruptedReplicationDrafts == 1
+    and .restored.historicalCitations >= 1
+    and .restored.interruptedReplicationWorkingCopies == 1
     and .removedRemoteObjects > 0
     and .remoteResidueObjects == 0
   ' "$report" >/dev/null || fail "the redacted canary report is incomplete"

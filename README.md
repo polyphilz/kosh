@@ -84,7 +84,7 @@ reproducible hardening report command.
 ## Lexical search
 
 The native backend projects current citation passages into separate word and
-trigram FTS5 indexes. Search covers title, heading context, passage body,
+trigram FTS5 indexes. Search covers heading context, passage body,
 source labels and URLs/domains, attachment filenames, and extracted text.
 Queries are parsed as literal data before FTS execution; quoted phrases and
 explicit Exact mode never forward raw user syntax into `MATCH`.
@@ -179,15 +179,3 @@ Repository policy and secret checks run from the repository root:
 ```bash
 scripts/check-repository.sh
 ```
-
-## Local Research
-
-Research runs Claude Code with read-only Kosh tools and no web access. The
-Research route streams only inert preview text and compact tool activity, then
-renders a grounded final answer whose interactive markers are bound to exact
-Kosh citation snapshots. Runs, visible events, outcomes, model metadata, and
-answers survive restart; interrupted runs can be rerun but are never
-resurrected. A completed answer can be saved explicitly as a normal tidbit.
-
-See [docs/research-citations.md](docs/research-citations.md) for the citation
-trust boundary and durable-history contract.

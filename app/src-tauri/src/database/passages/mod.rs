@@ -10,8 +10,6 @@ use uuid::Uuid;
 use super::{search, tidbits, DatabaseError, Result, TidbitSource};
 use builder::{build_markdown_passages, MarkdownLocator, CONSTRUCTION_VERSION};
 
-pub(super) const BACKGROUND_RECONCILE_BATCH_SIZE: u32 = 25;
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CitationState {
@@ -55,7 +53,6 @@ pub struct CitationTidbit {
     pub id: String,
     pub revision_id: String,
     pub revision_number: i64,
-    pub title: Option<String>,
     pub display_title: String,
     pub deleted: bool,
 }
@@ -137,13 +134,6 @@ fn insert_author_passages_inner(
     let passages = build_markdown_passages(markdown);
     if passages.is_empty() {
         if allow_empty {
-            transaction.execute(
-                "INSERT INTO empty_author_passage_revision(
-                    tidbit_revision_id, construction_version, created_at
-                 ) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(tidbit_revision_id, construction_version) DO NOTHING",
-                params![tidbit_revision_id, CONSTRUCTION_VERSION, created_at_ms],
-            )?;
             return Ok(0);
         }
         return Err(DatabaseError::InvalidInput(
@@ -193,216 +183,6 @@ fn insert_author_passages_inner(
         )?;
     }
     Ok(passages.len())
-}
-
-pub(super) fn reconcile_author_passages(connection: &mut Connection) -> Result<()> {
-    while reconcile_author_passage_batch(connection, BACKGROUND_RECONCILE_BATCH_SIZE)? {}
-    Ok(())
-}
-
-pub(super) fn reconcile_author_passage_batch(
-    connection: &mut Connection,
-    limit: u32,
-) -> Result<bool> {
-    if limit == 0 {
-        return Err(DatabaseError::InvalidInput(
-            "passage reconciliation limit must be positive".into(),
-        ));
-    }
-    let state_updated = connection.execute(
-        "UPDATE index_state
-         SET version = ?1, status = 'RUNNING', cursor = NULL, error = NULL
-         WHERE name = 'PASSAGE_BUILD'",
-        params![CONSTRUCTION_VERSION],
-    )?;
-    if state_updated != 1 {
-        return Err(DatabaseError::Validation {
-            kind: "main",
-            reason: "PASSAGE_BUILD index state is missing".into(),
-        });
-    }
-    match reconcile_author_passage_batch_transaction(connection, limit) {
-        Ok(has_more) => Ok(has_more),
-        Err(error) => {
-            let message = error.to_string();
-            let _ = connection.execute(
-                "UPDATE index_state
-                 SET status = 'FAILED', cursor = NULL, error = ?1
-                 WHERE name = 'PASSAGE_BUILD'",
-                params![message],
-            );
-            Err(error)
-        }
-    }
-}
-
-fn reconcile_author_passage_batch_transaction(
-    connection: &mut Connection,
-    limit: u32,
-) -> Result<bool> {
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let missing = {
-        let mut statement = transaction.prepare(
-            "SELECT revision.id, revision.body_markdown, revision.created_at
-             FROM tidbit_revision AS revision
-             WHERE NOT EXISTS (
-                 SELECT 1
-                 FROM passage
-                 WHERE passage.tidbit_revision_id = revision.id
-                   AND passage.owner_kind = 'AUTHOR'
-                   AND passage.construction_version = ?1
-             )
-               AND NOT EXISTS (
-                 SELECT 1
-                 FROM empty_author_passage_revision AS empty_revision
-                 WHERE empty_revision.tidbit_revision_id = revision.id
-                   AND empty_revision.construction_version = ?1
-             )
-             ORDER BY revision.created_at, revision.id
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![CONSTRUCTION_VERSION, limit], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    for (revision_id, body_markdown, created_at_ms) in &missing {
-        insert_author_passages_allow_empty(
-            &transaction,
-            revision_id,
-            body_markdown,
-            *created_at_ms,
-        )?;
-        let current_tidbit_id = transaction
-            .query_row(
-                "SELECT id
-                 FROM tidbit
-                 WHERE current_revision_id = ?1
-                   AND deleted_at IS NULL",
-                params![revision_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        if let Some(tidbit_id) = current_tidbit_id {
-            replace_active_author_passages_allow_empty(&transaction, &tidbit_id, revision_id)?;
-        }
-    }
-
-    let has_more = transaction.query_row(
-        "SELECT EXISTS(
-            SELECT 1
-            FROM tidbit_revision AS revision
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM passage
-                WHERE passage.tidbit_revision_id = revision.id
-                  AND passage.owner_kind = 'AUTHOR'
-                  AND passage.construction_version = ?1
-            )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM empty_author_passage_revision AS empty_revision
-                WHERE empty_revision.tidbit_revision_id = revision.id
-                  AND empty_revision.construction_version = ?1
-            )
-         )",
-        params![CONSTRUCTION_VERSION],
-        |row| row.get::<_, bool>(0),
-    )?;
-    let active_set_differs = !has_more
-        && transaction.query_row(
-            "SELECT
-            EXISTS(
-                SELECT 1
-                FROM tidbit
-                JOIN passage
-                  ON passage.tidbit_revision_id = tidbit.current_revision_id
-                 AND passage.owner_kind = 'AUTHOR'
-                 AND passage.construction_version = ?1
-                WHERE tidbit.deleted_at IS NULL
-                  AND NOT EXISTS(
-                      SELECT 1
-                      FROM active_passage
-                      WHERE active_passage.passage_id = passage.id
-                        AND active_passage.tidbit_id = tidbit.id
-                  )
-            )
-            OR EXISTS(
-                SELECT 1
-                FROM active_passage
-                WHERE NOT EXISTS(
-                    SELECT 1
-                    FROM tidbit
-                    JOIN passage
-                      ON passage.tidbit_revision_id = tidbit.current_revision_id
-                     AND passage.owner_kind = 'AUTHOR'
-                     AND passage.construction_version = ?1
-                    WHERE tidbit.deleted_at IS NULL
-                      AND tidbit.id = active_passage.tidbit_id
-                      AND passage.id = active_passage.passage_id
-                )
-            )",
-            params![CONSTRUCTION_VERSION],
-            |row| row.get::<_, bool>(0),
-        )?;
-    let search_index_needs_rebuild = !has_more
-        && transaction.query_row(
-            "SELECT version != ?1 OR status != 'IDLE'
-             FROM index_state
-             WHERE name = 'PASSAGE_FTS'",
-            params![search::FTS_VERSION],
-            |row| row.get::<_, bool>(0),
-        )?;
-    if active_set_differs {
-        transaction.execute("DELETE FROM active_passage", [])?;
-        transaction.execute(
-            "INSERT INTO active_passage(passage_id, tidbit_id)
-             SELECT passage.id, tidbit.id
-             FROM tidbit
-             JOIN passage
-               ON passage.tidbit_revision_id = tidbit.current_revision_id
-              AND passage.owner_kind = 'AUTHOR'
-              AND passage.construction_version = ?1
-             WHERE tidbit.deleted_at IS NULL
-             ORDER BY tidbit.id, passage.ordinal",
-            params![CONSTRUCTION_VERSION],
-        )?;
-    }
-    if active_set_differs || search_index_needs_rebuild {
-        search::rebuild_documents(&transaction)?;
-    }
-    let status = if has_more { "DIRTY" } else { "IDLE" };
-    let cursor = if has_more {
-        missing
-            .last()
-            .map(|(revision_id, _, _)| revision_id.as_str())
-    } else {
-        None
-    };
-    let batch_updated_at = missing
-        .iter()
-        .map(|(_, _, created_at_ms)| *created_at_ms)
-        .max()
-        .unwrap_or_default();
-    transaction.execute(
-        "UPDATE index_state
-         SET status = ?1,
-             cursor = ?2,
-             updated_at = max(
-                 updated_at,
-                 ?3
-             ),
-             error = NULL
-         WHERE name = 'PASSAGE_BUILD'",
-        params![status, cursor, batch_updated_at],
-    )?;
-    transaction.commit()?;
-    Ok(has_more)
 }
 
 pub(super) fn replace_active_author_passages(
@@ -583,12 +363,10 @@ fn resolve_author_citation(
                 passage.id
             ),
         })?;
-    let (tidbit_id, revision_number, title, body_markdown, deleted, is_active) = connection
-        .query_row(
-            "SELECT
+    let (tidbit_id, revision_number, body_markdown, deleted, is_active) = connection.query_row(
+        "SELECT
                 revision.tidbit_id,
                 revision.revision_number,
-                revision.title,
                 revision.body_markdown,
                 tidbit.deleted_at IS NOT NULL,
                 EXISTS(
@@ -599,18 +377,17 @@ fn resolve_author_citation(
              FROM tidbit_revision AS revision
              JOIN tidbit ON tidbit.id = revision.tidbit_id
              WHERE revision.id = ?2",
-            params![&passage.id, revision_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, bool>(4)?,
-                    row.get::<_, bool>(5)?,
-                ))
-            },
-        )?;
+        params![&passage.id, revision_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, bool>(4)?,
+            ))
+        },
+    )?;
     let sources = tidbits::load_sources(connection, revision_id)?;
     Ok(CitationResolution {
         passage_id: passage.id,
@@ -636,8 +413,7 @@ fn resolve_author_citation(
             id: tidbit_id,
             revision_id: revision_id.to_owned(),
             revision_number,
-            display_title: tidbits::derive_display_title(title.as_deref(), &body_markdown),
-            title,
+            display_title: tidbits::derive_display_title(&body_markdown),
             deleted,
         }),
         attachment: None,

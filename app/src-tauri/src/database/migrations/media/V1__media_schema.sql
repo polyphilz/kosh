@@ -32,6 +32,9 @@ CREATE TABLE media_blob_lease (
 CREATE INDEX media_blob_lease_expiry_idx
     ON media_blob_lease(expires_at, lease_id);
 
+CREATE INDEX media_blob_lease_hash_expiry_idx
+    ON media_blob_lease(sha256, expires_at);
+
 CREATE TABLE media_blob_reap_authorization (
     sha256 BLOB PRIMARY KEY CHECK (length(sha256) = 32),
     authorized_at INTEGER NOT NULL CHECK (authorized_at >= 0),

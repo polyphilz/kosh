@@ -68,12 +68,11 @@ describe("global quick add", () => {
     fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
 
     await waitFor(() => expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.Dismiss));
-    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    const notes = await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" });
     expect(notes.items).toHaveLength(1);
     const note = await backend.loadTidbit(notes.items[0]!.id);
     expect(note).toMatchObject({
       bodyMarkdown: "The shower thought must survive dismissal.",
-      title: null,
     });
     const search = await backend.searchPassages({
       limit: 10,
@@ -106,7 +105,7 @@ describe("global quick add", () => {
       expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.ShowMain),
     );
     expect(
-      (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
+      (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
     ).toHaveLength(1);
   });
 
@@ -223,9 +222,9 @@ describe("global quick add", () => {
     fireEvent.keyDown(editor, { key: "Escape" });
 
     await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
-    expect((await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items).toEqual(
-      [],
-    );
+    expect(
+      (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
+    ).toEqual([]);
     expect(await backend.listWorkingCopies()).toEqual([]);
   });
 
@@ -261,7 +260,7 @@ describe("global quick add", () => {
 
     await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
     expect(
-      (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
+      (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
     ).toHaveLength(1);
     expect(await backend.listWorkingCopies()).toEqual([]);
   });
@@ -288,7 +287,7 @@ describe("global quick add", () => {
     });
     await waitFor(() => expect(native.dismiss).toHaveBeenCalledTimes(2));
 
-    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    const notes = await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" });
     expect(notes.items).toHaveLength(2);
     expect(new Set(notes.items.map((note) => note.id)).size).toBe(2);
   });
@@ -344,7 +343,6 @@ describe("global quick add", () => {
       kind: attachment.record.kind,
       mediaType: attachment.record.mediaType,
     });
-    const saveDraft = vi.spyOn(backend, "saveDraft");
     renderQuickAdd(backend, native.controller);
     await screen.findByRole("textbox", { name: "Quick note" });
 
@@ -360,8 +358,7 @@ describe("global quick add", () => {
     });
 
     await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
-    expect(saveDraft).not.toHaveBeenCalled();
-    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    const notes = await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" });
     expect((await backend.loadTidbit(notes.items[0]!.id)).bodyMarkdown).toContain(
       attachment.record.id,
     );
@@ -395,7 +392,7 @@ describe("global quick add", () => {
     act(() => quit.prepare(41));
 
     await waitFor(() => expect(quit.acknowledge).toHaveBeenCalledWith(41, null));
-    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    const notes = await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" });
     expect((await backend.loadTidbit(notes.items[0]!.id)).bodyMarkdown).toContain(
       "immediately before Quit",
     );
@@ -452,7 +449,7 @@ describe("global quick add", () => {
     );
 
     await waitFor(() => expect(quit.acknowledge).toHaveBeenCalledWith(42, null));
-    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    const notes = await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" });
     expect((await backend.loadTidbit(notes.items[0]!.id)).bodyMarkdown).toContain(
       "01980c8e-6c00-7000-8000-000000000287",
     );

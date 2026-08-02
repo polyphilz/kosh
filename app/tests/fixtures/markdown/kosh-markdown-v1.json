@@ -1,9 +1,9 @@
 [
   {
-    "id": "commonmark-structure",
-    "canonical": "## Heading\n\nEscaped \\*asterisk\\*, *emphasis*, and **strong**.\n\n> A quotation\n\n---",
-    "selectors": ["h2", "em", "strong", "blockquote", "hr"],
-    "text": ["Heading", "Escaped *asterisk*, emphasis, and strong.", "A quotation"]
+    "id": "commonmark-styles",
+    "canonical": "## Heading\n\nEscaped \\*asterisk\\*, *emphasis*, and **strong**.",
+    "selectors": ["h2", "em", "strong"],
+    "text": ["Heading", "Escaped *asterisk*, emphasis, and strong."]
   },
   {
     "id": "nested-lists",
@@ -24,10 +24,10 @@
     "text": ["**literal**", "const answer: number = 42", "plain <tag>"]
   },
   {
-    "id": "gfm-table-tasks-and-strike",
-    "canonical": "~~old~~\n\n| Left | Right |\n| ---- | ----: |\n| a    |     2 |\n\n- [x] done\n- [ ] later",
-    "selectors": ["del", "table", "input[type=checkbox]"],
-    "text": ["old", "Left", "Right", "done", "later"]
+    "id": "gfm-strike",
+    "canonical": "~~old~~ and current",
+    "selectors": ["del"],
+    "text": ["old", "current"]
   },
   {
     "id": "math",

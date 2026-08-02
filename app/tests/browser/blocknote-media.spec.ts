@@ -3,9 +3,9 @@ import { expect, test, type Page } from "./fixtures";
 test("local image, PDF, and file blocks preserve only opaque Markdown references", async ({
   page,
 }) => {
-  await openSpike(page);
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.insertMediaFixture());
-  expect((await readSnapshot(page)).blocks.map((block) => block.type)).toEqual(
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.insertMediaFixture());
+  expect((await readHarnessSnapshot(page)).blocks.map((block) => block.type)).toEqual(
     expect.arrayContaining(["koshImage", "koshPdf", "koshFileAttachment"]),
   );
 
@@ -34,22 +34,22 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
   const resizedWidth = await image.evaluate((element) => Number.parseInt(element.style.width, 10));
   expect(resizedWidth).toBeGreaterThan(beforeWidth - 5);
 
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setEditable(false));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setEditable(false));
   await image.focus();
   await page.keyboard.press("Alt+ArrowRight");
   await expect
     .poll(() => image.evaluate((element) => Number.parseInt(element.style.width, 10)))
     .toBe(resizedWidth);
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setEditable(true));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setEditable(true));
 
-  const snapshot = await readSnapshot(page);
+  const snapshot = await readHarnessSnapshot(page);
   const pdfBlock = snapshot.blocks.find((block) => block.type === "koshPdf")!;
   await page.locator(`.bn-block-outer[data-id="${pdfBlock.id}"]`).hover();
   await page.getByRole("button", { name: "Open block menu" }).click();
   await page.getByRole("menuitem", { name: "Move block up" }).click();
   await expect
     .poll(async () => {
-      const blocks = (await readSnapshot(page)).blocks;
+      const blocks = (await readHarnessSnapshot(page)).blocks;
       return blocks.findIndex((block) => block.id === pdfBlock.id);
     })
     .toBe(snapshot.blocks.findIndex((block) => block.id === pdfBlock.id) - 1);
@@ -77,7 +77,7 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
   expect(markdown).toContain("{{kosh:attachment:019f547b-6200-7000-8000-000000000103}}");
   expect(markdown).not.toMatch(/(?:blob:|data:|file:|\/Users\/)/u);
 
-  await page.evaluate((value) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(value), markdown);
+  await page.evaluate((value) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(value), markdown);
   await expect(page.locator("[data-kosh-image='true']")).toHaveCount(1);
   await expect(page.locator("[data-kosh-pdf='true']")).toHaveCount(1);
   await expect(page.locator("[data-kosh-file='true']")).toHaveCount(1);
@@ -87,8 +87,8 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
 test("paste, native-drop insertion, cancellation, and failure retain authored content", async ({
   page,
 }) => {
-  await openSpike(page);
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("Keep this text"));
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Keep this text"));
   await page.locator(".bn-inline-content").click();
   await page.evaluate(() => {
     const clipboard = new DataTransfer();
@@ -114,11 +114,11 @@ test("paste, native-drop insertion, cancellation, and failure retain authored co
 
   for (const outcome of ["cancel", "failure"] as const) {
     const requestId = await page.evaluate(() =>
-      window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+      window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
     );
     await expect(page.getByRole("status", { name: "Adding deferred image" })).toBeVisible();
     await page.evaluate(
-      ({ id, result }) => window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(id, result),
+      ({ id, result }) => window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(id, result),
       { id: requestId, result: outcome },
     );
     await expect(page.getByRole("status", { name: "Adding deferred image" })).toHaveCount(0);
@@ -161,17 +161,17 @@ test("read-only editors reject direct, deferred, pasted, and dropped media", asy
 });
 
 test("slow media ingest preserves the active writing cursor", async ({ page }) => {
-  await openSpike(page);
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("Original thought"));
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Original thought"));
   const requestId = await page.evaluate(() =>
-    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
   );
   await expect(page.getByRole("status", { name: "Adding deferred image" })).toBeVisible();
 
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.appendParagraph("Keep writing"));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph("Keep writing"));
   await page.keyboard.type(" while loading");
   await page.evaluate(
-    (id) => window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(id, "success"),
+    (id) => window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(id, "success"),
     requestId,
   );
   await expect(page.getByRole("status", { name: "Adding deferred image" })).toHaveCount(0);
@@ -186,18 +186,18 @@ test("deferred media inserts at the active caret without stealing it on completi
   page,
 }) => {
   await openSpike(page);
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("Before after"));
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setCursorOffset(6));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Before after"));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setCursorOffset(6));
 
   const requestId = await page.evaluate(() =>
-    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
   );
   await expect
-    .poll(async () => (await readSnapshot(page)).blocks.map((block) => block.type))
+    .poll(async () => (await readHarnessSnapshot(page)).blocks.map((block) => block.type))
     .toEqual(["paragraph", "koshPendingMedia", "paragraph"]);
   await page.keyboard.type("inserted");
   await page.evaluate(
-    (id) => window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(id, "success"),
+    (id) => window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(id, "success"),
     requestId,
   );
   await expect(page.locator("[data-kosh-image='true']")).toHaveCount(1);
@@ -278,36 +278,36 @@ test("overlapping deferred media restores one paragraph or preserves committed m
 });
 
 test("image and PDF retries restart status polling", async ({ page }) => {
-  await openSpike(page);
+  await openHarness(page);
 
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.installRetryMediaFixture("image"));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.installRetryMediaFixture("image"));
   const imageRetry = page.getByRole("button", { name: "Retry text recognition" });
   await expect(imageRetry).toBeVisible();
   const imageCallsBeforeRetry = await page.evaluate(() =>
-    window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("image"),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("image"),
   );
   await imageRetry.click();
   await expect(page.locator("[data-kosh-image='true']")).toContainText("Image text indexed");
   await expect
-    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("image")))
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("image")))
     .toBeGreaterThan(imageCallsBeforeRetry);
 
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.installRetryMediaFixture("pdf"));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.installRetryMediaFixture("pdf"));
   const pdfRetry = page.getByRole("button", { name: "Retry extraction" });
   await expect(pdfRetry).toBeVisible();
   const pdfCallsBeforeRetry = await page.evaluate(() =>
-    window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("pdf"),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("pdf"),
   );
   await pdfRetry.click();
   await expect(page.locator("[data-kosh-pdf='true']")).toContainText("12 pages · 12 searchable");
   await expect
-    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("pdf")))
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("pdf")))
     .toBeGreaterThan(pdfCallsBeforeRetry);
 });
 
 test("the restricted slash menu inserts media through the local controller", async ({ page }) => {
-  await openSpike(page);
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.appendParagraph());
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph());
   await page.keyboard.type("/image");
   await page.getByRole("option", { name: "Image" }).click();
 
@@ -317,23 +317,23 @@ test("the restricted slash menu inserts media through the local controller", asy
     .toContain("{{kosh:image:019f547b-6200-7000-8000-000000000101");
 });
 
-interface SpikeBlock {
+interface HarnessBlock {
   id: string;
   props: Record<string, unknown>;
   type: string;
 }
 
-async function openSpike(page: Page) {
-  await page.goto("/blocknote-spike.html");
-  await page.waitForFunction(() => window.__KOSH_BLOCKNOTE_SPIKE__?.capability === "blocknote");
+async function openHarness(page: Page) {
+  await page.goto("/editor-harness.html");
+  await page.waitForFunction(() => window.__KOSH_BLOCKNOTE_HARNESS__?.capability === "blocknote");
 }
 
-async function readSnapshot(page: Page): Promise<{ blocks: SpikeBlock[] }> {
-  return page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.snapshot()) as Promise<{
-    blocks: SpikeBlock[];
+async function readHarnessSnapshot(page: Page): Promise<{ blocks: HarnessBlock[] }> {
+  return page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot()) as Promise<{
+    blocks: HarnessBlock[];
   }>;
 }
 
 async function editorMarkdown(page: Page): Promise<string> {
-  return page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.markdown());
+  return page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown());
 }

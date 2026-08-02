@@ -122,7 +122,7 @@ test("delete flushes the latest note and Undo restores it immediately", async ({
     await page.evaluate(async () => {
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
-      return (await backend.listTidbits({ cursor: null, limit: 10, scope: "DELETED" })).items;
+      return (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "DELETED" })).items;
     }),
   ).toEqual([
     expect.objectContaining({

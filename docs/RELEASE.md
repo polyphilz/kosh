@@ -19,8 +19,6 @@ build because it does not stage or verify the pinned native sidecars.
 - The 232,883,776-byte embedding model is not bundled. Capture and lexical
   search work without it; Kosh downloads and verifies it only after explicit
   semantic setup.
-- Research is optional. It uses a separately installed and authenticated
-  `claude` CLI and never enables web search.
 - Production data is outside the app bundle under macOS Application Support.
   Replacing `Kosh.app` must never replace or reset that data.
 
@@ -121,7 +119,7 @@ The native executable embeds its source commit, and the lane rejects a bundle
 whose embedded commit differs from the checkout under test. Release build and
 smoke commands also reject modified, staged, or untracked source, while ignored
 local data remains allowed. The lane also checks current migrations,
-WAL/integrity, and operation without Claude or a semantic model.
+WAL/integrity, and operation without a semantic model.
 
 ## 3. Run release acceptance
 
@@ -137,10 +135,9 @@ against the exact candidate. The profiles live beneath ignored
 `app/.data/release-acceptance/`; commands reject existing or out-of-scope
 profiles and never point the candidate at production data.
 
-The required record covers clean capture and lexical search without
-Claude/model, Quick Add, code/math, image OCR, PDF search, hybrid search,
-grounded Research citations, restart, previous-release migration, a verified
-pre-migration snapshot, and restoration into a separate replacement profile.
+The required record covers clean capture and lexical search without a semantic
+model, Quick Add, code/math, image OCR, PDF search, hybrid search, grounded
+citations, restart, and restoration into a separate replacement profile.
 Do not claim a UI journey from database checks alone.
 
 If off-site recovery is configured for the release, also complete the packaged
@@ -241,31 +238,21 @@ Use the copy under `/Applications`, not the build directory.
 - Run exact lexical search and open its resolved citation.
 - Add a real image and PDF; wait for extraction and search their text.
 - Prepare semantic search, run a paraphrase, and open the exact cited passage.
-- If Claude is configured, run Research and open every citation.
 - Quit with `Cmd+Q`, reopen, and confirm all durable content survives.
-- Confirm capture and lexical search still work with Claude unavailable and
-  while semantic setup is unavailable.
-- Quit and confirm no Kosh, `llama-server`, `litestream`, PDF worker, or Claude
+- Confirm capture and lexical search still work while semantic setup is
+  unavailable.
+- Quit and confirm no Kosh, `llama-server`, `litestream`, or PDF worker
   subprocess remains.
 - Use **Kosh → Check for Updates…** and confirm the current-version result.
 - Confirm disabling automatic update checks in Settings survives restart;
   manual checks must remain available.
 
-GUI apps do not inherit a login shell's `PATH`. Kosh probes
-`~/.local/bin/claude`, `~/.claude/local/claude`,
-`/opt/homebrew/bin/claude`, and `/usr/local/bin/claude` before inherited
-`PATH`. The packaged acceptance launcher supplies a minimal path and exposes
-an existing CLI through the first home-local location. Its
-`--without-claude` mode sets an explicit discovery disable and is mandatory for
-the clean-core lane.
-
 ## Rollback and recovery boundary
 
-Reinstalling an older app does not roll back a migrated database. If an
-upgrade fails, quit Kosh and preserve the failed Application Support directory
-plus logs. Inspect the newest `safety-snapshots/migration-*` manifest before
-copying anything. The acceptance recovery command operates only on ignored
-test profiles; it is not authorization to overwrite production data.
+This hard-cutover release accepts only its current schema. Pre-cutover
+development profiles are intentionally unsupported and should be recreated.
+The acceptance recovery command operates only on ignored test profiles; it is
+not authorization to overwrite user data.
 
 The package contains the pinned Litestream executable, the opt-in
 single-writer backup runtime, exact checkpoint preview/drill controls, and the

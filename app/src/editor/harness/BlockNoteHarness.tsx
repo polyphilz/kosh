@@ -19,32 +19,32 @@ import {
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
 import { useEffect, useMemo } from "react";
-import { createBlockNoteMediaController } from "../../editor/mediaController";
-import { KoshMediaActionsProvider, type KoshMediaActions } from "../../editor/mediaBlocks";
+import { createBlockNoteMediaController } from "../mediaController";
+import { KoshMediaActionsProvider, type KoshMediaActions } from "../mediaBlocks";
 import {
-  installSpikeBridge,
+  installHarnessBridge,
   mediaFixtureRecords,
-  type BlockNoteSpikeMediaHarness,
-  type BlockNoteSpikeMediaKind,
+  type BlockNoteHarnessMediaHarness,
+  type BlockNoteHarnessMediaKind,
 } from "./bridge";
 import {
-  initialSpikeBlocks,
-  koshSpikeSchema,
-  supportedSpikeBlockTypes,
-  supportedSpikeInlineTypes,
-  supportedSpikeStyleTypes,
-  type KoshSpikeEditor,
-  type KoshSpikePartialBlock,
+  initialHarnessBlocks,
+  koshHarnessSchema,
+  supportedHarnessBlockTypes,
+  supportedHarnessInlineTypes,
+  supportedHarnessStyleTypes,
+  type KoshHarnessEditor,
+  type KoshHarnessPartialBlock,
 } from "./schema";
 
-export interface BlockNoteSpikeProps {
+export interface BlockNoteHarnessProps {
   theme: "light" | "dark";
 }
 
-export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
+export function BlockNoteHarness({ theme }: BlockNoteHarnessProps) {
   const editor = useCreateBlockNote({
-    schema: koshSpikeSchema,
-    initialContent: initialSpikeBlocks,
+    schema: koshHarnessSchema,
+    initialContent: initialHarnessBlocks,
     tabBehavior: "prefer-indent",
   });
   const mediaController = useMemo(() => createBlockNoteMediaController(editor), [editor]);
@@ -52,16 +52,16 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
     () => restrictedSlashItems(editor, mediaController),
     [editor, mediaController],
   );
-  const mediaHarness = useMemo(() => createSpikeMediaHarness(), []);
+  const mediaHarness = useMemo(() => createHarnessMediaHarness(), []);
 
   useEffect(
     () =>
-      installSpikeBridge(
+      installHarnessBridge(
         editor,
         {
-          blocks: supportedSpikeBlockTypes,
-          inlineContent: supportedSpikeInlineTypes,
-          styles: supportedSpikeStyleTypes,
+          blocks: supportedHarnessBlockTypes,
+          inlineContent: supportedHarnessInlineTypes,
+          styles: supportedHarnessStyleTypes,
         },
         mediaController,
         mediaHarness,
@@ -77,7 +77,7 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
     <MantineProvider forceColorScheme={theme}>
       <KoshMediaActionsProvider actions={mediaHarness.actions}>
         <main
-          className="kosh-blocknote-spike"
+          className="kosh-editor-harness"
           data-theme={theme}
           onDropCapture={(event) => {
             if (![...(event.dataTransfer?.types ?? [])].includes("application/x-kosh-media")) {
@@ -93,7 +93,7 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
             )
           }
         >
-          <p className="kosh-blocknote-spike__label">Isolated BlockNote feasibility harness</p>
+          <p className="kosh-editor-harness__label">Isolated BlockNote editor harness</p>
           <BlockNoteView
             comments={false}
             editor={editor}
@@ -109,7 +109,7 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
               getItems={async (query) => filterSuggestionItems(slashItems, query)}
               triggerCharacter="/"
             />
-            <SideMenuController sideMenu={KoshSpikeSideMenu} />
+            <SideMenuController sideMenu={KoshHarnessSideMenu} />
           </BlockNoteView>
         </main>
       </KoshMediaActionsProvider>
@@ -117,21 +117,21 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
   );
 }
 
-interface SpikeMediaHarness extends BlockNoteSpikeMediaHarness {
+interface HarnessMediaHarness extends BlockNoteHarnessMediaHarness {
   actions: KoshMediaActions;
 }
 
-function createSpikeMediaHarness(): SpikeMediaHarness {
+function createHarnessMediaHarness(): HarnessMediaHarness {
   const records = mediaFixtureRecords();
   const image = records[0]!.recordKind === "IMAGE" ? records[0].record : null;
   const pdf = records[1]!.recordKind === "PDF" ? records[1].record : null;
   const file = records[2]!.recordKind === "GENERIC" ? records[2].record : null;
-  if (!image || !pdf || !file) throw new Error("Invalid media spike fixtures");
-  const phases: Record<BlockNoteSpikeMediaKind, "FAILED" | "PENDING" | "READY"> = {
+  if (!image || !pdf || !file) throw new Error("Invalid editor harness media fixtures");
+  const phases: Record<BlockNoteHarnessMediaKind, "FAILED" | "PENDING" | "READY"> = {
     image: "READY",
     pdf: "READY",
   };
-  const statusCalls: Record<BlockNoteSpikeMediaKind, number> = { image: 0, pdf: 0 };
+  const statusCalls: Record<BlockNoteHarnessMediaKind, number> = { image: 0, pdf: 0 };
   const actions: KoshMediaActions = {
     attachmentStatus: async (attachmentId) => ({
       attachmentId,
@@ -214,7 +214,7 @@ function createSpikeMediaHarness(): SpikeMediaHarness {
   };
 }
 
-function KoshSpikeDragMenu() {
+function KoshHarnessDragMenu() {
   return (
     <DragHandleMenu>
       <KoshMoveBlockItem direction="up" />
@@ -226,7 +226,7 @@ function KoshSpikeDragMenu() {
 
 function KoshMoveBlockItem({ direction }: { direction: "down" | "up" }) {
   const Components = useComponentsContext()!;
-  const editor = useBlockNoteEditor(koshSpikeSchema);
+  const editor = useBlockNoteEditor(koshHarnessSchema);
   const hoveredBlock = useExtensionState(SideMenuExtension, {
     editor,
     selector: (state) => state?.block,
@@ -248,7 +248,7 @@ function KoshMoveBlockItem({ direction }: { direction: "down" | "up" }) {
 
 function KoshRemoveBlockItem() {
   const Components = useComponentsContext()!;
-  const editor = useBlockNoteEditor(koshSpikeSchema);
+  const editor = useBlockNoteEditor(koshHarnessSchema);
   const hoveredBlock = useExtensionState(SideMenuExtension, {
     editor,
     selector: (state) => state?.block,
@@ -281,17 +281,17 @@ function KoshRemoveBlockItem() {
   );
 }
 
-function KoshSpikeSideMenu(properties: SideMenuProps) {
+function KoshHarnessSideMenu(properties: SideMenuProps) {
   return (
     <SideMenu {...properties}>
-      <KoshSpikeDragHandleButton />
+      <KoshHarnessDragHandleButton />
     </SideMenu>
   );
 }
 
-function KoshSpikeDragHandleButton() {
+function KoshHarnessDragHandleButton() {
   const Components = useComponentsContext()!;
-  const editor = useBlockNoteEditor(koshSpikeSchema);
+  const editor = useBlockNoteEditor(koshHarnessSchema);
   const sideMenu = useExtension(SideMenuExtension, { editor });
   const hoveredBlock = useExtensionState(SideMenuExtension, {
     editor,
@@ -324,13 +324,13 @@ function KoshSpikeDragHandleButton() {
           onDragStart={(event) => sideMenu.blockDragStart(event, hoveredBlock)}
         />
       </Components.Generic.Menu.Trigger>
-      <KoshSpikeDragMenu />
+      <KoshHarnessDragMenu />
     </Components.Generic.Menu.Root>
   );
 }
 
 function restrictedSlashItems(
-  editor: KoshSpikeEditor,
+  editor: KoshHarnessEditor,
   mediaController: ReturnType<typeof createBlockNoteMediaController>,
 ): DefaultReactSuggestionItem[] {
   return [
@@ -363,7 +363,7 @@ function restrictedSlashItems(
 }
 
 function mediaItem(
-  editor: KoshSpikeEditor,
+  editor: KoshHarnessEditor,
   controller: ReturnType<typeof createBlockNoteMediaController>,
   title: string,
   alias: string,
@@ -385,9 +385,9 @@ function mediaItem(
 }
 
 function blockItem(
-  editor: KoshSpikeEditor,
+  editor: KoshHarnessEditor,
   title: string,
-  block: KoshSpikePartialBlock,
+  block: KoshHarnessPartialBlock,
   aliases: string[],
 ): DefaultReactSuggestionItem {
   return {

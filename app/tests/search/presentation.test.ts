@@ -15,7 +15,6 @@ describe("search presentation", () => {
         [
           { field: "BODY", startChar: 2, endChar: 7 },
           { field: "BODY", startChar: 8, endChar: 12 },
-          { field: "TITLE", startChar: 0, endChar: 1 },
         ],
         ["BODY"],
       ),
@@ -53,7 +52,6 @@ describe("search presentation", () => {
         id: "tidbit-1",
         revisionId: "revision-3",
         revisionNumber: 3,
-        title: "Proof",
         displayTitle: "Proof",
         deleted: false,
       },
@@ -107,7 +105,6 @@ describe("search presentation", () => {
         id: "tidbit-code",
         revisionId: "revision-code",
         revisionNumber: 1,
-        title: null,
         displayTitle: "Code sample",
         deleted: false,
       },

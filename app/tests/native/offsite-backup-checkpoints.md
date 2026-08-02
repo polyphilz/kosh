@@ -1,17 +1,16 @@
 # Complete off-site checkpoint protocol
 
-Main migration V20 adds a durable content clock and an append-only checkpoint
-state machine. V21 persists each checkpoint's exact media snapshot so even a
-large library can be validated with bounded keyset pages instead of being
-materialized in process memory, requires that STRICT table during startup
-schema validation, and transactionally reclaims its child rows when the
-checkpoint becomes `PUBLISHED` or `FAILED`. The checkpoint header retains its
-aggregate evidence without checkpoint-by-media growth. Every recoverable
+The canonical main schema includes a durable content clock, append-only
+checkpoint state machine, and each checkpoint's exact media snapshot. Even a
+large library can therefore be validated with bounded keyset pages instead of
+being materialized in process memory. Snapshot rows are reclaimed when a
+checkpoint becomes `PUBLISHED` or `FAILED`, while the checkpoint header keeps
+its aggregate evidence without checkpoint-by-media growth. Every recoverable
 main-database mutation advances the clock in the same SQLite transaction.
-Startup compares every content-clock trigger and its clock delete guard against
-the embedded checksummed V20 definitions, rejecting missing or altered
-definitions. Backup configuration and checkpoint bookkeeping are excluded, so
-publishing a checkpoint cannot recursively schedule another one.
+Startup checks every content-clock trigger and its delete guard against the
+embedded canonical definitions, rejecting missing or altered definitions.
+Backup configuration and checkpoint bookkeeping are excluded, so publishing a
+checkpoint cannot recursively schedule another one.
 
 ## Publication contract
 
@@ -96,7 +95,7 @@ The native suite proves:
 - media references persist with the PREPARED row and keyset-page as 8/8/3 for
   a 19-object snapshot, with oversized page requests rejected and child rows
   reclaimed on terminal transitions while aggregate evidence remains;
-- startup rejects a migrated database whose required V21 STRICT snapshot table
+- startup rejects a database whose required STRICT snapshot table
   is absent;
 - startup classifies incomplete attempts as failed;
 - quiet-time and maximum-delay scheduling boundaries are exact;
@@ -124,6 +123,6 @@ cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
   --features test-support --lib checkpoint
 ```
 
-The full native suite additionally proves migration compatibility, transactional
-media enqueueing, supervised Litestream behavior, release contracts, and
-headless startup.
+The full native suite additionally proves canonical-schema integrity,
+transactional media enqueueing, supervised Litestream behavior, release
+contracts, and headless startup.

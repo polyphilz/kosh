@@ -103,16 +103,24 @@ const evidence = {
   attachments: numberSql(main, "SELECT count(*) FROM attachment"),
   mediaBlobs: numberSql(media, "SELECT count(*) FROM media_blob"),
   searchDocuments: numberSql(main, "SELECT count(*) FROM passage_search_document"),
-  legacyResearchCitations: numberSql(
+  historicalCitations: numberSql(
     main,
-    "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0) FROM research_run WHERE final_answer_json IS NOT NULL",
+    `SELECT count(*)
+     FROM passage
+     JOIN tidbit ON tidbit.id = passage.tidbit_id
+     WHERE passage.revision_id <> tidbit.current_revision_id
+       AND EXISTS (
+         SELECT 1
+         FROM tidbit_revision_source
+         WHERE tidbit_revision_source.revision_id = passage.revision_id
+       )`,
   ),
 };
 assert(evidence.activeTidbits >= 2, "restored package lost tidbits");
 assert(evidence.revisions >= 3, "restored package lost immutable revisions");
 assert(evidence.attachments >= 1 && evidence.mediaBlobs >= 1, "restored package lost media");
 assert(evidence.searchDocuments >= 2, "restored package lost rebuilt lexical search");
-assert(evidence.legacyResearchCitations >= 1, "restored package lost legacy citation history");
+assert(evidence.historicalCitations >= 1, "restored package lost historical note citations");
 writeFileSync(
   reportPath,
   `${JSON.stringify(

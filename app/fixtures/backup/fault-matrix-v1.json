@@ -3,13 +3,6 @@
   "description": "Deterministic off-site snapshot, replication, checkpoint, restore, and clean-reopen fault coverage.",
   "cases": [
     {
-      "id": "snapshot-before-migration",
-      "phase": "snapshot",
-      "failureClass": "crash-boundary",
-      "test": "database::safety_snapshot::tests::pending_migration_publishes_verified_pre_migration_pair_before_changes",
-      "invariants": ["authored-bytes", "citation-provenance", "idempotency"]
-    },
-    {
       "id": "snapshot-retained-media-hash",
       "phase": "snapshot",
       "failureClass": "corruption",
@@ -220,19 +213,6 @@
       "invariants": ["media-immutability", "bounded-cleanup"]
     },
     {
-      "id": "restore-clean-directory",
-      "phase": "restore",
-      "failureClass": "retry",
-      "test": "backup::restore::tests::clean_directory_install_is_idempotent_and_restores_search_citations_and_media",
-      "invariants": [
-        "authored-bytes",
-        "citation-provenance",
-        "media-immutability",
-        "search-rebuildability",
-        "idempotency"
-      ]
-    },
-    {
       "id": "restore-nonmutating-drill",
       "phase": "restore",
       "failureClass": "filesystem",
@@ -287,41 +267,6 @@
       "failureClass": "filesystem",
       "test": "backup::restore::tests::staging_rejection_never_claims_or_cleans_an_existing_library",
       "invariants": ["authored-bytes", "media-immutability", "bounded-cleanup"]
-    },
-    {
-      "id": "install-partial-pair-rollback",
-      "phase": "install",
-      "failureClass": "crash-boundary",
-      "test": "database::restore_install::tests::recovery_rolls_back_a_partially_installed_pair_without_a_receipt",
-      "invariants": ["authored-bytes", "idempotency"]
-    },
-    {
-      "id": "install-complete-unreceipted-rollback",
-      "phase": "install",
-      "failureClass": "crash-boundary",
-      "test": "database::restore_install::tests::recovery_rolls_back_a_complete_installed_pair_without_a_receipt",
-      "invariants": ["authored-bytes", "idempotency"]
-    },
-    {
-      "id": "install-receipt-fsync-failure",
-      "phase": "install",
-      "failureClass": "filesystem",
-      "test": "database::restore_install::tests::receipt_persistence_failure_rolls_back_the_installed_pair",
-      "invariants": ["authored-bytes", "idempotency"]
-    },
-    {
-      "id": "install-receipted-reopen",
-      "phase": "install",
-      "failureClass": "retry",
-      "test": "database::restore_install::tests::recovery_keeps_a_receipted_pair_and_only_cleans_transaction_debris",
-      "invariants": ["authored-bytes", "idempotency", "bounded-cleanup"]
-    },
-    {
-      "id": "install-pre-restore-snapshot",
-      "phase": "install",
-      "failureClass": "filesystem",
-      "test": "backup::restore::tests::replacing_an_existing_pair_creates_a_verified_pre_restore_snapshot",
-      "invariants": ["authored-bytes", "idempotency"]
     },
     {
       "id": "install-clean-target-race",
@@ -427,10 +372,10 @@
       ]
     },
     {
-      "id": "reopen-historical-research-citation",
+      "id": "reopen-historical-note-citation",
       "phase": "reopen",
       "failureClass": "stale-state",
-      "test": "database::tests::durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_tables",
+      "test": "backup::canary::historical_canary_evidence_requires_exact_locator_and_source_provenance",
       "invariants": ["authored-bytes", "citation-provenance"]
     },
     {

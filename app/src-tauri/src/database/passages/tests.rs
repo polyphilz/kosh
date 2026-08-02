@@ -4,9 +4,8 @@ use tempfile::TempDir;
 use super::{deterministic_passage_id, CitationLocator, CitationState};
 use crate::database::{
     connection::{self, DatabaseKind, FileState},
-    tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    Database, DatabasePaths, DeleteTidbitInput, EditTidbitInput, RestoreTidbitInput, SourceDraft,
-    TidbitDraft,
+    tidbits::CreateTidbitWrite,
+    Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput, SourceDraft, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -57,7 +56,6 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
         .client()
         .create_tidbit(CreateTidbitWrite {
             input: TidbitDraft {
-                title: None,
                 body_markdown:
                     "# Heat\n\nHeat is impatient motion.\n\nTemperature is a distribution.".into(),
                 sources: vec![SourceDraft {
@@ -90,7 +88,7 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("FTS status");
-    assert_eq!(fts_status, ("IDLE".into(), "lexical-v3".into()));
+    assert_eq!(fts_status, ("IDLE".into(), "lexical-v4".into()));
 
     let heading = library
         .database
@@ -125,25 +123,32 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
         "# Heat\n"
     );
 
-    let edited = library
-        .database
-        .client()
-        .edit_tidbit(EditTidbitWrite {
-            input: EditTidbitInput {
-                id: created.id.clone(),
-                expected_revision_id: created.current_revision_id,
-                title: Some("Revised heat".into()),
-                body_markdown: "# Heat\n\nA revised observation.".into(),
-                sources: vec![SourceDraft {
-                    label: Some("Second notebook".into()),
-                    url: Some("https://example.com/second".into()),
-                }],
-            },
-            now_ms: 11,
-            revision_id: "019f547b-6200-7000-8000-000000002004".into(),
-            source_ids: vec!["019f547b-6200-7000-8000-000000002005".into()],
-        })
-        .expect("edit cited tidbit");
+    let client = library.database.client();
+    client
+        .save_working_copy_for_test(
+            created.id.clone(),
+            Some(created.current_revision_id),
+            1,
+            "# Heat\n\nA revised observation.".into(),
+            vec![SourceDraft {
+                label: Some("Second notebook".into()),
+                url: Some("https://example.com/second".into()),
+            }],
+            11,
+            false,
+        )
+        .expect("save cited edit");
+    let edited = client
+        .checkpoint_working_copy_for_test(
+            created.id,
+            1,
+            12,
+            "019f547b-6200-7000-8000-000000002004".into(),
+            vec!["019f547b-6200-7000-8000-000000002005".into()],
+        )
+        .expect("checkpoint cited edit")
+        .note
+        .expect("edited cited note");
     let second_passages = library.active_passage_ids(tidbit_id);
     assert_eq!(second_passages.len(), 2);
     assert!(first_passages
@@ -318,307 +323,5 @@ fn attachment_citations_resolve_typed_file_and_line_provenance() {
             start_line: 4,
             end_line: 7,
         }
-    );
-}
-
-#[test]
-fn startup_reconciles_preexisting_revisions_and_retains_old_builder_versions() {
-    let root = tempfile::tempdir().expect("temporary upgraded library");
-    let paths = DatabasePaths::new(root.path());
-    drop(Database::initialize(paths.clone()).expect("initial schema"));
-    let connection = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("pre-upgrade writer");
-    connection
-        .execute_batch(
-            "BEGIN;
-             INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-             VALUES(
-                '019f547b-6200-7000-8000-000000002201',
-                10, 10, '019f547b-6200-7000-8000-000000002202'
-             );
-             INSERT INTO tidbit_revision(
-                id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002202',
-                '019f547b-6200-7000-8000-000000002201',
-                1, 10,
-                'Earlier {{kosh:attachment:019f547b-6200-7000-8000-000000002204;caption=Useful%20appendix}}',
-                zeroblob(32)
-             );
-             INSERT INTO passage(
-                id, tidbit_revision_id, owner_kind, ordinal, content,
-                content_hash, locator_kind, locator_json, created_at,
-                construction_version, heading_context_json
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002203',
-                '019f547b-6200-7000-8000-000000002202',
-                'AUTHOR', 0,
-                'Earlier {{kosh:attachment:019f547b-6200-7000-8000-000000002204;caption=Useful%20appendix}}',
-                zeroblob(32), 'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10,
-                'markdown-blocks-v1', '[]'
-             );
-             COMMIT;",
-        )
-        .expect("preexisting revision and legacy passage");
-    drop(connection);
-
-    let upgraded = Database::initialize(paths).expect("library opens before reconciliation");
-    upgraded
-        .client()
-        .reconcile_author_passages()
-        .expect("reconcile passage versions");
-    let active_ids = {
-        let connection = upgraded
-            .open_main_read_only()
-            .expect("read reconciled library");
-        let mut statement = connection
-            .prepare("SELECT passage_id FROM active_passage ORDER BY passage_id")
-            .expect("active passage query");
-        statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("active rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("active IDs")
-    };
-    assert_eq!(active_ids.len(), 1);
-    let passage_count: i64 = upgraded
-        .open_main_read_only()
-        .expect("read retained passage versions")
-        .query_row(
-            "SELECT count(*)
-             FROM passage
-             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000002202'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("passage version count");
-    assert_eq!(passage_count, 2);
-    let reconciled = upgraded
-        .client()
-        .resolve_citation(active_ids[0].clone())
-        .expect("reconciled citation");
-    assert_eq!(reconciled.state, CitationState::Current);
-    assert_eq!(reconciled.excerpt, "Earlier Useful appendix");
-    let legacy = upgraded
-        .client()
-        .resolve_citation("019f547b-6200-7000-8000-000000002203".into())
-        .expect("legacy citation remains resolvable");
-    assert_eq!(legacy.state, CitationState::Historical);
-    let CitationLocator::MarkdownBlocks {
-        source_start_byte,
-        source_end_byte,
-        ..
-    } = legacy.locator
-    else {
-        panic!("legacy author citation needs a Markdown locator");
-    };
-    assert_eq!(source_start_byte, None);
-    assert_eq!(source_end_byte, None);
-}
-
-#[test]
-fn empty_legacy_revisions_are_reconciled_without_blocking_valid_content() {
-    let root = tempfile::tempdir().expect("temporary recoverable library");
-    let paths = DatabasePaths::new(root.path());
-    drop(Database::initialize(paths.clone()).expect("initial schema"));
-    let connection = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("legacy writer");
-    connection
-        .execute_batch(
-            "BEGIN;
-             INSERT INTO tidbit(
-                id, created_at, updated_at, deleted_at, current_revision_id
-             )
-             VALUES(
-                '019f547b-6200-7000-8000-000000002301',
-                10, 11, NULL, '019f547b-6200-7000-8000-000000002302'
-             );
-             INSERT INTO tidbit_revision(
-                id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002302',
-                '019f547b-6200-7000-8000-000000002301',
-                1, 10, '', zeroblob(32)
-             );
-             INSERT INTO tidbit(
-                id, created_at, updated_at, deleted_at, current_revision_id
-             )
-             VALUES(
-                '019f547b-6200-7000-8000-000000002303',
-                20, 21, 21, '019f547b-6200-7000-8000-000000002304'
-             );
-             INSERT INTO tidbit_revision(
-                id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002304',
-                '019f547b-6200-7000-8000-000000002303',
-                1, 20, 'Valid evidence behind the malformed revision.', zeroblob(32)
-             );
-             COMMIT;",
-        )
-        .expect("malformed legacy revision");
-    drop(connection);
-
-    let opened = Database::initialize(paths).expect("authored library remains available");
-    let tidbit = opened
-        .client()
-        .load_tidbit("019f547b-6200-7000-8000-000000002301".into())
-        .expect("authored content loads");
-    assert_eq!(tidbit.body_markdown, "");
-    opened
-        .client()
-        .reconcile_author_passages()
-        .expect("reconcile empty and valid revisions");
-    opened
-        .client()
-        .reconcile_author_passages()
-        .expect("empty revision marker makes reconciliation idempotent");
-    let (status, error, empty_markers): (String, Option<String>, i64) = opened
-        .open_main_read_only()
-        .expect("read passage build state")
-        .query_row(
-            "SELECT
-                status,
-                error,
-                (SELECT count(*)
-                 FROM empty_author_passage_revision
-                 WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000002302')
-             FROM index_state
-             WHERE name = 'PASSAGE_BUILD'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("passage build status");
-    assert_eq!(status, "IDLE");
-    assert_eq!(error, None);
-    assert_eq!(empty_markers, 1);
-
-    let restored_valid = opened
-        .client()
-        .restore_tidbit(
-            RestoreTidbitInput {
-                id: "019f547b-6200-7000-8000-000000002303".into(),
-                expected_revision_id: "019f547b-6200-7000-8000-000000002304".into(),
-            },
-            22,
-        )
-        .expect("valid revision restores with on-demand passages");
-    assert_eq!(restored_valid.deleted_at_ms, None);
-    let (valid_active, malformed_active): (i64, i64) = opened
-        .open_main_read_only()
-        .expect("read restored active passages")
-        .query_row(
-            "SELECT
-                (SELECT count(*) FROM active_passage
-                 WHERE tidbit_id = '019f547b-6200-7000-8000-000000002303'),
-                (SELECT count(*) FROM active_passage
-                 WHERE tidbit_id = '019f547b-6200-7000-8000-000000002301')",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("restored passage counts");
-    assert_eq!((valid_active, malformed_active), (1, 0));
-}
-
-#[test]
-fn passage_backfill_is_bounded_and_resumable_between_batches() {
-    let root = tempfile::tempdir().expect("temporary batched library");
-    let paths = DatabasePaths::new(root.path());
-    drop(Database::initialize(paths.clone()).expect("initial schema"));
-    let mut connection =
-        connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
-            .expect("batch writer");
-    let transaction = connection
-        .transaction()
-        .expect("legacy fixture transaction");
-    for index in 0..30_u64 {
-        let tidbit_id = format!("019f547b-6200-7000-8000-{:012x}", 0x2_400 + index * 2);
-        let revision_id = format!("019f547b-6200-7000-8000-{:012x}", 0x2_401 + index * 2);
-        transaction
-            .execute(
-                "INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-                 VALUES(?1, ?2, ?2, ?3)",
-                params![tidbit_id, index as i64 + 1, revision_id],
-            )
-            .expect("legacy tidbit");
-        transaction
-            .execute(
-                "INSERT INTO tidbit_revision(
-                    id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-                 ) VALUES(?1, ?2, 1, ?3, ?4, zeroblob(32))",
-                params![
-                    revision_id,
-                    tidbit_id,
-                    index as i64 + 1,
-                    format!("Legacy evidence {index}.")
-                ],
-            )
-            .expect("legacy revision");
-    }
-    transaction.commit().expect("legacy fixtures");
-
-    assert!(super::reconcile_author_passage_batch(&mut connection, 7).expect("first batch"));
-    let first_count: i64 = connection
-        .query_row(
-            "SELECT count(*)
-             FROM passage
-             WHERE owner_kind = 'AUTHOR'
-               AND construction_version = 'markdown-blocks-v2'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("first batch count");
-    assert_eq!(first_count, 7);
-    let first_status: (String, Option<String>) = connection
-        .query_row(
-            "SELECT status, cursor FROM index_state WHERE name = 'PASSAGE_BUILD'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("first batch status");
-    assert_eq!(first_status.0, "DIRTY");
-    assert!(first_status.1.is_some());
-
-    assert!(super::reconcile_author_passage_batch(&mut connection, 7).expect("second batch"));
-    let second_count: i64 = connection
-        .query_row(
-            "SELECT count(*)
-             FROM passage
-             WHERE owner_kind = 'AUTHOR'
-               AND construction_version = 'markdown-blocks-v2'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("second batch count");
-    assert_eq!(second_count, 14);
-
-    while super::reconcile_author_passage_batch(&mut connection, 7).expect("remaining batch") {}
-    let final_state: (i64, i64, String, String, Option<String>) = connection
-        .query_row(
-            "SELECT
-                (SELECT count(*) FROM passage
-                 WHERE owner_kind = 'AUTHOR'
-                   AND construction_version = 'markdown-blocks-v2'),
-                (SELECT count(*) FROM active_passage),
-                version,
-                status,
-                cursor
-             FROM index_state
-             WHERE name = 'PASSAGE_BUILD'",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .expect("final batch state");
-    assert_eq!(
-        final_state,
-        (30, 30, "markdown-blocks-v2".into(), "IDLE".into(), None)
     );
 }

@@ -24,7 +24,6 @@ pub struct EvaluationPassage {
     pub owner_kind: EvaluationOwnerKind,
     pub tidbit_id: Option<String>,
     pub evidence_attachment_id: Option<String>,
-    pub title: Option<String>,
     #[serde(default)]
     pub heading_context: Vec<String>,
     pub content: String,

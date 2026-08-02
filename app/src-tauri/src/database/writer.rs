@@ -22,7 +22,6 @@ use super::{
         OffsiteBackupConfig, OffsiteBackupConfigIntent, OffsiteBackupTakeoverIntent,
         SaveOffsiteBackupConfigInput,
     },
-    drafts::{ClearDraftInput, Draft, SaveDraftWrite},
     embedding_index::{
         InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
     },
@@ -47,11 +46,7 @@ use super::{
         PassageSearchResult, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
     },
     settings::{SetAutomaticUpdateChecksInput, SetShortcutSettingsInput, ShortcutSettings},
-    tidbits::{
-        CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitRevisionsInput,
-        ListTidbitsInput, PurgeTidbitInput, RestoreTidbitInput, Tidbit, TidbitListPage,
-        TidbitRevision, TidbitRevisionPage,
-    },
+    tidbits::{CreateTidbitWrite, DeleteTidbitInput, RestoreTidbitInput, Tidbit},
     working_copies::{
         CheckpointWorkingCopyWrite, DiscardWorkingCopyInput, SaveWorkingCopyWrite, WorkingCopy,
         WorkingCopyCheckpointResult, WorkingCopySaveResult,
@@ -226,9 +221,6 @@ pub(super) enum WriterMessage {
     ReconcileFts {
         reply: SyncSender<Result<bool>>,
     },
-    ReconcileAuthorPassages {
-        reply: SyncSender<Result<()>>,
-    },
     MaintenanceSnapshot {
         reply: SyncSender<Result<MaintenanceDatabaseSnapshot>>,
     },
@@ -243,7 +235,6 @@ pub(super) enum WriterMessage {
         now_ms: i64,
         reply: SyncSender<Result<ExtractionRetryReport>>,
     },
-    ReconcileAuthorPassageBatch,
     LoadEmbeddingReconciliationBatch {
         limit: u32,
         reply: SyncSender<Result<Vec<PendingPassageEmbedding>>>,
@@ -378,26 +369,9 @@ pub(super) enum WriterMessage {
         id: String,
         reply: SyncSender<Result<Tidbit>>,
     },
-    ListTidbits {
-        input: ListTidbitsInput,
-        reply: SyncSender<Result<TidbitListPage>>,
-    },
-    ListTidbitRevisions {
-        input: ListTidbitRevisionsInput,
-        reply: SyncSender<Result<TidbitRevisionPage>>,
-    },
-    LoadTidbitRevision {
-        tidbit_id: String,
-        revision_id: String,
-        reply: SyncSender<Result<TidbitRevision>>,
-    },
     LoadSourceUrl {
         source_id: String,
         reply: SyncSender<Result<String>>,
-    },
-    EditTidbit {
-        write: EditTidbitWrite,
-        reply: SyncSender<Result<Tidbit>>,
     },
     DeleteTidbit {
         input: DeleteTidbitInput,
@@ -408,11 +382,6 @@ pub(super) enum WriterMessage {
         input: RestoreTidbitInput,
         now_ms: i64,
         reply: SyncSender<Result<Tidbit>>,
-    },
-    PurgeTidbit {
-        input: PurgeTidbitInput,
-        now_ms: i64,
-        reply: SyncSender<Result<bool>>,
     },
     ResolveCitation {
         passage_id: String,
@@ -431,23 +400,6 @@ pub(super) enum WriterMessage {
     InstallLexicalBenchmarkAttachments {
         writes: Vec<LexicalBenchmarkAttachmentWrite>,
         reply: SyncSender<Result<()>>,
-    },
-    SaveDraft {
-        write: SaveDraftWrite,
-        reply: SyncSender<Result<Draft>>,
-    },
-    LoadDraft {
-        context_key: String,
-        reply: SyncSender<Result<Option<Draft>>>,
-    },
-    ClearDraft {
-        input: ClearDraftInput,
-        now_ms: i64,
-        reply: SyncSender<Result<bool>>,
-    },
-    AdoptLegacyQuickAddDraft {
-        now_ms: i64,
-        reply: SyncSender<Result<Option<WorkingCopy>>>,
     },
     SaveWorkingCopy {
         write: SaveWorkingCopyWrite,
@@ -1326,16 +1278,6 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub fn reconcile_author_passages(&self) -> Result<()> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ReconcileAuthorPassages { reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
     pub fn maintenance_snapshot(&self) -> Result<MaintenanceDatabaseSnapshot> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
@@ -1387,12 +1329,6 @@ impl DatabaseClient {
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(super) fn schedule_author_passage_reconciliation(&self) -> Result<()> {
-        self.sender
-            .send(WriterMessage::ReconcileAuthorPassageBatch)
-            .map_err(|_| DatabaseError::WriterUnavailable)
     }
 
     pub(crate) fn load_embedding_reconciliation_batch(
@@ -1529,61 +1465,10 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn list_tidbits(&self, input: ListTidbitsInput) -> Result<TidbitListPage> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ListTidbits { input, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn list_tidbit_revisions(
-        &self,
-        input: ListTidbitRevisionsInput,
-    ) -> Result<TidbitRevisionPage> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ListTidbitRevisions { input, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn load_tidbit_revision(
-        &self,
-        tidbit_id: String,
-        revision_id: String,
-    ) -> Result<TidbitRevision> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::LoadTidbitRevision {
-                tidbit_id,
-                revision_id,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
     pub(crate) fn load_source_url(&self, source_id: String) -> Result<String> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::LoadSourceUrl { source_id, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn edit_tidbit(&self, write: EditTidbitWrite) -> Result<Tidbit> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::EditTidbit { write, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
@@ -1608,24 +1493,6 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::RestoreTidbit {
-                input,
-                now_ms,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn purge_tidbit(&self, input: PurgeTidbitInput, now_ms: i64) -> Result<bool> {
-        let _fence = self
-            .offsite_media_fence
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::PurgeTidbit {
                 input,
                 now_ms,
                 reply,
@@ -1692,49 +1559,11 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn save_draft(&self, write: SaveDraftWrite) -> Result<Draft> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::SaveDraft { write, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn load_draft(&self, context_key: String) -> Result<Option<Draft>> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::LoadDraft { context_key, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn clear_draft_at(&self, input: ClearDraftInput, now_ms: i64) -> Result<bool> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ClearDraft {
-                input,
-                now_ms,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
     pub(crate) fn save_working_copy(
         &self,
         write: SaveWorkingCopyWrite,
     ) -> Result<WorkingCopySaveResult> {
         self.request(|reply| WriterMessage::SaveWorkingCopy { write, reply })
-    }
-
-    pub(crate) fn adopt_legacy_quick_add_draft(&self, now_ms: i64) -> Result<Option<WorkingCopy>> {
-        self.request(|reply| WriterMessage::AdoptLegacyQuickAddDraft { now_ms, reply })
     }
 
     pub(crate) fn load_working_copy(&self, note_id: String) -> Result<Option<WorkingCopy>> {
@@ -1765,6 +1594,23 @@ impl DatabaseClient {
     }
 
     #[cfg(test)]
+    pub(crate) fn enqueue_discard_working_copy_for_test(
+        &self,
+        input: DiscardWorkingCopyInput,
+        now_ms: i64,
+    ) -> Result<mpsc::Receiver<Result<bool>>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::DiscardWorkingCopy {
+                input,
+                now_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        Ok(receiver)
+    }
+
+    #[cfg(test)]
     pub(crate) fn enqueue_media_maintenance_for_test(
         &self,
         now_ms: i64,
@@ -1775,23 +1621,6 @@ impl DatabaseClient {
             .send(WriterMessage::MaintainMediaWithSafetySnapshot {
                 scan: MediaMaintenanceScan::new(now_ms, limits)?,
                 snapshot: MediaMaintenanceSnapshotState::PendingCandidates,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        Ok(receiver)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn enqueue_clear_draft_for_test(
-        &self,
-        input: ClearDraftInput,
-        now_ms: i64,
-    ) -> Result<mpsc::Receiver<Result<bool>>> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ClearDraft {
-                input,
-                now_ms,
                 reply,
             })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
@@ -1819,6 +1648,53 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn save_working_copy_for_test(
+        &self,
+        note_id: String,
+        base_revision_id: Option<String>,
+        edit_generation: i64,
+        body_markdown: String,
+        sources: Vec<super::SourceDraft>,
+        now_ms: i64,
+        allow_empty_ephemeral: bool,
+    ) -> Result<WorkingCopy> {
+        self.save_working_copy(SaveWorkingCopyWrite {
+            input: super::SaveWorkingCopyInput {
+                note_id,
+                base_revision_id,
+                edit_generation,
+                body_markdown,
+                sources,
+            },
+            now_ms,
+            media_limits: super::MediaLimits::default(),
+            allow_empty_ephemeral,
+        })?
+        .working_copy
+        .ok_or_else(|| DatabaseError::InvalidInput("test working copy was not saved".into()))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn checkpoint_working_copy_for_test(
+        &self,
+        note_id: String,
+        expected_edit_generation: i64,
+        now_ms: i64,
+        revision_id: String,
+        source_ids: Vec<String>,
+    ) -> Result<WorkingCopyCheckpointResult> {
+        self.checkpoint_working_copy(CheckpointWorkingCopyWrite {
+            input: super::CheckpointWorkingCopyInput {
+                note_id,
+                expected_edit_generation,
+            },
+            now_ms,
+            revision_id,
+            source_ids,
+        })
+    }
+
     pub(crate) fn set_shortcut_settings(
         &self,
         input: SetShortcutSettingsInput,
@@ -1843,12 +1719,6 @@ impl DatabaseClient {
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clear_draft(&self, input: ClearDraftInput) -> Result<bool> {
-        let now_ms = input.expected_updated_at_ms;
-        self.clear_draft_at(input, now_ms)
     }
 
     pub(super) fn shutdown(&self) -> Result<()> {

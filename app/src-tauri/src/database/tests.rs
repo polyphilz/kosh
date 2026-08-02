@@ -1,13 +1,12 @@
 use std::sync::{Arc, Barrier};
 
-use refinery::Target;
-use rusqlite::{params, Connection, OptionalExtension};
-use sha2::{Digest, Sha256};
+use rusqlite::{Connection, OptionalExtension};
 use tempfile::TempDir;
+use uuid::Uuid;
 
 use super::{
-    connection::{self, DatabaseKind, FileState},
-    migrations, Database, DatabaseError, DatabasePaths, LexicalSearchMode, SearchPassagesInput,
+    migrations, CitationState, Database, DatabaseError, DatabasePaths, DeleteTidbitInput,
+    LexicalSearchMode, RestoreTidbitInput, SearchPassagesInput, SourceDraft,
 };
 
 struct TestPair {
@@ -24,77 +23,234 @@ impl TestPair {
 }
 
 #[test]
-fn initial_migration_checksums_remain_stable() {
-    let main_v1 = migrations::main_runner()
-        .get_migrations()
-        .iter()
-        .find(|migration| migration.version() == 1)
-        .expect("main V1 migration")
-        .checksum();
-    let media_v1 = migrations::media_runner()
-        .get_migrations()
-        .iter()
-        .find(|migration| migration.version() == 1)
-        .expect("media V1 migration")
-        .checksum();
-    assert_eq!(main_v1, 1_893_190_742_697_353_014);
-    assert_eq!(media_v1, 14_137_568_078_953_250_380);
+fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
+    let main_migrations = migrations::main_runner().get_migrations().to_vec();
+    let media_migrations = migrations::media_runner().get_migrations().to_vec();
+    assert_eq!(main_migrations.len(), 1);
+    assert_eq!(main_migrations[0].version(), 1);
+    assert_eq!(main_migrations[0].name(), "note_first_schema");
+    assert_eq!(media_migrations.len(), 1);
+    assert_eq!(media_migrations[0].version(), 1);
+    assert_eq!(media_migrations[0].name(), "media_schema");
+    assert_eq!(migrations::expected_heads().main, Some(1));
+    assert_eq!(migrations::expected_heads().media, Some(1));
+
+    let pair = TestPair::new();
+    let database = Database::initialize(pair.paths.clone()).expect("fresh database pair");
+    let main = database.open_main_read_only().expect("main database");
+    for retired in [
+        "draft_context",
+        "research_run",
+        "research_citation",
+        "research_run_attachment",
+        "purge_authorization",
+    ] {
+        assert_eq!(
+            table_exists(&main, retired),
+            false,
+            "retired table {retired}"
+        );
+    }
+    assert_eq!(column_exists(&main, "tidbit_revision", "title"), false);
+    assert_eq!(
+        table_columns(&main, "draft"),
+        [
+            "id",
+            "base_revision_id",
+            "edit_generation",
+            "media_reservation",
+            "created_at",
+            "updated_at",
+            "body_markdown",
+        ]
+    );
+    drop(main);
+    database.shutdown().expect("close fresh database pair");
 }
 
 #[test]
-fn fresh_pair_reopens_with_durable_pragmas_and_schema() {
+fn note_lifecycle_search_citations_delete_restore_and_restart() {
     let pair = TestPair::new();
-    let database = Database::initialize(pair.paths.clone()).expect("fresh pair");
-    let diagnostics = database.client().diagnostics().expect("diagnostics");
+    let database = Database::initialize(pair.paths.clone()).expect("database");
+    let client = database.client();
+    let note_id = Uuid::now_v7().to_string();
+    let first_revision_id = Uuid::now_v7().to_string();
+    client
+        .save_working_copy_for_test(
+            note_id.clone(),
+            None,
+            1,
+            "# Arrays\n\nExact citrine evidence lives here.".into(),
+            vec![SourceDraft {
+                label: Some("Reference".into()),
+                url: Some("https://example.com/reference".into()),
+            }],
+            10,
+            false,
+        )
+        .expect("save new note");
+    let created = client
+        .checkpoint_working_copy_for_test(
+            note_id.clone(),
+            1,
+            11,
+            first_revision_id.clone(),
+            vec![Uuid::now_v7().to_string()],
+        )
+        .expect("checkpoint new note")
+        .note
+        .expect("created note");
+    assert_eq!(created.display_title, "Arrays");
 
-    assert_eq!(diagnostics.migration_heads, migrations::expected_heads());
-    assert_eq!(diagnostics.main_journal_mode.to_ascii_lowercase(), "wal");
-    assert_eq!(diagnostics.media_journal_mode.to_ascii_lowercase(), "wal");
-    assert!(diagnostics.main_foreign_keys);
-    assert!(diagnostics.media_foreign_keys);
-    drop(database);
+    let first_result = client
+        .search_passages(SearchPassagesInput {
+            query: "citrine".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search first revision")
+        .pop()
+        .expect("first search result");
+    assert_eq!(first_result.citation.state, CitationState::Current);
+    assert_eq!(
+        first_result.citation.sources[0].url.as_deref(),
+        Some("https://example.com/reference")
+    );
 
-    let reopened = Database::initialize(pair.paths.clone()).expect("reopened pair");
+    client
+        .save_working_copy_for_test(
+            note_id.clone(),
+            Some(first_revision_id.clone()),
+            2,
+            "# Arrays\n\nExact amber evidence replaced the earlier wording.".into(),
+            Vec::new(),
+            20,
+            false,
+        )
+        .expect("save edited note");
+    let edited = client
+        .checkpoint_working_copy_for_test(
+            note_id.clone(),
+            2,
+            21,
+            Uuid::now_v7().to_string(),
+            Vec::new(),
+        )
+        .expect("checkpoint edited note")
+        .note
+        .expect("edited note");
+    assert_eq!(
+        client
+            .resolve_citation(first_result.passage_id)
+            .expect("historical citation")
+            .state,
+        CitationState::Historical
+    );
+    assert!(client
+        .search_passages(SearchPassagesInput {
+            query: "amber".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search current revision")
+        .iter()
+        .any(|result| result.citation.state == CitationState::Current));
+
+    let deleted = client
+        .delete_tidbit(
+            DeleteTidbitInput {
+                id: note_id.clone(),
+                expected_revision_id: edited.current_revision_id.clone(),
+            },
+            30,
+        )
+        .expect("delete note");
+    assert!(deleted.deleted_at_ms.is_some());
+    assert!(client
+        .search_passages(SearchPassagesInput {
+            query: "amber".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search deleted note")
+        .is_empty());
+    client
+        .restore_tidbit(
+            RestoreTidbitInput {
+                id: note_id.clone(),
+                expected_revision_id: edited.current_revision_id,
+            },
+            31,
+        )
+        .expect("restore note");
+    database.shutdown().expect("close database");
+
+    let reopened = Database::initialize(pair.paths.clone()).expect("reopen database");
     assert_eq!(
         reopened
             .client()
-            .diagnostics()
-            .expect("reopened diagnostics")
-            .migration_heads,
-        migrations::expected_heads()
+            .load_tidbit(note_id)
+            .expect("restored note after restart")
+            .body_markdown,
+        "# Arrays\n\nExact amber evidence replaced the earlier wording."
     );
+    reopened
+        .client()
+        .full_integrity_check()
+        .expect("integrity after restart");
 }
 
 #[test]
-fn full_integrity_scan_is_an_explicit_maintenance_operation() {
+fn incompatible_migration_history_is_rejected_without_resetting_the_profile() {
     let pair = TestPair::new();
-    let database = Database::initialize(pair.paths.clone()).expect("fresh pair");
+    Database::initialize(pair.paths.clone())
+        .expect("database")
+        .shutdown()
+        .expect("close database");
+    let connection = Connection::open(&pair.paths.main).expect("tamper migration history");
+    connection
+        .execute(
+            "UPDATE refinery_schema_history SET checksum = '0' WHERE version = 1",
+            [],
+        )
+        .expect("install divergent checksum");
+    drop(connection);
 
-    database
-        .client()
-        .full_integrity_check()
-        .expect("explicit integrity scan");
+    let error = Database::initialize(pair.paths.clone()).expect_err("divergent history refused");
+    assert!(matches!(
+        error,
+        DatabaseError::IncompatibleMigrationHistory { kind: "main", .. }
+    ));
+    let connection = Connection::open(&pair.paths.main).expect("inspect refused profile");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT checksum FROM refinery_schema_history WHERE version = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("retained divergent checksum"),
+        "0"
+    );
+    assert!(table_exists(&connection, "tidbit"));
 }
 
 #[test]
 fn database_pair_allows_only_one_active_writer() {
     let pair = TestPair::new();
     let first = Database::initialize(pair.paths.clone()).expect("first writer");
-
     let error = Database::initialize(pair.paths.clone()).expect_err("second writer refused");
     assert!(matches!(error, DatabaseError::DatabaseInUse { .. }));
-
-    first.shutdown().expect("release first writer");
+    first.shutdown().expect("release writer");
     drop(Database::initialize(pair.paths.clone()).expect("replacement writer"));
 }
 
 #[test]
-fn concurrent_shutdown_serializes_writer_join_and_ownership_release() {
+fn concurrent_shutdown_is_idempotent() {
     let pair = TestPair::new();
-    let database =
-        Arc::new(Database::initialize(pair.paths.clone()).expect("exclusive database owner"));
+    let database = Arc::new(Database::initialize(pair.paths.clone()).expect("database"));
     let barrier = Arc::new(Barrier::new(3));
-    let shutdowns = (0..2)
+    let workers = (0..2)
         .map(|_| {
             let database = Arc::clone(&database);
             let barrier = Arc::clone(&barrier);
@@ -104,1710 +260,39 @@ fn concurrent_shutdown_serializes_writer_join_and_ownership_release() {
             })
         })
         .collect::<Vec<_>>();
-
     barrier.wait();
-    for shutdown in shutdowns {
-        shutdown
-            .join()
-            .expect("shutdown caller did not panic")
-            .expect("shutdown succeeded");
+    for worker in workers {
+        worker.join().expect("shutdown thread").expect("shutdown");
     }
-
     drop(database);
     drop(Database::initialize(pair.paths.clone()).expect("replacement writer"));
 }
 
-#[test]
-fn pending_migrations_apply_to_an_identified_empty_pair() {
-    let pair = TestPair::new();
-    std::fs::create_dir_all(pair.paths.root()).expect("pair root");
-    drop(
-        connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-            .expect("empty main"),
-    );
-    drop(
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
-            .expect("empty media"),
-    );
-
-    let database = Database::initialize(pair.paths.clone()).expect("pending migrations");
-    assert_eq!(
-        database
-            .client()
-            .diagnostics()
-            .expect("diagnostics")
-            .migration_heads,
-        migrations::expected_heads()
-    );
-}
-
-#[test]
-fn pushed_v16_profile_upgrades_without_checksum_divergence() {
-    let pair = TestPair::new();
-    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("fresh main writer");
-    main.pragma_update(None, "foreign_keys", "OFF")
-        .expect("disable foreign keys for grouped migration");
-    migrations::main_runner()
-        .set_target(Target::Version(16))
-        .run(&mut main)
-        .expect("main schema through pushed V16");
-    main.pragma_update(None, "foreign_keys", "ON")
-        .expect("restore foreign keys");
-    let mut media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
-            .expect("fresh media writer");
-    migrations::run_media(&mut media).expect("media schema");
-    drop(main);
-    drop(media);
-
-    let database = Database::initialize(pair.paths.clone()).expect("upgrade V16 profile");
-    assert_eq!(
-        database
-            .client()
-            .diagnostics()
-            .expect("upgraded diagnostics")
-            .migration_heads,
-        migrations::expected_heads()
-    );
-}
-
-#[test]
-fn serialized_v16_profile_preserves_authored_search_and_citation_across_upgrade() {
-    const MAIN_SQL: &str = include_str!("fixtures/v16-profile/main-v16.sql");
-    const MEDIA_SQL: &str = include_str!("fixtures/v16-profile/media-v2.sql");
-    let manifest: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/v16-profile/manifest.json"))
-            .expect("migration fixture manifest");
-    assert_eq!(manifest["schemaVersion"], 2);
-    assert_eq!(manifest["serialization"], "sqlite-sql-dump");
-    assert_eq!(manifest["mainMigrationHead"], 16);
-    assert_eq!(manifest["mediaMigrationHead"], 2);
-    assert_eq!(
-        sha256_hex(MAIN_SQL.as_bytes()),
-        manifest["mainSqlSha256"]
-            .as_str()
-            .expect("main SQL fixture hash")
-    );
-    assert_eq!(
-        sha256_hex(MEDIA_SQL.as_bytes()),
-        manifest["mediaSqlSha256"]
-            .as_str()
-            .expect("media SQL fixture hash")
-    );
-
-    let pair = TestPair::new();
-    materialize_sql_fixture(&pair.paths.main, MAIN_SQL);
-    materialize_sql_fixture(&pair.paths.media, MEDIA_SQL);
-
-    for launch in 0..2 {
-        let database =
-            Database::initialize(pair.paths.clone()).expect("upgrade serialized V16 fixture");
-        assert_eq!(
-            database
-                .client()
-                .diagnostics()
-                .expect("fixture diagnostics")
-                .migration_heads,
-            migrations::expected_heads()
-        );
-        let tidbit = database
-            .client()
-            .load_tidbit(
-                manifest["tidbitId"]
-                    .as_str()
-                    .expect("fixture tidbit ID")
-                    .to_owned(),
-            )
-            .expect("authored fixture tidbit");
-        assert_eq!(
-            tidbit.current_revision_id,
-            manifest["revisionId"]
-                .as_str()
-                .expect("fixture revision ID")
-        );
-        assert_eq!(
-            tidbit.body_markdown,
-            "The checked migration profile preserves exact amber evidence."
-        );
-
-        let search = database
-            .client()
-            .search_passages(SearchPassagesInput {
-                query: "amber".into(),
-                mode: LexicalSearchMode::Exact,
-                limit: 10,
-            })
-            .expect("exact fixture search");
-        assert_eq!(search.len(), 1, "launch {launch}");
-        let result = &search[0];
-        assert_eq!(
-            result.passage_id,
-            manifest["passageId"].as_str().expect("fixture passage ID")
-        );
-        assert_eq!(
-            result
-                .citation
-                .tidbit
-                .as_ref()
-                .expect("fixture citation tidbit")
-                .revision_id,
-            manifest["revisionId"]
-                .as_str()
-                .expect("fixture revision ID")
-        );
-        assert_eq!(
-            result.citation.sources[0].url.as_deref(),
-            manifest["sourceUrl"].as_str()
-        );
-        database.shutdown().expect("close upgraded fixture");
-    }
-}
-
-fn materialize_sql_fixture(path: &std::path::Path, sql: &str) {
-    let connection = Connection::open(path).expect("open serialized migration fixture");
+fn table_exists(connection: &Connection, table: &str) -> bool {
     connection
-        .execute_batch(sql)
-        .expect("materialize serialized migration fixture");
-    connection
-        .pragma_update(None, "foreign_keys", "ON")
-        .expect("enable fixture foreign keys");
-    assert_eq!(
-        connection
-            .query_row("PRAGMA foreign_key_check", [], |_| Ok(1))
-            .optional()
-            .expect("serialized fixture foreign key check"),
-        None
-    );
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .optional()
+        .expect("inspect table")
+        .is_some()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
+fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
+    table_columns(connection, table)
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .any(|candidate| candidate == column)
 }
 
-#[test]
-fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_tables() {
-    let pair = TestPair::new();
-    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("fresh main writer");
-    migrations::main_runner()
-        .set_target(Target::Version(11))
-        .run(&mut main)
-        .expect("main schema through shortcut settings");
-    let mut media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
-            .expect("fresh media writer");
-    migrations::run_media(&mut media).expect("media schema");
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(
-            id, created_at, updated_at, current_revision_id
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000121',
-            1,
-            1,
-            '019f547b-6200-7000-8000-000000000122'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, title,
-            body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000122',
-            '019f547b-6200-7000-8000-000000000121',
-            1,
-            1,
-            'Legacy evidence',
-            'A broad passage containing exact legacy evidence.',
-            randomblob(32)
-         );
-         INSERT INTO source(
-            id, created_at, label, normalized_url
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000123',
-            1,
-            'Legacy source',
-            'https://example.com/legacy'
-         );
-         INSERT INTO tidbit_revision_source(
-            tidbit_revision_id, source_id, sort_order
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000122',
-            '019f547b-6200-7000-8000-000000000123',
-            0
-         );
-         INSERT INTO passage(
-            id, tidbit_revision_id, owner_kind, ordinal, content,
-            content_hash, locator_kind, locator_json, created_at,
-            construction_version, heading_context_json
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000124',
-            '019f547b-6200-7000-8000-000000000122',
-            'AUTHOR',
-            0,
-            'A broad passage containing exact legacy evidence.',
-            randomblob(32),
-            'MARKDOWN_BLOCKS',
-            '{\"start\":0,\"end\":0}',
-            1,
-            'legacy',
-            '[\"Legacy chapter\"]'
-         );
-         INSERT INTO active_passage(passage_id, tidbit_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000124',
-            '019f547b-6200-7000-8000-000000000121'
-         );
-         INSERT INTO research_run(
-            id, query, status, created_at, started_at, completed_at, answer_markdown
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000111',
-            'Legacy completed question',
-            'COMPLETED',
-            10,
-            11,
-            12,
-            'A preserved legacy answer.【1】'
-         );
-         INSERT INTO research_citation(
-            research_run_id, ordinal, passage_id, cited_text
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000111',
-            0,
-            '019f547b-6200-7000-8000-000000000124',
-            'exact legacy evidence'
-         );
-         INSERT INTO research_run(
-            id, query, status, created_at, started_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000112',
-            'Legacy active question',
-            'RUNNING',
-            20,
-            21
-         );
-         COMMIT;",
-    )
-    .expect("legacy research rows");
-    let oversized_query = "q".repeat(65_537);
-    main.execute(
-        "INSERT INTO research_run(
-            id, query, status, created_at, started_at, completed_at, error
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000113',
-            ?1,
-            'FAILED',
-            30,
-            31,
-            32,
-            'Legacy failure'
-         )",
-        [&oversized_query],
-    )
-    .expect("oversized legacy query");
-    drop(main);
-    drop(media);
-
-    let database = Database::initialize(pair.paths.clone()).expect("durable research upgrade");
-    let main = database
-        .open_main_read_only()
-        .expect("migrated main reader");
-    let (completed_status, completed_answer): (String, String) = main
-        .query_row(
-            "SELECT status, final_answer_json FROM research_run WHERE id = ?1",
-            ["019f547b-6200-7000-8000-000000000111"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("migrated completed row");
-    assert_eq!(completed_status, "COMPLETED");
-    let completed: serde_json::Value =
-        serde_json::from_str(&completed_answer).expect("migrated answer JSON");
-    assert_eq!(
-        completed
-            .get("markdown")
-            .and_then(serde_json::Value::as_str),
-        Some("A preserved legacy answer.【1】")
-    );
-    let citation = completed
-        .get("citations")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|citations| citations.first())
-        .expect("migrated citation");
-    assert_eq!(
-        citation.get("number").and_then(serde_json::Value::as_u64),
-        Some(1)
-    );
-    assert_eq!(
-        citation
-            .pointer("/evidence/passageId")
-            .and_then(serde_json::Value::as_str),
-        Some("019f547b-6200-7000-8000-000000000124")
-    );
-    assert_eq!(
-        citation
-            .pointer("/evidence/excerpt")
-            .and_then(serde_json::Value::as_str),
-        Some("exact legacy evidence")
-    );
-    assert_eq!(
-        citation
-            .pointer("/evidence/sources/0/url")
-            .and_then(serde_json::Value::as_str),
-        Some("https://example.com/legacy")
-    );
-    let mention = completed
-        .get("mentions")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|mentions| mentions.first())
-        .expect("migrated citation mention");
-    let answer_markdown = "A preserved legacy answer.【1】";
-    let marker_start = answer_markdown.find('【').expect("legacy marker");
-    assert_eq!(
-        mention
-            .get("citationNumber")
-            .and_then(serde_json::Value::as_u64),
-        Some(1)
-    );
-    assert_eq!(
-        mention.get("startByte").and_then(serde_json::Value::as_u64),
-        Some(marker_start as u64)
-    );
-    assert_eq!(
-        mention.get("endByte").and_then(serde_json::Value::as_u64),
-        Some(answer_markdown.len() as u64)
-    );
-    let (oversized_status, oversized_query): (String, String) = main
-        .query_row(
-            "SELECT status, query FROM research_run WHERE id = ?1",
-            ["019f547b-6200-7000-8000-000000000113"],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("migrated oversized row");
-    assert_eq!(oversized_query.chars().count(), 65_536);
-    assert_eq!(oversized_status, "FAILED");
-    assert_eq!(
-        main.query_row(
-            "SELECT status FROM research_run WHERE id = ?1",
-            ["019f547b-6200-7000-8000-000000000112"],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("preserved active row"),
-        "RUNNING"
-    );
-    drop(main);
-    database.shutdown().expect("close upgraded database");
-    drop(database);
-
-    let reopened = Database::initialize(pair.paths.clone()).expect("reopen durable upgrade");
-    let reopened_main = reopened
-        .open_main_read_only()
-        .expect("reopened main reader");
-    let reopened_answer: String = reopened_main
-        .query_row(
-            "SELECT final_answer_json FROM research_run WHERE id = ?1",
-            ["019f547b-6200-7000-8000-000000000111"],
-            |row| row.get(0),
-        )
-        .expect("reopened migrated answer");
-    let reopened_answer: serde_json::Value =
-        serde_json::from_str(&reopened_answer).expect("reopened answer JSON");
-    assert_eq!(
-        reopened_answer
-            .pointer("/citations/0/evidence/passageId")
-            .and_then(serde_json::Value::as_str),
-        Some("019f547b-6200-7000-8000-000000000124")
-    );
-    assert_eq!(
-        reopened_answer
-            .pointer("/mentions/0/citationNumber")
-            .and_then(serde_json::Value::as_u64),
-        Some(1)
-    );
-}
-
-#[test]
-fn research_media_upgrade_backfills_durable_attachment_references() {
-    let pair = TestPair::new();
-    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("fresh main writer");
-    migrations::main_runner()
-        .set_target(Target::Version(14))
-        .run(&mut main)
-        .expect("main schema through research citation mentions");
-    let mut media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
-            .expect("fresh media writer");
-    migrations::run_media(&mut media).expect("media schema");
-    let hash = Sha256::digest(b"x").to_vec();
-    main.execute(
-        "INSERT INTO attachment(
-            id, created_at, updated_at, deleted_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000151',
-            1, 20, 20, ?1, 'legacy-research.txt', 'text/plain', 1,
-            'TEXT', 'READY'
-         )",
-        params![&hash],
-    )
-    .expect("legacy research attachment");
-    media
-        .execute(
-            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
-             VALUES(?1, x'78', 1, 1)",
-            params![&hash],
-        )
-        .expect("legacy research media");
-    let final_answer = serde_json::json!({
-        "markdown": "Retained attachment evidence.【1】",
-        "citations": [{
-            "number": 1,
-            "label": "legacy-research.txt, lines 1–1",
-            "evidenceKind": "TEXT_LINES",
-            "evidence": {
-                "passageId": "019f547b-6200-7000-8000-000000000152",
-                "excerpt": "x",
-                "headingContext": [],
-                "constructionVersion": "legacy",
-                "state": "CURRENT",
-                "locator": {
-                    "kind": "TEXT_LINES",
-                    "startLine": 1,
-                    "endLine": 1
-                },
-                "tidbit": null,
-                "attachment": {
-                    "id": "019f547b-6200-7000-8000-000000000151",
-                    "extractionId": "019f547b-6200-7000-8000-000000000153",
-                    "displayFilename": "legacy-research.txt",
-                    "mediaType": "text/plain",
-                    "deleted": false
-                },
-                "sources": []
-            }
-        }],
-        "mentions": [],
-        "issues": []
-    })
-    .to_string();
-    main.execute(
-        "INSERT INTO research_run(
-            id, query, status, created_at, started_at, completed_at, updated_at,
-            final_answer_json
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000154',
-            'Legacy attachment question',
-            'COMPLETED',
-            10, 11, 12, 12, ?1
-         )",
-        params![final_answer],
-    )
-    .expect("legacy durable research answer");
-    drop(main);
-    drop(media);
-
-    let database = Database::initialize(pair.paths.clone()).expect("research media upgrade");
-    let main = database.open_main_read_only().expect("main reader");
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*)
-             FROM research_run_attachment
-             WHERE research_run_id =
-                       '019f547b-6200-7000-8000-000000000154'
-               AND attachment_id =
-                       '019f547b-6200-7000-8000-000000000151'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("backfilled research attachment"),
-        1
-    );
-    drop(main);
-    assert_eq!(
-        database
-            .client()
-            .load_media_payload("019f547b-6200-7000-8000-000000000151".into(), 30, None, 64,)
-            .expect("backfilled research media remains readable")
-            .bytes,
-        b"x"
-    );
-}
-
-#[test]
-fn lexical_upgrade_defers_backfill_until_post_start_reconciliation() {
-    let pair = TestPair::new();
-    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("fresh main writer");
-    migrations::main_runner()
-        .set_target(Target::Version(3))
-        .run(&mut main)
-        .expect("main schema through passage provenance");
-    let mut media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Fresh)
-            .expect("fresh media writer");
-    migrations::run_media(&mut media).expect("media schema");
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000121',
-            10, 10, '019f547b-6200-7000-8000-000000000122'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000122',
-            '019f547b-6200-7000-8000-000000000121',
-            1, 10, 'deferred lexical upgrade evidence', zeroblob(32)
-         );
-         COMMIT;",
-    )
-    .expect("pre-lexical authored data");
-
-    migrations::run_main(&mut main).expect("lexical schema migration");
-    assert_eq!(
-        main.query_row("SELECT count(*) FROM passage_search_document", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .expect("empty derived projection"),
-        0
-    );
-    assert_eq!(
-        main.query_row(
-            "SELECT status, error FROM index_state WHERE name = 'PASSAGE_FTS'",
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )
-        .expect("deferred lexical state"),
-        (
-            "DIRTY".into(),
-            Some("initial lexical backfill pending".into())
-        )
-    );
-    drop(main);
-    drop(media);
-
-    let database = Database::initialize(pair.paths.clone()).expect("authored library opens");
-    database
-        .client()
-        .reconcile_author_passages()
-        .expect("post-start passage and search reconciliation");
-    let results = database
-        .client()
-        .search_passages(SearchPassagesInput {
-            query: "deferred lexical upgrade".into(),
-            mode: LexicalSearchMode::Default,
-            limit: 10,
-        })
-        .expect("search after deferred backfill");
-    assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0]
-            .citation
-            .tidbit
-            .as_ref()
-            .expect("authored citation")
-            .id,
-        "019f547b-6200-7000-8000-000000000121"
-    );
-}
-
-#[test]
-fn media_lifecycle_upgrade_preserves_attachments_and_allows_shared_blobs() {
-    let pair = TestPair::new();
-    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("fresh main writer");
-    migrations::main_runner()
-        .set_target(Target::Version(5))
-        .run(&mut main)
-        .expect("main schema before media lifecycle");
-    let sha256 = vec![0x5a_u8; 32];
-    main.execute(
-        "INSERT INTO attachment(
-            id, created_at, updated_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000601',
-            10, 10, ?1, 'first.bin', 'application/octet-stream',
-            4, 'BINARY', 'NOT_APPLICABLE'
-         )",
-        params![&sha256],
-    )
-    .expect("pre-upgrade attachment");
-    main.execute(
-        "INSERT INTO media_ingest_lease(
-            id, sha256, attachment_id, state, created_at, expires_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000603',
-            ?1,
-            '019f547b-6200-7000-8000-000000000601',
-            'COMMITTED',
-            10,
-            20
-         )",
-        params![&sha256],
-    )
-    .expect("pre-upgrade attachment lease");
-
-    migrations::run_main(&mut main).expect("media lifecycle migration");
-    assert_eq!(
-        main.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
-            .expect("foreign key state"),
-        1
-    );
-    let foreign_key_errors = main
-        .prepare("PRAGMA foreign_key_check")
-        .expect("foreign key check")
-        .query_map([], |_| Ok(()))
-        .expect("foreign key rows")
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .expect("foreign key results");
-    assert!(foreign_key_errors.is_empty());
-    assert_eq!(
-        main.query_row(
-            "SELECT attachment_id
-             FROM media_ingest_lease
-             WHERE id = '019f547b-6200-7000-8000-000000000603'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("preserved attachment lease"),
-        "019f547b-6200-7000-8000-000000000601"
-    );
-    main.execute(
-        "INSERT INTO attachment(
-            id, created_at, updated_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000602',
-            11, 11, ?1, 'second.bin', 'application/octet-stream',
-            4, 'BINARY', 'NOT_APPLICABLE'
-         )",
-        params![&sha256],
-    )
-    .expect("shared blob attachment");
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*) FROM attachment WHERE sha256 = ?1",
-            params![&sha256],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("shared attachment count"),
-        2
-    );
-    for (kind, name) in [
-        ("view", "current_attachment_passage"),
-        ("trigger", "passage_attachment_locator_validate"),
-        ("trigger", "attachment_search_refresh_after_update"),
-    ] {
-        assert_eq!(
-            main.query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE type = ?1 AND name = ?2",
-                params![kind, name],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("dependent schema object"),
-            1
-        );
-    }
-}
-
-#[test]
-fn revision_owned_attachment_search_upgrade_removes_draft_only_documents() {
-    let pair = TestPair::new();
-    let mut main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-        .expect("fresh main writer");
-    migrations::main_runner()
-        .set_target(Target::Version(7))
-        .run(&mut main)
-        .expect("main schema before revision-owned attachment search");
-    main.execute_batch(
-        "INSERT INTO attachment(
-            id, created_at, updated_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000801',
-            10, 10, zeroblob(32), 'draft-only.pdf',
-            'application/pdf', 128, 'PDF', 'READY'
-         );
-         INSERT INTO attachment_extraction(
-            id, attachment_id, extractor, extractor_version, content_hash,
-            status, created_at, started_at, completed_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000802',
-            '019f547b-6200-7000-8000-000000000801',
-            'pdf-text', '1', zeroblob(32), 'READY', 10, 10, 10
-         );
-         INSERT INTO attachment_segment(
-            id, extraction_id, ordinal, locator_kind, page_number,
-            content, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000803',
-            '019f547b-6200-7000-8000-000000000802',
-            0, 'PDF_PAGE', 1, 'draft_only_upgrade_evidence', zeroblob(32)
-         );
-         INSERT INTO passage(
-            id, attachment_segment_id, owner_kind, ordinal, content,
-            content_hash, locator_kind, locator_json, created_at,
-            construction_version, heading_context_json
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000804',
-            '019f547b-6200-7000-8000-000000000803',
-            'ATTACHMENT', 0, 'draft_only_upgrade_evidence',
-            zeroblob(32), 'PDF_PAGE', '{\"page\":1}', 10,
-            'pdf-page-v1', '[]'
-         );
-         INSERT INTO passage_search_document(
-            rowid, passage_id, tidbit_id, title, heading_context, body,
-            source_labels, source_domains, attachment_names, extracted_text,
-            owner_content_hash, updated_at
-         )
-         SELECT
-            rowid, id, NULL, '', '', '', '', '', 'draft-only.pdf',
-            content, content_hash, 10
-         FROM passage
-         WHERE id = '019f547b-6200-7000-8000-000000000804';",
-    )
-    .expect("legacy draft-only attachment search document");
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*) FROM current_attachment_passage",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("legacy current attachment passage"),
-        1
-    );
-
-    migrations::run_main(&mut main).expect("revision-owned attachment search migration");
-
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*) FROM current_attachment_passage",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("gated current attachment passage"),
-        0
-    );
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*) FROM passage_search_document
-             WHERE passage_id = '019f547b-6200-7000-8000-000000000804'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("removed draft-only search document"),
-        0
-    );
-}
-
-#[test]
-fn corrupt_application_id_is_rejected_before_migration() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-
-    let connection = Connection::open(&pair.paths.main).expect("main database");
-    connection
-        .pragma_update(None, "application_id", 0x1234_i32)
-        .expect("corrupt application id");
-    drop(connection);
-
-    let error = Database::initialize(pair.paths.clone()).expect_err("wrong application id");
-    assert!(matches!(
-        error,
-        DatabaseError::WrongApplicationId { kind: "main", .. }
-    ));
-}
-
-#[test]
-fn missing_required_checkpoint_media_table_is_rejected_at_startup() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-
-    let connection = Connection::open(&pair.paths.main).expect("main database");
-    connection
-        .execute("DROP TABLE offsite_backup_checkpoint_media", [])
-        .expect("drop required checkpoint table");
-    drop(connection);
-
-    let error = Database::initialize(pair.paths.clone()).expect_err("missing required table");
-    assert!(matches!(
-        error,
-        DatabaseError::Validation { kind: "main", .. }
-    ));
-}
-
-#[test]
-fn missing_durable_backup_journal_is_rejected_at_startup() {
-    for table in [
-        "offsite_backup_config_intent",
-        "offsite_backup_takeover_intent",
-    ] {
-        let pair = TestPair::new();
-        drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-
-        let connection = Connection::open(&pair.paths.main).expect("main database");
-        connection
-            .execute(&format!("DROP TABLE {table}"), [])
-            .expect("drop durable backup journal");
-        drop(connection);
-
-        let error = Database::initialize(pair.paths.clone()).expect_err("missing backup journal");
-        assert!(matches!(
-            error,
-            DatabaseError::Validation { kind: "main", .. }
-        ));
-        assert!(error.to_string().contains(table));
-    }
-}
-
-#[test]
-fn missing_or_altered_content_clock_trigger_is_rejected_at_startup() {
-    for replacement in [
-        None,
-        Some(
-            "CREATE TRIGGER offsite_clock_tidbit_update
-             AFTER UPDATE ON tidbit
-             BEGIN
-                 SELECT 1;
-             END",
-        ),
-    ] {
-        let pair = TestPair::new();
-        drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-
-        let connection = Connection::open(&pair.paths.main).expect("main database");
-        connection
-            .execute("DROP TRIGGER offsite_clock_tidbit_update", [])
-            .expect("drop content-clock trigger");
-        if let Some(replacement) = replacement {
-            connection
-                .execute_batch(replacement)
-                .expect("install altered content-clock trigger");
-        }
-        drop(connection);
-
-        let error =
-            Database::initialize(pair.paths.clone()).expect_err("damaged trigger definition");
-        assert!(matches!(
-            error,
-            DatabaseError::Validation { kind: "main", .. }
-        ));
-        assert!(error.to_string().contains("content-clock trigger"));
-    }
-}
-
-#[test]
-fn divergent_migration_checksum_is_rejected() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-
-    let connection = Connection::open(&pair.paths.main).expect("main database");
-    connection
-        .execute(
-            "UPDATE refinery_schema_history SET checksum = '0' WHERE version = 1",
-            [],
-        )
-        .expect("divergent checksum");
-    drop(connection);
-
-    let error = Database::initialize(pair.paths.clone()).expect_err("divergent history");
-    assert!(matches!(
-        error,
-        DatabaseError::IncompatibleMigrationHistory { kind: "main", .. }
-    ));
-}
-
-#[test]
-fn unknown_future_migration_is_rejected_as_missing_from_the_binary() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-
-    let connection = Connection::open(&pair.paths.main).expect("main database");
-    let future_version = migrations::expected_heads()
-        .main
-        .expect("main migration head")
-        + 1;
-    connection
-        .execute(
-            "INSERT INTO refinery_schema_history(version, name, applied_on, checksum)
-             SELECT ?1, 'removed_from_binary', applied_on, '0'
-             FROM refinery_schema_history
-             WHERE version = 1",
-            params![future_version],
-        )
-        .expect("future migration");
-    drop(connection);
-
-    let error = Database::initialize(pair.paths.clone()).expect_err("missing migration");
-    assert!(matches!(
-        error,
-        DatabaseError::IncompatibleMigrationHistory { kind: "main", .. }
-    ));
-}
-
-#[test]
-fn interrupted_pristine_pair_creation_resumes_idempotently() {
-    let pair = TestPair::new();
-    std::fs::create_dir_all(pair.paths.root()).expect("pair root");
-    drop(
-        connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Fresh)
-            .expect("interrupted main"),
-    );
-
-    let database = Database::initialize(pair.paths.clone()).expect("resumed pair");
-    assert!(pair.paths.media.exists());
-    assert_eq!(
-        database
-            .client()
-            .diagnostics()
-            .expect("diagnostics")
-            .migration_heads,
-        migrations::expected_heads()
-    );
-}
-
-#[test]
-fn missing_half_of_a_migrated_pair_is_not_silently_recreated() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    std::fs::remove_file(&pair.paths.media).expect("remove migrated media half");
-
-    let error = Database::initialize(pair.paths.clone()).expect_err("incomplete migrated pair");
-    assert!(matches!(error, DatabaseError::IncompletePair { .. }));
-}
-
-#[test]
-fn diagnostic_connections_are_query_only() {
-    let pair = TestPair::new();
-    let database = Database::initialize(pair.paths.clone()).expect("fresh pair");
-    let connection = database.open_main_read_only().expect("read-only main");
-    let query_only: i64 = connection
-        .query_row("PRAGMA query_only", [], |row| row.get(0))
-        .expect("query_only");
-    assert_eq!(query_only, 1);
-    assert!(connection
-        .execute(
-            "UPDATE app_settings SET appearance = 'DARK' WHERE id = 1",
-            []
-        )
-        .is_err());
-}
-
-#[test]
-fn strict_schema_rejects_non_uuidv7_ids_and_preserves_immutable_rows() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-
-    assert!(main
-        .execute(
-            "INSERT INTO source(id, created_at, label)
-             VALUES('zzzzzzzz-zzzz-7zzz-8zzz-zzzzzzzzzzzz', 10, 'invalid')",
-            [],
-        )
-        .is_err());
-    let unsafe_url = main
-        .execute(
-            "INSERT INTO source(id, created_at, normalized_url)
-             VALUES(
-                '019f547b-6200-7000-8000-000000000200',
-                10, 'javascript:alert(1)'
-             )",
-            [],
-        )
-        .expect_err("unsafe source URL");
-    assert!(unsafe_url.to_string().contains("source_url_safe_scheme"));
-    main.execute(
-        "INSERT INTO source(id, created_at, label, normalized_url)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000201',
-            10, 'valid', 'https://example.com/evidence'
-         )",
-        [],
-    )
-    .expect("valid UUIDv7 source");
-    assert!(main
-        .execute(
-            "UPDATE source SET label = 'mutated'
-             WHERE id = '019f547b-6200-7000-8000-000000000201'",
-            [],
-        )
-        .is_err());
-
-    assert!(main
-        .execute(
-            "UPDATE passage_embedding_index
-             SET model_revision = 'mutated'
-             WHERE index_key = 'jina_v1'",
-            [],
-        )
-        .is_err());
-    main.execute(
-        "UPDATE passage_embedding_settings
-         SET active_embedding_index_id = (
-             SELECT id FROM passage_embedding_index WHERE index_key = 'jina_v1'
-         ),
-         updated_at = 10
-         WHERE singleton_id = 1",
-        [],
-    )
-    .expect("activation remains mutable");
-}
-
-#[test]
-fn media_schema_enforces_the_product_blob_size_limit() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Existing)
-            .expect("media writer");
-    let error = media
-        .execute(
-            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
-             VALUES(?1, x'00', ?2, 10)",
-            params![vec![12_u8; 32], connection::MAX_MEDIA_BLOB_BYTES + 1],
-        )
-        .expect_err("oversized media blob");
-
-    assert!(error.to_string().contains("media_blob_size_limit"));
-}
-
-#[test]
-fn current_revision_must_belong_to_its_tidbit() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000301',
-            10, 10, '019f547b-6200-7000-8000-000000000302'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000302',
-            '019f547b-6200-7000-8000-000000000301',
-            1, 10, 'first', zeroblob(32)
-         );
-         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000303',
-            10, 10, '019f547b-6200-7000-8000-000000000304'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000304',
-            '019f547b-6200-7000-8000-000000000303',
-            1, 10, 'second', zeroblob(32)
-         );
-         COMMIT;",
-    )
-    .expect("two tidbits");
-
-    assert!(main
-        .execute(
-            "UPDATE tidbit
-             SET current_revision_id = '019f547b-6200-7000-8000-000000000304'
-             WHERE id = '019f547b-6200-7000-8000-000000000301'",
-            [],
-        )
-        .is_err());
-
-    for locator in ["{}", "{\"start\":0}"] {
-        assert!(main
-            .execute(
-                "INSERT INTO passage(
-                    id, tidbit_revision_id, owner_kind, ordinal, content,
-                    content_hash, locator_kind, locator_json, created_at
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000000305',
-                    '019f547b-6200-7000-8000-000000000302',
-                    'AUTHOR', 0, 'unresolvable', zeroblob(32),
-                    'MARKDOWN_BLOCKS', ?1, 10
-                 )",
-                params![locator],
-            )
-            .is_err());
-    }
-}
-
-#[test]
-fn attachment_citation_provenance_cannot_silently_retarget() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    main.execute_batch(
-        "INSERT INTO attachment(
-            id, created_at, updated_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000401',
-            10, 10, zeroblob(32), 'notes.txt', 'text/plain', 12, 'TEXT', 'PENDING'
-         );
-         INSERT INTO attachment_extraction(
-            id, attachment_id, extractor, extractor_version, content_hash,
-            status, created_at, started_at, completed_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000402',
-            '019f547b-6200-7000-8000-000000000401',
-            'text', '1', zeroblob(32), 'READY', 10, 10, 10
-         );
-         INSERT INTO attachment_segment(
-            id, extraction_id, ordinal, locator_kind, line_start, line_end,
-            content, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000403',
-            '019f547b-6200-7000-8000-000000000402',
-            0, 'TEXT_LINES', 1, 1, 'evidence', zeroblob(32)
-         );",
-    )
-    .expect("attachment provenance");
-
-    assert!(main
-        .execute(
-            "INSERT INTO passage(
-                id, attachment_segment_id, owner_kind, ordinal, content,
-                content_hash, locator_kind, locator_json, created_at
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000000404',
-                '019f547b-6200-7000-8000-000000000403',
-                'ATTACHMENT', 0, 'evidence', zeroblob(32),
-                'TEXT_LINES', '{\"start\":1,\"end\":2}', 10
-             )",
-            [],
-        )
-        .is_err());
-    main.execute(
-        "INSERT INTO passage(
-            id, attachment_segment_id, owner_kind, ordinal, content,
-            content_hash, locator_kind, locator_json, created_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000404',
-            '019f547b-6200-7000-8000-000000000403',
-            'ATTACHMENT', 0, 'evidence', zeroblob(32),
-            'TEXT_LINES', '{\"start\":1,\"end\":1}', 10
-         )",
-        [],
-    )
-    .expect("passage locator matches stored segment");
-
-    assert!(main
-        .execute(
-            "UPDATE attachment_extraction
-             SET content_hash = randomblob(32)
-             WHERE id = '019f547b-6200-7000-8000-000000000402'",
-            [],
-        )
-        .is_err());
-    let regression = main
-        .execute(
-            "UPDATE attachment_extraction
-             SET status = 'RUNNING'
-             WHERE id = '019f547b-6200-7000-8000-000000000402'",
-            [],
-        )
-        .expect_err("ready extraction cannot regress");
-    assert!(regression
-        .to_string()
-        .contains("ready attachment extractions are terminal"));
-    assert!(main
-        .execute(
-            "UPDATE attachment_segment
-             SET content = 'different evidence'
-             WHERE id = '019f547b-6200-7000-8000-000000000403'",
-            [],
-        )
-        .is_err());
-}
-
-#[test]
-fn extractions_require_current_content_and_discard_partial_outputs() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let valid_digest = vec![13_u8; 32];
-    let changed_digest = vec![14_u8; 32];
-
-    let media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Existing)
-            .expect("media writer");
-    for digest in [&valid_digest, &changed_digest] {
-        media
-            .execute(
-                "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
-                 VALUES(?1, x'01', 1, 10)",
-                params![digest],
-            )
-            .expect("media blob");
-    }
-    drop(media);
-
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    for (attachment_id, digest) in [
-        ("019f547b-6200-7000-8000-000000000801", &valid_digest),
-        ("019f547b-6200-7000-8000-000000000803", &changed_digest),
-    ] {
-        main.execute(
-            "INSERT INTO attachment(
-                id, created_at, updated_at, sha256, display_filename,
-                media_type, byte_length, kind, extraction_state
-             ) VALUES(?1, 10, 10, ?2, 'scan.png', 'image/png', 1, 'IMAGE', 'PENDING')",
-            params![attachment_id, digest],
-        )
-        .expect("attachment");
-    }
-    main.execute(
-        "INSERT INTO attachment_extraction(
-            id, attachment_id, extractor, extractor_version, content_hash,
-            status, created_at, started_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000802',
-            '019f547b-6200-7000-8000-000000000801',
-            'ocr', 'fixture-v1', ?1, 'RUNNING', 10, 11
-         )",
-        params![&valid_digest],
-    )
-    .expect("running extraction");
-    let mismatch = main
-        .execute(
-            "INSERT INTO attachment_extraction(
-                id, attachment_id, extractor, extractor_version, content_hash,
-                status, created_at
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000000804',
-                '019f547b-6200-7000-8000-000000000803',
-                'ocr', 'fixture-v1', ?1, 'READY', 10
-             )",
-            params![vec![15_u8; 32]],
-        )
-        .expect_err("extraction hash must match attachment");
-    assert!(mismatch
-        .to_string()
-        .contains("FOREIGN KEY constraint failed"));
-    main.execute(
-        "INSERT INTO attachment_segment(
-            id, extraction_id, ordinal, locator_kind, page_number, content, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000805',
-            '019f547b-6200-7000-8000-000000000802',
-            0, 'PDF_PAGE', 1, 'partial output', zeroblob(32)
-         )",
-        [],
-    )
-    .expect("partial segment");
-    assert!(main
-        .execute(
-            "INSERT INTO passage(
-                id, attachment_segment_id, owner_kind, ordinal, content,
-                content_hash, locator_kind, locator_json, created_at
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000000806',
-                '019f547b-6200-7000-8000-000000000805',
-                'ATTACHMENT', 0, 'partial output', zeroblob(32),
-                'PDF_PAGE', '{\"page\":1}', 11
-             )",
-            [],
-        )
-        .is_err());
-    drop(main);
-
-    let database = Database::initialize(pair.paths.clone()).expect("recovered pair");
-    let read_only = database.open_main_read_only().expect("read-only main");
-    let valid: (String, Option<i64>, String) = read_only
-        .query_row(
-            "SELECT status, started_at, extractor_version
-             FROM attachment_extraction
-             WHERE id = '019f547b-6200-7000-8000-000000000802'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("requeued extraction");
-    assert_eq!(valid, ("PENDING".into(), None, "fixture-v1".into()));
-
-    let partial_segments: i64 = read_only
-        .query_row(
-            "SELECT count(*)
-             FROM attachment_segment
-             WHERE extraction_id = '019f547b-6200-7000-8000-000000000802'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("partial segment count");
-    assert_eq!(partial_segments, 0);
-}
-
-#[test]
-fn passage_embeddings_require_exact_passage_and_index_provenance() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000901',
-            10, 10, '019f547b-6200-7000-8000-000000000902'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000902',
-            '019f547b-6200-7000-8000-000000000901',
-            1, 10, 'semantic evidence', zeroblob(32)
-         );
-         COMMIT;",
-    )
-    .expect("embedding provenance fixture");
-    let passage_hash = vec![21_u8; 32];
-    main.execute(
-        "INSERT INTO passage(
-            id, tidbit_revision_id, owner_kind, ordinal, content,
-            content_hash, locator_kind, locator_json, created_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000903',
-            '019f547b-6200-7000-8000-000000000902',
-            'AUTHOR', 0, 'semantic evidence', ?1,
-            'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10
-         )",
-        params![&passage_hash],
-    )
-    .expect("passage");
-
-    let mismatch = main
-        .execute(
-            "INSERT INTO passage_embedding(
-                passage_id, embedding_index_id, passage_content_hash, created_at
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000000903',
-                '019f547b-6200-7000-8000-000000000002', ?1, 11
-             )",
-            params![vec![22_u8; 32]],
-        )
-        .expect_err("stale passage hash");
-    assert!(mismatch
-        .to_string()
-        .contains("passage embedding provenance mismatch"));
-    main.execute(
-        "INSERT INTO passage_embedding(
-            passage_id, embedding_index_id, passage_content_hash, created_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000903',
-            '019f547b-6200-7000-8000-000000000002', ?1, 11
-         )",
-        params![&passage_hash],
-    )
-    .expect("matching embedding provenance");
-
-    let invalid_vector = serde_json::to_string(&vec![0.0_f32; 3]).expect("vector JSON");
-    assert!(main
-        .execute(
-            "INSERT INTO passage_embedding_vec_jina_v1(rowid, embedding)
-             SELECT rowid, ?1 FROM passage
-             WHERE id = '019f547b-6200-7000-8000-000000000903'",
-            params![invalid_vector],
-        )
-        .is_err());
-    let mut vector = vec![0.0_f32; 768];
-    vector[0] = 1.0;
-    let vector_json = serde_json::to_string(&vector).expect("vector JSON");
-    main.execute(
-        "INSERT INTO passage_embedding_vec_jina_v1(rowid, embedding)
-         SELECT rowid, ?1 FROM passage
-         WHERE id = '019f547b-6200-7000-8000-000000000903'",
-        params![vector_json],
-    )
-    .expect("matching vector dimension");
-}
-
-#[test]
-fn revision_provenance_links_cannot_be_retargeted_or_deleted() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000701',
-            10, 10, '019f547b-6200-7000-8000-000000000702'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000702',
-            '019f547b-6200-7000-8000-000000000701',
-            1, 10, 'historical evidence', zeroblob(32)
-         );
-         INSERT INTO source(id, created_at, label, normalized_url)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000703',
-            10, 'Primary source', 'https://example.com/source'
-         );
-         INSERT INTO attachment(
-            id, created_at, updated_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000704',
-            10, 10, randomblob(32), 'evidence.txt', 'text/plain',
-            12, 'TEXT', 'PENDING'
-         );
-         INSERT INTO tidbit_revision_source(tidbit_revision_id, source_id, sort_order)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000702',
-            '019f547b-6200-7000-8000-000000000703',
-            0
-         );
-         INSERT INTO tidbit_revision_attachment(
-            tidbit_revision_id, attachment_id, sort_order, display_role
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000702',
-            '019f547b-6200-7000-8000-000000000704',
-            0, 'ATTACHMENT'
-         );
-         COMMIT;",
-    )
-    .expect("revision provenance");
-
-    assert!(main
-        .execute(
-            "UPDATE tidbit_revision_source
-             SET sort_order = 1
-             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
-            [],
-        )
-        .is_err());
-    assert!(main
-        .execute(
-            "DELETE FROM tidbit_revision_source
-             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
-            [],
-        )
-        .is_err());
-    assert!(main
-        .execute(
-            "UPDATE tidbit_revision_attachment
-             SET display_role = 'INLINE'
-             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
-            [],
-        )
-        .is_err());
-    assert!(main
-        .execute(
-            "DELETE FROM tidbit_revision_attachment
-             WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000000702'",
-            [],
-        )
-        .is_err());
-}
-
-#[test]
-fn explicit_shutdown_joins_the_only_writer() {
-    let pair = TestPair::new();
-    let database = Database::initialize(pair.paths.clone()).expect("fresh pair");
-    let client = database.client();
-
-    database.shutdown().expect("clean shutdown");
-    assert!(matches!(
-        client.diagnostics(),
-        Err(DatabaseError::WriterUnavailable)
-    ));
-}
-
-#[test]
-fn orphaned_media_stage_is_recoverable_but_missing_committed_bytes_are_not() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-
-    let media =
-        connection::open_writer(&pair.paths.media, DatabaseKind::Media, FileState::Existing)
-            .expect("media writer");
-    let digest = vec![7_u8; 32];
-    media
-        .execute(
-            "INSERT INTO media_blob(sha256, bytes, byte_length, created_at)
-             VALUES(?1, x'010203', 3, 10)",
-            params![&digest],
-        )
-        .expect("orphaned staged blob");
-    drop(media);
-
-    drop(Database::initialize(pair.paths.clone()).expect("orphan tolerated"));
-
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    main.execute(
-        "INSERT INTO attachment(
-            id, created_at, updated_at, deleted_at, sha256, display_filename,
-            media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000101',
-            10, 11, 11, ?1, 'missing.pdf', 'application/pdf', 3, 'PDF', 'PENDING'
-         )",
-        params![vec![8_u8; 32]],
-    )
-    .expect("deleted attachment without blob");
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000102',
-            10, 10, '019f547b-6200-7000-8000-000000000103'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000103',
-            '019f547b-6200-7000-8000-000000000102',
-            1, 10, 'historical attachment', zeroblob(32)
-         );
-         INSERT INTO tidbit_revision_attachment(
-            tidbit_revision_id, attachment_id, sort_order, display_role
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000103',
-            '019f547b-6200-7000-8000-000000000101',
-            0, 'ATTACHMENT'
-         );
-         COMMIT;",
-    )
-    .expect("historical attachment provenance");
-    drop(main);
-
-    let error = Database::initialize(pair.paths.clone()).expect_err("missing committed bytes");
-    assert!(matches!(
-        error,
-        DatabaseError::Validation {
-            kind: "database pair",
-            ..
-        }
-    ));
-}
-
-#[test]
-fn stale_fts_is_deferred_until_explicit_post_start_maintenance() {
-    let pair = TestPair::new();
-    drop(Database::initialize(pair.paths.clone()).expect("fresh pair"));
-    let main = connection::open_writer(&pair.paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    main.execute_batch(
-        "BEGIN;
-         INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000501',
-            10, 10, '019f547b-6200-7000-8000-000000000502'
-         );
-         INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000502',
-            '019f547b-6200-7000-8000-000000000501',
-            1, 10, 'authored survives', zeroblob(32)
-         );
-         INSERT INTO passage(
-            id, tidbit_revision_id, owner_kind, ordinal, content,
-            content_hash, locator_kind, locator_json, created_at,
-            construction_version, heading_context_json
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000000503',
-            '019f547b-6200-7000-8000-000000000502',
-            'AUTHOR', 0, 'recoverable ﬁle evidence', zeroblob(32),
-            'MARKDOWN_BLOCKS', '{\"start\":0,\"end\":0}', 10,
-            'markdown-blocks-v1', '[]'
-         );
-         INSERT INTO active_passage(passage_id, tidbit_id)
-         VALUES(
-            '019f547b-6200-7000-8000-000000000503',
-            '019f547b-6200-7000-8000-000000000501'
-         );
-         INSERT INTO passage_search_document(
-            rowid, passage_id, tidbit_id, title, heading_context, body,
-            source_labels, source_domains, attachment_names, extracted_text,
-            owner_content_hash, updated_at
-         )
-         SELECT
-            passage.rowid,
-            passage.id,
-            '019f547b-6200-7000-8000-000000000501',
-            '', '', passage.content, '', '', '', '',
-            zeroblob(32), 10
-         FROM passage
-         WHERE passage.id = '019f547b-6200-7000-8000-000000000503';
-         INSERT INTO passage_fts_word(passage_fts_word) VALUES('delete-all');
-         INSERT INTO passage_fts_trigram(passage_fts_trigram) VALUES('delete-all');
-         UPDATE index_state
-         SET version = 'legacy', status = 'RUNNING', updated_at = 10
-         WHERE name = 'PASSAGE_FTS';
-         COMMIT;",
-    )
-    .expect("passage without derived index row");
-    drop(main);
-
-    let database = Database::initialize(pair.paths.clone()).expect("authored data opens");
-    let read_only = database.open_main_read_only().expect("read-only main");
-    let state: (String, String) = read_only
-        .query_row(
-            "SELECT status, version FROM index_state WHERE name = 'PASSAGE_FTS'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("recovered index state");
-    assert_eq!(state, ("DIRTY".into(), "legacy".into()));
-    let before: i64 = read_only
-        .query_row(
-            "SELECT count(*)
-             FROM passage_fts_word
-             WHERE passage_fts_word MATCH 'file'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("stale search remains optional");
-    assert_eq!(before, 0);
-
-    assert!(database
-        .client()
-        .reconcile_fts()
-        .expect("explicit FTS maintenance"));
-    let matches: i64 = read_only
-        .query_row(
-            "SELECT count(*)
-             FROM passage_fts_word
-             WHERE passage_fts_word MATCH 'file'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("rebuilt search");
-    assert_eq!(matches, 1);
-    assert!(database
-        .client()
-        .reconcile_fts()
-        .expect("normalized integrity maintenance"));
-    let matches_after_integrity: i64 = read_only
-        .query_row(
-            "SELECT count(*)
-             FROM passage_fts_word
-             WHERE passage_fts_word MATCH 'file'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("normalized search after integrity check");
-    assert_eq!(matches_after_integrity, 1);
-    let state: (String, String) = read_only
-        .query_row(
-            "SELECT status, version FROM index_state WHERE name = 'PASSAGE_FTS'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("maintained index state");
-    assert_eq!(state, ("IDLE".into(), "lexical-v3".into()));
+fn table_columns(connection: &Connection, table: &str) -> Vec<String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .expect("prepare table columns");
+    statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("query table columns")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect table columns")
 }

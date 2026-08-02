@@ -12,6 +12,7 @@ const matrixBytes = readFileSync(matrixPath);
 const matrix = JSON.parse(matrixBytes);
 
 const sourceByModule = new Map([
+  ["backup::canary", "src-tauri/src/backup/canary.rs"],
   ["backup::checkpoint", "src-tauri/src/backup/checkpoint.rs"],
   ["backup::credentials", "src-tauri/src/backup/credentials.rs"],
   ["backup::litestream", "src-tauri/src/backup/litestream.rs"],
@@ -25,7 +26,6 @@ const sourceByModule = new Map([
   ["database::maintenance_tests", "src-tauri/src/database/maintenance_tests.rs"],
   ["database::offsite_checkpoint_tests", "src-tauri/src/database/offsite_checkpoint_tests.rs"],
   ["database::tests", "src-tauri/src/database/tests.rs"],
-  ["database::restore_install", "src-tauri/src/database/restore_install.rs"],
   ["database::safety_snapshot", "src-tauri/src/database/safety_snapshot.rs"],
 ]);
 const requiredPhases = [

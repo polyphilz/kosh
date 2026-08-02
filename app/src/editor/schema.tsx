@@ -71,24 +71,6 @@ const inlineMath = createReactInlineContentSpec(
   },
 );
 
-const legacyMarkdown = createReactBlockSpec(
-  {
-    type: "legacyMarkdown",
-    propSchema: {
-      markdown: { default: "" },
-    },
-    content: "none",
-  },
-  {
-    render: ({ block, editor }) => (
-      <LegacyMarkdownSource
-        markdown={block.props.markdown}
-        onChange={(markdown) => editor.updateBlock(block, { props: { markdown } })}
-      />
-    ),
-  },
-);
-
 const supportedCodeLanguages = Object.fromEntries(
   codeLanguageDefinitions.map((definition) => [
     definition.canonical,
@@ -112,7 +94,6 @@ export const koshBlockNoteSchema = BlockNoteSchema.create({
     }),
     displayMath: displayMath(),
     ...koshMediaBlockSpecs,
-    legacyMarkdown: legacyMarkdown(),
   },
   inlineContentSpecs: {
     text: defaultInlineContentSpecs.text,
@@ -182,31 +163,6 @@ function MathSource({
         />
       )}
     </span>
-  );
-}
-
-function LegacyMarkdownSource({
-  markdown,
-  onChange,
-}: {
-  markdown: string;
-  onChange: (markdown: string) => void;
-}) {
-  const disabled = useKoshEditorDisabled();
-  return (
-    <label className="kosh-legacy-markdown" contentEditable={false}>
-      <span className="kosh-legacy-markdown__label">Legacy Markdown</span>
-      <textarea
-        aria-label="Legacy Markdown source"
-        disabled={disabled}
-        onChange={(event) => {
-          if (!disabled) onChange(event.currentTarget.value);
-        }}
-        onKeyDown={(event) => event.stopPropagation()}
-        spellCheck={false}
-        value={markdown}
-      />
-    </label>
   );
 }
 

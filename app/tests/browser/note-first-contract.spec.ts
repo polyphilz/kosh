@@ -18,7 +18,7 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
 
-    backend.selectImage = async () => "baseline-image-selection";
+    backend.selectImage = async () => "note-image-selection";
     backend.ingestSelectedImage = async () => ({
       id: "019f547b-6200-7000-8000-00000000c001",
       ingestLeaseId: "019f547b-6200-7000-8000-00000000c002",
@@ -40,7 +40,7 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
       nextAttemptAtMs: null,
     });
 
-    backend.selectPdf = async () => "baseline-pdf-selection";
+    backend.selectPdf = async () => "note-pdf-selection";
     backend.ingestSelectedPdf = async () => ({
       id: "019f547b-6200-7000-8000-00000000c011",
       ingestLeaseId: "019f547b-6200-7000-8000-00000000c012",
@@ -63,7 +63,7 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
       nextAttemptAtMs: null,
     });
 
-    backend.selectAttachment = async () => "baseline-file-selection";
+    backend.selectAttachment = async () => "note-file-selection";
     backend.ingestSelectedAttachment = async () => ({
       recordKind: "GENERIC",
       record: {
@@ -102,7 +102,7 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
   await editor.focus();
   await editor.press("Control+End");
   await editor.press("Enter");
-  await editor.pressSequentially("The exact baseline passage remembers contiguous arrays.");
+  await editor.pressSequentially("The exact note passage remembers contiguous arrays.");
 
   await page.getByRole("button", { name: "Sources" }).click();
   const sources = page.getByRole("dialog", { name: "Note sources" });
@@ -119,7 +119,7 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByRole("combobox", { name: "Search notes" }).fill("contiguous arrays");
   const citation = page.getByRole("option", { name: /Vector note/u });
-  await expect(citation).toContainText("The exact baseline passage remembers contiguous arrays.");
+  await expect(citation).toContainText("The exact note passage remembers contiguous arrays.");
   await expect(citation).toContainText("NumPy notebook · example.com");
   await citation.click();
   await expect(page.getByText("Search match", { exact: true })).toBeVisible();

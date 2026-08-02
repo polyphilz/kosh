@@ -7,7 +7,7 @@ configuration.
 
 ## Persistence contract
 
-Main migration V18 stores only non-secret, revision-guarded state:
+The canonical main schema stores only non-secret, revision-guarded state:
 
 - canonical UUIDv7 backup-set and replica-epoch IDs;
 - enabled/disabled state;
@@ -25,8 +25,7 @@ versioned payload in the macOS Keychain service
 `com.rohan.kosh.offsite-backup.r2`. Debug output is redacted. A Keychain save
 is read back and decoded before it succeeds; a mismatched readback removes the
 new item and fails. Credential payloads never contain the backup writer
-identity. Legacy payloads that embedded one are verified, upgraded, and stripped
-under the same rollback protocol.
+identity, and unknown payload versions fail closed.
 
 The non-secret writer identity is instead a domain-separated SHA-256 digest of
 macOS's hardware-provided `IOPlatformUUID` plus the profile data directory's

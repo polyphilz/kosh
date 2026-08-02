@@ -1,8 +1,8 @@
 # Hardening and supported limits
 
 Kosh treats capture and lexical search as the availability floor. Optional
-embedding, extraction, and Research work may fail or be interrupted without
-making authored notes or exact citations unavailable.
+embedding and extraction work may fail or be interrupted without making
+authored notes or exact citations unavailable.
 
 ## Reproduce the hardening report
 
@@ -32,7 +32,6 @@ local aggregation, not a substitute for any required CI job.
 | draft and attachment staging | interrupted reader, orphaned stage, committed/missing blob, concurrent ingestion | partial bytes removed; committed references never reaped |
 | text/PDF/OCR extraction | pending, running, retry-wait, ready, failed, stale extractor, retired attachment | bounded batch requeue or terminal failure; stale output never becomes current |
 | embedding index | dirty, running, partial vectors, model/version change | incomplete vectors requeued; index activates only when complete |
-| Research run/process | queued, running, cancel, timeout, malformed/oversized stream, killed process | process group and workspace cleaned; durable run becomes interrupted and can be rerun |
 | migration and media reclamation | pending migration or irreversible eligible-media cleanup | verified main/media snapshot pair exists before mutation and reopens with integrity and citation provenance |
 
 Startup media recovery may renew or retire lifecycle metadata and rebuild reap
@@ -41,8 +40,7 @@ only through explicit maintenance after its verified snapshot is published.
 
 The exact tests are deliberately distributed beside the state machines:
 `database/reliability_tests.rs`, `database/safety_snapshot.rs`,
-`database/media_tests.rs`, `database/embedding_index_tests.rs`,
-`database/research_runs_tests.rs`, `claude.rs`, and `research/tests.rs`.
+`database/media_tests.rs`, and `database/embedding_index_tests.rs`.
 
 ## Resource and latency budgets
 
@@ -58,8 +56,6 @@ The exact tests are deliberately distributed beside the state machines:
   chunk.
 - The PDF worker is capped at 512 MiB address space and 32 MiB structured
   output. Semantic sidecar logs rotate at 5 MiB per file.
-- Research prompts are capped at 64 KiB, parsed streams at 16 MiB and 16,384
-  events, visible answer text at 1 MiB, and a run at two hours.
 - Kosh retains at most three verified local safety-snapshot pairs. They are
   recovery points for migration/maintenance, not backup or multi-device sync.
   Before copying, Kosh rotates the oldest owned pair, computes a conservative
@@ -95,10 +91,8 @@ opaque.
 
 Production CSP defaults to self-only execution and permits only Tauri IPC plus
 typed `kosh-media:` image/object reads. Frames, forms, base retargeting, remote
-connections, arbitrary filesystem/shell/process capabilities, and web-enabled
-Research tools are absent. Source links are HTTP(S)-only. Local media access
-requires a canonical UUIDv7 capability, and untrusted Research text has Kosh
-media capabilities neutralized before rendering.
+connections, and arbitrary filesystem/shell/process capabilities. Source links
+are HTTP(S)-only. Local media access requires a canonical UUIDv7 capability.
 
 Every primary route is checked in light and dark mode with axe WCAG 2 A/AA and
 2.1 A/AA rules. The suite also covers keyboard-only primary navigation, focus

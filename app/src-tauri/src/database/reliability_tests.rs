@@ -5,7 +5,6 @@ use std::{
 };
 
 use super::{
-    drafts::{SaveDraftInput, SaveDraftWrite},
     AttachmentIngestInput, Database, DatabasePaths, LexicalSearchMode, MediaLimits,
     SearchPassagesInput, SourceDraft, TidbitDraft,
 };
@@ -24,20 +23,8 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
     let database = Arc::new(Database::initialize(paths.clone()).expect("database"));
     let setup_client = database.client();
     setup_client
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: String::new(),
-                sources: Vec::new(),
-            },
-            now_ms: 1,
-            draft_id: DRAFT_ID.into(),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("attachment draft");
+        .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 1, true)
+        .expect("attachment working copy");
 
     let worker_count = CAPTURE_THREADS + SEARCH_THREADS + 2;
     let start = Arc::new(Barrier::new(worker_count));
@@ -53,7 +40,6 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
                 client
                     .create_tidbit_with_ids(
                         TidbitDraft {
-                            title: Some(format!("Stress tidbit {ordinal:03}")),
                             body_markdown: format!(
                                 "Concurrent stress evidence {ordinal:03}.\n\n```text\nworker={capture_thread}\n```"
                             ),
@@ -133,9 +119,6 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
         worker.join().expect("mixed workload worker");
     }
 
-    setup_client
-        .reconcile_author_passages()
-        .expect("finish authored passage reconciliation");
     setup_client.full_integrity_check().expect("live integrity");
     let before = setup_client
         .maintenance_snapshot()
