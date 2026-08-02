@@ -40,6 +40,113 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
   );
 });
 
+test("navigation fences an edit before the working-copy debounce", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Navigate immediately, but keep every byte.");
+
+  await page.getByRole("link", { name: "Search", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Search" })).toBeVisible();
+
+  expect(
+    await page.evaluate(async () => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      return (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items;
+    }),
+  ).toEqual([
+    expect.objectContaining({
+      bodyPreview: expect.stringContaining("Navigate immediately, but keep every byte."),
+      title: null,
+    }),
+  ]);
+});
+
+test("an interrupted new note finishes recovery before accepting input", async ({ page }) => {
+  const noteId = "019f547b-6200-7000-8000-00000000e001";
+  await page.goto("/#/search");
+  await page.evaluate(async (recoveredNoteId) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    await backend.saveWorkingCopy({
+      noteId: recoveredNoteId,
+      baseRevisionId: null,
+      editGeneration: 7,
+      bodyMarkdown: "Recovered before the editor becomes interactive.",
+      sources: [],
+    });
+    const loadWorkingCopy = backend.loadWorkingCopy.bind(backend);
+    backend.loadWorkingCopy = async (requestedNoteId) => {
+      if (requestedNoteId === recoveredNoteId) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      }
+      return loadWorkingCopy(requestedNoteId);
+    };
+    window.location.hash = `/new/${recoveredNoteId}`;
+  }, noteId);
+
+  await expect(page.locator("main.note-page[aria-busy='true']")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Note" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
+    "Recovered before the editor becomes interactive.",
+  );
+});
+
+test("one stale working copy cannot block later recovery", async ({ page }) => {
+  const trailingNoteId = "019f547b-6200-7000-8000-00000000e101";
+  await page.goto("/#/search");
+  const staleNoteId = await page.evaluate(async (recoverableNoteId) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const staleNote = await backend.createTidbit({
+      title: null,
+      bodyMarkdown: "Original durable note.",
+      sources: [],
+    });
+    await backend.saveWorkingCopy({
+      noteId: recoverableNoteId,
+      baseRevisionId: null,
+      editGeneration: 1,
+      bodyMarkdown: "This trailing copy must still reconcile.",
+      sources: [],
+    });
+    await backend.saveWorkingCopy({
+      noteId: staleNote.id,
+      baseRevisionId: staleNote.currentRevisionId,
+      editGeneration: 1,
+      bodyMarkdown: "This copy will become stale.",
+      sources: [],
+    });
+    await backend.editTidbit({
+      id: staleNote.id,
+      expectedRevisionId: staleNote.currentRevisionId,
+      title: null,
+      bodyMarkdown: "A newer route already changed this note.",
+      sources: [],
+    });
+    window.location.hash = "/";
+    return staleNote.id;
+  }, trailingNoteId);
+
+  await expect
+    .poll(() =>
+      page.evaluate(async (noteId) => {
+        const backend = window.__KOSH_FAKE_BACKEND__;
+        if (!backend) throw new Error("fake backend is unavailable");
+        const page = await backend.listTidbits({ cursor: null, limit: 20, scope: "ACTIVE" });
+        return page.items.some((item) => item.id === noteId);
+      }, trailingNoteId),
+    )
+    .toBe(true);
+  expect(
+    await page.evaluate(async () => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      return (await backend.listWorkingCopies()).map((copy) => copy.noteId);
+    }),
+  ).toEqual([staleNoteId]);
+});
+
 test("a legacy title is projected without a revision until the first authored edit", async ({
   page,
 }) => {

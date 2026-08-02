@@ -1,4 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -10,11 +10,7 @@ import type {
   WorkingCopyRecord,
 } from "../backend/contracts";
 import { KoshBlockNoteEditor, type KoshBlockNoteEditorHandle } from "../editor/KoshBlockNoteEditor";
-import {
-  NoteAutosaveCoordinator,
-  hasMeaningfulAuthoredContent,
-  type NoteMediaReservation,
-} from "../notes/autosave";
+import { NoteAutosaveCoordinator, type NoteMediaReservation } from "../notes/autosave";
 import { projectLegacyTitle } from "../notes/legacyTitle";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { TauriEvent } from "../tauriProtocol";
@@ -33,6 +29,7 @@ interface NotePageProps {
 
 interface NoteSession {
   coordinator: NoteAutosaveCoordinator;
+  noteId: string;
   note: TidbitRecord | null;
 }
 
@@ -41,30 +38,27 @@ const reconciliationStarted = new WeakSet<Backend>();
 
 export function NotePage({ mode, noteId }: NotePageProps) {
   const backend = useBackend();
-  const [session, setSession] = useState<NoteSession | null>(() =>
-    mode === "ephemeral"
-      ? { coordinator: NoteAutosaveCoordinator.ephemeral(backend, { noteId }), note: null }
-      : null,
-  );
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [session, setSession] = useState<NoteSession | null>(null);
+  const [loadError, setLoadError] = useState<{ message: string; noteId: string } | null>(null);
 
   useEffect(() => {
     let active = true;
+    setLoadError(null);
     if (mode === "ephemeral") {
-      const initialCoordinator = session?.coordinator;
       void backend
         .loadWorkingCopy(noteId)
         .then((workingCopy) => {
-          if (!active || !workingCopy || !initialCoordinator) return;
-          const snapshot = initialCoordinator.getSnapshot();
-          if (snapshot.editGeneration !== 0 || snapshot.bodyMarkdown !== "") return;
+          if (!active) return;
           setSession({
-            coordinator: NoteAutosaveCoordinator.recovered(backend, workingCopy),
+            coordinator: workingCopy
+              ? NoteAutosaveCoordinator.recovered(backend, workingCopy)
+              : NoteAutosaveCoordinator.ephemeral(backend, { noteId }),
+            noteId,
             note: null,
           });
         })
         .catch((reason: unknown) => {
-          if (active) setLoadError(errorMessage(reason));
+          if (active) setLoadError({ message: errorMessage(reason), noteId });
         });
       return () => {
         active = false;
@@ -76,28 +70,29 @@ export function NotePage({ mode, noteId }: NotePageProps) {
         if (!active) return;
         setSession({
           coordinator: coordinatorForDurableNote(backend, note, workingCopy),
+          noteId,
           note,
         });
       })
       .catch((reason: unknown) => {
-        if (active) setLoadError(errorMessage(reason));
+        if (active) setLoadError({ message: errorMessage(reason), noteId });
       });
     return () => {
       active = false;
     };
   }, [backend, mode, noteId]);
 
-  if (loadError) {
+  if (loadError?.noteId === noteId) {
     return (
       <main className="note-page note-page--error">
         <div role="alert">
           <p>Could not open this note.</p>
-          <span>{loadError}</span>
+          <span>{loadError.message}</span>
         </div>
       </main>
     );
   }
-  if (!session) {
+  if (!session || session.noteId !== noteId) {
     return (
       <main aria-busy="true" className="note-page">
         <span className="visually-hidden">Opening note</span>
@@ -128,6 +123,7 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
   const dropCountRef = useRef(0);
   const pendingWaitersRef = useRef(new Set<() => void>());
   const disposeTimerRef = useRef<number | null>(null);
+  const leavingNoteRef = useRef(false);
   const [mediaPending, setMediaPending] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getSnapshot);
@@ -146,6 +142,26 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
     return new Promise<void>((resolve) => pendingWaitersRef.current.add(resolve));
   }, []);
 
+  const flushForNavigation = useCallback(async () => {
+    await waitForPendingMedia();
+    await coordinator.flush("NAVIGATION");
+  }, [coordinator, waitForPendingMedia]);
+
+  useBlocker({
+    enableBeforeUnload: false,
+    shouldBlockFn: async ({ next }) => {
+      leavingNoteRef.current =
+        next.pathname !== `/new/${noteId}` && next.pathname !== `/notes/${noteId}`;
+      try {
+        await flushForNavigation();
+        return false;
+      } catch (reason) {
+        leavingNoteRef.current = false;
+        throw reason;
+      }
+    },
+  });
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       editorRef.current?.focus();
@@ -162,14 +178,18 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
     }
     return () => {
       scrollPositions.set(noteId, window.scrollY);
-      for (const resolve of pendingWaitersRef.current) resolve();
-      pendingWaitersRef.current.clear();
-      disposeTimerRef.current = window.setTimeout(() => coordinator.dispose(), 0);
+      disposeTimerRef.current = window.setTimeout(() => {
+        void flushForNavigation()
+          .catch((reason: unknown) => {
+            console.error("Could not flush note before navigation", reason);
+          })
+          .finally(() => coordinator.dispose());
+      }, 0);
     };
-  }, [coordinator, noteId]);
+  }, [coordinator, flushForNavigation, noteId]);
 
   useEffect(() => {
-    if (mode !== "ephemeral" || snapshot.baseRevisionId === null) return;
+    if (mode !== "ephemeral" || snapshot.baseRevisionId === null || leavingNoteRef.current) return;
     void navigate({
       to: "/notes/$noteId",
       params: { noteId },
@@ -387,19 +407,21 @@ function scheduleWorkingCopyReconciliation(backend: Backend, activeNoteId: strin
       .then(async (workingCopies) => {
         for (const workingCopy of workingCopies) {
           if (workingCopy.noteId === activeNoteId) continue;
-          if (
-            workingCopy.baseRevisionId === null &&
-            !hasMeaningfulAuthoredContent(workingCopy.bodyMarkdown)
-          ) {
-            await backend.discardWorkingCopy({
+          try {
+            const save = await backend.saveWorkingCopy({
               noteId: workingCopy.noteId,
-              expectedEditGeneration: workingCopy.editGeneration,
+              baseRevisionId: workingCopy.baseRevisionId,
+              editGeneration: workingCopy.editGeneration + 1,
+              bodyMarkdown: workingCopy.bodyMarkdown,
+              sources: workingCopy.sources,
             });
-          } else {
+            if (save.status !== "SAVED") continue;
             await backend.checkpointWorkingCopy({
               noteId: workingCopy.noteId,
-              expectedEditGeneration: workingCopy.editGeneration,
+              expectedEditGeneration: save.acceptedEditGeneration,
             });
+          } catch (reason) {
+            console.warn(`Could not reconcile interrupted note ${workingCopy.noteId}`, reason);
           }
         }
       })
