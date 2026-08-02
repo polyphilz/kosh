@@ -120,6 +120,56 @@ test("paste, native-drop insertion, cancellation, and failure retain authored co
   expect(await editorMarkdown(page)).not.toContain("koshPendingMedia");
 });
 
+test("slow media ingest preserves the active writing cursor", async ({ page }) => {
+  await openSpike(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("Original thought"));
+  const requestId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+  );
+  await expect(page.getByRole("status", { name: "Adding deferred image" })).toBeVisible();
+
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.appendParagraph("Keep writing"));
+  await page.keyboard.type(" while loading");
+  await page.evaluate(
+    (id) => window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(id, "success"),
+    requestId,
+  );
+  await expect(page.getByRole("status", { name: "Adding deferred image" })).toHaveCount(0);
+  await expect(page.locator("[data-kosh-image='true']")).toHaveCount(1);
+  await page.keyboard.type(" after completion");
+
+  const markdown = await editorMarkdown(page);
+  expect(markdown).toContain("Keep writing while loading after completion");
+});
+
+test("image and PDF retries restart status polling", async ({ page }) => {
+  await openSpike(page);
+
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.installRetryMediaFixture("image"));
+  const imageRetry = page.getByRole("button", { name: "Retry text recognition" });
+  await expect(imageRetry).toBeVisible();
+  const imageCallsBeforeRetry = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("image"),
+  );
+  await imageRetry.click();
+  await expect(page.locator("[data-kosh-image='true']")).toContainText("Image text indexed");
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("image")))
+    .toBeGreaterThan(imageCallsBeforeRetry);
+
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.installRetryMediaFixture("pdf"));
+  const pdfRetry = page.getByRole("button", { name: "Retry extraction" });
+  await expect(pdfRetry).toBeVisible();
+  const pdfCallsBeforeRetry = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("pdf"),
+  );
+  await pdfRetry.click();
+  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("12 pages · 12 searchable");
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.mediaStatusCalls("pdf")))
+    .toBeGreaterThan(pdfCallsBeforeRetry);
+});
+
 test("the restricted slash menu inserts media through the local controller", async ({ page }) => {
   await openSpike(page);
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.appendParagraph());

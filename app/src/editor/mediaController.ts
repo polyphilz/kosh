@@ -67,11 +67,10 @@ export function createBlockNoteMediaController(
         editor.removeBlocks([current]);
         return;
       }
-      const replacement = editor.replaceBlocks(
+      editor.replaceBlocks(
         [current],
         [selectedAttachmentToMediaBlock(record, editorWidth()) as KoshBlockNotePartialBlock],
-      ).insertedBlocks[0];
-      focusAfterMedia(editor, replacement);
+      );
     } catch (error) {
       if (!disposed) {
         const current = editor.getBlock(pendingBlock.id);

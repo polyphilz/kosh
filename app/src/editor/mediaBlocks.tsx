@@ -246,6 +246,7 @@ type FileRenderProps = ReactCustomBlockRenderProps<typeof fileAttachmentConfig>;
 
 function KoshImageBlock({ block, editor }: ImageRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
+  const [pollRevision, setPollRevision] = useState(0);
   const [status, setStatus] = useState<ImageStatusRecord | null>(null);
   const figureRef = useRef<HTMLElement>(null);
   const attachmentId = block.props.attachmentId;
@@ -272,7 +273,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [actions, attachmentId]);
+  }, [actions, attachmentId, pollRevision]);
 
   const updateWidth = (widthPercent: number) =>
     editor.updateBlock(block, { props: { widthPercent: clampImageWidth(widthPercent) } });
@@ -367,7 +368,12 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
             disabled={!editor.isEditable}
             onClick={() =>
               void actions.retryImageOcr!(attachmentId)
-                .then(setStatus)
+                .then((record) => {
+                  setStatus(record);
+                  if (ACTIVE_IMAGE_STATUSES.has(record.ocrStatus)) {
+                    setPollRevision((revision) => revision + 1);
+                  }
+                })
                 .catch((error: unknown) => actions.onError?.(error))
             }
             type="button"
@@ -389,6 +395,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
 
 function KoshPdfBlock({ block, editor }: PdfRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
+  const [pollRevision, setPollRevision] = useState(0);
   const [status, setStatus] = useState<PdfStatusRecord | null>(null);
   const attachmentId = block.props.attachmentId;
 
@@ -412,7 +419,7 @@ function KoshPdfBlock({ block, editor }: PdfRenderProps) {
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [actions, attachmentId]);
+  }, [actions, attachmentId, pollRevision]);
 
   const extractionStatus = status?.extractionStatus ?? block.props.extractionStatus;
   const extractionError = status?.extractionError ?? block.props.extractionError;
@@ -439,7 +446,13 @@ function KoshPdfBlock({ block, editor }: PdfRenderProps) {
         onRemove={() => editor.removeBlocks([block])}
         onRetry={
           extractionStatus === "FAILED" && actions.retryPdfExtraction
-            ? () => actions.retryPdfExtraction!(attachmentId).then(setStatus)
+            ? () =>
+                actions.retryPdfExtraction!(attachmentId).then((record) => {
+                  setStatus(record);
+                  if (ACTIVE_PDF_STATUSES.has(record.extractionStatus)) {
+                    setPollRevision((revision) => revision + 1);
+                  }
+                })
             : undefined
         }
       />

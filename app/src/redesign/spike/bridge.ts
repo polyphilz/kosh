@@ -15,8 +15,10 @@ export interface BlockNoteSpikeBridge {
   capability: "blocknote";
   installLongDocument(blockCount: number): void;
   installListPair(): { firstId: string; secondId: string };
+  installRetryMediaFixture(kind: BlockNoteSpikeMediaKind): void;
   loadMarkdown(markdown: string): void;
   markdown(): string;
+  mediaStatusCalls(kind: BlockNoteSpikeMediaKind): number;
   insertMediaFixture(): void;
   resolveDeferredMedia(requestId: string, outcome: "cancel" | "failure" | "success"): void;
   schema: {
@@ -26,6 +28,13 @@ export interface BlockNoteSpikeBridge {
   };
   selectBlocks(startId: string, endId: string): void;
   snapshot(): BlockNoteSpikeSnapshot;
+}
+
+export type BlockNoteSpikeMediaKind = "image" | "pdf";
+
+export interface BlockNoteSpikeMediaHarness {
+  prepareRetry(kind: BlockNoteSpikeMediaKind): void;
+  statusCalls(kind: BlockNoteSpikeMediaKind): number;
 }
 
 declare global {
@@ -38,6 +47,7 @@ export function installSpikeBridge(
   editor: KoshSpikeEditor,
   schema: BlockNoteSpikeBridge["schema"],
   mediaController: BlockNoteMediaController,
+  mediaHarness: BlockNoteSpikeMediaHarness,
 ): () => void {
   const deferredMedia = new Map<
     string,
@@ -104,6 +114,10 @@ export function installSpikeBridge(
       editor.focus();
       return { firstId: first.id, secondId: second.id };
     },
+    installRetryMediaFixture(kind) {
+      mediaHarness.prepareRetry(kind);
+      mediaController.insert([mediaFixtureRecords()[kind === "image" ? 0 : 1]!]);
+    },
     loadMarkdown(markdown) {
       editor.replaceBlocks(editor.document, markdownToKoshBlocks(markdown));
       editor.setTextCursorPosition(editor.document[0]!, "start");
@@ -111,6 +125,9 @@ export function installSpikeBridge(
     },
     markdown() {
       return koshBlocksToMarkdown(editor.document);
+    },
+    mediaStatusCalls(kind) {
+      return mediaHarness.statusCalls(kind);
     },
     insertMediaFixture() {
       mediaController.insert(mediaFixtureRecords());

@@ -21,7 +21,12 @@ import { MantineProvider } from "@mantine/core";
 import { useEffect, useMemo } from "react";
 import { createBlockNoteMediaController } from "../../editor/mediaController";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "../../editor/mediaBlocks";
-import { installSpikeBridge, mediaFixtureRecords } from "./bridge";
+import {
+  installSpikeBridge,
+  mediaFixtureRecords,
+  type BlockNoteSpikeMediaHarness,
+  type BlockNoteSpikeMediaKind,
+} from "./bridge";
 import {
   initialSpikeBlocks,
   koshSpikeSchema,
@@ -47,7 +52,7 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
     () => restrictedSlashItems(editor, mediaController),
     [editor, mediaController],
   );
-  const mediaActions = useMemo<KoshMediaActions>(() => spikeMediaActions(), []);
+  const mediaHarness = useMemo(() => createSpikeMediaHarness(), []);
 
   useEffect(
     () =>
@@ -59,8 +64,9 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
           styles: supportedSpikeStyleTypes,
         },
         mediaController,
+        mediaHarness,
       ),
-    [editor, mediaController],
+    [editor, mediaController, mediaHarness],
   );
   useEffect(() => {
     mediaController.activate();
@@ -69,7 +75,7 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
 
   return (
     <MantineProvider forceColorScheme={theme}>
-      <KoshMediaActionsProvider actions={mediaActions}>
+      <KoshMediaActionsProvider actions={mediaHarness.actions}>
         <main
           className="kosh-blocknote-spike"
           data-theme={theme}
@@ -111,13 +117,22 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
   );
 }
 
-function spikeMediaActions(): KoshMediaActions {
+interface SpikeMediaHarness extends BlockNoteSpikeMediaHarness {
+  actions: KoshMediaActions;
+}
+
+function createSpikeMediaHarness(): SpikeMediaHarness {
   const records = mediaFixtureRecords();
   const image = records[0]!.recordKind === "IMAGE" ? records[0].record : null;
   const pdf = records[1]!.recordKind === "PDF" ? records[1].record : null;
   const file = records[2]!.recordKind === "GENERIC" ? records[2].record : null;
   if (!image || !pdf || !file) throw new Error("Invalid media spike fixtures");
-  return {
+  const phases: Record<BlockNoteSpikeMediaKind, "FAILED" | "PENDING" | "READY"> = {
+    image: "READY",
+    pdf: "READY",
+  };
+  const statusCalls: Record<BlockNoteSpikeMediaKind, number> = { image: 0, pdf: 0 };
+  const actions: KoshMediaActions = {
     attachmentStatus: async (attachmentId) => ({
       attachmentId,
       byteLength: file.byteLength,
@@ -128,30 +143,74 @@ function spikeMediaActions(): KoshMediaActions {
       kind: file.kind,
       mediaType: file.mediaType,
     }),
-    imageStatus: async (attachmentId) => ({
-      attachmentId,
-      naturalHeight: image.naturalHeight,
-      naturalWidth: image.naturalWidth,
-      nextAttemptAtMs: null,
-      ocrError: image.ocrError,
-      ocrStatus: image.ocrStatus,
-    }),
+    imageStatus: async (attachmentId) => {
+      statusCalls.image += 1;
+      const phase = phases.image;
+      if (phase === "PENDING") phases.image = "READY";
+      return {
+        attachmentId,
+        naturalHeight: image.naturalHeight,
+        naturalWidth: image.naturalWidth,
+        nextAttemptAtMs: null,
+        ocrError: phase === "FAILED" ? "Synthetic OCR failure" : null,
+        ocrStatus: phase === "PENDING" ? "READY" : phase,
+      };
+    },
     mediaUrl: () =>
       "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='480'%3E%3Crect width='640' height='480' fill='%23d97745'/%3E%3C/svg%3E",
     openAttachmentExternal: async () => undefined,
     openPdfExternal: async () => undefined,
-    pdfStatus: async (attachmentId) => ({
-      attachmentId,
-      displayFilename: pdf.displayFilename,
-      extractedPageCount: pdf.pageCount,
-      extractionError: pdf.extractionError,
-      extractionStatus: pdf.extractionStatus,
-      nextAttemptAtMs: null,
-      pageCount: pdf.pageCount,
-      unavailablePageCount: 0,
-    }),
+    pdfStatus: async (attachmentId) => {
+      statusCalls.pdf += 1;
+      const phase = phases.pdf;
+      if (phase === "PENDING") phases.pdf = "READY";
+      return {
+        attachmentId,
+        displayFilename: pdf.displayFilename,
+        extractedPageCount: phase === "FAILED" ? 0 : pdf.pageCount,
+        extractionError: phase === "FAILED" ? "Synthetic PDF failure" : null,
+        extractionStatus: phase === "PENDING" ? "READY" : phase,
+        nextAttemptAtMs: null,
+        pageCount: pdf.pageCount,
+        unavailablePageCount: 0,
+      };
+    },
     pickReplacement: async () => records[0]!,
     revealAttachmentInFinder: async () => undefined,
+    retryImageOcr: async (attachmentId) => {
+      phases.image = "PENDING";
+      return {
+        attachmentId,
+        naturalHeight: image.naturalHeight,
+        naturalWidth: image.naturalWidth,
+        nextAttemptAtMs: null,
+        ocrError: null,
+        ocrStatus: "PENDING",
+      };
+    },
+    retryPdfExtraction: async (attachmentId) => {
+      phases.pdf = "PENDING";
+      return {
+        attachmentId,
+        displayFilename: pdf.displayFilename,
+        extractedPageCount: 0,
+        extractionError: null,
+        extractionStatus: "PENDING",
+        nextAttemptAtMs: null,
+        pageCount: pdf.pageCount,
+        unavailablePageCount: 0,
+      };
+    },
+  };
+  return {
+    actions,
+    prepareRetry(kind) {
+      phases[kind] = "FAILED";
+      statusCalls[kind] = 0;
+    },
+    statusCalls(kind) {
+      return statusCalls[kind];
+    },
   };
 }
 
