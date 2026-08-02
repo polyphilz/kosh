@@ -45,13 +45,7 @@ const noteRoute = createRoute({
 const searchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/search",
-  beforeLoad: () => {
-    throw redirect({
-      to: "/new/$noteId",
-      params: { noteId: createUuidV7() },
-      replace: true,
-    });
-  },
+  component: SearchRoute,
 });
 const addRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -113,6 +107,10 @@ function DurableNoteRoute() {
   const { noteId } = noteRoute.useParams();
   const { passage } = noteRoute.useSearch();
   return <NotePage key={`durable:${noteId}`} mode="durable" noteId={noteId} passageId={passage} />;
+}
+
+function SearchRoute() {
+  return null;
 }
 
 export function createAppRouter(history: RouterHistory = createHashHistory()) {

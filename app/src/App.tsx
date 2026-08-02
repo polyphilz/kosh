@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_QUICK_ADD_ACCELERATOR, KoshCommand } from "./backend/contracts";
@@ -31,7 +31,9 @@ export function App() {
 
 function AppShell() {
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchRouteOpen = pathname === "/search";
   const { settings } = useShortcutSettings();
   const quickAddAccelerator =
     bindingFor(settings?.keyboardBindings ?? [], KoshCommand.QuickAdd)?.accelerator ??
@@ -163,7 +165,13 @@ function AppShell() {
         <div className="app-content">
           <Outlet />
         </div>
-        <SearchOverlay onClose={() => setSearchOpen(false)} open={searchOpen} />
+        <SearchOverlay
+          onClose={() => {
+            setSearchOpen(false);
+            if (searchRouteOpen) void navigate({ to: "/", replace: true });
+          }}
+          open={searchOpen || searchRouteOpen}
+        />
       </div>
     </ErrorBoundary>
   );

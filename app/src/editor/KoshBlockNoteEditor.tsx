@@ -484,8 +484,7 @@ function citationInlineRange(
 ): { blockId: string; endChar: number; startChar: number } | null {
   if (citation.locator.kind !== "MARKDOWN_BLOCKS") return null;
   const { startChar, endChar, startLine, endLine } = citation.locator;
-  const text = searchableBlockPlainText(block);
-  if (text !== searchableBlockEvidenceText(block)) return null;
+  const text = searchableBlockEvidenceText(block);
   const characterCount = [...text].length;
   if (startChar !== null && endChar !== null) {
     if (startChar < 0 || endChar <= startChar || endChar > characterCount) return null;
@@ -542,10 +541,6 @@ function searchableBlockEvidenceText(block: {
   return inlineEvidenceText(block.content);
 }
 
-function searchableBlockPlainText(block: SearchableBlock): string {
-  return textFromUnknown(block.content, "");
-}
-
 function inlineEvidenceText(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map(inlineEvidenceText).join("");
@@ -566,17 +561,6 @@ function stringFromRecord(record: Record<string, unknown> | undefined, key: stri
 
 function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
-}
-
-function textFromUnknown(value: unknown, separator = " "): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value))
-    return value.map((item) => textFromUnknown(item, separator)).join(separator);
-  if (!value || typeof value !== "object") return "";
-  const object = value as Record<string, unknown>;
-  return [object.text, object.latex, object.markdown, object.content]
-    .map((item) => textFromUnknown(item, separator))
-    .join(separator);
 }
 
 function comparableCitationText(value: string): string {

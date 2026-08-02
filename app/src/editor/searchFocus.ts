@@ -94,27 +94,59 @@ function resolveInlineRange(
   range: SearchFocusInlineRange,
 ): { from: number; to: number } | null {
   if (range.startChar < 0 || range.endChar <= range.startChar) return null;
-  const textNodes: Array<{ position: number; text: string }> = [];
+  const segments: EvidenceSegment[] = [];
+  let evidenceStart = 0;
   block.descendants((node, position) => {
-    if (node.isText && node.text) {
-      textNodes.push({ position: blockPosition + 1 + position, text: node.text });
-    }
+    const absolutePosition = blockPosition + 1 + position;
+    const evidence = evidenceText(node);
+    if (!evidence) return;
+    const evidenceEnd = evidenceStart + [...evidence].length;
+    segments.push({
+      evidence,
+      evidenceEnd,
+      evidenceStart,
+      from: absolutePosition,
+      to: absolutePosition + node.nodeSize,
+      atom: node.type.name === "inlineMath",
+    });
+    evidenceStart = evidenceEnd;
+    return node.isText ? undefined : false;
   });
-  let consumedCharacters = 0;
-  let from: number | null = null;
-  let to: number | null = null;
-  for (const textNode of textNodes) {
-    const characters = [...textNode.text];
-    const nodeStart = consumedCharacters;
-    const nodeEnd = nodeStart + characters.length;
-    if (from === null && range.startChar >= nodeStart && range.startChar <= nodeEnd) {
-      from = textNode.position + characters.slice(0, range.startChar - nodeStart).join("").length;
-    }
-    if (range.endChar >= nodeStart && range.endChar <= nodeEnd) {
-      to = textNode.position + characters.slice(0, range.endChar - nodeStart).join("").length;
-      break;
-    }
-    consumedCharacters = nodeEnd;
-  }
+  const from = resolveEvidenceBoundary(segments, range.startChar, "start");
+  const to = resolveEvidenceBoundary(segments, range.endChar, "end");
   return from !== null && to !== null && from < to ? { from, to } : null;
+}
+
+interface EvidenceSegment {
+  atom: boolean;
+  evidence: string;
+  evidenceEnd: number;
+  evidenceStart: number;
+  from: number;
+  to: number;
+}
+
+function evidenceText(node: ProseMirrorNode): string {
+  if (node.isText) return node.text ?? "";
+  if (node.type.name !== "inlineMath") return "";
+  const latex = typeof node.attrs.latex === "string" ? node.attrs.latex : "";
+  return latex ? `$${latex}$` : "";
+}
+
+function resolveEvidenceBoundary(
+  segments: readonly EvidenceSegment[],
+  offset: number,
+  edge: "end" | "start",
+): number | null {
+  for (const segment of segments) {
+    if (offset < segment.evidenceStart || offset > segment.evidenceEnd) continue;
+    if (segment.atom) {
+      if (offset === segment.evidenceEnd && edge === "start") continue;
+      if (offset === segment.evidenceStart && edge === "end") continue;
+      return edge === "start" ? segment.from : segment.to;
+    }
+    const relative = offset - segment.evidenceStart;
+    return segment.from + [...segment.evidence].slice(0, relative).join("").length;
+  }
+  return null;
 }

@@ -371,6 +371,36 @@ describe("production BlockNote editor", () => {
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
   });
 
+  it("maps citation offsets across inline math evidence", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="zero $x < y$ exact slice omega"
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText(/exact slice omega/);
+    const citation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "exact slice",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startChar: 13,
+        endChar: 24,
+      },
+    };
+
+    expect(ref.current?.focusCitation(citation)).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      "exact slice",
+    );
+  });
+
   it("makes disabled state explicit to assistive technology and BlockNote", async () => {
     const view = render(
       <AppearanceProvider>

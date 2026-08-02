@@ -175,6 +175,13 @@ test("lifecycle preparation locks note input until cancellation", async ({ page 
   await expect(editor).toHaveAttribute("contenteditable", "true");
 });
 
+test("a direct search route opens the search overlay", async ({ page }) => {
+  await page.goto("/#/search");
+
+  await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Search notes" })).toBeFocused();
+});
+
 test("an interrupted new note finishes recovery before accepting input", async ({ page }) => {
   const noteId = "019f547b-6200-7000-8000-00000000e001";
   await page.goto("/#/search");
