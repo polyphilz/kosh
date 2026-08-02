@@ -20,6 +20,7 @@ import {
   type NoteMediaReservation,
 } from "../notes/autosave";
 import { NoteActions } from "../notes/NoteActions";
+import { hasMeaningfulAuthoredContent } from "../notes/content";
 import { TauriEvent } from "../tauriProtocol";
 import {
   QuickAddDismissAction,
@@ -319,6 +320,9 @@ const QuickAddSession = forwardRef<
   return (
     <div className="quick-add-editor" data-phase={snapshot.phase}>
       <NoteActions
+        canEditSources={
+          snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
+        }
         canDelete={false}
         deleteError={null}
         deleting={false}
