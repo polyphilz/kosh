@@ -57,8 +57,8 @@ use super::{
         TidbitRevision, TidbitRevisionPage,
     },
     working_copies::{
-        CheckpointWorkingCopyWrite, SaveWorkingCopyWrite, WorkingCopy, WorkingCopyCheckpointResult,
-        WorkingCopySaveResult,
+        CheckpointWorkingCopyWrite, DiscardWorkingCopyInput, SaveWorkingCopyWrite, WorkingCopy,
+        WorkingCopyCheckpointResult, WorkingCopySaveResult,
     },
 };
 
@@ -493,6 +493,11 @@ pub(super) enum WriterMessage {
     CheckpointWorkingCopy {
         write: CheckpointWorkingCopyWrite,
         reply: SyncSender<Result<WorkingCopyCheckpointResult>>,
+    },
+    DiscardWorkingCopy {
+        input: DiscardWorkingCopyInput,
+        now_ms: i64,
+        reply: SyncSender<Result<bool>>,
     },
     LoadShortcutSettings {
         reply: SyncSender<Result<ShortcutSettings>>,
@@ -1860,6 +1865,18 @@ impl DatabaseClient {
         write: CheckpointWorkingCopyWrite,
     ) -> Result<WorkingCopyCheckpointResult> {
         self.request(|reply| WriterMessage::CheckpointWorkingCopy { write, reply })
+    }
+
+    pub(crate) fn discard_working_copy(
+        &self,
+        input: DiscardWorkingCopyInput,
+        now_ms: i64,
+    ) -> Result<bool> {
+        self.request(|reply| WriterMessage::DiscardWorkingCopy {
+            input,
+            now_ms,
+            reply,
+        })
     }
 
     #[cfg(test)]

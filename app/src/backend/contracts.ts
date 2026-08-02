@@ -564,6 +564,11 @@ export interface CheckpointWorkingCopyInput {
   expectedEditGeneration: number;
 }
 
+export interface DiscardWorkingCopyInput {
+  noteId: string;
+  expectedEditGeneration: number;
+}
+
 export type WorkingCopyCheckpointStatus = "CHECKPOINTED" | "STALE";
 
 export interface WorkingCopyCheckpointResult {
@@ -957,6 +962,8 @@ export interface Backend {
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;
   saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
+  reserveWorkingCopyForMedia(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
+  discardWorkingCopy(input: DiscardWorkingCopyInput): Promise<boolean>;
   loadWorkingCopy(noteId: string): Promise<WorkingCopyRecord | null>;
   listWorkingCopies(): Promise<WorkingCopyRecord[]>;
   checkpointWorkingCopy(input: CheckpointWorkingCopyInput): Promise<WorkingCopyCheckpointResult>;

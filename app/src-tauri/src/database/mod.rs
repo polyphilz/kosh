@@ -113,8 +113,8 @@ pub use tidbits::{
     TidbitRevisionPage, TidbitRevisionSummary, TidbitSource, TIDBIT_PURGE_DELAY_MS,
 };
 pub use working_copies::{
-    CheckpointWorkingCopyInput, SaveWorkingCopyInput, WorkingCopy, WorkingCopyCheckpointResult,
-    WorkingCopySaveResult,
+    CheckpointWorkingCopyInput, DiscardWorkingCopyInput, SaveWorkingCopyInput, WorkingCopy,
+    WorkingCopyCheckpointResult, WorkingCopySaveResult,
 };
 pub(crate) use writer::LexicalBenchmarkAttachmentWrite;
 use writer::MediaMaintenanceSnapshotState;
@@ -1010,6 +1010,13 @@ fn writer_loop(
             }
             WriterMessage::CheckpointWorkingCopy { write, reply } => {
                 let _ = reply.send(working_copies::checkpoint(&mut main, write));
+            }
+            WriterMessage::DiscardWorkingCopy {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(working_copies::discard(&mut main, input, now_ms));
             }
             WriterMessage::LoadShortcutSettings { reply } => {
                 let _ = reply.send(settings::load_shortcut_settings(&main));

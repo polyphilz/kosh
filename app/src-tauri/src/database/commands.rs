@@ -10,11 +10,12 @@ use super::{
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     CheckpointWorkingCopyInput, CitationResolution, ClearDraftInput, DatabaseError,
-    DeleteTidbitInput, Draft, EditTidbitInput, ListResearchRunsInput, ListTidbitRevisionsInput,
-    ListTidbitsInput, PurgeTidbitInput, ResearchRunPage, ResearchRunRecord, RestoreTidbitInput,
-    SaveDraftInput, SaveWorkingCopyInput, SearchPassagesInput, SearchPassagesResponse,
-    SemanticSearchReadiness, Tidbit, TidbitDraft, TidbitListPage, TidbitRevision,
-    TidbitRevisionPage, WorkingCopy, WorkingCopyCheckpointResult, WorkingCopySaveResult,
+    DeleteTidbitInput, DiscardWorkingCopyInput, Draft, EditTidbitInput, ListResearchRunsInput,
+    ListTidbitRevisionsInput, ListTidbitsInput, PurgeTidbitInput, ResearchRunPage,
+    ResearchRunRecord, RestoreTidbitInput, SaveDraftInput, SaveWorkingCopyInput,
+    SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness, Tidbit, TidbitDraft,
+    TidbitListPage, TidbitRevision, TidbitRevisionPage, WorkingCopy, WorkingCopyCheckpointResult,
+    WorkingCopySaveResult,
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -339,6 +340,27 @@ pub(crate) async fn save_working_copy(
             .next()
             .expect("requested working-copy draft ID"),
         media_limits: state.media_limits(),
+        allow_empty_ephemeral: false,
+    };
+    run_writer(move || client.save_working_copy(write)).await
+}
+
+#[tauri::command]
+pub(crate) async fn reserve_working_copy_for_media(
+    state: State<'_, RuntimeState>,
+    input: SaveWorkingCopyInput,
+) -> CommandResult<WorkingCopySaveResult> {
+    let client = state.database_client();
+    let write = SaveWorkingCopyWrite {
+        input,
+        now_ms: state.now_ms(),
+        draft_id: state
+            .next_ids(1)
+            .into_iter()
+            .next()
+            .expect("requested working-copy draft ID"),
+        media_limits: state.media_limits(),
+        allow_empty_ephemeral: true,
     };
     run_writer(move || client.save_working_copy(write)).await
 }
@@ -386,6 +408,16 @@ pub(crate) async fn checkpoint_working_copy(
         source_ids: ids.collect(),
     };
     run_writer(move || client.checkpoint_working_copy(write)).await
+}
+
+#[tauri::command]
+pub(crate) async fn discard_working_copy(
+    state: State<'_, RuntimeState>,
+    input: DiscardWorkingCopyInput,
+) -> CommandResult<bool> {
+    let client = state.database_client();
+    let now_ms = state.now_ms();
+    run_writer(move || client.discard_working_copy(input, now_ms)).await
 }
 
 async fn run_writer<T, F>(operation: F) -> CommandResult<T>

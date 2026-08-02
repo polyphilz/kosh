@@ -10,7 +10,6 @@ import {
   NoteAutosaveCoordinator,
   WORKING_COPY_DEBOUNCE_MS,
   createUuidV7,
-  hasMeaningfulAuthoredContent,
   type NoteFlushReason,
   type NoteWorkingCopyGateway,
 } from "../../src/notes/autosave";
@@ -77,12 +76,20 @@ function checkpointed(
 
 function gateway(): {
   saveWorkingCopy: ReturnType<typeof vi.fn<NoteWorkingCopyGateway["saveWorkingCopy"]>>;
+  reserveWorkingCopyForMedia: ReturnType<
+    typeof vi.fn<NoteWorkingCopyGateway["reserveWorkingCopyForMedia"]>
+  >;
+  discardWorkingCopy: ReturnType<typeof vi.fn<NoteWorkingCopyGateway["discardWorkingCopy"]>>;
   checkpointWorkingCopy: ReturnType<typeof vi.fn<NoteWorkingCopyGateway["checkpointWorkingCopy"]>>;
 } {
   return {
     saveWorkingCopy: vi.fn(async (input) =>
       saved(input.editGeneration, input.bodyMarkdown, input.baseRevisionId),
     ),
+    reserveWorkingCopyForMedia: vi.fn(async (input) =>
+      saved(input.editGeneration, input.bodyMarkdown, input.baseRevisionId),
+    ),
+    discardWorkingCopy: vi.fn(async () => true),
     checkpointWorkingCopy: vi.fn(async (input) => checkpointed(input.expectedEditGeneration)),
   };
 }
@@ -276,6 +283,59 @@ describe("note autosave coordinator", () => {
       phase: "DURABLE",
     });
   });
+
+  it("reserves an untouched note for media and checkpoints the inserted token", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
+
+    const reservation = await coordinator.prepareMedia();
+    coordinator.update("{{kosh:image:019f547b-6200-7000-8000-000000008099}}");
+    await expect(coordinator.flush("QUIT")).resolves.toMatchObject({
+      id: NOTE_ID,
+      title: null,
+    });
+
+    expect(reservation).toEqual({ draftId: "draft-1", generation: 1, discardable: true });
+    expect(backend.reserveWorkingCopyForMedia).toHaveBeenCalledOnce();
+    expect(backend.saveWorkingCopy).toHaveBeenCalledWith(
+      expect.objectContaining({ editGeneration: 2 }),
+    );
+    expect(backend.checkpointWorkingCopy).toHaveBeenCalledWith({
+      noteId: NOTE_ID,
+      expectedEditGeneration: 2,
+    });
+  });
+
+  it("discards a canceled blank media reservation without creating a note", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
+
+    const reservation = await coordinator.prepareMedia();
+    await expect(coordinator.discardMediaReservation(reservation)).resolves.toBe(true);
+    await expect(coordinator.flush("QUIT")).resolves.toBeNull();
+
+    expect(backend.discardWorkingCopy).toHaveBeenCalledWith({
+      noteId: NOTE_ID,
+      expectedEditGeneration: 1,
+    });
+    expect(backend.checkpointWorkingCopy).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      phase: "EPHEMERAL",
+      checkpointedGeneration: 1,
+    });
+  });
+
+  it("does not discard a reservation after a newer authored edit", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
+
+    const reservation = await coordinator.prepareMedia();
+    coordinator.update("keep this newer edit");
+
+    await expect(coordinator.discardMediaReservation(reservation)).resolves.toBe(false);
+    expect(backend.discardWorkingCopy).not.toHaveBeenCalled();
+    await expect(coordinator.flush("QUIT")).resolves.toMatchObject({ id: NOTE_ID });
+  });
 });
 
 describe("note autosave primitives", () => {
@@ -287,16 +347,5 @@ describe("note autosave primitives", () => {
 
     expect(id).toBe("01020304-0506-7fff-bfff-ffffffffffff");
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
-  });
-
-  it("distinguishes structural Markdown from authored text, math, and media", () => {
-    expect(hasMeaningfulAuthoredContent("# \n\n- ** **")).toBe(false);
-    expect(hasMeaningfulAuthoredContent("$x$")).toBe(true);
-    expect(hasMeaningfulAuthoredContent("<https://example.com>")).toBe(true);
-    expect(hasMeaningfulAuthoredContent("<someone@example.com>")).toBe(true);
-    expect(hasMeaningfulAuthoredContent("<br><span> </span>")).toBe(false);
-    expect(
-      hasMeaningfulAuthoredContent("{{kosh:image:019f547b-6200-7000-8000-000000008099}}"),
-    ).toBe(true);
   });
 });

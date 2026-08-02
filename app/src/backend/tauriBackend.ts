@@ -15,6 +15,7 @@ import type {
   CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
+  DiscardWorkingCopyInput,
   DraftRecord,
   EditTidbitInput,
   GenericAttachmentStatusRecord,
@@ -119,6 +120,10 @@ export const tauriBackend: Backend = {
   clearDraft: (input: ClearDraftInput) => invoke<boolean>(TauriCommand.ClearDraft, { input }),
   saveWorkingCopy: (input: SaveWorkingCopyInput) =>
     invoke<WorkingCopySaveResult>(TauriCommand.SaveWorkingCopy, { input }),
+  reserveWorkingCopyForMedia: (input: SaveWorkingCopyInput) =>
+    invoke<WorkingCopySaveResult>(TauriCommand.ReserveWorkingCopyForMedia, { input }),
+  discardWorkingCopy: (input: DiscardWorkingCopyInput) =>
+    invoke<boolean>(TauriCommand.DiscardWorkingCopy, { input }),
   loadWorkingCopy: (noteId: string) =>
     invoke<WorkingCopyRecord | null>(TauriCommand.LoadWorkingCopy, { noteId }),
   listWorkingCopies: () => invoke<WorkingCopyRecord[]>(TauriCommand.ListWorkingCopies),

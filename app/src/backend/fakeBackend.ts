@@ -12,6 +12,7 @@ import type {
   CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
+  DiscardWorkingCopyInput,
   DraftRecord,
   EditTidbitInput,
   GenericAttachmentStatusRecord,
@@ -1034,6 +1035,17 @@ export class FakeBackend implements Backend {
   }
 
   async saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult> {
+    return this.saveWorkingCopyInternal(input, false);
+  }
+
+  async reserveWorkingCopyForMedia(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult> {
+    return this.saveWorkingCopyInternal(input, true);
+  }
+
+  private saveWorkingCopyInternal(
+    input: SaveWorkingCopyInput,
+    allowEmptyEphemeral: boolean,
+  ): WorkingCopySaveResult {
     validateEditGeneration(input.editGeneration, "editGeneration");
     const currentNote = this.tidbits.get(input.noteId);
     if (input.baseRevisionId === null) {
@@ -1059,7 +1071,11 @@ export class FakeBackend implements Backend {
         workingCopy: cloneWorkingCopy(existing),
       };
     }
-    if (input.baseRevisionId === null && !hasMeaningfulAuthoredContent(input.bodyMarkdown)) {
+    if (
+      !allowEmptyEphemeral &&
+      input.baseRevisionId === null &&
+      !hasMeaningfulAuthoredContent(input.bodyMarkdown)
+    ) {
       this.workingCopies.delete(input.noteId);
       return {
         status: "CLEARED",
@@ -1083,6 +1099,15 @@ export class FakeBackend implements Backend {
       acceptedEditGeneration: saved.editGeneration,
       workingCopy: cloneWorkingCopy(saved),
     };
+  }
+
+  async discardWorkingCopy(input: DiscardWorkingCopyInput): Promise<boolean> {
+    validateEditGeneration(input.expectedEditGeneration, "expectedEditGeneration");
+    const workingCopy = this.workingCopies.get(input.noteId);
+    if (!workingCopy || workingCopy.editGeneration !== input.expectedEditGeneration) {
+      return false;
+    }
+    return this.workingCopies.delete(input.noteId);
   }
 
   async loadWorkingCopy(noteId: string): Promise<WorkingCopyRecord | null> {

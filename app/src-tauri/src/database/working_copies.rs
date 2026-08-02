@@ -28,6 +28,13 @@ pub struct CheckpointWorkingCopyInput {
     pub expected_edit_generation: i64,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscardWorkingCopyInput {
+    pub note_id: String,
+    pub expected_edit_generation: i64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkingCopy {
@@ -78,6 +85,7 @@ pub(crate) struct SaveWorkingCopyWrite {
     pub now_ms: i64,
     pub draft_id: String,
     pub media_limits: media::MediaLimits,
+    pub allow_empty_ephemeral: bool,
 }
 
 pub(crate) struct CheckpointWorkingCopyWrite {
@@ -122,7 +130,8 @@ pub(super) fn save(
         }
     }
 
-    if write.input.base_revision_id.is_none()
+    if !write.allow_empty_ephemeral
+        && write.input.base_revision_id.is_none()
         && !has_meaningful_authored_content(&write.input.body_markdown)
     {
         if existing.is_some() {
@@ -227,6 +236,30 @@ pub(super) fn save(
         WorkingCopySaveStatus::Saved,
         Some(working_copy),
     ))
+}
+
+pub(super) fn discard(
+    connection: &mut Connection,
+    input: DiscardWorkingCopyInput,
+    now_ms: i64,
+) -> Result<bool> {
+    tidbits::validate_uuid_v7(&input.note_id, "noteId")?;
+    validate_generation(input.expected_edit_generation, "expectedEditGeneration")?;
+    tidbits::validate_timestamp(now_ms, "nowMs")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(working_copy) = load_in_transaction(&transaction, &input.note_id)? else {
+        transaction.rollback()?;
+        return Ok(false);
+    };
+    if working_copy.edit_generation != input.expected_edit_generation {
+        transaction.rollback()?;
+        return Ok(false);
+    }
+    media::abandon_draft_media_leases(&transaction, &note_context(&input.note_id), now_ms)?;
+    let deleted =
+        transaction.execute("DELETE FROM draft WHERE id = ?1", params![&working_copy.id])?;
+    transaction.commit()?;
+    Ok(deleted == 1)
 }
 
 pub(super) fn load(connection: &Connection, note_id: &str) -> Result<Option<WorkingCopy>> {
@@ -416,14 +449,12 @@ fn checkpoint_existing(
         &prepared.body_markdown,
         updated_at_ms,
     )?;
-    if !prepared.body_markdown.trim().is_empty() {
-        passages::insert_author_passages(
-            transaction,
-            &write.revision_id,
-            &prepared.body_markdown,
-            updated_at_ms,
-        )?;
-    }
+    passages::insert_author_passages_allow_empty(
+        transaction,
+        &write.revision_id,
+        &prepared.body_markdown,
+        updated_at_ms,
+    )?;
     let changed = transaction.execute(
         "UPDATE tidbit
          SET current_revision_id = ?1, updated_at = ?2
@@ -620,10 +651,12 @@ fn html_has_visible_text(html: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use crate::database::{
-        tidbits::CreateTidbitWrite, Database, DatabasePaths, SearchPassagesInput,
-        SemanticSearchReadiness, TidbitDraft,
+        tidbits::CreateTidbitWrite, AttachmentIngestInput, Database, DatabasePaths,
+        SearchPassagesInput, SemanticSearchReadiness, TidbitDraft,
     };
 
     const NOTE_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -680,6 +713,7 @@ mod tests {
                     now_ms: 100 + generation,
                     draft_id: draft_id.into(),
                     media_limits: media::MediaLimits::default(),
+                    allow_empty_ephemeral: false,
                 })
                 .expect("save working copy")
         }
@@ -757,6 +791,141 @@ mod tests {
     }
 
     #[test]
+    fn empty_media_reservation_is_discarded_only_at_its_exact_generation() {
+        let library = TestLibrary::new();
+        let reservation = library
+            .database
+            .client()
+            .save_working_copy(SaveWorkingCopyWrite {
+                input: SaveWorkingCopyInput {
+                    note_id: NOTE_ID.into(),
+                    base_revision_id: None,
+                    edit_generation: 1,
+                    body_markdown: String::new(),
+                    sources: Vec::new(),
+                },
+                now_ms: 101,
+                draft_id: DRAFT_ID_1.into(),
+                media_limits: media::MediaLimits::default(),
+                allow_empty_ephemeral: true,
+            })
+            .expect("reserve draft for media");
+        assert_eq!(reservation.status, WorkingCopySaveStatus::Saved);
+        assert_eq!(
+            reservation
+                .working_copy
+                .as_ref()
+                .map(|copy| copy.id.as_str()),
+            Some(DRAFT_ID_1)
+        );
+
+        library.save(2, "newer authored text", None, DRAFT_ID_2);
+        assert!(!library
+            .database
+            .client()
+            .discard_working_copy(
+                DiscardWorkingCopyInput {
+                    note_id: NOTE_ID.into(),
+                    expected_edit_generation: 1,
+                },
+                103,
+            )
+            .expect("reject stale discard"));
+        assert_eq!(
+            library
+                .database
+                .client()
+                .load_working_copy(NOTE_ID.into())
+                .expect("load preserved copy")
+                .map(|copy| copy.body_markdown),
+            Some("newer authored text".into())
+        );
+        assert!(library
+            .database
+            .client()
+            .discard_working_copy(
+                DiscardWorkingCopyInput {
+                    note_id: NOTE_ID.into(),
+                    expected_edit_generation: 2,
+                },
+                104,
+            )
+            .expect("discard exact copy"));
+        assert_eq!(
+            library
+                .database
+                .client()
+                .load_working_copy(NOTE_ID.into())
+                .expect("load discarded copy"),
+            None
+        );
+    }
+
+    #[test]
+    fn media_only_working_copy_checkpoints_its_attachment_membership() {
+        let library = TestLibrary::new();
+        library
+            .database
+            .client()
+            .save_working_copy(SaveWorkingCopyWrite {
+                input: SaveWorkingCopyInput {
+                    note_id: NOTE_ID.into(),
+                    base_revision_id: None,
+                    edit_generation: 1,
+                    body_markdown: String::new(),
+                    sources: Vec::new(),
+                },
+                now_ms: 101,
+                draft_id: DRAFT_ID_1.into(),
+                media_limits: media::MediaLimits::default(),
+                allow_empty_ephemeral: true,
+            })
+            .expect("reserve media-only note");
+        let attachment = library
+            .database
+            .ingest_attachment(
+                AttachmentIngestInput {
+                    draft_id: DRAFT_ID_1.into(),
+                    display_filename: "shower-thought.txt".into(),
+                    media_type: "text/plain".into(),
+                    now_ms: 102,
+                    limits: media::MediaLimits::default(),
+                },
+                Cursor::new(b"attachment-only note"),
+            )
+            .expect("ingest note attachment");
+        let body = format!("{{{{kosh:attachment:{}}}}}", attachment.id);
+        let saved = library.save(2, &body, None, DRAFT_ID_2);
+        assert_eq!(saved.status, WorkingCopySaveStatus::Saved);
+        let checkpoint = library.checkpoint(2, REVISION_ID_1);
+        assert_eq!(checkpoint.status, WorkingCopyCheckpointStatus::Checkpointed);
+        assert_eq!(
+            checkpoint.note.as_ref().map(|note| note.title.as_ref()),
+            Some(None)
+        );
+        assert_eq!(
+            checkpoint
+                .note
+                .as_ref()
+                .map(|note| note.body_markdown.as_str()),
+            Some(body.as_str())
+        );
+        assert_eq!(
+            library
+                .database
+                .open_main_read_only()
+                .expect("main reader")
+                .query_row(
+                    "SELECT count(*) FROM tidbit_revision_attachment WHERE tidbit_revision_id = ?1",
+                    params![REVISION_ID_1],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("revision attachment count"),
+            1
+        );
+    }
+
+    #[test]
     fn monotonically_newer_generation_wins_and_reuse_is_rejected() {
         let library = TestLibrary::new();
         let newer = library.save(2, "newest exact text", None, DRAFT_ID_1);
@@ -785,6 +954,7 @@ mod tests {
                 now_ms: 103,
                 draft_id: DRAFT_ID_2.into(),
                 media_limits: media::MediaLimits::default(),
+                allow_empty_ephemeral: false,
             });
         assert!(matches!(reused, Err(DatabaseError::InvalidInput(_))));
     }
@@ -868,6 +1038,40 @@ mod tests {
         assert_eq!(cleared.revision_number, 2);
         assert_eq!(cleared.body_markdown, "");
         assert_eq!(cleared.deleted_at_ms, None);
+        library
+            .database
+            .client()
+            .reconcile_author_passages()
+            .expect("empty revision reconciles");
+        library
+            .database
+            .client()
+            .reconcile_author_passages()
+            .expect("empty revision reconciliation is idempotent");
+        let connection = library
+            .database
+            .open_main_read_only()
+            .expect("read empty revision passage state");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM active_passage WHERE tidbit_id = ?1",
+                    params![NOTE_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("active passage count"),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM index_state WHERE name = 'PASSAGE_BUILD'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("passage build status"),
+            "IDLE"
+        );
     }
 
     #[test]
@@ -888,6 +1092,7 @@ mod tests {
                 now_ms: 300,
                 draft_id: DRAFT_ID_1.into(),
                 media_limits: media::MediaLimits::default(),
+                allow_empty_ephemeral: false,
             })
             .expect("persist interrupted copy");
         database.shutdown().expect("shutdown before recovery");
@@ -980,6 +1185,7 @@ mod tests {
                 now_ms: 401,
                 draft_id: DRAFT_ID_1.into(),
                 media_limits: media::MediaLimits::default(),
+                allow_empty_ephemeral: false,
             });
         assert!(matches!(stale, Err(DatabaseError::StaleTidbit { .. })));
         assert_eq!(

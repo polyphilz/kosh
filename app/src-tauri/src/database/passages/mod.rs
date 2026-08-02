@@ -103,8 +103,49 @@ pub(super) fn insert_author_passages(
     markdown: &str,
     created_at_ms: i64,
 ) -> Result<usize> {
+    insert_author_passages_inner(
+        transaction,
+        tidbit_revision_id,
+        markdown,
+        created_at_ms,
+        false,
+    )
+}
+
+pub(super) fn insert_author_passages_allow_empty(
+    transaction: &Transaction<'_>,
+    tidbit_revision_id: &str,
+    markdown: &str,
+    created_at_ms: i64,
+) -> Result<usize> {
+    insert_author_passages_inner(
+        transaction,
+        tidbit_revision_id,
+        markdown,
+        created_at_ms,
+        true,
+    )
+}
+
+fn insert_author_passages_inner(
+    transaction: &Transaction<'_>,
+    tidbit_revision_id: &str,
+    markdown: &str,
+    created_at_ms: i64,
+    allow_empty: bool,
+) -> Result<usize> {
     let passages = build_markdown_passages(markdown);
     if passages.is_empty() {
+        if allow_empty {
+            transaction.execute(
+                "INSERT INTO empty_author_passage_revision(
+                    tidbit_revision_id, construction_version, created_at
+                 ) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(tidbit_revision_id, construction_version) DO NOTHING",
+                params![tidbit_revision_id, CONSTRUCTION_VERSION, created_at_ms],
+            )?;
+            return Ok(0);
+        }
         return Err(DatabaseError::InvalidInput(
             "authored Markdown did not produce a citation passage".into(),
         ));
@@ -212,6 +253,12 @@ fn reconcile_author_passage_batch_transaction(
                    AND passage.owner_kind = 'AUTHOR'
                    AND passage.construction_version = ?1
              )
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM empty_author_passage_revision AS empty_revision
+                 WHERE empty_revision.tidbit_revision_id = revision.id
+                   AND empty_revision.construction_version = ?1
+             )
              ORDER BY revision.created_at, revision.id
              LIMIT ?2",
         )?;
@@ -225,7 +272,12 @@ fn reconcile_author_passage_batch_transaction(
         rows.collect::<std::result::Result<Vec<_>, _>>()?
     };
     for (revision_id, body_markdown, created_at_ms) in &missing {
-        insert_author_passages(&transaction, revision_id, body_markdown, *created_at_ms)?;
+        insert_author_passages_allow_empty(
+            &transaction,
+            revision_id,
+            body_markdown,
+            *created_at_ms,
+        )?;
         let current_tidbit_id = transaction
             .query_row(
                 "SELECT id
@@ -251,6 +303,12 @@ fn reconcile_author_passage_batch_transaction(
                 WHERE passage.tidbit_revision_id = revision.id
                   AND passage.owner_kind = 'AUTHOR'
                   AND passage.construction_version = ?1
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM empty_author_passage_revision AS empty_revision
+                WHERE empty_revision.tidbit_revision_id = revision.id
+                  AND empty_revision.construction_version = ?1
             )
          )",
         params![CONSTRUCTION_VERSION],
@@ -418,16 +476,16 @@ pub(super) fn activate_author_passages_on_restore(
             params![tidbit_revision_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )?;
-        if body_markdown.trim().is_empty() {
-            deactivate_tidbit(transaction, tidbit_id)?;
-            return Ok(false);
-        }
-        insert_author_passages(
+        let inserted = insert_author_passages_allow_empty(
             transaction,
             tidbit_revision_id,
             &body_markdown,
             created_at_ms,
         )?;
+        if inserted == 0 {
+            deactivate_tidbit(transaction, tidbit_id)?;
+            return Ok(false);
+        }
     }
     replace_active_author_passages(transaction, tidbit_id, tidbit_revision_id)?;
     Ok(true)

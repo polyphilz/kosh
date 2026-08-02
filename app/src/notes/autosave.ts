@@ -1,5 +1,6 @@
 import type {
   CheckpointWorkingCopyInput,
+  DiscardWorkingCopyInput,
   SaveWorkingCopyInput,
   SourceDraft,
   TidbitRecord,
@@ -36,7 +37,15 @@ export interface NoteAutosaveSnapshot {
 
 export interface NoteWorkingCopyGateway {
   saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
+  reserveWorkingCopyForMedia(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
+  discardWorkingCopy(input: DiscardWorkingCopyInput): Promise<boolean>;
   checkpointWorkingCopy(input: CheckpointWorkingCopyInput): Promise<WorkingCopyCheckpointResult>;
+}
+
+export interface NoteMediaReservation {
+  draftId: string;
+  generation: number;
+  discardable: boolean;
 }
 
 interface TimerScheduler {
@@ -62,6 +71,7 @@ export class NoteAutosaveCoordinator {
   private queue: Promise<void> = Promise.resolve();
   private workingCopyTimer: number | null = null;
   private checkpointTimer: number | null = null;
+  private workingCopyId: string | null;
   private disposed = false;
 
   constructor(
@@ -74,11 +84,13 @@ export class NoteAutosaveCoordinator {
         >
       >,
     options: NoteAutosaveOptions = {},
+    workingCopyId: string | null = null,
   ) {
     this.gateway = gateway;
     this.scheduler = options.scheduler ?? window;
     this.workingCopyDelayMs = options.workingCopyDelayMs ?? WORKING_COPY_DEBOUNCE_MS;
     this.checkpointDelayMs = options.checkpointDelayMs ?? CHECKPOINT_IDLE_MS;
+    this.workingCopyId = workingCopyId;
     const editGeneration = initial.editGeneration ?? 0;
     const durableGeneration = initial.durableGeneration ?? 0;
     const checkpointedGeneration = initial.checkpointedGeneration ?? 0;
@@ -90,7 +102,7 @@ export class NoteAutosaveCoordinator {
       checkpointedGeneration,
       bodyMarkdown: initial.bodyMarkdown,
       sources: cloneSources(initial.sources),
-      phase: phaseForInitialState(initial.baseRevisionId, initial.bodyMarkdown, editGeneration),
+      phase: phaseForInitialState(initial.baseRevisionId, editGeneration),
       error: null,
     };
   }
@@ -108,6 +120,7 @@ export class NoteAutosaveCoordinator {
         sources: [],
       },
       options,
+      null,
     );
   }
 
@@ -127,6 +140,7 @@ export class NoteAutosaveCoordinator {
         sources: workingCopy.sources,
       },
       options,
+      workingCopy.id,
     );
   }
 
@@ -158,8 +172,93 @@ export class NoteAutosaveCoordinator {
     this.clearWorkingCopyTimer();
     await this.enqueue(async () => {
       const target = authoredSnapshot(this.state);
+      if (target.editGeneration <= this.state.checkpointedGeneration) return;
       if (target.editGeneration <= this.state.durableGeneration) return;
       await this.saveTarget(target);
+    });
+  }
+
+  async prepareMedia(): Promise<NoteMediaReservation> {
+    this.clearTimers();
+    return this.enqueue(async () => {
+      const current = authoredSnapshot(this.state);
+      if (current.editGeneration > this.state.durableGeneration) {
+        await this.saveTarget(current);
+      }
+      if (this.workingCopyId !== null) {
+        return {
+          draftId: this.workingCopyId,
+          generation: this.state.editGeneration,
+          discardable: false,
+        };
+      }
+
+      const generation = nextGeneration(this.state.editGeneration);
+      const target = { ...authoredSnapshot(this.state), editGeneration: generation };
+      this.publish({
+        ...this.state,
+        editGeneration: generation,
+        phase: "SAVING",
+        error: null,
+      });
+      let result: WorkingCopySaveResult;
+      try {
+        result = await this.gateway.reserveWorkingCopyForMedia({
+          noteId: target.noteId,
+          baseRevisionId: target.baseRevisionId,
+          editGeneration: target.editGeneration,
+          bodyMarkdown: target.bodyMarkdown,
+          sources: cloneSources(target.sources),
+        });
+      } catch (reason) {
+        this.fail(reason);
+        throw reason;
+      }
+      if (result.status !== "SAVED" || result.workingCopy === null) {
+        const error = new Error("media reservation did not create a working copy");
+        this.fail(error);
+        throw error;
+      }
+      this.workingCopyId = result.workingCopy.id;
+      const unchanged = this.state.editGeneration === generation;
+      this.publish({
+        ...this.state,
+        durableGeneration: Math.max(this.state.durableGeneration, generation),
+        phase: unchanged ? "DURABLE" : "DIRTY",
+        error: null,
+      });
+      return {
+        draftId: result.workingCopy.id,
+        generation,
+        discardable: true,
+      };
+    });
+  }
+
+  async discardMediaReservation(reservation: NoteMediaReservation): Promise<boolean> {
+    if (!reservation.discardable) return false;
+    return this.enqueue(async () => {
+      if (this.state.editGeneration !== reservation.generation) return false;
+      let discarded: boolean;
+      try {
+        discarded = await this.gateway.discardWorkingCopy({
+          noteId: this.state.noteId,
+          expectedEditGeneration: reservation.generation,
+        });
+      } catch (reason) {
+        this.fail(reason);
+        throw reason;
+      }
+      if (!discarded) return false;
+      this.workingCopyId = null;
+      this.publish({
+        ...this.state,
+        durableGeneration: Math.max(this.state.durableGeneration, reservation.generation),
+        checkpointedGeneration: Math.max(this.state.checkpointedGeneration, reservation.generation),
+        phase: this.state.baseRevisionId === null ? "EPHEMERAL" : "CLEAN",
+        error: null,
+      });
+      return true;
     });
   }
 
@@ -197,10 +296,7 @@ export class NoteAutosaveCoordinator {
         await this.saveTarget(target);
       }
       if (target.editGeneration !== this.state.editGeneration) continue;
-      if (
-        this.state.baseRevisionId === null &&
-        !hasMeaningfulAuthoredContent(target.bodyMarkdown)
-      ) {
+      if (this.state.baseRevisionId === null && this.workingCopyId === null) {
         this.publish({
           ...this.state,
           durableGeneration: Math.max(this.state.durableGeneration, target.editGeneration),
@@ -234,6 +330,7 @@ export class NoteAutosaveCoordinator {
         throw error;
       }
       const note = result.note;
+      this.workingCopyId = null;
       const hasNewerLocalEdit = this.state.editGeneration !== target.editGeneration;
       this.publish({
         ...this.state,
@@ -247,7 +344,7 @@ export class NoteAutosaveCoordinator {
     }
   }
 
-  private async saveTarget(target: AuthoredSnapshot): Promise<void> {
+  private async saveTarget(target: AuthoredSnapshot): Promise<WorkingCopySaveResult> {
     this.publish({ ...this.state, phase: "SAVING", error: null });
     let result: WorkingCopySaveResult;
     try {
@@ -271,8 +368,9 @@ export class NoteAutosaveCoordinator {
         this.fail(error);
         throw error;
       }
-      return;
+      return result;
     }
+    this.workingCopyId = result.workingCopy?.id ?? null;
     const durableGeneration = Math.max(this.state.durableGeneration, result.acceptedEditGeneration);
     const unchanged = this.state.editGeneration === target.editGeneration;
     this.publish({
@@ -281,6 +379,7 @@ export class NoteAutosaveCoordinator {
       phase: unchanged ? (result.status === "CLEARED" ? "EPHEMERAL" : "DURABLE") : "DIRTY",
       error: null,
     });
+    return result;
   }
 
   private schedulePersistence(): void {
@@ -353,13 +452,10 @@ function authoredSnapshot(state: NoteAutosaveSnapshot): AuthoredSnapshot {
 
 function phaseForInitialState(
   baseRevisionId: string | null,
-  bodyMarkdown: string,
   editGeneration: number,
 ): NoteSavePhase {
   if (editGeneration > 0) return "DURABLE";
-  return baseRevisionId === null && !hasMeaningfulAuthoredContent(bodyMarkdown)
-    ? "EPHEMERAL"
-    : "CLEAN";
+  return baseRevisionId === null ? "EPHEMERAL" : "CLEAN";
 }
 
 function nextGeneration(generation: number): number {
@@ -384,18 +480,6 @@ function sourcesEqual(left: readonly SourceDraft[], right: readonly SourceDraft[
       (source, index) => source.label === right[index]?.label && source.url === right[index]?.url,
     )
   );
-}
-
-export function hasMeaningfulAuthoredContent(markdown: string): boolean {
-  const mediaAware = markdown.replace(
-    /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu,
-    "media",
-  );
-  if (/<(?:[A-Za-z][A-Za-z\d+.-]*:[^<>\s]+|[^<>\s@]+@[^<>\s@]+)>/u.test(mediaAware)) {
-    return true;
-  }
-  const withoutTags = mediaAware.replace(/<[^>]*>/gu, "");
-  return withoutTags.replace(/[`*_#>+\-[\]()~$\\\s]/gu, "").length > 0;
 }
 
 export function createUuidV7(
