@@ -19,13 +19,35 @@ printf '%s=\n%s=\n' \
   "$access_key_name" \
   "$secret_key_name" \
   >"$temp_dir/.env.example"
-git -C "$temp_dir" add .env.example scripts/check-secrets.sh
+printf '%s=\n%s=\n' \
+  "APPLE_API_KEY_PATH" \
+  "TAURI_SIGNING_PRIVATE_KEY_PATH" \
+  >"$temp_dir/.env.notarization.example"
+git -C "$temp_dir" add \
+  .env.example \
+  .env.notarization.example \
+  scripts/check-secrets.sh
 git -C "$temp_dir" commit --quiet -m baseline
 base_commit="$(git -C "$temp_dir" rev-parse HEAD)"
 (
   cd "$temp_dir"
   KOSH_DIFF_BASE="$base_commit" scripts/check-secrets.sh >/dev/null
 )
+
+printf '%s=%s\n' \
+  "APPLE_API_KEY_PATH" \
+  '/private/notarization-key.p8' \
+  >"$temp_dir/.env.notarization"
+git -C "$temp_dir" add .env.notarization
+if (
+  cd "$temp_dir"
+  KOSH_DIFF_BASE='' scripts/check-secrets.sh >/dev/null 2>&1
+); then
+  echo "secret checker accepted a tracked named environment file" >&2
+  exit 1
+fi
+git -C "$temp_dir" restore --staged .env.notarization
+rm "$temp_dir/.env.notarization"
 
 printf '%s=%s\n%s=\n' \
   "$access_key_name" \
