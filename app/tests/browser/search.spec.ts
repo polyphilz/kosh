@@ -42,6 +42,18 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
+test("search checkpoints the active note before querying", async ({ page }) => {
+  await page.goto("/#/");
+  await page
+    .getByRole("textbox", { name: "Note" })
+    .fill("A just-authored quokka detail must be searchable immediately.");
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("quokka detail");
+
+  await expect(page.getByRole("option", { name: /quokka detail/u })).toBeVisible();
+});
+
 test("dismissal clears transient search and stale responses cannot replace newer results", async ({
   page,
 }) => {

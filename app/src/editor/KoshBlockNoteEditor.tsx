@@ -387,38 +387,66 @@ function citationBlockRange(
   }
   if (citation.locator.kind !== "MARKDOWN_BLOCKS") return null;
   const span = Math.max(1, citation.locator.endBlock - citation.locator.startBlock + 1);
-  const ordinalStart = Math.min(citation.locator.startBlock, blocks.length - 1);
-  const ordinalRange = {
-    start: ordinalStart,
-    end: Math.min(blocks.length - 1, ordinalStart + span - 1),
-  };
   const excerptCandidates = citationExcerptCandidates(citation.excerpt);
   if (excerptCandidates.length === 0) return null;
-  if (blockRangeContainsExcerpt(blocks, ordinalRange, excerptCandidates)) return ordinalRange;
+  let best: { end: number; start: number } | null = null;
+  let bestScore: CitationMatchScore | null = null;
+  let bestIsAmbiguous = false;
   for (let start = 0; start < blocks.length; start += 1) {
     const candidate = { start, end: Math.min(blocks.length - 1, start + span - 1) };
-    if (blockRangeContainsExcerpt(blocks, candidate, excerptCandidates)) return candidate;
+    const score = blockRangeMatchScore(blocks, candidate, excerptCandidates);
+    if (!score) continue;
+    const comparison = compareCitationMatchScore(score, bestScore);
+    if (comparison > 0) {
+      best = candidate;
+      bestScore = score;
+      bestIsAmbiguous = false;
+    } else if (comparison === 0) {
+      bestIsAmbiguous = true;
+    }
   }
-  return null;
+  return bestIsAmbiguous ? null : best;
 }
 
-function blockRangeContainsExcerpt(
+interface CitationMatchScore {
+  coverage: number;
+  relation: number;
+}
+
+function blockRangeMatchScore(
   blocks: readonly SearchableBlock[],
   range: { end: number; start: number },
   excerptCandidates: readonly string[],
-): boolean {
+): CitationMatchScore | null {
   const blockText = comparableCitationText(
     blocks
       .slice(range.start, range.end + 1)
       .map(searchableBlockEvidenceText)
       .join(" "),
   );
-  return (
-    Boolean(blockText) &&
-    excerptCandidates.some(
-      (candidate) => candidate.includes(blockText) || blockText.includes(candidate),
-    )
-  );
+  if (!blockText) return null;
+  let best: CitationMatchScore | null = null;
+  for (const excerpt of excerptCandidates) {
+    const score =
+      blockText === excerpt
+        ? { relation: 3, coverage: blockText.length }
+        : excerpt.includes(blockText)
+          ? { relation: 2, coverage: blockText.length }
+          : blockText.includes(excerpt)
+            ? { relation: 1, coverage: -blockText.length }
+            : null;
+    if (score && compareCitationMatchScore(score, best) > 0) best = score;
+  }
+  return best;
+}
+
+function compareCitationMatchScore(
+  left: CitationMatchScore,
+  right: CitationMatchScore | null,
+): number {
+  if (!right) return 1;
+  if (left.relation !== right.relation) return left.relation - right.relation;
+  return left.coverage - right.coverage;
 }
 
 function citationInlineRange(

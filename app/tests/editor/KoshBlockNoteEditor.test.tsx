@@ -170,6 +170,26 @@ describe("production BlockNote editor", () => {
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
   });
 
+  it("refuses to retarget a citation when its fallback excerpt is ambiguous", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={
+            "An inserted block moved the citation.\n\nSlow simmering preserves brightness.\n\nSlow simmering preserves brightness."
+          }
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findAllByText("Slow simmering preserves brightness.");
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
   it("preserves punctuation while validating citation evidence", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(

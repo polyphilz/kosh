@@ -15,6 +15,7 @@ import { NoteAutosaveCoordinator, type NoteMediaReservation } from "../notes/aut
 import { projectLegacyTitle } from "../notes/legacyTitle";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { citationLocation } from "../search/presentation";
+import { registerSearchCheckpoint } from "../search/checkpoint";
 import { TauriEvent } from "../tauriProtocol";
 
 interface FileDropNotice {
@@ -163,6 +164,8 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     await waitForPendingMedia();
     await coordinator.flush("NAVIGATION");
   }, [coordinator, waitForPendingMedia]);
+
+  useEffect(() => registerSearchCheckpoint(flushForNavigation), [flushForNavigation]);
 
   useBlocker({
     enableBeforeUnload: false,

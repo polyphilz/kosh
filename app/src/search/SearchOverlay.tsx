@@ -8,6 +8,7 @@ import type {
 } from "../backend/contracts";
 import { useBackend } from "../backend/context";
 import { Dialog } from "../components/Dialog";
+import { checkpointBeforeSearch } from "./checkpoint";
 import { HighlightedText } from "./HighlightedText";
 import { citationLocation, sourceDisplay } from "./presentation";
 
@@ -54,10 +55,17 @@ export function SearchOverlay({ onClose, open }: SearchOverlayProps) {
     if (!trimmed) return;
 
     const timer = window.setTimeout(() => {
-      void backend
-        .searchPassages({ query: trimmed, mode: "DEFAULT", limit: SEARCH_RESULT_LIMIT })
+      void checkpointBeforeSearch()
+        .then(() => {
+          if (request.current !== requestId) return null;
+          return backend.searchPassages({
+            query: trimmed,
+            mode: "DEFAULT",
+            limit: SEARCH_RESULT_LIMIT,
+          });
+        })
         .then((nextResponse) => {
-          if (request.current !== requestId) return;
+          if (request.current !== requestId || !nextResponse) return;
           setResponse(nextResponse);
         })
         .catch((reason: unknown) => {
