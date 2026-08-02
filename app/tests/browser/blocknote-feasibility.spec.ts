@@ -101,9 +101,9 @@ test("real keyboard input covers undo, redo, IME, and list nesting", async ({ pa
   await expect
     .poll(async () => blockText(await readSnapshot(page), undoBlockId))
     .toBe("Undo seed change");
-  await page.keyboard.press("Meta+z");
+  await page.keyboard.press("ControlOrMeta+z");
   await expect.poll(async () => blockText(await readSnapshot(page), undoBlockId)).toBe("");
-  await page.keyboard.press("Meta+Shift+z");
+  await page.keyboard.press("ControlOrMeta+Shift+z");
   await expect
     .poll(async () => blockText(await readSnapshot(page), undoBlockId))
     .toBe("Undo seed change");

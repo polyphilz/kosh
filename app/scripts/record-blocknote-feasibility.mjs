@@ -121,8 +121,11 @@ try {
     };
     await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     process.stdout.write(`Wrote ${outputPath}\n`);
-    if (!budgets.firstInputPaint.passed || !budgets.longDocumentInputPaint.passed) {
-      throw new Error("BlockNote input latency exceeded the one-frame feasibility budget");
+    const failedBudgets = Object.entries(budgets)
+      .filter(([, result]) => !result.passed)
+      .map(([name]) => name);
+    if (failedBudgets.length > 0) {
+      throw new Error(`BlockNote feasibility budgets failed: ${failedBudgets.join(", ")}`);
     }
   } finally {
     await browser.close();
