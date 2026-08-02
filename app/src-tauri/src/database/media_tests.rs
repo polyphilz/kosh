@@ -25,10 +25,11 @@ use super::{
     },
     research_runs::{AppendResearchEventWrite, CreateResearchRunWrite},
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CitationLocator,
-    ClearDraftInput, Database, DatabaseClient, DatabaseError, DatabasePaths, EditTidbitInput,
-    LexicalSearchMode, MediaLimits, MediaMaintenanceReport, SaveDraftInput, SearchPassagesInput,
-    SourceDraft, TidbitDraft,
+    working_copies::CheckpointWorkingCopyWrite,
+    AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput,
+    CitationLocator, ClearDraftInput, Database, DatabaseClient, DatabaseError, DatabasePaths,
+    EditTidbitInput, LexicalSearchMode, MediaLimits, MediaMaintenanceReport, SaveDraftInput,
+    SearchPassagesInput, SourceDraft, TidbitDraft,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -2161,9 +2162,12 @@ fn quick_add_media_lease_and_draft_survive_restart() {
                 context_key: "quick-add".into(),
                 tidbit_id: None,
                 base_revision_id: None,
-                title: Some("Quick attachment".into()),
+                title: Some("Quick *attachment*".into()),
                 body_markdown: body,
-                sources: Vec::new(),
+                sources: vec![SourceDraft {
+                    label: Some("Recovered source".into()),
+                    url: Some("https://example.com/quick-add".into()),
+                }],
             },
             now_ms: 13,
             draft_id: id(0x732),
@@ -2191,13 +2195,62 @@ fn quick_add_media_lease_and_draft_survive_restart() {
             .client()
             .load_draft("quick-add".into())
             .expect("recovered quick-add draft"),
-        Some(saved)
+        Some(saved.clone())
     );
     assert_eq!(
         reopened
             .client()
-            .load_media_payload(attachment.id, 14, None, 64)
+            .load_media_payload(attachment.id.clone(), 14, None, 64)
             .expect("recovered quick-add attachment")
+            .bytes,
+        b"quick add attachment"
+    );
+    let recovered = reopened
+        .client()
+        .adopt_legacy_quick_add_draft(14)
+        .expect("adopt legacy Quick Add draft")
+        .expect("legacy Quick Add working copy");
+    assert_eq!(recovered.note_id, draft_id);
+    assert_eq!(recovered.edit_generation, 1);
+    assert_eq!(
+        recovered.body_markdown,
+        format!(
+            "# Quick \\*attachment\\*\n\n{{{{kosh:attachment:{}}}}}",
+            attachment.id
+        )
+    );
+    assert_eq!(recovered.sources, saved.sources);
+    assert_eq!(
+        reopened
+            .client()
+            .load_draft("quick-add".into())
+            .expect("retired Quick Add draft lookup"),
+        None
+    );
+
+    let checkpoint = reopened
+        .client()
+        .checkpoint_working_copy(CheckpointWorkingCopyWrite {
+            input: CheckpointWorkingCopyInput {
+                note_id: draft_id.clone(),
+                expected_edit_generation: 1,
+            },
+            now_ms: 15,
+            revision_id: id(0x733),
+            source_ids: vec![id(0x734)],
+        })
+        .expect("checkpoint recovered Quick Add note");
+    let note = checkpoint.note.expect("recovered note");
+    assert_eq!(note.id, draft_id);
+    assert_eq!(note.title, None);
+    assert_eq!(note.body_markdown, recovered.body_markdown);
+    assert_eq!(note.sources.len(), 1);
+    assert_eq!(note.sources[0].label.as_deref(), Some("Recovered source"));
+    assert_eq!(
+        reopened
+            .client()
+            .load_media_payload(attachment.id, 16, None, 64)
+            .expect("checkpointed Quick Add attachment")
             .bytes,
         b"quick add attachment"
     );

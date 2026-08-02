@@ -479,6 +479,10 @@ pub(super) enum WriterMessage {
         now_ms: i64,
         reply: SyncSender<Result<bool>>,
     },
+    AdoptLegacyQuickAddDraft {
+        now_ms: i64,
+        reply: SyncSender<Result<Option<WorkingCopy>>>,
+    },
     SaveWorkingCopy {
         write: SaveWorkingCopyWrite,
         reply: SyncSender<Result<WorkingCopySaveResult>>,
@@ -1850,6 +1854,10 @@ impl DatabaseClient {
         write: SaveWorkingCopyWrite,
     ) -> Result<WorkingCopySaveResult> {
         self.request(|reply| WriterMessage::SaveWorkingCopy { write, reply })
+    }
+
+    pub(crate) fn adopt_legacy_quick_add_draft(&self, now_ms: i64) -> Result<Option<WorkingCopy>> {
+        self.request(|reply| WriterMessage::AdoptLegacyQuickAddDraft { now_ms, reply })
     }
 
     pub(crate) fn load_working_copy(&self, note_id: String) -> Result<Option<WorkingCopy>> {

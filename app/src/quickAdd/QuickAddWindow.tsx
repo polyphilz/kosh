@@ -141,9 +141,8 @@ const QuickAddSession = forwardRef<
   const dropCountRef = useRef(0);
   const pendingWaitersRef = useRef(new Set<() => void>());
   const finishPromiseRef = useRef<Promise<boolean> | null>(null);
-  const mediaFailureRef = useRef<{ message: string; version: number } | null>(null);
-  const mediaFailureVersionRef = useRef(0);
-  const handledMediaFailureVersionRef = useRef(0);
+  const finishingRef = useRef(false);
+  const mediaFailureRef = useRef<string | null>(null);
   const [coordinator] = useState(() =>
     NoteAutosaveCoordinator.ephemeral(backend, { noteId: createUuidV7() }),
   );
@@ -169,23 +168,23 @@ const QuickAddSession = forwardRef<
     return new Promise<void>((resolve) => pendingWaitersRef.current.add(resolve));
   }, []);
   const reportMediaError = useCallback((message: string) => {
-    const version = mediaFailureVersionRef.current + 1;
-    mediaFailureVersionRef.current = version;
-    mediaFailureRef.current = { message, version };
+    mediaFailureRef.current = message;
     setMediaError(message);
   }, []);
   const clearMediaError = useCallback(() => {
-    handledMediaFailureVersionRef.current = mediaFailureVersionRef.current;
     mediaFailureRef.current = null;
     setMediaError(null);
   }, []);
   const waitForSettledMedia = useCallback(async () => {
     await waitForPendingMedia();
     const failure = mediaFailureRef.current;
-    if (!failure || failure.version <= handledMediaFailureVersionRef.current) return;
-    handledMediaFailureVersionRef.current = failure.version;
-    throw new Error(failure.message);
+    if (!failure) return;
+    throw new Error(failure);
   }, [waitForPendingMedia]);
+  const updateFinishing = useCallback((value: boolean) => {
+    finishingRef.current = value;
+    setFinishing(value);
+  }, []);
   const withMediaReservation = useCallback(
     async <Record,>(operation: (draftId: string) => Promise<Record>): Promise<Record> => {
       const reservation = await coordinator.prepareMedia();
@@ -212,15 +211,17 @@ const QuickAddSession = forwardRef<
 
   const requestDismiss = useCallback(
     (action: QuickAddDismissAction): Promise<boolean> => {
-      if (finishPromiseRef.current) return finishPromiseRef.current;
       setRetryAction(action);
+      if (finishPromiseRef.current) return finishPromiseRef.current;
       setFinishError(null);
-      setFinishing(true);
+      updateFinishing(true);
       const operation = (async () => {
+        let dismissed = false;
         try {
           await waitForSettledMedia();
           await coordinator.flush("HIDE");
           await native.dismiss(action);
+          dismissed = true;
           onDismissed();
           return true;
         } catch (reason) {
@@ -234,13 +235,13 @@ const QuickAddSession = forwardRef<
           return false;
         } finally {
           finishPromiseRef.current = null;
-          setFinishing(false);
+          if (!dismissed) updateFinishing(false);
         }
       })();
       finishPromiseRef.current = operation;
       return operation;
     },
-    [coordinator, native, onDismissed, waitForSettledMedia],
+    [coordinator, native, onDismissed, updateFinishing, waitForSettledMedia],
   );
 
   useImperativeHandle(
@@ -257,14 +258,14 @@ const QuickAddSession = forwardRef<
   useEffect(
     () =>
       registerQuitParticipant({
-        cancel: () => setFinishing(false),
+        cancel: () => updateFinishing(false),
         prepare: async (reason) => {
-          setFinishing(true);
+          updateFinishing(true);
           await waitForSettledMedia();
           await coordinator.flush(reason);
         },
       }),
-    [coordinator, waitForSettledMedia],
+    [coordinator, updateFinishing, waitForSettledMedia],
   );
 
   useEffect(() => {
@@ -275,7 +276,7 @@ const QuickAddSession = forwardRef<
       TauriEvent.FileDrop,
       (event) => {
         const selectionIds = event.payload.selections.map((selection) => selection.selectionId);
-        if (!active) {
+        if (!active || finishingRef.current) {
           void backend.discardFileDropSelections(selectionIds);
           return;
         }
@@ -391,7 +392,10 @@ const QuickAddSession = forwardRef<
           <span>{error}</span>
           <button
             disabled={finishing || mediaPending}
-            onClick={() => void requestDismiss(retryAction)}
+            onClick={() => {
+              clearMediaError();
+              void requestDismiss(retryAction);
+            }}
             type="button"
           >
             Retry

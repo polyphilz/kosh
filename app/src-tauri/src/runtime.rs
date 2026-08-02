@@ -132,6 +132,15 @@ impl RuntimeState {
         let database = Database::initialize(DatabasePaths::new(&data_dir))?;
         let media_limits = MediaLimits::default().validate()?;
         let startup_now_ms = SystemClock.now_ms();
+        if let Some(working_copy) = database
+            .client()
+            .adopt_legacy_quick_add_draft(startup_now_ms)?
+        {
+            log::info!(
+                "recovered legacy Quick Add draft as working copy {}",
+                working_copy.note_id
+            );
+        }
         if let Err(error) = database
             .client()
             .interrupt_active_research_runs(startup_now_ms)

@@ -1007,6 +1007,9 @@ fn writer_loop(
             } => {
                 let _ = reply.send(drafts::clear_draft(&mut main, input, now_ms));
             }
+            WriterMessage::AdoptLegacyQuickAddDraft { now_ms, reply } => {
+                let _ = reply.send(working_copies::adopt_legacy_quick_add(&mut main, now_ms));
+            }
             WriterMessage::SaveWorkingCopy { write, reply } => {
                 let _ = reply.send(working_copies::save(&mut main, write));
             }

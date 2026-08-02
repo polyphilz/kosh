@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
 import type { ImageRecord, SelectedAttachmentRecord } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
@@ -23,6 +23,29 @@ import {
   type QuickAddDismissRequest,
   type QuickAddNative,
 } from "../../src/quickAdd/native";
+import { TauriEvent } from "../../src/tauriProtocol";
+
+const tauriEvents = vi.hoisted(() => {
+  const listeners = new Map<string, (event: { payload: unknown }) => void>();
+  return {
+    clear: () => listeners.clear(),
+    emit: (event: string, payload: unknown) => listeners.get(event)?.({ payload }),
+    listen: vi.fn(async (event: string, listener: (event: { payload: unknown }) => void) => {
+      listeners.set(event, listener);
+      return () => listeners.delete(event);
+    }),
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ label: "quick-add" }),
+}));
+
+afterEach(() => {
+  tauriEvents.clear();
+  delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+});
 
 describe("global quick add", () => {
   it("checkpoints a titleless note before Command-Enter dismisses it", async () => {
@@ -103,10 +126,82 @@ describe("global quick add", () => {
     expect(native.dismiss).not.toHaveBeenCalled();
     expect(native.cancelDismiss).toHaveBeenCalledOnce();
 
+    act(() => native.request(QuickAddDismissAction.Settings));
+    await waitFor(() => expect(native.cancelDismiss).toHaveBeenCalledTimes(2));
+    expect(native.dismiss).not.toHaveBeenCalled();
+
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
-      expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.ShowMain),
+      expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.Settings),
     );
+  });
+
+  it("retries the latest dismissal action when an in-flight checkpoint fails", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    let rejectCheckpoint: ((reason: Error) => void) | undefined;
+    vi.spyOn(backend, "checkpointWorkingCopy").mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectCheckpoint = reject;
+        }),
+    );
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "Keep the newest dismissal intent.");
+
+    act(() => native.request(QuickAddDismissAction.Dismiss));
+    await waitFor(() => expect(backend.checkpointWorkingCopy).toHaveBeenCalledOnce());
+    act(() => native.request(QuickAddDismissAction.Settings));
+    await act(async () => rejectCheckpoint?.(new Error("checkpoint unavailable")));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("checkpoint unavailable");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.Settings),
+    );
+  });
+
+  it("discards file drops that arrive after lifecycle flushing starts", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    const originalCheckpoint = backend.checkpointWorkingCopy.bind(backend);
+    let releaseCheckpoint: (() => void) | undefined;
+    vi.spyOn(backend, "checkpointWorkingCopy").mockImplementation(async (input) => {
+      await new Promise<void>((resolve) => {
+        releaseCheckpoint = resolve;
+      });
+      return originalCheckpoint(input);
+    });
+    const discard = vi.spyOn(backend, "discardFileDropSelections");
+    const ingest = vi.spyOn(backend, "ingestSelectedAttachment");
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "Fence the final checkpoint.");
+    await waitFor(() =>
+      expect(tauriEvents.listen).toHaveBeenCalledWith(
+        TauriEvent.FileDrop,
+        expect.any(Function),
+        expect.any(Object),
+      ),
+    );
+
+    act(() => native.request(QuickAddDismissAction.Dismiss));
+    await waitFor(() => expect(backend.checkpointWorkingCopy).toHaveBeenCalledOnce());
+    act(() =>
+      tauriEvents.emit(TauriEvent.FileDrop, {
+        selections: [{ filename: "too-late.txt", selectionId: "selection-too-late" }],
+      }),
+    );
+
+    await waitFor(() => expect(discard).toHaveBeenCalledWith(["selection-too-late"]));
+    expect(ingest).not.toHaveBeenCalled();
+    await act(async () => releaseCheckpoint?.());
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
   });
 
   it("does not materialize an untouched ephemeral note", async () => {
