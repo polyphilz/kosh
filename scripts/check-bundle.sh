@@ -6,6 +6,13 @@ fail() {
   exit 1
 }
 
+# The restricted BlockNote production editor deliberately carries its editor,
+# Mantine, and math runtime. Keep explicit ceilings close to that measured
+# production shape so later growth still fails loudly.
+total_byte_budget=4500000
+javascript_byte_budget=2900000
+javascript_chunk_byte_budget=1750000
+
 repo_root="$(git rev-parse --show-toplevel)"
 dist_root="${KOSH_BUNDLE_ROOT:-$repo_root/app/dist}"
 report="${KOSH_BUNDLE_REPORT:-$repo_root/app/test-results/bundle/report.json}"
@@ -43,12 +50,12 @@ for file in "${files[@]}"; do
   fi
 done
 
-((total_bytes <= 4000000)) ||
-  fail "uncompressed bundle is $total_bytes bytes; release budget is 4000000"
-((total_javascript_bytes <= 2700000)) ||
-  fail "JavaScript is $total_javascript_bytes bytes; release budget is 2700000"
-((largest_javascript_bytes <= 1100000)) ||
-  fail "$largest_javascript_file is $largest_javascript_bytes bytes; chunk budget is 1100000"
+((total_bytes <= total_byte_budget)) ||
+  fail "uncompressed bundle is $total_bytes bytes; release budget is $total_byte_budget"
+((total_javascript_bytes <= javascript_byte_budget)) ||
+  fail "JavaScript is $total_javascript_bytes bytes; release budget is $javascript_byte_budget"
+((largest_javascript_bytes <= javascript_chunk_byte_budget)) ||
+  fail "$largest_javascript_file is $largest_javascript_bytes bytes; chunk budget is $javascript_chunk_byte_budget"
 
 for forbidden_path in \
   '.env' \
@@ -85,6 +92,9 @@ jq -n \
   --argjson totalBytes "$total_bytes" \
   --argjson javascriptBytes "$total_javascript_bytes" \
   --argjson largestJavascriptBytes "$largest_javascript_bytes" \
+  --argjson totalByteBudget "$total_byte_budget" \
+  --argjson javascriptByteBudget "$javascript_byte_budget" \
+  --argjson javascriptChunkByteBudget "$javascript_chunk_byte_budget" \
   '{
     schemaVersion: 1,
     result: "pass",
@@ -96,9 +106,9 @@ jq -n \
       bytes: $largestJavascriptBytes
     },
     budgets: {
-      totalBytes: 4000000,
-      javascriptBytes: 2700000,
-      javascriptChunkBytes: 1100000
+      totalBytes: $totalByteBudget,
+      javascriptBytes: $javascriptByteBudget,
+      javascriptChunkBytes: $javascriptChunkByteBudget
     }
   }' >"$temporary"
 mv "$temporary" "$report"
