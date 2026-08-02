@@ -874,6 +874,13 @@ pub(super) fn purge_tidbit(
         params![input.id],
     )?;
     transaction.execute(
+        "DELETE FROM empty_author_passage_revision
+         WHERE tidbit_revision_id IN (
+            SELECT id FROM tidbit_revision WHERE tidbit_id = ?1
+         )",
+        params![input.id],
+    )?;
+    transaction.execute(
         "DELETE FROM tidbit_revision WHERE tidbit_id = ?1",
         params![input.id],
     )?;

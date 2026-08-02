@@ -289,7 +289,7 @@ fn reconcile_author_passage_batch_transaction(
             )
             .optional()?;
         if let Some(tidbit_id) = current_tidbit_id {
-            replace_active_author_passages(&transaction, &tidbit_id, revision_id)?;
+            replace_active_author_passages_allow_empty(&transaction, &tidbit_id, revision_id)?;
         }
     }
 

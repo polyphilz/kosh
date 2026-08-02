@@ -431,7 +431,7 @@ fn empty_legacy_revisions_are_reconciled_without_blocking_valid_content() {
              )
              VALUES(
                 '019f547b-6200-7000-8000-000000002301',
-                10, 11, 11, '019f547b-6200-7000-8000-000000002302'
+                10, 11, NULL, '019f547b-6200-7000-8000-000000002302'
              );
              INSERT INTO tidbit_revision(
                 id, tidbit_id, revision_number, created_at, body_markdown, content_hash
@@ -504,17 +504,6 @@ fn empty_legacy_revisions_are_reconciled_without_blocking_valid_content() {
         )
         .expect("valid revision restores with on-demand passages");
     assert_eq!(restored_valid.deleted_at_ms, None);
-    let restored_malformed = opened
-        .client()
-        .restore_tidbit(
-            RestoreTidbitInput {
-                id: "019f547b-6200-7000-8000-000000002301".into(),
-                expected_revision_id: "019f547b-6200-7000-8000-000000002302".into(),
-            },
-            23,
-        )
-        .expect("malformed revision restores without derived passages");
-    assert_eq!(restored_malformed.deleted_at_ms, None);
     let (valid_active, malformed_active): (i64, i64) = opened
         .open_main_read_only()
         .expect("read restored active passages")

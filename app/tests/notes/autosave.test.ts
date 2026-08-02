@@ -284,6 +284,32 @@ describe("note autosave coordinator", () => {
     });
   });
 
+  it("clears an abandoned blank media reservation before lifecycle checkpoint", async () => {
+    const backend = gateway();
+    backend.saveWorkingCopy.mockResolvedValue({
+      status: "CLEARED",
+      acceptedEditGeneration: 8,
+      workingCopy: null,
+    });
+    const coordinator = NoteAutosaveCoordinator.recovered(backend, workingCopy(7, ""));
+
+    await expect(coordinator.flush("QUIT")).resolves.toBeNull();
+
+    expect(backend.saveWorkingCopy).toHaveBeenCalledWith({
+      noteId: NOTE_ID,
+      baseRevisionId: null,
+      editGeneration: 8,
+      bodyMarkdown: "",
+      sources: [],
+    });
+    expect(backend.checkpointWorkingCopy).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      editGeneration: 8,
+      durableGeneration: 8,
+      phase: "EPHEMERAL",
+    });
+  });
+
   it("reserves an untouched note for media and checkpoints the inserted token", async () => {
     const backend = gateway();
     const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });

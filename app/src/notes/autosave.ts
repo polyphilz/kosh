@@ -72,6 +72,7 @@ export class NoteAutosaveCoordinator {
   private workingCopyTimer: number | null = null;
   private checkpointTimer: number | null = null;
   private workingCopyId: string | null;
+  private requiresRecoveryClassification: boolean;
   private disposed = false;
 
   constructor(
@@ -85,12 +86,14 @@ export class NoteAutosaveCoordinator {
       >,
     options: NoteAutosaveOptions = {},
     workingCopyId: string | null = null,
+    requiresRecoveryClassification = false,
   ) {
     this.gateway = gateway;
     this.scheduler = options.scheduler ?? window;
     this.workingCopyDelayMs = options.workingCopyDelayMs ?? WORKING_COPY_DEBOUNCE_MS;
     this.checkpointDelayMs = options.checkpointDelayMs ?? CHECKPOINT_IDLE_MS;
     this.workingCopyId = workingCopyId;
+    this.requiresRecoveryClassification = requiresRecoveryClassification;
     const editGeneration = initial.editGeneration ?? 0;
     const durableGeneration = initial.durableGeneration ?? 0;
     const checkpointedGeneration = initial.checkpointedGeneration ?? 0;
@@ -141,6 +144,7 @@ export class NoteAutosaveCoordinator {
       },
       options,
       workingCopy.id,
+      workingCopy.baseRevisionId === null,
     );
   }
 
@@ -292,6 +296,21 @@ export class NoteAutosaveCoordinator {
         this.publish({ ...this.state, phase: "EPHEMERAL", error: null });
         return null;
       }
+      if (this.requiresRecoveryClassification) {
+        const editGeneration = nextGeneration(this.state.editGeneration);
+        const classificationTarget = {
+          ...authoredSnapshot(this.state),
+          editGeneration,
+        };
+        this.publish({
+          ...this.state,
+          editGeneration,
+          phase: "DIRTY",
+          error: null,
+        });
+        await this.saveTarget(classificationTarget);
+        continue;
+      }
       if (target.editGeneration > this.state.durableGeneration) {
         await this.saveTarget(target);
       }
@@ -371,6 +390,7 @@ export class NoteAutosaveCoordinator {
       return result;
     }
     this.workingCopyId = result.workingCopy?.id ?? null;
+    this.requiresRecoveryClassification = false;
     const durableGeneration = Math.max(this.state.durableGeneration, result.acceptedEditGeneration);
     const unchanged = this.state.editGeneration === target.editGeneration;
     this.publish({

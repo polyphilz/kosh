@@ -629,6 +629,14 @@ fn permanent_purge_is_delayed_transactional_and_removes_authored_history() {
             params![created.id, deleted.deleted_at_ms],
         )
         .expect("restore deleted state for writer purge");
+    direct
+        .execute(
+            "INSERT INTO empty_author_passage_revision(
+                tidbit_revision_id, construction_version, created_at
+             ) VALUES(?1, 'markdown-blocks-v2', ?2)",
+            params![created.current_revision_id, created.created_at_ms],
+        )
+        .expect("seed derived empty-revision marker");
     drop(direct);
 
     assert!(library
