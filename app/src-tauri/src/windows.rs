@@ -1,6 +1,10 @@
 #![cfg_attr(feature = "test-support", allow(dead_code))]
 
-use std::{collections::BTreeSet, sync::Mutex, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{mpsc, Mutex},
+    time::Duration,
+};
 
 use objc2::MainThreadMarker as ObjcMainThreadMarker;
 use objc2_app_kit::{
@@ -10,7 +14,7 @@ use objc2_app_kit::{
 use serde::Serialize;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuBuilder},
+    menu::{Menu, MenuBuilder, MenuItemBuilder, MenuItemKind, PredefinedMenuItem},
     tray::TrayIconBuilder,
     utils::config::BackgroundThrottlingPolicy,
     App, AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
@@ -20,8 +24,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, Short
 
 use crate::{
     database::{
-        validate_complete_bindings, KeyboardBinding, KoshCommand, SetShortcutSettingsInput,
-        ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR, DEFAULT_QUICK_ADD_ACCELERATOR,
+        validate_complete_bindings, KeyboardBinding, KoshCommand, SetAutomaticUpdateChecksInput,
+        SetShortcutSettingsInput, ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR,
+        DEFAULT_QUICK_ADD_ACCELERATOR,
     },
     runtime::RuntimeState,
 };
@@ -34,15 +39,20 @@ const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const QUICK_ADD_SHOWN_EVENT: &str = "kosh://quick-add-shown";
 const OPEN_SETTINGS_EVENT: &str = "kosh://open-settings";
+const CHECK_FOR_UPDATES_EVENT: &str = "kosh://check-for-updates";
 const SHORTCUT_SETTINGS_CHANGED_EVENT: &str = "kosh://shortcut-settings-changed";
 const PREPARE_QUIT_EVENT: &str = "kosh://prepare-quit";
 const QUIT_CANCELED_EVENT: &str = "kosh://quit-canceled";
 const QUIT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+const SETTINGS_MENU_ID: &str = "open-settings";
+const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
+const CHECK_FOR_UPDATES_TRAY_MENU_ID: &str = "check-for-updates-tray";
 
 #[derive(Clone, Copy)]
 enum TrayAction {
     ShowMain,
     ShowSettings,
+    CheckForUpdates,
     ShowQuickAdd,
     Quit,
 }
@@ -52,6 +62,7 @@ impl TrayAction {
         match self {
             Self::ShowMain => "show-main",
             Self::ShowSettings => "show-settings",
+            Self::CheckForUpdates => CHECK_FOR_UPDATES_TRAY_MENU_ID,
             Self::ShowQuickAdd => "show-quick-add",
             Self::Quit => "quit",
         }
@@ -61,6 +72,7 @@ impl TrayAction {
         [
             Self::ShowMain,
             Self::ShowSettings,
+            Self::CheckForUpdates,
             Self::ShowQuickAdd,
             Self::Quit,
         ]
@@ -126,6 +138,7 @@ enum DismissFocus {
 pub(crate) struct WindowState {
     focus: Mutex<FocusContext>,
     quit: Mutex<QuitContext>,
+    relaunch_preparations: Mutex<BTreeMap<u64, mpsc::SyncSender<Result<(), String>>>>,
     shortcut_errors: Mutex<Vec<String>>,
 }
 
@@ -237,6 +250,7 @@ pub(crate) fn setup(
     // Remaining Regular costs a Dock icon and keeps activation and menu-bar ownership stable.
     app.set_activation_policy(tauri::ActivationPolicy::Regular);
     app.manage(WindowState::default());
+    install_application_menu(app)?;
     create_quick_add_window(app.handle())?;
     install_tray(app, &settings.keyboard_bindings)?;
     let errors = register_shortcuts(app.handle(), &settings.keyboard_bindings);
@@ -249,6 +263,31 @@ pub(crate) fn setup(
             log::error!("failed to show the main window on launch: {error}");
         }
     }
+    Ok(())
+}
+
+fn install_application_menu(app: &mut App) -> tauri::Result<()> {
+    let menu = Menu::default(app.handle())?;
+    if let Some(application_menu) = menu.items()?.into_iter().find_map(|item| match item {
+        MenuItemKind::Submenu(submenu) => Some(submenu),
+        _ => None,
+    }) {
+        let check_for_updates =
+            MenuItemBuilder::with_id(CHECK_FOR_UPDATES_MENU_ID, "Check for Updates…").build(app)?;
+        let settings = MenuItemBuilder::with_id(SETTINGS_MENU_ID, "Settings…")
+            .accelerator("CmdOrCtrl+,")
+            .build(app)?;
+        let separator = PredefinedMenuItem::separator(app)?;
+        application_menu.append_items(&[&check_for_updates, &separator, &settings])?;
+    }
+    app.on_menu_event(|app, event| match event.id().as_ref() {
+        SETTINGS_MENU_ID => dispatch_logged(app, "show settings", show_settings_inner),
+        CHECK_FOR_UPDATES_MENU_ID => {
+            dispatch_logged(app, "check for updates", check_for_updates_inner)
+        }
+        _ => {}
+    });
+    app.set_menu(menu)?;
     Ok(())
 }
 
@@ -304,6 +343,7 @@ fn tray_menu(app: &AppHandle, bindings: &[KeyboardBinding]) -> tauri::Result<Men
             format!("Open Kosh  {main_window}"),
         )
         .text(TrayAction::ShowSettings.id(), "Settings…")
+        .text(TrayAction::CheckForUpdates.id(), "Check for Updates…")
         .text(
             TrayAction::ShowQuickAdd.id(),
             format!("Quick Add  {quick_add}"),
@@ -328,6 +368,9 @@ fn install_tray(app: &App, bindings: &[KeyboardBinding]) -> tauri::Result<()> {
                 }
                 Some(TrayAction::ShowSettings) => {
                     dispatch_logged(app, "show settings", show_settings_inner)
+                }
+                Some(TrayAction::CheckForUpdates) => {
+                    dispatch_logged(app, "check for updates", check_for_updates_inner)
                 }
                 Some(TrayAction::ShowQuickAdd) => {
                     dispatch_logged(app, "show quick add", show_quick_add_inner)
@@ -437,17 +480,122 @@ pub(crate) fn acknowledge_quit(
         .acknowledge(request_id, window.label(), error);
     match acknowledgement {
         QuitAcknowledgement::Exit => {
-            dispatch_logged(window.app_handle(), "quit Kosh", |app| {
-                app.exit(0);
-                Ok(())
-            });
+            let preparation = state
+                .relaunch_preparations
+                .lock()
+                .expect("relaunch preparations poisoned")
+                .remove(&request_id);
+            if let Some(completion) = preparation {
+                let _ = completion.send(Ok(()));
+            } else {
+                dispatch_logged(window.app_handle(), "quit Kosh", |app| {
+                    app.exit(0);
+                    Ok(())
+                });
+            }
         }
         QuitAcknowledgement::Canceled {
             error,
             window_label,
-        } => cancel_quit_ui(window.app_handle(), request_id, &window_label, &error),
+        } => {
+            if let Some(completion) = state
+                .relaunch_preparations
+                .lock()
+                .expect("relaunch preparations poisoned")
+                .remove(&request_id)
+            {
+                let _ = completion.send(Err(error.clone()));
+            }
+            cancel_quit_ui(window.app_handle(), request_id, &window_label, &error);
+        }
         QuitAcknowledgement::Ignored | QuitAcknowledgement::Waiting => {}
     }
+}
+
+#[tauri::command]
+pub(crate) async fn prepare_update_relaunch(app: AppHandle) -> Result<u64, String> {
+    let labels = [MAIN_LABEL, QUICK_ADD_LABEL]
+        .into_iter()
+        .filter(|label| app.get_webview_window(label).is_some())
+        .map(str::to_owned);
+    let Some((request_id, labels)) = app
+        .state::<WindowState>()
+        .quit
+        .lock()
+        .expect("quit context poisoned")
+        .begin(labels)
+    else {
+        return Err("Kosh is already preparing to close".into());
+    };
+    if labels.is_empty() {
+        app.state::<WindowState>()
+            .quit
+            .lock()
+            .expect("quit context poisoned")
+            .cancel(request_id);
+        return Ok(request_id);
+    }
+
+    let (completion, receiver) = mpsc::sync_channel(1);
+    app.state::<WindowState>()
+        .relaunch_preparations
+        .lock()
+        .expect("relaunch preparations poisoned")
+        .insert(request_id, completion);
+    let notice = QuitNotice { request_id };
+    for label in &labels {
+        if let Err(error) = app.emit_to(label, PREPARE_QUIT_EVENT, notice) {
+            app.state::<WindowState>()
+                .quit
+                .lock()
+                .expect("quit context poisoned")
+                .cancel(request_id);
+            app.state::<WindowState>()
+                .relaunch_preparations
+                .lock()
+                .expect("relaunch preparations poisoned")
+                .remove(&request_id);
+            let message = format!("Could not ask {label} to preserve its draft: {error}");
+            cancel_quit_ui(&app, request_id, label, &message);
+            return Err(message);
+        }
+    }
+
+    let wait =
+        tauri::async_runtime::spawn_blocking(move || receiver.recv_timeout(QUIT_ACK_TIMEOUT))
+            .await
+            .map_err(|error| error.to_string())?;
+    match wait {
+        Ok(result) => result.map(|()| request_id),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            app.state::<WindowState>()
+                .quit
+                .lock()
+                .expect("quit context poisoned")
+                .cancel(request_id);
+            app.state::<WindowState>()
+                .relaunch_preparations
+                .lock()
+                .expect("relaunch preparations poisoned")
+                .remove(&request_id);
+            let message = "Kosh did not finish preserving open drafts before the update timeout";
+            cancel_quit_ui(&app, request_id, MAIN_LABEL, message);
+            Err(message.into())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Kosh could not confirm that open drafts were preserved".into())
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn cancel_update_relaunch(app: AppHandle, request_id: u64) {
+    cancel_quit_ui(
+        &app,
+        request_id,
+        MAIN_LABEL,
+        "Kosh could not restart after installing the update",
+    );
 }
 
 fn cancel_quit_ui(app: &AppHandle, request_id: u64, window_label: &str, error: &str) {
@@ -723,6 +871,25 @@ pub(crate) async fn set_shortcut_settings(
 }
 
 #[tauri::command]
+pub(crate) async fn set_automatic_update_checks(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    input: SetAutomaticUpdateChecksInput,
+) -> Result<ShortcutSettingsSnapshot, String> {
+    let client = state.database_client();
+    let persisted =
+        tauri::async_runtime::spawn_blocking(move || client.set_automatic_update_checks(input))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+    let snapshot = snapshot(&app, persisted);
+    if let Err(error) = app.emit_to(MAIN_LABEL, SHORTCUT_SETTINGS_CHANGED_EVENT, &snapshot) {
+        log::error!("could not publish update settings: {error}");
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub(crate) fn show_quick_add(app: AppHandle) -> Result<(), String> {
     dispatch_to_main_thread(&app, "show quick add", show_quick_add_inner)
 }
@@ -872,6 +1039,12 @@ fn show_settings_inner(app: &AppHandle) -> Result<(), String> {
     show_main_inner(app)?;
     app.emit_to(MAIN_LABEL, OPEN_SETTINGS_EVENT, ())
         .map_err(|error| format!("could not open Settings: {error}"))
+}
+
+fn check_for_updates_inner(app: &AppHandle) -> Result<(), String> {
+    show_main_inner(app)?;
+    app.emit_to(MAIN_LABEL, CHECK_FOR_UPDATES_EVENT, ())
+        .map_err(|error| format!("could not request an update check: {error}"))
 }
 
 fn activate_main_window(app: &AppHandle) -> Result<(), String> {

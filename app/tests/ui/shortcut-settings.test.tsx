@@ -13,6 +13,33 @@ import { AppearanceProvider } from "../../src/components/Appearance";
 import { createAppRouter } from "../../src/router";
 
 describe("shortcut settings", () => {
+  it("persists the automatic update preference", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const setAutomaticUpdateChecks = vi.spyOn(backend, "setAutomaticUpdateChecks");
+    const router = createAppRouter(
+      createMemoryHistory({
+        initialEntries: ["/settings"],
+      }),
+    );
+    render(
+      <BackendProvider backend={backend}>
+        <AppearanceProvider>
+          <RouterProvider router={router} />
+        </AppearanceProvider>
+      </BackendProvider>,
+    );
+
+    const toggle = await screen.findByRole("switch", {
+      name: "Automatically check for updates",
+    });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+
+    await waitFor(() => expect(setAutomaticUpdateChecks).toHaveBeenCalledOnce());
+    expect((await backend.loadShortcutSettings()).automaticUpdateChecksEnabled).toBe(false);
+  });
+
   it("records, persists, rejects conflicts, and resets global shortcuts", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();

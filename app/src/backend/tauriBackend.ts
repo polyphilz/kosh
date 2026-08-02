@@ -36,6 +36,7 @@ import type {
   ResearchRunRecord,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
+  SetAutomaticUpdateChecksInput,
   SetShortcutSettingsInput,
   SetBackupEnabledInput,
   RestoreTidbitInput,
@@ -112,6 +113,8 @@ export const tauriBackend: Backend = {
     invoke<DraftRecord | null>(TauriCommand.LoadDraft, { contextKey }),
   clearDraft: (input: ClearDraftInput) => invoke<boolean>(TauriCommand.ClearDraft, { input }),
   loadShortcutSettings: () => invoke<ShortcutSettingsSnapshot>(TauriCommand.LoadShortcutSettings),
+  setAutomaticUpdateChecks: (input: SetAutomaticUpdateChecksInput) =>
+    invoke<ShortcutSettingsSnapshot>(TauriCommand.SetAutomaticUpdateChecks, { input }),
   setShortcutSettings: (input: SetShortcutSettingsInput) =>
     invoke<ShortcutSettingsSnapshot>(TauriCommand.SetShortcutSettings, { input }),
   selectImage: () => invoke<string | null>(TauriCommand.SelectImage),

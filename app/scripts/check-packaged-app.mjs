@@ -2,19 +2,40 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  DistributionSidecarKey,
+  readDistributionSigningPolicy,
+  verifyDeveloperIdSignature,
+} from "./distribution-signing.mjs";
+
+const PackageSignatureMode = Object.freeze({
+  AdHoc: "ad-hoc",
+  DeveloperId: "developer-id",
+});
 
 const appPath = resolve(
   process.argv[2] ?? "src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app",
 );
+const signatureMode = process.argv[3] ?? PackageSignatureMode.AdHoc;
+assert(
+  Object.values(PackageSignatureMode).includes(signatureMode),
+  `unknown package signature mode: ${signatureMode}`,
+);
+const distributionPolicy =
+  signatureMode === PackageSignatureMode.DeveloperId ? readDistributionSigningPolicy() : undefined;
 const resources = resolve(appPath, "Contents/Resources");
 const appBinary = resolve(appPath, "Contents/MacOS/kosh");
 const sidecar = resolve(resources, "bin/llama-server");
 const litestream = resolve(resources, "bin/litestream");
+const stagedSidecar = resolve("src-tauri/resources/release/bin/llama-server");
+const stagedLitestream = resolve("src-tauri/resources/release/bin/litestream");
 const releaseManifestPath = resolve(resources, "release/llama-server.json");
 const manifest = readJson(releaseManifestPath);
 const pin = readJson("src-tauri/resources/sidecars/llama-server-v1.json");
 const litestreamManifest = readJson(resolve(resources, "release/litestream.json"));
 const litestreamPin = readJson("src-tauri/resources/sidecars/litestream-v1.json");
+const sourceProvenance = readJson(resolve(resources, "release/source.json"));
+const stagedSourceProvenance = readJson("src-tauri/resources/release/source.json");
 const packageJson = readJson("package.json");
 const infoPlist = resolve(appPath, "Contents/Info.plist");
 
@@ -22,13 +43,12 @@ assertDirectory(appPath, "Kosh.app");
 assertRegularExecutable(appBinary, "Kosh executable");
 assertRegularExecutable(sidecar, "bundled llama-server");
 assertRegularExecutable(litestream, "bundled Litestream");
-assertEqual(sha256File(sidecar), manifest.binary.sha256, "bundled llama-server SHA-256");
-assertEqual(
-  sha256File("src-tauri/resources/release/bin/llama-server"),
-  manifest.binary.sha256,
-  "staged llama-server SHA-256",
-);
-assertEqual(lstatSync(sidecar).size, manifest.binary.size, "bundled llama-server size");
+if (signatureMode === PackageSignatureMode.AdHoc) {
+  assertEqual(sha256File(sidecar), manifest.binary.sha256, "bundled llama-server SHA-256");
+  assertEqual(sha256File(stagedSidecar), manifest.binary.sha256, "staged llama-server SHA-256");
+  assertEqual(lstatSync(sidecar).size, manifest.binary.size, "bundled llama-server size");
+}
+assertEqual(sourceProvenance, stagedSourceProvenance, "bundled release source provenance");
 assertEqual(
   sha256File(resolve(resources, "embedding-indexes/jina-v1.json")),
   manifest.verification.embeddingManifest.sha256,
@@ -44,21 +64,23 @@ assertEqual(
   manifest.licenseNotices[0].sha256,
   "bundled license SHA-256",
 );
-assertEqual(
-  sha256File(litestream),
-  litestreamPin.binary.universal.sha256,
-  "bundled Litestream SHA-256",
-);
-assertEqual(
-  sha256File("src-tauri/resources/release/bin/litestream"),
-  litestreamPin.binary.universal.sha256,
-  "staged Litestream SHA-256",
-);
-assertEqual(
-  lstatSync(litestream).size,
-  litestreamPin.binary.universal.size,
-  "bundled Litestream size",
-);
+if (signatureMode === PackageSignatureMode.AdHoc) {
+  assertEqual(
+    sha256File(litestream),
+    litestreamPin.binary.universal.sha256,
+    "bundled Litestream SHA-256",
+  );
+  assertEqual(
+    sha256File(stagedLitestream),
+    litestreamPin.binary.universal.sha256,
+    "staged Litestream SHA-256",
+  );
+  assertEqual(
+    lstatSync(litestream).size,
+    litestreamPin.binary.universal.size,
+    "bundled Litestream size",
+  );
+}
 assertEqual(
   litestreamManifest.stagedBinary.sha256,
   litestreamPin.binary.universal.sha256,
@@ -104,8 +126,25 @@ assertEqual(
   "com.rohan.kosh",
   "signed application identifier",
 );
-assertEqual(signatureField(signature, "Signature"), "adhoc", "app signature");
-assert(!signature.includes("runtime"), "personal-v1 package unexpectedly enables hardened runtime");
+if (signatureMode === PackageSignatureMode.AdHoc) {
+  assertEqual(signatureField(signature, "Signature"), "adhoc", "app signature");
+  assert(
+    !signature.includes("runtime"),
+    "personal-v1 package unexpectedly enables hardened runtime",
+  );
+} else {
+  verifyDeveloperIdSignature(appPath, distributionPolicy, "com.rohan.kosh");
+  for (const [key, path] of [
+    [DistributionSidecarKey.LlamaServer, sidecar],
+    [DistributionSidecarKey.Litestream, litestream],
+  ]) {
+    verifyDeveloperIdSignature(
+      path,
+      distributionPolicy,
+      distributionPolicy.sidecars[key].identifier,
+    );
+  }
+}
 
 assertEqual(plist("CFBundleIdentifier"), "com.rohan.kosh", "packaged application identifier");
 assertEqual(plist("CFBundleName"), "Kosh", "packaged application name");
@@ -131,6 +170,7 @@ const expectedResources = [
   "licenses/llama.cpp-LICENSE",
   "release/litestream.json",
   "release/llama-server.json",
+  "release/source.json",
 ].sort();
 const packagedResources = listFiles(resources)
   .map((path) => path.slice(resources.length + 1).replaceAll("\\", "/"))
@@ -150,13 +190,19 @@ for (const path of listFiles(appPath)) {
   }
 }
 
-const quarantine = spawnSync("xattr", ["-p", "com.apple.quarantine", appPath], {
-  encoding: "utf8",
-});
-assert(quarantine.status !== 0, "locally built Kosh.app unexpectedly has a quarantine attribute");
+if (signatureMode === PackageSignatureMode.AdHoc) {
+  const quarantine = spawnSync("xattr", ["-p", "com.apple.quarantine", appPath], {
+    encoding: "utf8",
+  });
+  assert(quarantine.status !== 0, "locally built Kosh.app unexpectedly has a quarantine attribute");
+}
 
+const signatureDescription =
+  signatureMode === PackageSignatureMode.AdHoc
+    ? "ad-hoc signed with exact pinned sidecar hashes"
+    : `Developer ID signed by ${distributionPolicy.application.teamIdentifier} with hardened sidecars`;
 console.info(
-  `Packaged app passed: ${appPath}, ad-hoc signed universal ${pin.target.architectures.join("+")} macOS ${pin.target.minimumSystemVersion}+, pinned llama-server ${manifest.binary.sha256} and Litestream ${litestreamPin.binary.universal.sha256}.`,
+  `Packaged app passed: ${appPath}, ${signatureDescription}, universal ${pin.target.architectures.join("+")} macOS ${pin.target.minimumSystemVersion}+.`,
 );
 
 function plist(key) {

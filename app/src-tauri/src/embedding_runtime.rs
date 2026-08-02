@@ -24,6 +24,8 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(target_os = "macos")]
+use crate::distribution_signing::{verify_distribution_sidecar, DistributionSidecar};
 use crate::embedding::{
     self, TextEmbeddingManifest, JINA_V1_GOLDEN_JSON, JINA_V1_MANIFEST_JSON,
     LLAMA_SERVER_V1_PIN_JSON,
@@ -35,6 +37,7 @@ const SIDECAR_OVERRIDE_ENV: &str = "KOSH_LLAMA_SERVER_PATH";
 const LLAMA_DEVICE_ENV: &str = "KOSH_LLAMA_DEVICE";
 const LLAMA_GPU_LAYERS_ENV: &str = "KOSH_LLAMA_GPU_LAYERS";
 const BUNDLED_SIDECAR_PATH: &str = "bin/llama-server";
+const BUNDLED_SIDECAR_COMPONENT: &str = "llama-server";
 const BUNDLED_RELEASE_MANIFEST_PATH: &str = "release/llama-server.json";
 const LIFECYCLE_LOCK_FILE: &str = "semantic-search.lock";
 const VERIFICATION_RECEIPT_FILE: &str = "semantic-search-verification.json";
@@ -847,31 +850,46 @@ fn verify_bundled_sidecar_artifact(
     let Some(expectation) = inner.sidecar_expectation.as_ref() else {
         return Ok(());
     };
-    let metadata = path.metadata().map_err(|error| {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
         SemanticRuntimeError::InvalidArtifact(format!(
             "cannot inspect bundled llama-server: {error}"
         ))
     })?;
-    if !metadata.is_file() {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(SemanticRuntimeError::InvalidArtifact(
-            "bundled llama-server is not a file".into(),
+            "bundled llama-server is not a regular file".into(),
         ));
     }
-    if metadata.len() != expectation.size {
-        return Err(SemanticRuntimeError::InvalidArtifact(format!(
+    let size_matches = metadata.len() == expectation.size;
+    let observed = sha256_file(path)?;
+    if size_matches && observed == expectation.sha256 {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    if verify_distribution_sidecar(
+        path,
+        DistributionSidecar::LlamaServer,
+        BUNDLED_SIDECAR_COMPONENT,
+        BUNDLED_SIDECAR_PATH,
+    )
+    .is_ok_and(|verified| verified.size == metadata.len())
+    {
+        return Ok(());
+    }
+
+    if !size_matches {
+        Err(SemanticRuntimeError::InvalidArtifact(format!(
             "bundled llama-server has {} bytes; expected {}",
             metadata.len(),
             expectation.size
-        )));
-    }
-    let observed = sha256_file(path)?;
-    if observed != expectation.sha256 {
-        return Err(SemanticRuntimeError::InvalidArtifact(format!(
+        )))
+    } else {
+        Err(SemanticRuntimeError::InvalidArtifact(format!(
             "bundled llama-server has SHA-256 {observed}; expected {}",
             expectation.sha256
-        )));
+        )))
     }
-    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String, SemanticRuntimeError> {

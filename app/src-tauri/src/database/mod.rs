@@ -99,8 +99,9 @@ pub use search::{
     SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
 };
 pub use settings::{
-    validate_complete_bindings, KeyboardBinding, KoshCommand, SetShortcutSettingsInput,
-    ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR, DEFAULT_QUICK_ADD_ACCELERATOR,
+    validate_complete_bindings, KeyboardBinding, KoshCommand, SetAutomaticUpdateChecksInput,
+    SetShortcutSettingsInput, ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR,
+    DEFAULT_QUICK_ADD_ACCELERATOR,
 };
 pub use tidbits::{
     DeleteTidbitInput, EditTidbitInput, ListTidbitRevisionsInput, ListTidbitsInput,
@@ -996,6 +997,9 @@ fn writer_loop(
             }
             WriterMessage::SetShortcutSettings { input, reply } => {
                 let _ = reply.send(settings::set_shortcut_settings(&mut main, input));
+            }
+            WriterMessage::SetAutomaticUpdateChecks { input, reply } => {
+                let _ = reply.send(settings::set_automatic_update_checks(&mut main, input));
             }
             #[cfg(test)]
             WriterMessage::PauseForTest { started, release } => {

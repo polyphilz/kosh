@@ -20,6 +20,7 @@ interface ShortcutSettingsContextValue {
   error: string | null;
   loading: boolean;
   settings: ShortcutSettingsSnapshot | null;
+  updateAutomaticChecks: (enabled: boolean) => Promise<void>;
   update: (input: SetShortcutSettingsInput) => Promise<void>;
 }
 
@@ -87,9 +88,36 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
     [backend],
   );
 
+  const updateAutomaticChecks = useCallback(
+    async (enabled: boolean) => {
+      if (!settings) return;
+      setLoading(true);
+      setError(null);
+      try {
+        setSettings(
+          await backend.setAutomaticUpdateChecks({
+            enabled,
+            expectedRevision: settings.revision,
+          }),
+        );
+      } catch (reason) {
+        setError(errorMessage(reason));
+        try {
+          setSettings(await backend.loadShortcutSettings());
+        } catch {
+          // Preserve the original mutation error.
+        }
+        throw reason;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [backend, settings],
+  );
+
   const value = useMemo(
-    () => ({ error, loading, settings, update }),
-    [error, loading, settings, update],
+    () => ({ error, loading, settings, update, updateAutomaticChecks }),
+    [error, loading, settings, update, updateAutomaticChecks],
   );
   return (
     <ShortcutSettingsContext.Provider value={value}>{children}</ShortcutSettingsContext.Provider>

@@ -50,7 +50,7 @@ use super::{
     search::{
         PassageSearchResult, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
     },
-    settings::{SetShortcutSettingsInput, ShortcutSettings},
+    settings::{SetAutomaticUpdateChecksInput, SetShortcutSettingsInput, ShortcutSettings},
     tidbits::{
         CreateTidbitWrite, DeleteTidbitInput, EditTidbitWrite, ListTidbitRevisionsInput,
         ListTidbitsInput, PurgeTidbitInput, RestoreTidbitInput, Tidbit, TidbitListPage,
@@ -480,6 +480,10 @@ pub(super) enum WriterMessage {
     },
     SetShortcutSettings {
         input: SetShortcutSettingsInput,
+        reply: SyncSender<Result<ShortcutSettings>>,
+    },
+    SetAutomaticUpdateChecks {
+        input: SetAutomaticUpdateChecksInput,
         reply: SyncSender<Result<ShortcutSettings>>,
     },
     #[cfg(test)]
@@ -1879,6 +1883,19 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::SetShortcutSettings { input, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn set_automatic_update_checks(
+        &self,
+        input: SetAutomaticUpdateChecksInput,
+    ) -> Result<ShortcutSettings> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::SetAutomaticUpdateChecks { input, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

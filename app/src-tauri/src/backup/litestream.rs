@@ -24,6 +24,10 @@ use super::{
     credentials::R2Credentials,
     domain::{R2ObjectKey, R2Target},
 };
+#[cfg(target_os = "macos")]
+use crate::distribution_signing::{
+    verify_distribution_sidecar, DistributionSidecar, DistributionSignatureError,
+};
 
 const EMBEDDED_MANIFEST: &str = include_str!("../../resources/sidecars/litestream-v1.json");
 const DEVELOPMENT_BINARY_OVERRIDE_ENV: &str = "KOSH_LITESTREAM_PATH";
@@ -74,6 +78,9 @@ pub(crate) fn write_aws_shared_credentials(
 pub enum LitestreamError {
     #[error("the Litestream source manifest is invalid")]
     InvalidEmbeddedManifest(#[source] serde_json::Error),
+    #[cfg(target_os = "macos")]
+    #[error("the Litestream distribution signature is invalid")]
+    InvalidDistributionSignature,
     #[error("the bundled Litestream release manifest is unavailable")]
     MissingReleaseManifest(#[source] std::io::Error),
     #[error("the bundled Litestream release manifest is invalid")]
@@ -194,6 +201,13 @@ struct ReleaseManifest {
     staged_binary: StagedBinary,
 }
 
+struct VerifiedSourceBinary {
+    code_signature_cdhash: String,
+    file: File,
+    sha256: String,
+    size: u64,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StagedBinary {
@@ -257,11 +271,43 @@ impl VerifiedLitestreamBinary {
         Ok(manifest.binary.trusted_cleanup_sha256s)
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn is_authorized_distribution_cleanup_binary(
+        path: &Path,
+        expected_sha256: &str,
+    ) -> bool {
+        if !is_sha256(expected_sha256) {
+            return false;
+        }
+        let Ok(manifest) = embedded_manifest() else {
+            return false;
+        };
+        if validate_protocol_manifest(&manifest).is_err() {
+            return false;
+        }
+        let Ok(signed) = verify_distribution_sidecar(
+            path,
+            DistributionSidecar::Litestream,
+            &manifest.component,
+            &manifest.binary.bundle_path,
+        ) else {
+            return false;
+        };
+        let Ok((file, size, actual_sha256)) = inspect_unpinned_binary(path) else {
+            return false;
+        };
+        if size != signed.size || actual_sha256 != expected_sha256 {
+            return false;
+        }
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        validate_immutable_file(&file).is_ok() && validate_immutable_directory(parent).is_ok()
+    }
+
     pub fn resolve(resource_dir: &Path) -> Result<Self, LitestreamError> {
         let manifest = embedded_manifest()?;
         validate_protocol_manifest(&manifest)?;
-        let code_signature_cdhash = current_code_signature_cdhash(&manifest.binary.universal)?;
-
         #[cfg(debug_assertions)]
         let development_override =
             std::env::var_os(DEVELOPMENT_BINARY_OVERRIDE_ENV).map(PathBuf::from);
@@ -274,13 +320,13 @@ impl VerifiedLitestreamBinary {
             verify_release_manifest(resource_dir, &manifest)?;
             resource_dir.join(&manifest.binary.bundle_path)
         };
-        let file = verify_binary(&path, &manifest.binary.universal)?;
+        let verified = verify_source_binary(&path, &manifest)?;
         Ok(Self {
             path,
-            sha256: manifest.binary.universal.sha256,
-            size: manifest.binary.universal.size,
-            code_signature_cdhash,
-            file,
+            sha256: verified.sha256,
+            size: verified.size,
+            code_signature_cdhash: verified.code_signature_cdhash,
+            file: verified.file,
         })
     }
 
@@ -288,14 +334,13 @@ impl VerifiedLitestreamBinary {
     pub fn resolve_staged_for_test(path: &Path) -> Result<Self, LitestreamError> {
         let manifest = embedded_manifest()?;
         validate_protocol_manifest(&manifest)?;
-        let code_signature_cdhash = current_code_signature_cdhash(&manifest.binary.universal)?;
-        let file = verify_binary(path, &manifest.binary.universal)?;
+        let verified = verify_source_binary(path, &manifest)?;
         Ok(Self {
             path: path.to_owned(),
-            sha256: manifest.binary.universal.sha256,
-            size: manifest.binary.universal.size,
-            code_signature_cdhash,
-            file,
+            sha256: verified.sha256,
+            size: verified.size,
+            code_signature_cdhash: verified.code_signature_cdhash,
+            file: verified.file,
         })
     }
 
@@ -676,6 +721,99 @@ fn verify_release_manifest(
         return Err(LitestreamError::ReleaseManifestMismatch);
     }
     Ok(())
+}
+
+fn verify_source_binary(
+    path: &Path,
+    manifest: &SourceManifest,
+) -> Result<VerifiedSourceBinary, LitestreamError> {
+    let pin = &manifest.binary.universal;
+    match verify_binary(path, pin) {
+        Ok(file) => Ok(VerifiedSourceBinary {
+            code_signature_cdhash: current_code_signature_cdhash(pin)?,
+            file,
+            sha256: pin.sha256.clone(),
+            size: pin.size,
+        }),
+        Err(
+            _error
+            @ (LitestreamError::BinarySizeMismatch | LitestreamError::BinaryChecksumMismatch),
+        ) => {
+            #[cfg(target_os = "macos")]
+            {
+                let signed = verify_distribution_sidecar(
+                    path,
+                    DistributionSidecar::Litestream,
+                    &manifest.component,
+                    &manifest.binary.bundle_path,
+                )
+                .map_err(|_error: DistributionSignatureError| {
+                    LitestreamError::InvalidDistributionSignature
+                })?;
+                let (file, size, sha256) = inspect_unpinned_binary(path)?;
+                if size != signed.size {
+                    return Err(LitestreamError::BinarySizeMismatch);
+                }
+                Ok(VerifiedSourceBinary {
+                    code_signature_cdhash: signed.code_directory_hash,
+                    file,
+                    sha256,
+                    size,
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(_error)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn inspect_unpinned_binary(path: &Path) -> Result<(File, u64, String), LitestreamError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    use std::os::unix::fs::OpenOptionsExt;
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let mut file = options.open(path).map_err(|error| {
+        if error.raw_os_error() == Some(libc::ELOOP) {
+            LitestreamError::BinaryNotRegular
+        } else {
+            LitestreamError::MissingBinary(path.to_owned())
+        }
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| LitestreamError::BinaryNotRegular)?;
+    if !metadata.is_file() {
+        return Err(LitestreamError::BinaryNotRegular);
+    }
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(LitestreamError::BinaryNotExecutable);
+    }
+    let size = metadata.len();
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    let mut bounded = (&mut file).take(size.saturating_add(1));
+    loop {
+        let read = bounded
+            .read(&mut buffer)
+            .map_err(|_| LitestreamError::BinaryChecksumMismatch)?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        hasher.update(&buffer[..read]);
+    }
+    if total != size {
+        return Err(LitestreamError::BinarySizeMismatch);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| LitestreamError::BinaryChecksumMismatch)?;
+    Ok((file, size, format!("{:x}", hasher.finalize())))
 }
 
 fn verify_binary(path: &Path, manifest: &BinaryPin) -> Result<File, LitestreamError> {

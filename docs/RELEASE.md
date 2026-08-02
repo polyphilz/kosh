@@ -1,17 +1,21 @@
 # Releasing Kosh
 
-This is the authoritative runbook for a Kosh personal release. Build from a
+This is the authoritative runbook for a Kosh macOS release. Build from a
 clean, reviewed `main` checkout. Ordinary `pnpm tauri build` is not a release
 build because it does not stage or verify the pinned native sidecars.
 
 ## Current distribution policy
 
-- The supported artifact is a universal `Kosh.app` for macOS 14 or newer.
-- The app and bundled universal `llama-server` and `litestream` executables are
-  ad-hoc signed. This is a local/personal artifact, not a notarized public
-  download.
-- The release has explicit empty entitlements, no updater, no DMG, and no
-  automatic tag-to-release workflow.
+- Local acceptance uses a universal, ad-hoc-signed `Kosh.app` for macOS 14 or
+  newer. Its updater capability is absent and its frontend updater marker is
+  disabled.
+- Public distribution produces a universal Developer ID-signed,
+  hardened-runtime, notarized, and stapled `Kosh.app` plus a signed and
+  notarized DMG.
+- Published releases include a minisign-authenticated universal updater
+  archive and `latest.json`. Both `darwin-aarch64` and `darwin-x86_64` select
+  the same universal archive.
+- Releases are created as GitHub drafts and are never published automatically.
 - The 232,883,776-byte embedding model is not bundled. Capture and lexical
   search work without it; Kosh downloads and verifies it only after explicit
   semantic setup.
@@ -32,6 +36,15 @@ tools, CMake, an Apple Silicon host, and Rosetta. Install both Rust targets:
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
+
+Public distribution additionally requires the
+`Developer ID Application: SILO77 LLC (PMZH6ULML8)` identity in the login
+Keychain, an App Store Connect API key authorized for notarization, and the
+encrypted SILO77 updater key. Copy `.env.notarization.example` to
+`.env.notarization` and `.env.updater.example` to `.env.updater`, then fill in
+the local paths and passwords. Both real environment files are ignored. Kosh
+currently shares Dara's SILO77 updater publisher key; only its public key is
+embedded in this repository.
 
 Place the pinned model at:
 
@@ -87,8 +100,8 @@ The build:
 5. verifies both official Litestream archives and their upstream checksum
    file, then assembles the pinned universal `litestream`;
 6. rejects non-system dependencies and verifies every sidecar slice;
-7. stages only binaries, generated manifests, licenses/notices, and embedding
-   contracts;
+7. stages only binaries, generated manifests, source provenance,
+   licenses/notices, and embedding contracts;
 8. builds a universal Tauri application;
 9. ad-hoc signs the app and nested executables; and
 10. checks architectures, hashes, versions, executable bits, Info.plist,
@@ -137,7 +150,55 @@ the exact clean source commit and prove a clean-directory restore through the
 packaged recovery command plus a hidden normal startup of that restored
 library.
 
-## 4. Archive and install
+## 4. Build the public distribution
+
+From the clean, reviewed `main` checkout used above:
+
+```sh
+cd app
+pnpm release:build:distribution
+```
+
+This command validates the Apple and updater credentials before doing build
+work, stages and Developer ID-signs both sidecars, builds the universal app
+with hardened runtime and the production-only updater capability, submits the
+app to Apple, staples it, creates and signs the DMG, submits and staples the
+DMG, and verifies both artifacts with `codesign`, `stapler`, and Gatekeeper.
+It then creates the updater archive, minisign signature, `latest.json`, and
+`SHA256SUMS` under:
+
+```text
+app/src-tauri/target/universal-apple-darwin/release/bundle/release/
+```
+
+Apple submission IDs and the signed sidecar hashes are persisted under the
+ignored `bundle/notarization/` directory. If polling or stapling is
+interrupted after submission, resume without rebuilding or resubmitting:
+
+```sh
+pnpm release:resume:distribution
+```
+
+Never use `--resume` after changing source, version, staged sidecars, or signing
+inputs; start a fresh distribution build instead.
+
+## 5. Create the draft GitHub release
+
+Set the version consistently in `package.json`, `Cargo.toml`, and
+`tauri.conf.json`, merge that version to `main`, and create and push an
+annotated `v<version>` tag at the exact `origin/main` commit. Write release
+notes outside the repository or in an ignored file, then run:
+
+```sh
+pnpm release:publish:draft -- /absolute/path/to/release-notes.md
+```
+
+The publisher refuses a dirty tree, a non-`main` branch, a source/tag mismatch,
+or inconsistent updater metadata/checksums. Inspect the uploaded draft and its
+assets before publishing it in GitHub. The updater only sees a release after
+GitHub marks it as the latest published release.
+
+## 6. Archive and install a local build
 
 Set the version explicitly and archive outside the repository:
 
@@ -156,7 +217,7 @@ Record the source commit and archive SHA-256 together. Quit Kosh with `Cmd+Q`,
 drag the candidate into `/Applications`, and choose **Replace** for an
 upgrade. Launch `/Applications/Kosh.app` from Finder, Spotlight, or Raycast.
 
-Because this personal build is not notarized, a downloaded copy may require
+Because the local build is not notarized, a downloaded copy may require
 Finder's **Open** confirmation or System Settings → Privacy & Security →
 **Open Anyway**. For a personally trusted and checksum-verified archive,
 removing quarantine is an explicit operator alternative:
@@ -167,7 +228,10 @@ xattr -cr /Applications/Kosh.app
 
 Never bypass Gatekeeper for an artifact whose source and checksum are unknown.
 
-## 5. Installed smoke check
+For a public candidate, install from the notarized universal DMG instead and
+do not bypass Gatekeeper.
+
+## 7. Installed smoke check
 
 Use the copy under `/Applications`, not the build directory.
 
@@ -183,6 +247,9 @@ Use the copy under `/Applications`, not the build directory.
   while semantic setup is unavailable.
 - Quit and confirm no Kosh, `llama-server`, `litestream`, PDF worker, or Claude
   subprocess remains.
+- Use **Kosh → Check for Updates…** and confirm the current-version result.
+- Confirm disabling automatic update checks in Settings survives restart;
+  manual checks must remain available.
 
 GUI apps do not inherit a login shell's `PATH`. Kosh probes
 `~/.local/bin/claude`, `~/.claude/local/claude`,
@@ -207,9 +274,13 @@ offline clean-directory recovery command documented in
 multi-device sync. Turning backup off preserves remote objects; v1 does not
 automatically delete immutable checkpoint manifests or media.
 
-## Public distribution is future work
+## Updater trust and failure behavior
 
-Before publishing Kosh as a normal download, add Developer ID signing for
-every executable, hardened-runtime entitlement validation, notarization and
-stapling, a signed installer/DMG, clean-machine Gatekeeper testing, and a
-release workflow that preserves every sidecar/model verification gate.
+Only public distribution builds receive the updater capability and
+`VITE_KOSH_UPDATER_ENABLED=true`; development and local acceptance builds
+cannot call updater or restart APIs. Automatic checks begin shortly after
+launch and repeat every six hours when enabled. Failures stay quiet for
+automatic checks and are visible for manual checks. An offered version can be
+dismissed for 24 hours. Before restarting after installation, Kosh waits for
+both the main and Quick Add webviews to preserve their current drafts; a save
+failure or timeout cancels the relaunch.

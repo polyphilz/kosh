@@ -503,8 +503,14 @@ export interface KeyboardBinding {
 
 export interface ShortcutSettingsSnapshot {
   revision: number;
+  automaticUpdateChecksEnabled: boolean;
   keyboardBindings: KeyboardBinding[];
   shortcutErrors: string[];
+}
+
+export interface SetAutomaticUpdateChecksInput {
+  expectedRevision: number;
+  enabled: boolean;
 }
 
 export interface SetShortcutSettingsInput {
@@ -915,6 +921,7 @@ export interface Backend {
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;
   loadShortcutSettings(): Promise<ShortcutSettingsSnapshot>;
+  setAutomaticUpdateChecks(input: SetAutomaticUpdateChecksInput): Promise<ShortcutSettingsSnapshot>;
   setShortcutSettings(input: SetShortcutSettingsInput): Promise<ShortcutSettingsSnapshot>;
   selectImage(): Promise<string | null>;
   ingestSelectedImage(selectionId: string, draftId: string): Promise<ImageRecord>;
