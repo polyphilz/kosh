@@ -8,6 +8,7 @@ import {
 import { createReactBlockSpec, createReactInlineContentSpec } from "@blocknote/react";
 import { renderToString } from "katex";
 import { codeLanguageDefinitions } from "../markdown/languages";
+import { koshMediaBlockSpecs } from "./mediaBlocks";
 
 const heading = createReactBlockSpec(
   {
@@ -135,6 +136,7 @@ export const koshBlockNoteSchema = BlockNoteSchema.create({
       supportedLanguages: supportedCodeLanguages,
     }),
     displayMath: displayMath(),
+    ...koshMediaBlockSpecs,
     legacyMarkdown: legacyMarkdown(),
   },
   inlineContentSpecs: {

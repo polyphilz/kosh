@@ -66,6 +66,11 @@ describe("restricted BlockNote Markdown adapter", () => {
       "numberedListItem",
       "codeBlock",
       "displayMath",
+      "koshImage",
+      "koshPendingMedia",
+      "koshPdf",
+      "koshFileAttachment",
+      "koshLegacyMedia",
       "legacyMarkdown",
     ]);
     expect(Object.keys(koshBlockNoteSchema.blockSchema)).not.toEqual(
@@ -76,6 +81,45 @@ describe("restricted BlockNote Markdown adapter", () => {
       "> quote\n\n---\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] retained",
     );
     expect(legacy.every((block) => block.type === "legacyMarkdown")).toBe(true);
+  });
+
+  it("round-trips canonical media as opaque Kosh blocks", () => {
+    const markdown = [
+      "{{kosh:image:019f547b-6200-7000-8000-000000000201;width=70%;alt=Diagram;caption=Overview}}",
+      "",
+      "{{kosh:pdf:019f547b-6200-7000-8000-000000000202}}",
+      "",
+      "{{kosh:attachment:019f547b-6200-7000-8000-000000000203;caption=Appendix}}",
+    ].join("\n");
+    const blocks = markdownToKoshBlocks(markdown);
+
+    expect(blocks.map((block) => block.type)).toEqual([
+      "koshImage",
+      "koshPdf",
+      "koshFileAttachment",
+    ]);
+    expect(blocks[0]?.props).toMatchObject({
+      attachmentId: "019f547b-6200-7000-8000-000000000201",
+      altText: "Diagram",
+      caption: "Overview",
+      widthPercent: 70,
+    });
+    expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
+    expect(JSON.stringify(blocks)).not.toMatch(/(?:blob:|data:|file:|\/Users\/)/u);
+  });
+
+  it("keeps malformed media references explicit and never persists pending placeholders", () => {
+    const malformed = "{{kosh:image:not-a-uuid;width=70%}}";
+    expect(markdownToKoshBlocks(malformed)).toEqual([
+      { type: "koshLegacyMedia", props: { markdown: malformed } },
+    ]);
+    expect(
+      koshBlocksToMarkdown([
+        { type: "paragraph", content: "Before" },
+        { type: "koshPendingMedia", props: { label: "Adding", requestId: "request" } },
+        { type: "paragraph", content: "After" },
+      ]),
+    ).toBe("Before\n\nAfter");
   });
 
   it("neutralizes unsafe links and inline or block HTML", () => {

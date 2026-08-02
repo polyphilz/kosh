@@ -102,7 +102,10 @@ test("legacy Markdown remains accessible without appearing in slash insertion", 
   await page.keyboard.type("/");
   const slashMenu = page.getByRole("listbox");
   await expect(slashMenu.getByRole("option", { name: "Legacy Markdown" })).toHaveCount(0);
-  await expect(slashMenu.getByRole("option")).toHaveCount(9);
+  await expect(slashMenu.getByRole("option")).toHaveCount(12);
+  await expect(slashMenu.getByRole("option", { name: "Image" })).toHaveCount(1);
+  await expect(slashMenu.getByRole("option", { name: "PDF" })).toHaveCount(1);
+  await expect(slashMenu.getByRole("option", { name: "File" })).toHaveCount(1);
 });
 
 interface SpikeBlock {

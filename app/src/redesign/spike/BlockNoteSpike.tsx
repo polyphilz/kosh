@@ -19,7 +19,9 @@ import {
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
 import { useEffect, useMemo } from "react";
-import { installSpikeBridge } from "./bridge";
+import { createBlockNoteMediaController } from "../../editor/mediaController";
+import { KoshMediaActionsProvider, type KoshMediaActions } from "../../editor/mediaBlocks";
+import { installSpikeBridge, mediaFixtureRecords } from "./bridge";
 import {
   initialSpikeBlocks,
   koshSpikeSchema,
@@ -40,49 +42,148 @@ export function BlockNoteSpike({ theme }: BlockNoteSpikeProps) {
     initialContent: initialSpikeBlocks,
     tabBehavior: "prefer-indent",
   });
-  const slashItems = useMemo(() => restrictedSlashItems(editor), [editor]);
+  const mediaController = useMemo(() => createBlockNoteMediaController(editor), [editor]);
+  const slashItems = useMemo(
+    () => restrictedSlashItems(editor, mediaController),
+    [editor, mediaController],
+  );
+  const mediaActions = useMemo<KoshMediaActions>(() => spikeMediaActions(), []);
 
   useEffect(
     () =>
-      installSpikeBridge(editor, {
-        blocks: supportedSpikeBlockTypes,
-        inlineContent: supportedSpikeInlineTypes,
-        styles: supportedSpikeStyleTypes,
-      }),
-    [editor],
+      installSpikeBridge(
+        editor,
+        {
+          blocks: supportedSpikeBlockTypes,
+          inlineContent: supportedSpikeInlineTypes,
+          styles: supportedSpikeStyleTypes,
+        },
+        mediaController,
+      ),
+    [editor, mediaController],
   );
+  useEffect(() => {
+    mediaController.activate();
+    return () => mediaController.dispose();
+  }, [mediaController]);
 
   return (
     <MantineProvider forceColorScheme={theme}>
-      <main className="kosh-blocknote-spike" data-theme={theme}>
-        <p className="kosh-blocknote-spike__label">Isolated BlockNote feasibility harness</p>
-        <BlockNoteView
-          comments={false}
-          editor={editor}
-          emojiPicker={false}
-          filePanel={false}
-          formattingToolbar
-          slashMenu={false}
-          sideMenu={false}
-          tableHandles={false}
-          theme={theme}
+      <KoshMediaActionsProvider actions={mediaActions}>
+        <main
+          className="kosh-blocknote-spike"
+          data-theme={theme}
+          onDropCapture={(event) => {
+            if (![...(event.dataTransfer?.types ?? [])].includes("application/x-kosh-media")) {
+              return;
+            }
+            event.preventDefault();
+            mediaController.insert(mediaFixtureRecords());
+          }}
+          onPasteCapture={(event) =>
+            mediaController.handleImagePaste(
+              event.nativeEvent,
+              async () => mediaFixtureRecords()[0]!,
+            )
+          }
         >
-          <SuggestionMenuController
-            getItems={async (query) => filterSuggestionItems(slashItems, query)}
-            triggerCharacter="/"
-          />
-          <SideMenuController sideMenu={KoshSpikeSideMenu} />
-        </BlockNoteView>
-      </main>
+          <p className="kosh-blocknote-spike__label">Isolated BlockNote feasibility harness</p>
+          <BlockNoteView
+            comments={false}
+            editor={editor}
+            emojiPicker={false}
+            filePanel={false}
+            formattingToolbar
+            slashMenu={false}
+            sideMenu={false}
+            tableHandles={false}
+            theme={theme}
+          >
+            <SuggestionMenuController
+              getItems={async (query) => filterSuggestionItems(slashItems, query)}
+              triggerCharacter="/"
+            />
+            <SideMenuController sideMenu={KoshSpikeSideMenu} />
+          </BlockNoteView>
+        </main>
+      </KoshMediaActionsProvider>
     </MantineProvider>
   );
+}
+
+function spikeMediaActions(): KoshMediaActions {
+  const records = mediaFixtureRecords();
+  const image = records[0]!.recordKind === "IMAGE" ? records[0].record : null;
+  const pdf = records[1]!.recordKind === "PDF" ? records[1].record : null;
+  const file = records[2]!.recordKind === "GENERIC" ? records[2].record : null;
+  if (!image || !pdf || !file) throw new Error("Invalid media spike fixtures");
+  return {
+    attachmentStatus: async (attachmentId) => ({
+      attachmentId,
+      byteLength: file.byteLength,
+      displayFilename: file.displayFilename,
+      extractedLineCount: file.extractedLineCount,
+      extractionError: file.extractionError,
+      extractionStatus: file.extractionStatus,
+      kind: file.kind,
+      mediaType: file.mediaType,
+    }),
+    imageStatus: async (attachmentId) => ({
+      attachmentId,
+      naturalHeight: image.naturalHeight,
+      naturalWidth: image.naturalWidth,
+      nextAttemptAtMs: null,
+      ocrError: image.ocrError,
+      ocrStatus: image.ocrStatus,
+    }),
+    mediaUrl: () =>
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='480'%3E%3Crect width='640' height='480' fill='%23d97745'/%3E%3C/svg%3E",
+    openAttachmentExternal: async () => undefined,
+    openPdfExternal: async () => undefined,
+    pdfStatus: async (attachmentId) => ({
+      attachmentId,
+      displayFilename: pdf.displayFilename,
+      extractedPageCount: pdf.pageCount,
+      extractionError: pdf.extractionError,
+      extractionStatus: pdf.extractionStatus,
+      nextAttemptAtMs: null,
+      pageCount: pdf.pageCount,
+      unavailablePageCount: 0,
+    }),
+    pickReplacement: async () => records[0]!,
+    revealAttachmentInFinder: async () => undefined,
+  };
 }
 
 function KoshSpikeDragMenu() {
   return (
     <DragHandleMenu>
+      <KoshMoveBlockItem direction="up" />
+      <KoshMoveBlockItem direction="down" />
       <KoshRemoveBlockItem />
     </DragHandleMenu>
+  );
+}
+
+function KoshMoveBlockItem({ direction }: { direction: "down" | "up" }) {
+  const Components = useComponentsContext()!;
+  const editor = useBlockNoteEditor(koshSpikeSchema);
+  const hoveredBlock = useExtensionState(SideMenuExtension, {
+    editor,
+    selector: (state) => state?.block,
+  });
+  if (!hoveredBlock) return null;
+  return (
+    <Components.Generic.Menu.Item
+      className="bn-menu-item"
+      onClick={() => {
+        if (direction === "up") editor.moveBlocksUp(hoveredBlock);
+        else editor.moveBlocksDown(hoveredBlock);
+        requestAnimationFrame(() => editor.focus());
+      }}
+    >
+      Move block {direction}
+    </Components.Generic.Menu.Item>
   );
 }
 
@@ -169,7 +270,10 @@ function KoshSpikeDragHandleButton() {
   );
 }
 
-function restrictedSlashItems(editor: KoshSpikeEditor): DefaultReactSuggestionItem[] {
+function restrictedSlashItems(
+  editor: KoshSpikeEditor,
+  mediaController: ReturnType<typeof createBlockNoteMediaController>,
+): DefaultReactSuggestionItem[] {
   return [
     blockItem(editor, "Paragraph", { type: "paragraph" }, ["text", "body"]),
     blockItem(editor, "Heading 1", { type: "heading", props: { level: 1 } }, ["h1"]),
@@ -193,7 +297,32 @@ function restrictedSlashItems(editor: KoshSpikeEditor): DefaultReactSuggestionIt
         });
       },
     },
+    mediaItem(editor, mediaController, "Image", "image", 0),
+    mediaItem(editor, mediaController, "PDF", "document", 1),
+    mediaItem(editor, mediaController, "File", "attachment", 2),
   ];
+}
+
+function mediaItem(
+  editor: KoshSpikeEditor,
+  controller: ReturnType<typeof createBlockNoteMediaController>,
+  title: string,
+  alias: string,
+  fixtureIndex: number,
+): DefaultReactSuggestionItem {
+  return {
+    title,
+    aliases: [alias, "upload"],
+    group: "Kosh media",
+    onItemClick: () => {
+      insertOrUpdateBlockForSlashMenu(editor, { type: "paragraph" });
+      void controller.begin(`Adding ${title.toLowerCase()}`, async () => {
+        const record = mediaFixtureRecords()[fixtureIndex];
+        if (!record) throw new Error(`Missing ${title} media fixture`);
+        return record;
+      });
+    },
+  };
 }
 
 function blockItem(
