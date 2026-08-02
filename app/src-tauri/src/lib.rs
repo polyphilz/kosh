@@ -122,7 +122,7 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         windows::acknowledge_quit,
         windows::cancel_update_relaunch,
         windows::prepare_update_relaunch,
-        windows::dismiss_quick_add,
+        windows::complete_quick_add_dismiss,
         windows::load_shortcut_settings,
         windows::set_automatic_update_checks,
         windows::set_quick_add_file_dialog_open,
