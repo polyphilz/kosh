@@ -65,6 +65,7 @@ describe("global quick add", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("checkpoint unavailable");
     expect(native.dismiss).not.toHaveBeenCalled();
+    expect(native.cancelDismiss).toHaveBeenCalledOnce();
     expect(screen.getByRole("textbox", { name: "Quick note" })).not.toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
@@ -74,6 +75,38 @@ describe("global quick add", () => {
     expect(
       (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
     ).toHaveLength(1);
+  });
+
+  it("keeps a failed pending attachment visible before allowing a deliberate retry", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    let failIngestion: ((reason: Error) => void) | undefined;
+    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
+      "01980c8e-6c00-7000-8000-000000000289",
+    );
+    vi.spyOn(backend, "ingestClipboardImage").mockImplementation(
+      () =>
+        new Promise<ImageRecord>((_resolve, reject) => {
+          failIngestion = reject;
+        }),
+    );
+    renderQuickAdd(backend, native.controller);
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+    fireEvent.paste(editor, { clipboardData: { items: [{ type: "image/png" }] } });
+    await screen.findByRole("status", { name: "Processing pasted image" }, { timeout: 3_000 });
+
+    act(() => native.request(QuickAddDismissAction.ShowMain));
+    await act(async () => failIngestion?.(new Error("image ingest unavailable")));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("image ingest unavailable");
+    expect(native.dismiss).not.toHaveBeenCalled();
+    expect(native.cancelDismiss).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.ShowMain),
+    );
   });
 
   it("does not materialize an untouched ephemeral note", async () => {
@@ -176,6 +209,16 @@ describe("global quick add", () => {
     const ingestAttachment = vi
       .spyOn(backend, "ingestSelectedAttachment")
       .mockResolvedValue(attachment);
+    vi.spyOn(backend, "attachmentStatus").mockResolvedValue({
+      attachmentId: attachment.record.id,
+      byteLength: attachment.record.byteLength,
+      displayFilename: attachment.record.displayFilename,
+      extractedLineCount: attachment.record.extractedLineCount,
+      extractionError: attachment.record.extractionError,
+      extractionStatus: attachment.record.extractionStatus,
+      kind: attachment.record.kind,
+      mediaType: attachment.record.mediaType,
+    });
     const saveDraft = vi.spyOn(backend, "saveDraft");
     renderQuickAdd(backend, native.controller);
     await screen.findByRole("textbox", { name: "Quick note" });
@@ -290,6 +333,37 @@ describe("global quick add", () => {
     );
   });
 
+  it("cancels quit when pending media fails", async () => {
+    const backend = new FakeBackend();
+    const native = createNative();
+    const quit = createQuitNative();
+    let failIngestion: ((reason: Error) => void) | undefined;
+    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
+      "01980c8e-6c00-7000-8000-000000000290",
+    );
+    vi.spyOn(backend, "ingestClipboardImage").mockImplementation(
+      () =>
+        new Promise<ImageRecord>((_resolve, reject) => {
+          failIngestion = reject;
+        }),
+    );
+    renderQuickAdd(backend, native.controller, quit.controller);
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+    fireEvent.paste(editor, { clipboardData: { items: [{ type: "image/png" }] } });
+    await screen.findByRole("status", { name: "Processing pasted image" }, { timeout: 3_000 });
+
+    act(() => quit.prepare(44));
+    await act(async () => failIngestion?.(new Error("quit media ingest failed")));
+
+    await waitFor(() =>
+      expect(quit.acknowledge).toHaveBeenCalledWith(
+        44,
+        "Could not add attachment: quit media ingest failed",
+      ),
+    );
+    expect(native.dismiss).not.toHaveBeenCalled();
+  });
+
   it("cancels quit when checkpointing fails and unlocks on native cancellation", async () => {
     const backend = new FakeBackend();
     vi.spyOn(backend, "checkpointWorkingCopy").mockRejectedValueOnce(new Error("disk offline"));
@@ -342,9 +416,11 @@ function createNative() {
   let shown: (() => void) | undefined;
   let dismissRequested: ((request: QuickAddDismissRequest) => void) | undefined;
   const dismiss = vi.fn(async (_action: QuickAddDismissAction) => undefined);
+  const cancelDismiss = vi.fn(async () => undefined);
   const setFileDialogOpen = vi.fn(async (_open: boolean) => undefined);
   return {
     controller: {
+      cancelDismiss,
       dismiss,
       onDismissRequested: vi.fn(async (listener: (request: QuickAddDismissRequest) => void) => {
         dismissRequested = listener;
@@ -360,6 +436,7 @@ function createNative() {
       }),
       setFileDialogOpen,
     } satisfies QuickAddNative,
+    cancelDismiss,
     dismiss,
     request: (action: QuickAddDismissAction) => dismissRequested?.({ action }),
     setFileDialogOpen,

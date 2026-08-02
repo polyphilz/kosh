@@ -293,8 +293,14 @@ impl Database {
         } else {
             Ok(())
         };
-        ownership.library_lock.take();
-        outcome
+        let unlock = ownership
+            .library_lock
+            .take()
+            .map(|lock| lock.unlock())
+            .transpose()
+            .map(|_| ())
+            .map_err(DatabaseError::from);
+        outcome.and(unlock)
     }
 }
 
@@ -305,7 +311,9 @@ impl Drop for Database {
             if let Some(thread) = ownership.writer_thread.take() {
                 let _ = thread.join();
             }
-            ownership.library_lock.take();
+            if let Some(lock) = ownership.library_lock.take() {
+                let _ = lock.unlock();
+            }
         }
     }
 }

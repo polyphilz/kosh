@@ -1162,6 +1162,15 @@ fn position_quick_add_on_cursor_monitor(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub(crate) fn cancel_quick_add_dismiss(state: State<'_, WindowState>) {
+    state
+        .focus
+        .lock()
+        .expect("focus context poisoned")
+        .cancel_dismiss_request();
+}
+
+#[tauri::command]
 pub(crate) fn complete_quick_add_dismiss(
     app: AppHandle,
     action: QuickAddDismissAction,
@@ -1606,6 +1615,16 @@ mod tests {
         );
         context.cancel_dismiss_request();
         assert!(context.should_dismiss_on_focus_loss());
+
+        assert_eq!(
+            context.begin_dismiss_request(QuickAddDismissAction::Settings),
+            DismissRequestState::Emit
+        );
+        context.cancel_dismiss_request();
+        assert_eq!(
+            context.resolve_dismiss_action(QuickAddDismissAction::Dismiss),
+            QuickAddDismissAction::Dismiss
+        );
     }
 
     #[test]

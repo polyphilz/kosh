@@ -140,6 +140,9 @@ const QuickAddSession = forwardRef<
   const dropCountRef = useRef(0);
   const pendingWaitersRef = useRef(new Set<() => void>());
   const finishPromiseRef = useRef<Promise<boolean> | null>(null);
+  const mediaFailureRef = useRef<{ message: string; version: number } | null>(null);
+  const mediaFailureVersionRef = useRef(0);
+  const handledMediaFailureVersionRef = useRef(0);
   const [coordinator] = useState(() =>
     NoteAutosaveCoordinator.ephemeral(backend, { noteId: createUuidV7() }),
   );
@@ -164,6 +167,24 @@ const QuickAddSession = forwardRef<
     if (!editorMediaPendingRef.current && dropCountRef.current === 0) return Promise.resolve();
     return new Promise<void>((resolve) => pendingWaitersRef.current.add(resolve));
   }, []);
+  const reportMediaError = useCallback((message: string) => {
+    const version = mediaFailureVersionRef.current + 1;
+    mediaFailureVersionRef.current = version;
+    mediaFailureRef.current = { message, version };
+    setMediaError(message);
+  }, []);
+  const clearMediaError = useCallback(() => {
+    handledMediaFailureVersionRef.current = mediaFailureVersionRef.current;
+    mediaFailureRef.current = null;
+    setMediaError(null);
+  }, []);
+  const waitForSettledMedia = useCallback(async () => {
+    await waitForPendingMedia();
+    const failure = mediaFailureRef.current;
+    if (!failure || failure.version <= handledMediaFailureVersionRef.current) return;
+    handledMediaFailureVersionRef.current = failure.version;
+    throw new Error(failure.message);
+  }, [waitForPendingMedia]);
   const withMediaReservation = useCallback(
     async <Record,>(operation: (draftId: string) => Promise<Record>): Promise<Record> => {
       const reservation = await coordinator.prepareMedia();
@@ -196,13 +217,19 @@ const QuickAddSession = forwardRef<
       setFinishing(true);
       const operation = (async () => {
         try {
-          await waitForPendingMedia();
+          await waitForSettledMedia();
           await coordinator.flush("HIDE");
           await native.dismiss(action);
           onDismissed();
           return true;
         } catch (reason) {
-          setFinishError(`Could not save Quick Add: ${errorMessage(reason)}`);
+          const message = `Could not save Quick Add: ${errorMessage(reason)}`;
+          try {
+            await native.cancelDismiss();
+            setFinishError(message);
+          } catch (cancelReason) {
+            setFinishError(`${message} Could not reset dismissal: ${errorMessage(cancelReason)}`);
+          }
           return false;
         } finally {
           finishPromiseRef.current = null;
@@ -212,7 +239,7 @@ const QuickAddSession = forwardRef<
       finishPromiseRef.current = operation;
       return operation;
     },
-    [coordinator, native, onDismissed, waitForPendingMedia],
+    [coordinator, native, onDismissed, waitForSettledMedia],
   );
 
   useImperativeHandle(
@@ -232,11 +259,11 @@ const QuickAddSession = forwardRef<
         cancel: () => setFinishing(false),
         prepare: async (reason) => {
           setFinishing(true);
-          await waitForPendingMedia();
+          await waitForSettledMedia();
           await coordinator.flush(reason);
         },
       }),
-    [coordinator, waitForPendingMedia],
+    [coordinator, waitForSettledMedia],
   );
 
   useEffect(() => {
@@ -252,6 +279,7 @@ const QuickAddSession = forwardRef<
           return;
         }
         if (event.payload.selections.length === 0) return;
+        clearMediaError();
         dropCountRef.current += 1;
         updatePendingState();
         void ingestDroppedAttachments(backend, coordinator, event.payload.selections)
@@ -259,11 +287,11 @@ const QuickAddSession = forwardRef<
             if (!active) return;
             if (attachments.length > 0) editorRef.current?.insertAttachments(attachments);
             if (failures.length > 0) {
-              setMediaError(`Could not add dropped files: ${failures.join("; ")}`);
+              reportMediaError(`Could not add dropped files: ${failures.join("; ")}`);
             }
           })
           .catch((reason: unknown) => {
-            if (active) setMediaError(`Could not add dropped files: ${errorMessage(reason)}`);
+            if (active) reportMediaError(`Could not add dropped files: ${errorMessage(reason)}`);
             void backend.discardFileDropSelections(selectionIds);
           })
           .finally(() => {
@@ -285,7 +313,7 @@ const QuickAddSession = forwardRef<
       unlisten?.();
       void backend.setFileDropConsumerActive(false);
     };
-  }, [backend, coordinator, updatePendingState]);
+  }, [backend, clearMediaError, coordinator, reportMediaError, updatePendingState]);
 
   const error = finishError ?? snapshot.error ?? mediaError;
   return (
@@ -308,7 +336,7 @@ const QuickAddSession = forwardRef<
         imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
         onChange={(bodyMarkdown) => coordinator.update(bodyMarkdown)}
         onImageError={(reason) =>
-          setMediaError(`Could not add attachment: ${errorMessage(reason)}`)
+          reportMediaError(`Could not add attachment: ${errorMessage(reason)}`)
         }
         onPendingImagesChange={(pending) => {
           editorMediaPendingRef.current = pending;
@@ -317,6 +345,7 @@ const QuickAddSession = forwardRef<
         openAttachmentExternal={(attachmentId) => backend.openAttachmentExternal(attachmentId)}
         openPdfExternal={(attachmentId) => backend.openPdfExternal(attachmentId)}
         pasteImage={async () => {
+          clearMediaError();
           const captureId = await backend.captureClipboardImage();
           return withMediaReservation((draftId) =>
             backend.ingestClipboardImage(captureId, draftId),
@@ -324,6 +353,7 @@ const QuickAddSession = forwardRef<
         }}
         pdfStatus={(attachmentId) => backend.pdfStatus(attachmentId)}
         pickAttachment={async () => {
+          clearMediaError();
           const selectionId = await withFileDialog(() => backend.selectAttachment());
           if (!selectionId) return null;
           return withMediaReservation((draftId) =>
@@ -331,6 +361,7 @@ const QuickAddSession = forwardRef<
           );
         }}
         pickImage={async () => {
+          clearMediaError();
           const selectionId = await withFileDialog(() => backend.selectImage());
           if (!selectionId) return null;
           return withMediaReservation((draftId) =>
@@ -338,6 +369,7 @@ const QuickAddSession = forwardRef<
           );
         }}
         pickPdf={async () => {
+          clearMediaError();
           const selectionId = await withFileDialog(() => backend.selectPdf());
           if (!selectionId) return null;
           return withMediaReservation((draftId) => backend.ingestSelectedPdf(selectionId, draftId));

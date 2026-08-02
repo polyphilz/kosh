@@ -23,6 +23,7 @@ export interface QuickAddDismissRequest {
 }
 
 export interface QuickAddNative {
+  cancelDismiss: () => Promise<void>;
   dismiss: (action: QuickAddDismissAction) => Promise<void>;
   onDismissRequested: (listener: (request: QuickAddDismissRequest) => void) => Promise<() => void>;
   onShown: (listener: () => void) => Promise<() => void>;
@@ -30,6 +31,7 @@ export interface QuickAddNative {
 }
 
 export const quickAddNative: QuickAddNative = {
+  cancelDismiss: () => invoke<void>(TauriCommand.CancelQuickAddDismiss),
   dismiss: (action) => invoke<void>(TauriCommand.CompleteQuickAddDismiss, { action }),
   onDismissRequested: (listener) =>
     listen<QuickAddDismissRequest>(TauriEvent.QuickAddDismissRequested, (event) =>
