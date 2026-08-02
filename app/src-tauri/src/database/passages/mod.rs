@@ -352,6 +352,30 @@ pub(super) fn replace_active_author_passages(
     tidbit_id: &str,
     tidbit_revision_id: &str,
 ) -> Result<()> {
+    let inserted =
+        replace_active_author_passages_inner(transaction, tidbit_id, tidbit_revision_id)?;
+    if inserted == 0 {
+        return Err(DatabaseError::InvalidInput(
+            "current revision has no authored passages".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn replace_active_author_passages_allow_empty(
+    transaction: &Transaction<'_>,
+    tidbit_id: &str,
+    tidbit_revision_id: &str,
+) -> Result<()> {
+    replace_active_author_passages_inner(transaction, tidbit_id, tidbit_revision_id)?;
+    Ok(())
+}
+
+fn replace_active_author_passages_inner(
+    transaction: &Transaction<'_>,
+    tidbit_id: &str,
+    tidbit_revision_id: &str,
+) -> Result<usize> {
     transaction.execute(
         "DELETE FROM active_passage WHERE tidbit_id = ?1",
         params![tidbit_id],
@@ -366,13 +390,8 @@ pub(super) fn replace_active_author_passages(
          ORDER BY ordinal",
         params![tidbit_id, tidbit_revision_id, CONSTRUCTION_VERSION],
     )?;
-    if inserted == 0 {
-        return Err(DatabaseError::InvalidInput(
-            "current revision has no authored passages".into(),
-        ));
-    }
     search::replace_tidbit_documents(transaction, tidbit_id)?;
-    Ok(())
+    Ok(inserted)
 }
 
 pub(super) fn activate_author_passages_on_restore(

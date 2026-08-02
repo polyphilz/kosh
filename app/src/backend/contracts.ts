@@ -537,6 +537,42 @@ export interface DraftRecord extends SaveDraftInput {
   updatedAtMs: number;
 }
 
+export interface SaveWorkingCopyInput {
+  noteId: string;
+  baseRevisionId: string | null;
+  editGeneration: number;
+  bodyMarkdown: string;
+  sources: SourceDraft[];
+}
+
+export interface WorkingCopyRecord extends SaveWorkingCopyInput {
+  id: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export type WorkingCopySaveStatus = "SAVED" | "CLEARED" | "STALE";
+
+export interface WorkingCopySaveResult {
+  status: WorkingCopySaveStatus;
+  acceptedEditGeneration: number;
+  workingCopy: WorkingCopyRecord | null;
+}
+
+export interface CheckpointWorkingCopyInput {
+  noteId: string;
+  expectedEditGeneration: number;
+}
+
+export type WorkingCopyCheckpointStatus = "CHECKPOINTED" | "STALE";
+
+export interface WorkingCopyCheckpointResult {
+  status: WorkingCopyCheckpointStatus;
+  consumedEditGeneration: number | null;
+  note: TidbitRecord | null;
+  workingCopy: WorkingCopyRecord | null;
+}
+
 export type ImageOcrStatus = "PENDING" | "RUNNING" | "RETRY_WAIT" | "READY" | "FAILED";
 
 export interface ImageRecord {
@@ -920,6 +956,10 @@ export interface Backend {
   saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
   loadDraft(contextKey: string): Promise<DraftRecord | null>;
   clearDraft(input: ClearDraftInput): Promise<boolean>;
+  saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
+  loadWorkingCopy(noteId: string): Promise<WorkingCopyRecord | null>;
+  listWorkingCopies(): Promise<WorkingCopyRecord[]>;
+  checkpointWorkingCopy(input: CheckpointWorkingCopyInput): Promise<WorkingCopyCheckpointResult>;
   loadShortcutSettings(): Promise<ShortcutSettingsSnapshot>;
   setAutomaticUpdateChecks(input: SetAutomaticUpdateChecksInput): Promise<ShortcutSettingsSnapshot>;
   setShortcutSettings(input: SetShortcutSettingsInput): Promise<ShortcutSettingsSnapshot>;

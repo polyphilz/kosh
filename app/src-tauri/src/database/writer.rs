@@ -56,6 +56,10 @@ use super::{
         ListTidbitsInput, PurgeTidbitInput, RestoreTidbitInput, Tidbit, TidbitListPage,
         TidbitRevision, TidbitRevisionPage,
     },
+    working_copies::{
+        CheckpointWorkingCopyWrite, SaveWorkingCopyWrite, WorkingCopy, WorkingCopyCheckpointResult,
+        WorkingCopySaveResult,
+    },
 };
 
 #[cfg(test)]
@@ -474,6 +478,21 @@ pub(super) enum WriterMessage {
         input: ClearDraftInput,
         now_ms: i64,
         reply: SyncSender<Result<bool>>,
+    },
+    SaveWorkingCopy {
+        write: SaveWorkingCopyWrite,
+        reply: SyncSender<Result<WorkingCopySaveResult>>,
+    },
+    LoadWorkingCopy {
+        note_id: String,
+        reply: SyncSender<Result<Option<WorkingCopy>>>,
+    },
+    ListWorkingCopies {
+        reply: SyncSender<Result<Vec<WorkingCopy>>>,
+    },
+    CheckpointWorkingCopy {
+        write: CheckpointWorkingCopyWrite,
+        reply: SyncSender<Result<WorkingCopyCheckpointResult>>,
     },
     LoadShortcutSettings {
         reply: SyncSender<Result<ShortcutSettings>>,
@@ -1819,6 +1838,28 @@ impl DatabaseClient {
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn save_working_copy(
+        &self,
+        write: SaveWorkingCopyWrite,
+    ) -> Result<WorkingCopySaveResult> {
+        self.request(|reply| WriterMessage::SaveWorkingCopy { write, reply })
+    }
+
+    pub(crate) fn load_working_copy(&self, note_id: String) -> Result<Option<WorkingCopy>> {
+        self.request(|reply| WriterMessage::LoadWorkingCopy { note_id, reply })
+    }
+
+    pub(crate) fn list_working_copies(&self) -> Result<Vec<WorkingCopy>> {
+        self.request(|reply| WriterMessage::ListWorkingCopies { reply })
+    }
+
+    pub(crate) fn checkpoint_working_copy(
+        &self,
+        write: CheckpointWorkingCopyWrite,
+    ) -> Result<WorkingCopyCheckpointResult> {
+        self.request(|reply| WriterMessage::CheckpointWorkingCopy { write, reply })
     }
 
     #[cfg(test)]

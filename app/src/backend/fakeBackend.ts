@@ -9,6 +9,7 @@ import type {
   ClaudeCliDefaults,
   ClaudeSetupStatus,
   ClearDraftInput,
+  CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
   DraftRecord,
@@ -37,6 +38,7 @@ import type {
   RestoreTidbitInput,
   PurgeTidbitInput,
   SaveDraftInput,
+  SaveWorkingCopyInput,
   SearchField,
   SearchPassagesInput,
   SearchPassagesResponse,
@@ -53,6 +55,9 @@ import type {
   TidbitRevisionPage,
   TidbitRevisionRecord,
   TidbitSource,
+  WorkingCopyCheckpointResult,
+  WorkingCopyRecord,
+  WorkingCopySaveResult,
   StartResearchProcessOutput,
   TakeOverBackupInput,
   TestBackupConnectionInput,
@@ -89,6 +94,7 @@ export class FakeBackend implements Backend {
     message: null,
   };
   private readonly drafts = new Map<string, DraftRecord>();
+  private readonly workingCopies = new Map<string, WorkingCopyRecord>();
   private readonly revisionOwners = new Map<string, string>();
   private readonly citations = new Map<string, FakeCitationSnapshot>();
   private readonly sourceIds = new Map<string, string>();
@@ -1027,6 +1033,140 @@ export class FakeBackend implements Backend {
     return this.drafts.delete(input.contextKey);
   }
 
+  async saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult> {
+    validateEditGeneration(input.editGeneration, "editGeneration");
+    const currentNote = this.tidbits.get(input.noteId);
+    if (input.baseRevisionId === null) {
+      if (currentNote) throw new Error("an existing note requires its current base revision");
+    } else if (!currentNote || currentNote.currentRevisionId !== input.baseRevisionId) {
+      throw new Error(`note ${input.noteId} is stale`);
+    }
+    const existing = this.workingCopies.get(input.noteId);
+    if (existing && input.editGeneration < existing.editGeneration) {
+      return {
+        status: "STALE",
+        acceptedEditGeneration: existing.editGeneration,
+        workingCopy: cloneWorkingCopy(existing),
+      };
+    }
+    if (existing && input.editGeneration === existing.editGeneration) {
+      if (!sameWorkingCopy(existing, input)) {
+        throw new Error("an edit generation cannot be reused for different content");
+      }
+      return {
+        status: "SAVED",
+        acceptedEditGeneration: existing.editGeneration,
+        workingCopy: cloneWorkingCopy(existing),
+      };
+    }
+    if (input.baseRevisionId === null && !hasMeaningfulAuthoredContent(input.bodyMarkdown)) {
+      this.workingCopies.delete(input.noteId);
+      return {
+        status: "CLEARED",
+        acceptedEditGeneration: input.editGeneration,
+        workingCopy: null,
+      };
+    }
+    const sequence = this.nextSequence();
+    const saved: WorkingCopyRecord = {
+      ...input,
+      sources: input.sources.map((source) => ({ ...source })),
+      id: existing?.id ?? `fake-working-copy-${sequence}`,
+      createdAtMs: existing?.createdAtMs ?? this.probe.nowMs + sequence,
+      updatedAtMs: existing
+        ? Math.max(existing.updatedAtMs + 1, this.probe.nowMs + sequence)
+        : this.probe.nowMs + sequence,
+    };
+    this.workingCopies.set(input.noteId, saved);
+    return {
+      status: "SAVED",
+      acceptedEditGeneration: saved.editGeneration,
+      workingCopy: cloneWorkingCopy(saved),
+    };
+  }
+
+  async loadWorkingCopy(noteId: string): Promise<WorkingCopyRecord | null> {
+    const workingCopy = this.workingCopies.get(noteId);
+    return workingCopy ? cloneWorkingCopy(workingCopy) : null;
+  }
+
+  async listWorkingCopies(): Promise<WorkingCopyRecord[]> {
+    return [...this.workingCopies.values()]
+      .sort(
+        (left, right) =>
+          right.updatedAtMs - left.updatedAtMs || left.noteId.localeCompare(right.noteId),
+      )
+      .map(cloneWorkingCopy);
+  }
+
+  async checkpointWorkingCopy(
+    input: CheckpointWorkingCopyInput,
+  ): Promise<WorkingCopyCheckpointResult> {
+    validateEditGeneration(input.expectedEditGeneration, "expectedEditGeneration");
+    const workingCopy = this.workingCopies.get(input.noteId);
+    if (!workingCopy) throw new Error(`working copy ${input.noteId} was not found`);
+    if (workingCopy.editGeneration !== input.expectedEditGeneration) {
+      return {
+        status: "STALE",
+        consumedEditGeneration: null,
+        note: null,
+        workingCopy: cloneWorkingCopy(workingCopy),
+      };
+    }
+    const sequence = this.nextSequence();
+    const current = this.tidbits.get(input.noteId);
+    if (workingCopy.baseRevisionId === null && current) {
+      throw new Error("ephemeral working-copy identity already belongs to a note");
+    }
+    if (
+      workingCopy.baseRevisionId !== null &&
+      (!current || current.currentRevisionId !== workingCopy.baseRevisionId)
+    ) {
+      throw new Error(`note ${input.noteId} is stale`);
+    }
+    if (
+      workingCopy.baseRevisionId === null &&
+      !hasMeaningfulAuthoredContent(workingCopy.bodyMarkdown)
+    ) {
+      throw new Error("an ephemeral note must contain authored text or media");
+    }
+    const sources = this.prepareSources(workingCopy.sources);
+    const note: TidbitRecord = current
+      ? {
+          ...current,
+          currentRevisionId: `fake-revision-${sequence}`,
+          revisionNumber: current.revisionNumber + 1,
+          updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
+          title: null,
+          displayTitle: deriveDisplayTitle(null, workingCopy.bodyMarkdown),
+          bodyMarkdown: workingCopy.bodyMarkdown,
+          sources,
+        }
+      : {
+          id: input.noteId,
+          currentRevisionId: `fake-revision-${sequence}`,
+          revisionNumber: 1,
+          createdAtMs: this.probe.nowMs + sequence,
+          updatedAtMs: this.probe.nowMs + sequence,
+          deletedAtMs: null,
+          title: null,
+          displayTitle: deriveDisplayTitle(null, workingCopy.bodyMarkdown),
+          bodyMarkdown: workingCopy.bodyMarkdown,
+          sources,
+        };
+    this.tidbits.set(note.id, note);
+    this.revisions.set(note.currentRevisionId, revisionFromTidbit(note));
+    this.revisionOwners.set(note.currentRevisionId, note.id);
+    this.registerCitation(note);
+    this.workingCopies.delete(input.noteId);
+    return {
+      status: "CHECKPOINTED",
+      consumedEditGeneration: workingCopy.editGeneration,
+      note: cloneTidbit(note),
+      workingCopy: null,
+    };
+  }
+
   async loadShortcutSettings(): Promise<ShortcutSettingsSnapshot> {
     return cloneShortcutSettings(this.shortcutSettings);
   }
@@ -1526,6 +1666,36 @@ function cloneDraft(draft: DraftRecord): DraftRecord {
     ...draft,
     sources: draft.sources.map((source) => ({ ...source })),
   };
+}
+
+function cloneWorkingCopy(workingCopy: WorkingCopyRecord): WorkingCopyRecord {
+  return {
+    ...workingCopy,
+    sources: workingCopy.sources.map((source) => ({ ...source })),
+  };
+}
+
+function sameWorkingCopy(workingCopy: WorkingCopyRecord, input: SaveWorkingCopyInput): boolean {
+  return (
+    workingCopy.baseRevisionId === input.baseRevisionId &&
+    workingCopy.bodyMarkdown === input.bodyMarkdown &&
+    JSON.stringify(workingCopy.sources) === JSON.stringify(input.sources)
+  );
+}
+
+function validateEditGeneration(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${field} must be a positive JavaScript-safe integer`);
+  }
+}
+
+function hasMeaningfulAuthoredContent(markdown: string): boolean {
+  const mediaAware = markdown.replace(
+    /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu,
+    "media",
+  );
+  const withoutTags = mediaAware.replace(/<[^>]*>/gu, "");
+  return withoutTags.replace(/[`*_#>+\-[\]()~$\\\s]/gu, "").length > 0;
 }
 
 function cloneShortcutSettings(settings: ShortcutSettingsSnapshot): ShortcutSettingsSnapshot {

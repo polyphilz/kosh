@@ -190,17 +190,17 @@ pub struct TidbitRevision {
 }
 
 #[derive(Clone, Debug)]
-struct PreparedSource {
+pub(super) struct PreparedSource {
     label: Option<String>,
     normalized_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-struct PreparedRevision {
-    title: Option<String>,
-    body_markdown: String,
-    sources: Vec<PreparedSource>,
-    content_hash: Vec<u8>,
+pub(super) struct PreparedRevision {
+    pub(super) title: Option<String>,
+    pub(super) body_markdown: String,
+    pub(super) sources: Vec<PreparedSource>,
+    pub(super) content_hash: Vec<u8>,
 }
 
 pub(crate) struct CreateTidbitWrite {
@@ -891,7 +891,16 @@ fn prepare_revision(
     body_markdown: String,
     sources: Vec<SourceDraft>,
 ) -> Result<PreparedRevision> {
-    if body_markdown.trim().is_empty() {
+    prepare_revision_with_empty(title, body_markdown, sources, false)
+}
+
+pub(super) fn prepare_revision_with_empty(
+    title: Option<String>,
+    body_markdown: String,
+    sources: Vec<SourceDraft>,
+    allow_empty_body: bool,
+) -> Result<PreparedRevision> {
+    if !allow_empty_body && body_markdown.trim().is_empty() {
         return Err(DatabaseError::InvalidInput(
             "bodyMarkdown must contain non-whitespace text".into(),
         ));
@@ -958,7 +967,7 @@ fn normalize_url(value: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-fn validate_source_ids(ids: &[String], expected: usize) -> Result<()> {
+pub(super) fn validate_source_ids(ids: &[String], expected: usize) -> Result<()> {
     if ids.len() != expected {
         return Err(DatabaseError::InvalidInput(
             "source ID count does not match source count".into(),
@@ -970,7 +979,7 @@ fn validate_source_ids(ids: &[String], expected: usize) -> Result<()> {
     Ok(())
 }
 
-fn insert_revision(
+pub(super) fn insert_revision(
     transaction: &Transaction<'_>,
     revision_id: &str,
     tidbit_id: &str,
@@ -1105,14 +1114,17 @@ fn tidbit_from_row(row: &Row<'_>) -> rusqlite::Result<Tidbit> {
     })
 }
 
-struct CurrentRevision {
-    revision_id: String,
-    revision_number: i64,
-    updated_at_ms: i64,
-    deleted_at_ms: Option<i64>,
+pub(super) struct CurrentRevision {
+    pub(super) revision_id: String,
+    pub(super) revision_number: i64,
+    pub(super) updated_at_ms: i64,
+    pub(super) deleted_at_ms: Option<i64>,
 }
 
-fn load_current_revision(transaction: &Transaction<'_>, id: &str) -> Result<CurrentRevision> {
+pub(super) fn load_current_revision(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> Result<CurrentRevision> {
     transaction
         .query_row(
             "SELECT
@@ -1142,7 +1154,7 @@ fn load_current_revision(transaction: &Transaction<'_>, id: &str) -> Result<Curr
         })
 }
 
-fn validate_timestamp(value: i64, field: &str) -> Result<()> {
+pub(super) fn validate_timestamp(value: i64, field: &str) -> Result<()> {
     if !(0..=MAX_SAFE_INTEGER).contains(&value) {
         return Err(DatabaseError::InvalidInput(format!(
             "{field} must be a non-negative JavaScript-safe integer"
@@ -1151,7 +1163,7 @@ fn validate_timestamp(value: i64, field: &str) -> Result<()> {
     Ok(())
 }
 
-fn next_timestamp(previous: i64, observed: i64) -> Result<i64> {
+pub(super) fn next_timestamp(previous: i64, observed: i64) -> Result<i64> {
     let next = if observed > previous {
         observed
     } else {
@@ -1163,7 +1175,7 @@ fn next_timestamp(previous: i64, observed: i64) -> Result<i64> {
     Ok(next)
 }
 
-fn validate_uuid_v7(value: &str, field: &str) -> Result<()> {
+pub(super) fn validate_uuid_v7(value: &str, field: &str) -> Result<()> {
     let parsed = Uuid::parse_str(value)
         .map_err(|_| DatabaseError::InvalidInput(format!("{field} must be a UUIDv7")))?;
     if parsed.get_version_num() != 7 || parsed.hyphenated().to_string() != value {

@@ -12,6 +12,7 @@ import type {
   ClaudeCliDefaults,
   ClaudeSetupStatus,
   ClearDraftInput,
+  CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
   DraftRecord,
@@ -42,6 +43,7 @@ import type {
   RestoreTidbitInput,
   PurgeTidbitInput,
   SaveDraftInput,
+  SaveWorkingCopyInput,
   SearchPassagesInput,
   SearchPassagesResponse,
   SemanticRuntimeLogs,
@@ -52,6 +54,9 @@ import type {
   TidbitRecord,
   TidbitRevisionPage,
   TidbitRevisionRecord,
+  WorkingCopyCheckpointResult,
+  WorkingCopyRecord,
+  WorkingCopySaveResult,
   StartResearchProcessOutput,
   TakeOverBackupInput,
   TestBackupConnectionInput,
@@ -112,6 +117,13 @@ export const tauriBackend: Backend = {
   loadDraft: (contextKey: string) =>
     invoke<DraftRecord | null>(TauriCommand.LoadDraft, { contextKey }),
   clearDraft: (input: ClearDraftInput) => invoke<boolean>(TauriCommand.ClearDraft, { input }),
+  saveWorkingCopy: (input: SaveWorkingCopyInput) =>
+    invoke<WorkingCopySaveResult>(TauriCommand.SaveWorkingCopy, { input }),
+  loadWorkingCopy: (noteId: string) =>
+    invoke<WorkingCopyRecord | null>(TauriCommand.LoadWorkingCopy, { noteId }),
+  listWorkingCopies: () => invoke<WorkingCopyRecord[]>(TauriCommand.ListWorkingCopies),
+  checkpointWorkingCopy: (input: CheckpointWorkingCopyInput) =>
+    invoke<WorkingCopyCheckpointResult>(TauriCommand.CheckpointWorkingCopy, { input }),
   loadShortcutSettings: () => invoke<ShortcutSettingsSnapshot>(TauriCommand.LoadShortcutSettings),
   setAutomaticUpdateChecks: (input: SetAutomaticUpdateChecksInput) =>
     invoke<ShortcutSettingsSnapshot>(TauriCommand.SetAutomaticUpdateChecks, { input }),
