@@ -1,6 +1,7 @@
 import "@mantine/core/styles.css";
 import "@blocknote/mantine/style.css";
 import "katex/dist/katex.min.css";
+import "../../editor/editor.css";
 import "./spike.css";
 
 import { StrictMode } from "react";

@@ -4,6 +4,8 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import "@mantine/core/styles.css";
+import "@blocknote/mantine/style.css";
 import "@fontsource-variable/reddit-mono";
 import "katex/dist/katex.min.css";
 import React from "react";
@@ -15,6 +17,7 @@ import { StartupSmokeReady } from "./components/StartupSmokeReady";
 import { QuitCoordinator } from "./lifecycle/quit";
 import "./components/components.css";
 import "./markdown/markdown.css";
+import "./editor/editor.css";
 import { QuickAddWindow } from "./quickAdd/QuickAddWindow";
 import "./styles.css";
 import "./quickAdd/quick-add.css";

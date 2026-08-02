@@ -23,7 +23,7 @@ import type {
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { Input } from "../components/Input";
-import { RichTextEditor, type RichTextEditorHandle } from "../markdown/RichTextEditor";
+import { KoshBlockNoteEditor, type KoshBlockNoteEditorHandle } from "../editor/KoshBlockNoteEditor";
 import { classNames } from "../lib/classNames";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { TauriEvent } from "../tauriProtocol";
@@ -104,7 +104,7 @@ export const TidbitComposer = forwardRef<TidbitComposerHandle, TidbitComposerPro
     const pendingDropCountRef = useRef(0);
     const quitPreparingRef = useRef(false);
     const queueRef = useRef<Promise<void>>(Promise.resolve());
-    const editorRef = useRef<RichTextEditorHandle>(null);
+    const editorRef = useRef<KoshBlockNoteEditorHandle>(null);
     const stateRef = useRef(state);
     const readyRef = useRef(ready);
 
@@ -500,7 +500,7 @@ export const TidbitComposer = forwardRef<TidbitComposerHandle, TidbitComposerPro
           />
 
           <label>Tidbit</label>
-          <RichTextEditor
+          <KoshBlockNoteEditor
             ariaLabel="Tidbit"
             attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
             disabled={!ready || busy}

@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { koshEditorSchema } from "../../src/markdown/editorSchema";
+import { koshBlocksToMarkdown, markdownToKoshBlocks } from "../../src/editor/markdownAdapter";
 import { MarkdownRenderer, injectTrustedCitationLinks } from "../../src/markdown/MarkdownRenderer";
-import { parseKoshMarkdown, serializeKoshMarkdown } from "../../src/markdown/markdownConversion";
 import { externalHttpUrl } from "../../src/markdown/urlPolicy";
 
 interface MarkdownFixture {
@@ -20,8 +19,7 @@ const fixtures = JSON.parse(
 
 describe("Kosh Markdown v1 fixture corpus", () => {
   it.each(fixtures)("$id remains canonical and renders its structure", (fixture) => {
-    const document = parseKoshMarkdown(fixture.canonical, koshEditorSchema);
-    expect(serializeKoshMarkdown(document)).toBe(fixture.canonical);
+    expect(koshBlocksToMarkdown(markdownToKoshBlocks(fixture.canonical))).toBe(fixture.canonical);
 
     const { container } = render(<MarkdownRenderer source={fixture.canonical} />);
     const root = container.querySelector(".kosh-markdown");

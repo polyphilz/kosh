@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
 import type { CitationResolution, ImageRecord } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
-import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
+import { AppearanceProvider } from "../../src/components/Appearance";
 import { createAppRouter } from "../../src/router";
 
 describe("tidbit capture and editing routes", () => {
@@ -82,7 +82,7 @@ describe("tidbit capture and editing routes", () => {
     renderRoute(backend, "/add");
     const title = await screen.findByRole("textbox", { name: /^Title/u });
     fireEvent.change(title, { target: { value: "Precise memory" } });
-    setEditorText("A citation-ready **tidbit**.");
+    await setEditorText(user, "A citation-ready **tidbit**.");
     await user.click(screen.getByRole("button", { name: "Add source" }));
     await user.type(screen.getByRole("textbox", { name: "Source 1 label" }), "Reference");
     await user.type(
@@ -103,7 +103,7 @@ describe("tidbit capture and editing routes", () => {
     fireEvent.change(screen.getByRole("textbox", { name: /^Title/u }), {
       target: { value: "Revised memory" },
     });
-    appendEditorText(" More exact.");
+    await appendEditorText(user, " More exact.");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("heading", { name: "Revised memory" })).toBeInTheDocument();
     expect(screen.getByText(/More exact/u)).toBeInTheDocument();
@@ -128,7 +128,7 @@ describe("tidbit capture and editing routes", () => {
     renderRoute(backend, "/add");
     await screen.findByRole("textbox", { name: "Tidbit" });
 
-    await user.click(screen.getByRole("button", { name: "Add image" }));
+    await chooseSlashItem(user, "Image");
     await waitFor(() => expect(selectImage).toHaveBeenCalledOnce());
     await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled());
 
@@ -153,7 +153,7 @@ describe("tidbit capture and editing routes", () => {
     const createTidbit = vi.spyOn(backend, "createTidbit");
     renderRoute(backend, "/add");
     const editor = await screen.findByRole("textbox", { name: "Tidbit" });
-    setEditorText("Do not save before the image.");
+    await setEditorText(userEvent.setup(), "Do not save before the image.");
 
     fireEvent.paste(editor, {
       clipboardData: { items: [{ type: "image/png" }] },
@@ -245,7 +245,7 @@ describe("tidbit capture and editing routes", () => {
 
     expect(await screen.findByText("Current revision", { exact: true })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Edit" }));
-    appendEditorText(" Updated.");
+    await appendEditorText(user, " Updated.");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect(await screen.findByText("Historical revision", { exact: true })).toBeInTheDocument();
@@ -325,34 +325,42 @@ function renderRoute(backend: FakeBackend, path: string) {
   return render(
     <StrictMode>
       <BackendProvider backend={backend}>
-        <RouterProvider router={router} />
+        <AppearanceProvider>
+          <RouterProvider router={router} />
+        </AppearanceProvider>
       </BackendProvider>
     </StrictMode>,
   );
 }
 
-function editorView() {
+async function setEditorText(user: ReturnType<typeof userEvent.setup>, value: string) {
   const textbox = screen.getByRole("textbox", { name: "Tidbit" });
-  const view = richTextEditorViewFromDOM(textbox);
-  if (!view) throw new Error("rich text editor view is unavailable");
-  return view;
+  await user.clear(textbox);
+  await user.type(textbox, value);
 }
 
-function setEditorText(value: string) {
-  const view = editorView();
-  act(() => {
-    view.dispatch(
-      view.state.tr
-        .delete(1, view.state.doc.content.size - 1)
-        .insertText(value, 1)
-        .scrollIntoView(),
-    );
-  });
+async function appendEditorText(user: ReturnType<typeof userEvent.setup>, value: string) {
+  const textbox = screen.getByRole("textbox", { name: "Tidbit" });
+  const insertionPoint =
+    textbox
+      .querySelectorAll(".bn-inline-content")
+      .item(textbox.querySelectorAll(".bn-inline-content").length - 1) || textbox;
+  textbox.focus();
+  const range = document.createRange();
+  range.selectNodeContents(insertionPoint);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  await user.type(textbox, value, { skipClick: true });
 }
 
-function appendEditorText(value: string) {
-  const view = editorView();
-  act(() => {
-    view.dispatch(view.state.tr.insertText(value, view.state.doc.content.size - 1));
-  });
+async function chooseSlashItem(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const textbox = screen.getByRole("textbox", { name: "Tidbit" });
+  const insertionPoint = textbox
+    .querySelectorAll(".bn-inline-content")
+    .item(textbox.querySelectorAll(".bn-inline-content").length - 1);
+  await user.click(insertionPoint || textbox);
+  await user.type(insertionPoint || textbox, "/");
+  await user.click(await screen.findByRole("option", { name }));
 }
