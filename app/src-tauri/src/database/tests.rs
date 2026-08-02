@@ -60,6 +60,13 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
             "body_markdown",
         ]
     );
+    for guard in [
+        "attachment_passage_revision_prevent_delete",
+        "tidbit_revision_attachment_prevent_delete",
+        "tidbit_revision_source_prevent_delete",
+    ] {
+        assert!(trigger_exists(&main, guard), "missing delete guard {guard}");
+    }
     drop(main);
     database.shutdown().expect("close fresh database pair");
 }
@@ -271,6 +278,18 @@ fn table_exists(connection: &Connection, table: &str) -> bool {
         )
         .optional()
         .expect("inspect table")
+        .is_some()
+}
+
+fn trigger_exists(connection: &Connection, trigger: &str) -> bool {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ?1",
+            [trigger],
+            |_| Ok(()),
+        )
+        .optional()
+        .expect("inspect trigger")
         .is_some()
 }
 

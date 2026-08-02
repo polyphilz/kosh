@@ -344,10 +344,20 @@ BEFORE UPDATE ON tidbit_revision_source
 BEGIN
     SELECT RAISE(ABORT, 'revision source links are immutable');
 END;
+CREATE TRIGGER tidbit_revision_source_prevent_delete
+BEFORE DELETE ON tidbit_revision_source
+BEGIN
+    SELECT RAISE(ABORT, 'revision source links are retained');
+END;
 CREATE TRIGGER tidbit_revision_attachment_prevent_update
 BEFORE UPDATE ON tidbit_revision_attachment
 BEGIN
     SELECT RAISE(ABORT, 'revision attachment links are immutable');
+END;
+CREATE TRIGGER tidbit_revision_attachment_prevent_delete
+BEFORE DELETE ON tidbit_revision_attachment
+BEGIN
+    SELECT RAISE(ABORT, 'revision attachment links are retained');
 END;
 CREATE TRIGGER attachment_extraction_identity_prevent_update
 BEFORE UPDATE OF attachment_id, extractor, extractor_version, content_hash, created_at
@@ -1221,6 +1231,11 @@ CREATE TRIGGER attachment_passage_revision_prevent_update
 BEFORE UPDATE ON attachment_passage_revision
 BEGIN
     SELECT RAISE(ABORT, 'attachment passage revision provenance is immutable');
+END;
+CREATE TRIGGER attachment_passage_revision_prevent_delete
+BEFORE DELETE ON attachment_passage_revision
+BEGIN
+    SELECT RAISE(ABORT, 'attachment passage revision provenance is retained');
 END;
 CREATE TRIGGER attachment_passage_revision_after_membership
 AFTER INSERT ON tidbit_revision_attachment
