@@ -157,7 +157,7 @@ export function NoteActions({
       )}
 
       <Dialog
-        description="The note leaves search immediately. You can undo after deleting it."
+        description="The note leaves search. You can undo immediately."
         footer={
           <>
             <button disabled={deleting} onClick={() => setDeleteOpen(false)} type="button">

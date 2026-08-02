@@ -184,7 +184,7 @@ test("a direct search route opens the search overlay", async ({ page }) => {
 
 test("an interrupted new note finishes recovery before accepting input", async ({ page }) => {
   const noteId = "019f547b-6200-7000-8000-00000000e001";
-  await page.goto("/#/search");
+  await page.goto("/#/settings");
   await page.evaluate(async (recoveredNoteId) => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
@@ -214,7 +214,7 @@ test("an interrupted new note finishes recovery before accepting input", async (
 
 test("one stale working copy cannot block later recovery", async ({ page }) => {
   const trailingNoteId = "019f547b-6200-7000-8000-00000000e101";
-  await page.goto("/#/search");
+  await page.goto("/#/settings");
   const staleNoteId = await page.evaluate(async (recoverableNoteId) => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
@@ -268,7 +268,7 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
 });
 
 test("startup recovery discards an abandoned existing-note media reservation", async ({ page }) => {
-  await page.goto("/#/search");
+  await page.goto("/#/settings");
   const noteId = await page.evaluate(async () => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
@@ -311,7 +311,7 @@ test("delayed reconciliation never checkpoints the note opened during its scan",
 }) => {
   const firstNoteId = "019f547b-6200-7000-8000-00000000e201";
   const openedNoteId = "019f547b-6200-7000-8000-00000000e202";
-  await page.goto("/#/search");
+  await page.goto("/#/settings");
   await page.evaluate(
     async ({ first, opened }) => {
       const backend = window.__KOSH_FAKE_BACKEND__;
@@ -378,7 +378,7 @@ test("delayed reconciliation never checkpoints the note opened during its scan",
 test("a legacy title is projected without a revision until the first authored edit", async ({
   page,
 }) => {
-  await page.goto("/#/search");
+  await page.goto("/#/settings");
   const note = await page.evaluate(async () => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
