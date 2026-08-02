@@ -35,6 +35,8 @@ interface NoteSession {
 
 const scrollPositions = new Map<string, number>();
 const reconciliationStarted = new WeakSet<Backend>();
+const activeNoteIds = new WeakMap<Backend, string>();
+const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>>();
 
 export function NotePage({ mode, noteId }: NotePageProps) {
   const backend = useBackend();
@@ -42,37 +44,19 @@ export function NotePage({ mode, noteId }: NotePageProps) {
   const [loadError, setLoadError] = useState<{ message: string; noteId: string } | null>(null);
 
   useEffect(() => {
+    activeNoteIds.set(backend, noteId);
+    return () => {
+      if (activeNoteIds.get(backend) === noteId) activeNoteIds.delete(backend);
+    };
+  }, [backend, noteId]);
+
+  useEffect(() => {
     let active = true;
     setLoadError(null);
-    if (mode === "ephemeral") {
-      void backend
-        .loadWorkingCopy(noteId)
-        .then((workingCopy) => {
-          if (!active) return;
-          setSession({
-            coordinator: workingCopy
-              ? NoteAutosaveCoordinator.recovered(backend, workingCopy)
-              : NoteAutosaveCoordinator.ephemeral(backend, { noteId }),
-            noteId,
-            note: null,
-          });
-        })
-        .catch((reason: unknown) => {
-          if (active) setLoadError({ message: errorMessage(reason), noteId });
-        });
-      return () => {
-        active = false;
-      };
-    }
-
-    void Promise.all([backend.loadTidbit(noteId), backend.loadWorkingCopy(noteId)])
-      .then(([note, workingCopy]) => {
+    void loadNoteSession(backend, mode, noteId)
+      .then((nextSession) => {
         if (!active) return;
-        setSession({
-          coordinator: coordinatorForDurableNote(backend, note, workingCopy),
-          noteId,
-          note,
-        });
+        setSession(nextSession);
       })
       .catch((reason: unknown) => {
         if (active) setLoadError({ message: errorMessage(reason), noteId });
@@ -166,7 +150,7 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
     const frame = window.requestAnimationFrame(() => {
       editorRef.current?.focus();
       restoreScroll(noteId);
-      scheduleWorkingCopyReconciliation(backend, noteId);
+      scheduleWorkingCopyReconciliation(backend);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [backend, noteId]);
@@ -366,6 +350,33 @@ function coordinatorForDurableNote(
   });
 }
 
+async function loadNoteSession(
+  backend: Backend,
+  mode: NotePageProps["mode"],
+  noteId: string,
+): Promise<NoteSession> {
+  await waitForWorkingCopyReconciliation(backend, noteId);
+  if (mode === "ephemeral") {
+    const workingCopy = await backend.loadWorkingCopy(noteId);
+    return {
+      coordinator: workingCopy
+        ? NoteAutosaveCoordinator.recovered(backend, workingCopy)
+        : NoteAutosaveCoordinator.ephemeral(backend, { noteId }),
+      noteId,
+      note: null,
+    };
+  }
+  const [note, workingCopy] = await Promise.all([
+    backend.loadTidbit(noteId),
+    backend.loadWorkingCopy(noteId),
+  ]);
+  return {
+    coordinator: coordinatorForDurableNote(backend, note, workingCopy),
+    noteId,
+    note,
+  };
+}
+
 async function discardFailedReservation(
   coordinator: NoteAutosaveCoordinator,
   reservation: NoteMediaReservation,
@@ -398,7 +409,7 @@ async function ingestDroppedAttachments(
   return { attachments, failures };
 }
 
-function scheduleWorkingCopyReconciliation(backend: Backend, activeNoteId: string): void {
+function scheduleWorkingCopyReconciliation(backend: Backend): void {
   if (reconciliationStarted.has(backend)) return;
   reconciliationStarted.add(backend);
   window.setTimeout(() => {
@@ -406,22 +417,18 @@ function scheduleWorkingCopyReconciliation(backend: Backend, activeNoteId: strin
       .listWorkingCopies()
       .then(async (workingCopies) => {
         for (const workingCopy of workingCopies) {
-          if (workingCopy.noteId === activeNoteId) continue;
+          if (workingCopy.noteId === activeNoteIds.get(backend)) continue;
+          const operation = reconcileWorkingCopy(backend, workingCopy);
+          const operations = operationsFor(backend);
+          operations.set(workingCopy.noteId, operation);
           try {
-            const save = await backend.saveWorkingCopy({
-              noteId: workingCopy.noteId,
-              baseRevisionId: workingCopy.baseRevisionId,
-              editGeneration: workingCopy.editGeneration + 1,
-              bodyMarkdown: workingCopy.bodyMarkdown,
-              sources: workingCopy.sources,
-            });
-            if (save.status !== "SAVED") continue;
-            await backend.checkpointWorkingCopy({
-              noteId: workingCopy.noteId,
-              expectedEditGeneration: save.acceptedEditGeneration,
-            });
+            await operation;
           } catch (reason) {
             console.warn(`Could not reconcile interrupted note ${workingCopy.noteId}`, reason);
+          } finally {
+            if (operations.get(workingCopy.noteId) === operation) {
+              operations.delete(workingCopy.noteId);
+            }
           }
         }
       })
@@ -429,6 +436,35 @@ function scheduleWorkingCopyReconciliation(backend: Backend, activeNoteId: strin
         console.error("Could not reconcile interrupted note autosaves", reason);
       });
   }, 0);
+}
+
+async function reconcileWorkingCopy(backend: Backend, workingCopy: WorkingCopyRecord) {
+  if (workingCopy.noteId === activeNoteIds.get(backend)) return;
+  const save = await backend.saveWorkingCopy({
+    noteId: workingCopy.noteId,
+    baseRevisionId: workingCopy.baseRevisionId,
+    editGeneration: workingCopy.editGeneration + 1,
+    bodyMarkdown: workingCopy.bodyMarkdown,
+    sources: workingCopy.sources,
+  });
+  if (save.status !== "SAVED" || workingCopy.noteId === activeNoteIds.get(backend)) return;
+  await backend.checkpointWorkingCopy({
+    noteId: workingCopy.noteId,
+    expectedEditGeneration: save.acceptedEditGeneration,
+  });
+}
+
+function operationsFor(backend: Backend): Map<string, Promise<void>> {
+  let operations = reconciliationOperations.get(backend);
+  if (!operations) {
+    operations = new Map();
+    reconciliationOperations.set(backend, operations);
+  }
+  return operations;
+}
+
+async function waitForWorkingCopyReconciliation(backend: Backend, noteId: string): Promise<void> {
+  await reconciliationOperations.get(backend)?.get(noteId);
 }
 
 function restoreScroll(noteId: string): void {

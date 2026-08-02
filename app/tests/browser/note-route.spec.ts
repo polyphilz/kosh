@@ -147,6 +147,73 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
   ).toEqual([staleNoteId]);
 });
 
+test("delayed reconciliation never checkpoints the note opened during its scan", async ({
+  page,
+}) => {
+  const firstNoteId = "019f547b-6200-7000-8000-00000000e201";
+  const openedNoteId = "019f547b-6200-7000-8000-00000000e202";
+  await page.goto("/#/search");
+  await page.evaluate(
+    async ({ first, opened }) => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      await backend.saveWorkingCopy({
+        noteId: first,
+        baseRevisionId: null,
+        editGeneration: 2,
+        bodyMarkdown: "The initially open interrupted note.",
+        sources: [],
+      });
+      await backend.saveWorkingCopy({
+        noteId: opened,
+        baseRevisionId: null,
+        editGeneration: 4,
+        bodyMarkdown: "Open this while recovery scans.",
+        sources: [],
+      });
+      const listWorkingCopies = backend.listWorkingCopies.bind(backend);
+      backend.listWorkingCopies = async () => {
+        (globalThis as unknown as Record<string, unknown>).__KOSH_RECONCILIATION_LISTING__ = true;
+        await new Promise((resolve) => window.setTimeout(resolve, 400));
+        return listWorkingCopies();
+      };
+      window.location.hash = `/new/${first}`;
+    },
+    { first: firstNoteId, opened: openedNoteId },
+  );
+
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText("initially open");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (globalThis as unknown as Record<string, unknown>).__KOSH_RECONCILIATION_LISTING__ ===
+          true,
+      ),
+    )
+    .toBe(true);
+  await page.evaluate((noteId) => {
+    window.location.hash = `/new/${noteId}`;
+  }, openedNoteId);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await expect(editor).toContainText("Open this while recovery scans.");
+  await page.waitForTimeout(500);
+  await editor.fill("This edit belongs to the still-open recovered note.");
+  await page.getByRole("link", { name: "Search", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Search" })).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(async (noteId) => {
+        const backend = window.__KOSH_FAKE_BACKEND__;
+        if (!backend) throw new Error("fake backend is unavailable");
+        return backend.loadTidbit(noteId);
+      }, openedNoteId),
+    )
+    .toMatchObject({ bodyMarkdown: "This edit belongs to the still-open recovered note." });
+});
+
 test("a legacy title is projected without a revision until the first authored edit", async ({
   page,
 }) => {
