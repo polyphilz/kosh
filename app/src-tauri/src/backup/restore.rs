@@ -1317,15 +1317,7 @@ mod tests {
                 .expect("source tidbit");
             database
                 .client()
-                .save_working_copy_for_test(
-                    DRAFT_ID.into(),
-                    None,
-                    1,
-                    String::new(),
-                    Vec::new(),
-                    11,
-                    true,
-                )
+                .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 11)
                 .expect("source working copy");
             let media_bytes = b"remote attachment evidence".to_vec();
             let attachment = database

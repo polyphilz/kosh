@@ -23,7 +23,7 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
     let database = Arc::new(Database::initialize(paths.clone()).expect("database"));
     let setup_client = database.client();
     setup_client
-        .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 1, true)
+        .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 1)
         .expect("attachment working copy");
 
     let worker_count = CAPTURE_THREADS + SEARCH_THREADS + 2;

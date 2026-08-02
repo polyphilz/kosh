@@ -45,13 +45,9 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
         "research_run_attachment",
         "purge_authorization",
     ] {
-        assert_eq!(
-            table_exists(&main, retired),
-            false,
-            "retired table {retired}"
-        );
+        assert!(!table_exists(&main, retired), "retired table {retired}");
     }
-    assert_eq!(column_exists(&main, "tidbit_revision", "title"), false);
+    assert!(!column_exists(&main, "tidbit_revision", "title"));
     assert_eq!(
         table_columns(&main, "draft"),
         [
@@ -86,7 +82,6 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
                 url: Some("https://example.com/reference".into()),
             }],
             10,
-            false,
         )
         .expect("save new note");
     let created = client
@@ -125,7 +120,6 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
             "# Arrays\n\nExact amber evidence replaced the earlier wording.".into(),
             Vec::new(),
             20,
-            false,
         )
         .expect("save edited note");
     let edited = client

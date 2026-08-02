@@ -335,7 +335,7 @@ fn checkpoint_media_snapshot_is_persisted_and_read_in_bounded_keyset_pages() {
     let client = database.client();
     let draft_id = "019f547b-6200-7000-8000-000000008001";
     client
-        .save_working_copy_for_test(draft_id.into(), None, 1, String::new(), Vec::new(), 2, true)
+        .save_working_copy_for_test(draft_id.into(), None, 1, String::new(), Vec::new(), 2)
         .expect("save working copy");
 
     let staging = root.path().join("staging");
@@ -562,7 +562,7 @@ fn retired_upload_rows_do_not_invalidate_historical_checkpoint_facts() {
     let client = database.client();
     let draft_id = "019f547b-6200-7000-8000-000000009001";
     client
-        .save_working_copy_for_test(draft_id.into(), None, 1, String::new(), Vec::new(), 2, true)
+        .save_working_copy_for_test(draft_id.into(), None, 1, String::new(), Vec::new(), 2)
         .expect("save working copy");
     let staging = root.path().join("staging");
     let staged = StagedAttachment::from_reader(

@@ -1657,7 +1657,6 @@ impl DatabaseClient {
         body_markdown: String,
         sources: Vec<super::SourceDraft>,
         now_ms: i64,
-        allow_empty_ephemeral: bool,
     ) -> Result<WorkingCopy> {
         self.save_working_copy(SaveWorkingCopyWrite {
             input: super::SaveWorkingCopyInput {
@@ -1669,7 +1668,7 @@ impl DatabaseClient {
             },
             now_ms,
             media_limits: super::MediaLimits::default(),
-            allow_empty_ephemeral,
+            allow_empty_ephemeral: true,
         })?
         .working_copy
         .ok_or_else(|| DatabaseError::InvalidInput("test working copy was not saved".into()))

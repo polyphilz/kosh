@@ -343,16 +343,16 @@ fn live_r2_canary_restores_complete_kosh_library_and_cleans_unique_backup_set() 
         );
         "PACKAGED"
     } else {
-        run_library_restore(
-            &cleanup.store,
-            &keyspace,
-            &checkpoint,
-            &source.backup_set_id,
-            &target,
-            &credentials,
-            &evidence_root,
-            &restored_root,
-        );
+        run_library_restore(LibraryRestoreRequest {
+            store: &cleanup.store,
+            keyspace: &keyspace,
+            checkpoint: &checkpoint,
+            backup_set_id: &source.backup_set_id,
+            target: &target,
+            credentials: &credentials,
+            evidence_root: &evidence_root,
+            restored_root: &restored_root,
+        });
         "LIBRARY"
     };
     let restored = verify_restored_library(&restored_root, &source.historical_citation);
@@ -411,15 +411,7 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
     let note_id = Uuid::now_v7().to_string();
     database
         .client()
-        .save_working_copy_for_test(
-            note_id.clone(),
-            None,
-            1,
-            String::new(),
-            Vec::new(),
-            20,
-            true,
-        )
+        .save_working_copy_for_test(note_id.clone(), None, 1, String::new(), Vec::new(), 20)
         .expect("reserve canary working copy");
     let attachment = database
         .ingest_attachment(
@@ -447,7 +439,6 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
                 url: Some("https://example.com/historical-recovery".into()),
             }],
             22,
-            false,
         )
         .expect("save original canary working copy");
     let original = database
@@ -487,7 +478,6 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
                 url: Some("https://example.com/current-recovery".into()),
             }],
             50,
-            false,
         )
         .expect("save current canary working copy");
     database
@@ -513,7 +503,6 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
                 url: Some(STARTUP_CANARY_SOURCE.into()),
             }],
             60,
-            false,
         )
         .expect("save startup canary working copy");
     database
@@ -665,7 +654,6 @@ fn replicate_and_publish(
             interrupted_replication_payload(),
             Vec::new(),
             90,
-            false,
         )
         .expect("write interrupted replication fence");
     assert_eq!(
@@ -834,16 +822,28 @@ fn upload_referenced_media(paths: &DatabasePaths, store: &R2ObjectStore, keyspac
     }
 }
 
-fn run_library_restore(
-    store: &R2ObjectStore,
-    keyspace: &R2Keyspace,
-    checkpoint: &RemoteCheckpoint,
-    backup_set_id: &BackupSetId,
-    target: &R2Target,
-    credentials: &R2Credentials,
-    evidence_root: &Path,
-    restored_root: &Path,
-) {
+struct LibraryRestoreRequest<'a> {
+    store: &'a R2ObjectStore,
+    keyspace: &'a R2Keyspace,
+    checkpoint: &'a RemoteCheckpoint,
+    backup_set_id: &'a BackupSetId,
+    target: &'a R2Target,
+    credentials: &'a R2Credentials,
+    evidence_root: &'a Path,
+    restored_root: &'a Path,
+}
+
+fn run_library_restore(request: LibraryRestoreRequest<'_>) {
+    let LibraryRestoreRequest {
+        store,
+        keyspace,
+        checkpoint,
+        backup_set_id,
+        target,
+        credentials,
+        evidence_root,
+        restored_root,
+    } = request;
     let mut runtime =
         EphemeralLitestreamRuntime::create().expect("isolated canary restore runtime");
     let verified = VerifiedLitestreamBinary::resolve_staged_for_test(Path::new(

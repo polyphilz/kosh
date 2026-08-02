@@ -57,7 +57,6 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
             "Updated searchable citation evidence.".into(),
             Vec::new(),
             20,
-            false,
         )
         .expect("save edited working copy");
     let edited = client

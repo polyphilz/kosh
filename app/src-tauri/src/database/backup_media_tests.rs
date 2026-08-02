@@ -34,15 +34,7 @@ impl TestLibrary {
         let database = Database::initialize(paths.clone()).expect("database");
         database
             .client()
-            .save_working_copy_for_test(
-                DRAFT_ID.into(),
-                None,
-                1,
-                String::new(),
-                Vec::new(),
-                10,
-                true,
-            )
+            .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 10)
             .expect("capture working copy");
         Self {
             _root: root,

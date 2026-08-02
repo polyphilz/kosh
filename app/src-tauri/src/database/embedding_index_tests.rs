@@ -137,7 +137,6 @@ fn semantic_retrieval_falls_back_when_fresh_content_invalidates_the_active_index
             "Updated automobile service intervals".into(),
             Vec::new(),
             40,
-            false,
         )
         .expect("save edit that invalidates active vectors");
     client
@@ -331,7 +330,6 @@ fn edits_and_deletes_invalidate_vectors_and_reject_stale_worker_results() {
             "second version".into(),
             Vec::new(),
             20,
-            false,
         )
         .expect("save edit");
     let edited = client

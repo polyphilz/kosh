@@ -135,7 +135,6 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
                 url: Some("https://example.com/second".into()),
             }],
             11,
-            false,
         )
         .expect("save cited edit");
     let edited = client

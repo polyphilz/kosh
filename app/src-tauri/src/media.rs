@@ -1045,7 +1045,6 @@ mod tests {
                 String::new(),
                 Vec::new(),
                 90,
-                true,
             )
             .expect("protocol working copy");
         let staged = StagedAttachment::from_reader(

@@ -2264,7 +2264,6 @@ mod tests {
                     .into(),
                 Vec::new(),
                 20,
-                false,
             )
             .expect("save searchable edit");
         let edited = client

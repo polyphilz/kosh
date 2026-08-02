@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "tauri": "KOSH_DATA_DIR=\"$PWD/.data/local\" tauri",
     "lint": "oxlint",
-    "lint:native": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --no-default-features -- -D warnings",
+    "lint:native": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-support -- -D warnings",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "test": "vitest run",

@@ -1106,15 +1106,7 @@ mod tests {
         let draft_id = Uuid::now_v7().to_string();
         database
             .client()
-            .save_working_copy_for_test(
-                draft_id.clone(),
-                None,
-                1,
-                String::new(),
-                Vec::new(),
-                1,
-                true,
-            )
+            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), Vec::new(), 1)
             .expect("attachment working copy");
         let bytes = b"content-addressed evidence";
         database
@@ -1169,15 +1161,7 @@ mod tests {
         let draft_id = Uuid::now_v7().to_string();
         database
             .client()
-            .save_working_copy_for_test(
-                draft_id.clone(),
-                None,
-                1,
-                String::new(),
-                Vec::new(),
-                1,
-                true,
-            )
+            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), Vec::new(), 1)
             .expect("image working copy");
         let limits = MediaLimits::default();
         let staged = StagedAttachment::from_reader(

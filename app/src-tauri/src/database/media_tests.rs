@@ -111,7 +111,6 @@ impl TestLibrary {
                 body_markdown.into(),
                 sources,
                 now_ms,
-                true,
             )
             .expect("save capture working copy")
     }
@@ -690,7 +689,6 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
                 url: Some("https://example.com/later".into()),
             }],
             16,
-            false,
         )
         .expect("save PDF-backed edit");
     client
@@ -1860,7 +1858,6 @@ fn concurrent_ingestion_serializes_before_reading_attachment_bytes() {
             String::new(),
             Vec::new(),
             10,
-            true,
         )
         .expect("concurrent staging working copy");
 
@@ -2085,15 +2082,7 @@ fn working_copy_media_and_note_survive_restart() {
     let initial = library
         .database
         .client()
-        .save_working_copy_for_test(
-            note_id.clone(),
-            None,
-            1,
-            String::new(),
-            Vec::new(),
-            11,
-            true,
-        )
+        .save_working_copy_for_test(note_id.clone(), None, 1, String::new(), Vec::new(), 11)
         .expect("create working copy");
     assert_eq!(initial.id, note_id);
     let attachment = library
@@ -2123,7 +2112,6 @@ fn working_copy_media_and_note_survive_restart() {
                 url: Some("https://example.com/working-copy".into()),
             }],
             13,
-            false,
         )
         .expect("save media working copy");
     assert_eq!(
@@ -2906,7 +2894,6 @@ fn integrity_scan_reports_missing_corrupt_and_extra_blobs() {
             String::new(),
             Vec::new(),
             10,
-            true,
         )
         .expect("capture working copy");
     assert_eq!(draft.id, CAPTURE_DRAFT_ID);
