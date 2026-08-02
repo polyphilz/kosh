@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "baseline": "pre-redesign-current-ui",
+  "sourceRevision": "4c0095f192611ff94849ef725891038627c2ff72",
+  "recordedAt": "2026-08-02T07:07:40.387Z",
+  "environment": {
+    "platform": "darwin",
+    "release": "24.5.0",
+    "cpu": "Apple M1 Max",
+    "logicalCpuCount": 10,
+    "totalMemoryBytes": 68719476736,
+    "browser": "149.0.7827.55",
+    "node": "v22.12.0"
+  },
+  "methodology": {
+    "samplesPerInteractiveMetric": 10,
+    "samplesPerNativeMetric": 5,
+    "browserMode": "headless Chromium against the deterministic fake backend",
+    "coldShell": "new browser context to focused current Search input",
+    "editorInitialization": "new browser context to visible current ProseMirror editor",
+    "inputPaint": "beforeinput event through the next animation frame",
+    "searchNavigation": "Playwright wall time from current Add route to focused Search route",
+    "firstSearchResult": "Playwright wall time from fill to first deterministic result option",
+    "lexicalScale": "existing release-mode 10,000-note / 200-query benchmark",
+    "nativeStartup": "process spawn through the complete exact-head Tauri startup-smoke receipt; cold uses a fresh profile and warm reopens one preserved profile"
+  },
+  "interactive": {
+    "coldShellMs": {
+      "median": 213.73,
+      "p95": 287.86,
+      "min": 208.97,
+      "max": 287.86,
+      "samples": [287.86, 219.21, 223.33, 213.41, 213.73, 226.93, 208.97, 212.92, 212.05, 225.25]
+    },
+    "editorInitializationMs": {
+      "median": 230.91,
+      "p95": 238.48,
+      "min": 220.87,
+      "max": 238.48,
+      "samples": [233.22, 232.69, 223.83, 238.48, 228.74, 225.23, 220.87, 234.44, 230.91, 237.75]
+    },
+    "inputPaintMs": {
+      "median": 5,
+      "p95": 6.9,
+      "min": 3.6,
+      "max": 6.9,
+      "samples": [6.9, 5.2, 4.6, 5, 3.6, 5.7, 4.3, 6.7, 4.1, 5.9]
+    },
+    "searchNavigationMs": {
+      "median": 115.21,
+      "p95": 123.51,
+      "min": 112.08,
+      "max": 123.51,
+      "samples": [123.51, 116.87, 118.1, 116.98, 119.93, 114.04, 114.37, 114.38, 112.08, 115.21]
+    },
+    "firstSearchResultMs": {
+      "median": 293.89,
+      "p95": 295.33,
+      "min": 288.91,
+      "max": 295.33,
+      "samples": [295.33, 293.44, 290.26, 294.74, 294.93, 288.91, 289.2, 293.89, 294.93, 294.64]
+    }
+  },
+  "nativeStartup": {
+    "coldProcessMs": {
+      "median": 886.94,
+      "p95": 1920.57,
+      "min": 817.52,
+      "max": 1920.57,
+      "samples": [1920.57, 886.94, 817.52, 888.74, 860.54]
+    },
+    "warmProcessMs": {
+      "median": 710.18,
+      "p95": 724.73,
+      "min": 708.2,
+      "max": 724.73,
+      "samples": [710.15, 724.73, 710.18, 708.2, 711.03]
+    }
+  },
+  "lexicalScale": {
+    "schemaVersion": 3,
+    "workload": "lexical-search-10k",
+    "generatorVersion": "kosh-scale-v1",
+    "seed": "0x4b4f53485f563108",
+    "tidbitCount": 10000,
+    "passageCount": 37333,
+    "queryCount": 200,
+    "resultLimit": 20,
+    "indexingDurationMs": 56991.624082999995,
+    "queryP50Ms": 13.575334,
+    "queryP95Ms": 27.425333,
+    "queryMaxMs": 28.79375,
+    "interactiveP95BudgetMs": 100,
+    "interactiveBudgetMet": true,
+    "runtime": {
+      "operatingSystem": "macos",
+      "architecture": "aarch64",
+      "logicalCpuCount": 10,
+      "buildProfile": "release",
+      "appVersion": "0.1.0",
+      "referenceHardware": null
+    }
+  }
+}

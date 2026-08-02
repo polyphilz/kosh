@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "activeNote": {
+    "id": "019f547b-6200-7000-8000-00000000b001",
+    "initialRevisionId": "019f547b-6200-7000-8000-00000000b002",
+    "currentRevisionId": "019f547b-6200-7000-8000-00000000b003",
+    "initialSourceId": "019f547b-6200-7000-8000-00000000b004",
+    "currentSourceId": "019f547b-6200-7000-8000-00000000b005",
+    "title": "Legacy vector notes",
+    "initialMarker": "historical_vector_marker",
+    "currentMarker": "current_vector_marker",
+    "sourceLabel": "NumPy notebook",
+    "sourceUrl": "https://example.com/numpy-vectors"
+  },
+  "media": {
+    "captureDraftId": "019f547b-6200-7000-8000-00000000b010",
+    "image": {
+      "attachmentId": "019f547b-6200-7000-8000-00000000b011",
+      "leaseId": "019f547b-6200-7000-8000-00000000b012",
+      "stagingId": "019f547b-6200-7000-8000-00000000b013",
+      "extractionId": "019f547b-6200-7000-8000-00000000b014",
+      "filename": "vector-board.png",
+      "ocrMarker": "image_vector_evidence"
+    },
+    "pdf": {
+      "attachmentId": "019f547b-6200-7000-8000-00000000b021",
+      "leaseId": "019f547b-6200-7000-8000-00000000b022",
+      "stagingId": "019f547b-6200-7000-8000-00000000b023",
+      "extractionId": "019f547b-6200-7000-8000-00000000b024",
+      "filename": "vector-chapter.pdf",
+      "pageMarker": "pdf_vector_evidence"
+    },
+    "text": {
+      "attachmentId": "019f547b-6200-7000-8000-00000000b031",
+      "leaseId": "019f547b-6200-7000-8000-00000000b032",
+      "stagingId": "019f547b-6200-7000-8000-00000000b033",
+      "extractionId": "019f547b-6200-7000-8000-00000000b034",
+      "filename": "vector-scraps.md",
+      "lineMarker": "text_vector_evidence"
+    },
+    "opaque": {
+      "attachmentId": "019f547b-6200-7000-8000-00000000b041",
+      "leaseId": "019f547b-6200-7000-8000-00000000b042",
+      "stagingId": "019f547b-6200-7000-8000-00000000b043",
+      "extractionId": "019f547b-6200-7000-8000-00000000b044",
+      "filename": "vector-data.bin"
+    }
+  },
+  "savedDraft": {
+    "id": "019f547b-6200-7000-8000-00000000b051",
+    "contextKey": "quick-add",
+    "body": "unfinished durable shower thought"
+  },
+  "deletedNote": {
+    "id": "019f547b-6200-7000-8000-00000000b061",
+    "revisionId": "019f547b-6200-7000-8000-00000000b062",
+    "body": "deleted_redesign_marker"
+  },
+  "settings": {
+    "quickAdd": "control+alt+KeyT",
+    "mainWindow": "control+alt+KeyM"
+  },
+  "backup": {
+    "backupSetId": "019f547b-6200-7000-8000-00000000b071",
+    "replicaEpochId": "019f547b-6200-7000-8000-00000000b072",
+    "accountId": "0123456789abcdef0123456789abcdef",
+    "bucket": "kosh-redesign-baseline"
+  }
+}

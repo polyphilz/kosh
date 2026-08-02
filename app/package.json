@@ -27,6 +27,7 @@
     "relevance:gate": "cargo test --locked --manifest-path src-tauri/Cargo.toml --test kosh-relevance -- --kosh-relevance-cli quality-gate",
     "relevance:lexical-scale": "cargo test --release --manifest-path src-tauri/Cargo.toml --test kosh-relevance -- --kosh-relevance-cli benchmark-lexical .data/relevance/reports/lexical-scale-v1.performance.json 10000 200",
     "relevance:scale": "cargo test --manifest-path src-tauri/Cargo.toml --test kosh-relevance -- --kosh-relevance-cli generate-scale .data/relevance/scale-v1.json 10000",
+    "baseline:redesign": "pnpm relevance:lexical-scale && node scripts/record-redesign-baseline.mjs",
     "hardening:report": "../scripts/run-hardening-report.sh",
     "model:verify": "../scripts/verify-jina-v1.sh",
     "release:stage-sidecar": "../scripts/build-llama-sidecar.sh",

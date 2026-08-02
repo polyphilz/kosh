@@ -35,6 +35,8 @@ mod media_tests;
 #[cfg(test)]
 mod offsite_checkpoint_tests;
 #[cfg(test)]
+mod redesign_baseline_tests;
+#[cfg(test)]
 mod reliability_tests;
 #[cfg(test)]
 mod research_runs_tests;

@@ -3,23 +3,27 @@
 ## Product invariants
 
 - Kosh is a macOS-first, local-first Tauri application.
-- Capture and lexical search must remain usable when Claude, the embedding
-  model, or remote backup is unavailable.
+- Kosh is a titleless, note-first capture tool: cold launch, typing, durable
+  autosave, hybrid search, and exact passage navigation are its critical path.
+- Capture and lexical search must remain usable when the embedding model or
+  remote backup is unavailable.
 - Search results operate on citation-sized passages. A trusted citation must
   resolve to the exact stored revision, attachment page, OCR evidence, or text
   line range supplied for that result.
-- `claude -p` research is read-only and has no web tools in v1. Never trust an
-  agent-provided URL or identifier as a citation target; resolve opaque handles
-  through Kosh-owned data.
+- Research is a retired product surface in the approved redesign. Do not add
+  new Research behavior; its code is removed only in the designated cleanup
+  slice while applied migrations and historical rows remain compatible.
 - Tidbit revisions and media blobs are immutable. Background extraction and
   embedding work must be content-hash checked before stale results can install.
 - R2 is single-writer backup/recovery, not multi-device synchronization.
 
 ## Repository workflow
 
-- The local implementation source of truth is `.plans/001-impl.md`.
+- `.plans/001-impl.md` remains the implementation foundation;
+  `.plans/003-redesign.md` supersedes its product and UI direction where they
+  conflict.
 - Work on one reviewable slice, branch, and pull request at a time.
-- Branches use `codex/<slice-number>-<short-description>`.
+- Redesign branches use `polyphilz/redesign-<zero-based-slice>-<short-description>`.
 - Keep changes scoped to the active slice and preserve unrelated user work.
 - Run targeted verification and the complete available check suite before
   committing.
@@ -57,10 +61,12 @@ directory before it can produce a passing receipt.
 The runtime gate owns these profiles; never replace or clear them to make a
 migration failure pass.
 
-The comprehensive test architecture and rollout live in the ignored
-`.plans/002-testing.md`. Chunk 26 executes the complete browser, native,
-migration, relevance, durability, security, performance, and release matrix;
-earlier chunks add the targeted layers called out for their changed contract.
+The comprehensive test architecture lives in the ignored
+`.plans/002-testing.md`; the redesign matrix and rollout live in
+`.plans/003-redesign.md`. Redesign Chunk 13 executes the complete browser,
+native, migration, relevance, durability, security, performance, and release
+matrix; earlier chunks add the targeted layers called out for their changed
+contract.
 
 ## Code Review Rules
 
