@@ -71,8 +71,20 @@ describe("production BlockNote editor", () => {
     expect(menu).toHaveTextContent("Display math");
     expect(menu).not.toHaveTextContent("Table");
     expect(menu).not.toHaveTextContent("Audio");
-    await user.keyboard("{Escape}");
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.blur(textbox);
     await waitFor(() => expect(onChange).toHaveBeenLastCalledWith("/"));
+  });
+
+  it("turns off browser writing assistance for technical notes", async () => {
+    renderEditor("", () => undefined);
+
+    const textbox = await screen.findByRole("textbox", { name: "Body" });
+    expect(textbox).toHaveAttribute("autocapitalize", "none");
+    expect(textbox).toHaveAttribute("autocomplete", "off");
+    expect(textbox).toHaveAttribute("autocorrect", "off");
+    expect(textbox).toHaveAttribute("spellcheck", "false");
+    expect(textbox).toHaveAttribute("writingsuggestions", "false");
   });
 
   it("inserts typed local media through its imperative bridge", async () => {

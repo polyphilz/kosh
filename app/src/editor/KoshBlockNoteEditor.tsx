@@ -3,6 +3,7 @@ import {
   HistoryExtension,
   insertOrUpdateBlockForSlashMenu,
   SideMenuExtension,
+  SuggestionMenu as SuggestionMenuExtension,
 } from "@blocknote/core/extensions";
 import { BlockNoteView } from "@blocknote/mantine";
 import {
@@ -19,7 +20,15 @@ import {
   useExtensionState,
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   GenericAttachmentStatusRecord,
   ImageRecord,
@@ -38,6 +47,7 @@ import {
   type KoshBlockNoteEditor as KoshBlockNoteEditorInstance,
   type KoshBlockNotePartialBlock,
 } from "./schema";
+import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
 
 export interface KoshBlockNoteEditorHandle {
   focus: () => void;
@@ -81,6 +91,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     const pendingExternalValue = useRef<string | undefined>(undefined);
     const replacingValue = useRef(false);
     const literalSlashPending = useRef(false);
+    const slashCommandSelected = useRef(false);
     if (properties.value !== lastPropertyValue.current) {
       lastPropertyValue.current = properties.value;
       if (properties.value !== lastEmittedValue.current) {
@@ -108,6 +119,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       tabBehavior: "prefer-indent",
       domAttributes: {
         editor: {
+          ...KOSH_WRITING_ASSISTANCE_ATTRIBUTES,
           "aria-label": properties.ariaLabel,
           "aria-multiline": "true",
           class: "kosh-blocknote-content",
@@ -160,6 +172,19 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       () => restrictedSlashItems(editor, mediaController, propertiesRef, capabilities),
       [capabilities, editor, mediaController],
     );
+    const settleLiteralSlash = useCallback(() => {
+      const commandWasSelected = slashCommandSelected.current;
+      slashCommandSelected.current = false;
+      if (!literalSlashPending.current) return;
+      literalSlashPending.current = false;
+      if (commandWasSelected) return;
+      const markdown = koshBlocksToMarkdown(editor.document);
+      if (markdown.trim() !== "/") return;
+      lastEmittedValue.current = markdown;
+      if (markdown !== propertiesRef.current.value) {
+        propertiesRef.current.onChange(markdown);
+      }
+    }, [editor]);
 
     useEffect(() => {
       mediaController.activate();
@@ -220,18 +245,6 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                   record: await propertiesRef.current.pasteImage!(),
                 }));
               }}
-              onKeyDownCapture={(event) => {
-                if (event.key !== "Escape" || !literalSlashPending.current) return;
-                window.requestAnimationFrame(() => {
-                  const markdown = koshBlocksToMarkdown(editor.document);
-                  if (markdown.trim() !== "/") return;
-                  literalSlashPending.current = false;
-                  lastEmittedValue.current = markdown;
-                  if (markdown !== propertiesRef.current.value) {
-                    propertiesRef.current.onChange(markdown);
-                  }
-                });
-              }}
             >
               <BlockNoteView
                 comments={false}
@@ -259,8 +272,13 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
               >
                 <SuggestionMenuController
                   getItems={async (query) => filterSuggestionItems(slashItems, query)}
+                  onItemClick={(item) => {
+                    slashCommandSelected.current = true;
+                    item.onItemClick();
+                  }}
                   triggerCharacter="/"
                 />
+                <KoshSlashMenuLifecycle onClosed={settleLiteralSlash} />
                 <SideMenuController sideMenu={KoshSideMenu} />
               </BlockNoteView>
             </div>
@@ -270,6 +288,17 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     );
   },
 );
+
+function KoshSlashMenuLifecycle({ onClosed }: { onClosed: () => void }) {
+  const state = useExtensionState(SuggestionMenuExtension);
+  const open = Boolean(state?.show && state.triggerCharacter === "/");
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (wasOpen.current && !open) onClosed();
+    wasOpen.current = open;
+  }, [onClosed, open]);
+  return null;
+}
 
 function restrictedSlashItems(
   editor: KoshBlockNoteEditorInstance,
