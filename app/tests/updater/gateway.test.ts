@@ -32,7 +32,7 @@ beforeEach(() => {
     version: "0.2.0",
   });
   mocks.downloadAndInstall.mockResolvedValue(undefined);
-  mocks.invoke.mockResolvedValue(undefined);
+  mocks.invoke.mockResolvedValue(41);
   mocks.relaunch.mockResolvedValue(undefined);
 });
 
@@ -42,10 +42,41 @@ test("preserves open drafts before relaunching an installed update", async () =>
   await tauriUpdateGateway.relaunch();
 
   expect(mocks.invoke).toHaveBeenCalledWith("prepare_update_relaunch");
+  expect(mocks.invoke).toHaveBeenCalledOnce();
   expect(mocks.relaunch).toHaveBeenCalledOnce();
   expect(mocks.invoke.mock.invocationCallOrder[0]).toBeLessThan(
     mocks.relaunch.mock.invocationCallOrder[0]!,
   );
+});
+
+test("releases preserved drafts when relaunching fails", async () => {
+  const relaunchError = new Error("restart unavailable");
+  mocks.relaunch.mockRejectedValue(relaunchError);
+  const { tauriUpdateGateway } = await import("../../src/updater/gateway.ts");
+
+  await expect(tauriUpdateGateway.relaunch()).rejects.toBe(relaunchError);
+
+  expect(mocks.invoke).toHaveBeenNthCalledWith(1, "prepare_update_relaunch");
+  expect(mocks.invoke).toHaveBeenNthCalledWith(2, "cancel_update_relaunch", {
+    requestId: 41,
+  });
+});
+
+test("preserves the relaunch error when releasing drafts also fails", async () => {
+  const relaunchError = new Error("restart unavailable");
+  const cleanupError = new Error("cleanup unavailable");
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  mocks.relaunch.mockRejectedValue(relaunchError);
+  mocks.invoke.mockResolvedValueOnce(41).mockRejectedValueOnce(cleanupError);
+  const { tauriUpdateGateway } = await import("../../src/updater/gateway.ts");
+
+  await expect(tauriUpdateGateway.relaunch()).rejects.toBe(relaunchError);
+
+  expect(consoleError).toHaveBeenCalledWith(
+    "Could not release drafts after the update restart failed",
+    cleanupError,
+  );
+  consoleError.mockRestore();
 });
 
 test("bounds update checks and downloads with explicit timeouts", async () => {

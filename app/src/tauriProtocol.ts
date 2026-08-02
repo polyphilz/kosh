@@ -2,6 +2,7 @@ export const TauriCommand = {
   AcknowledgeQuit: "acknowledge_quit",
   AttachmentStatus: "attachment_status",
   BackupNow: "backup_now",
+  CancelUpdateRelaunch: "cancel_update_relaunch",
   ConfigureBackup: "configure_backup",
   CancelResearchProcess: "cancel_research_process",
   CaptureClipboardImage: "capture_clipboard_image",

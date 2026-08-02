@@ -114,6 +114,7 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         database::commands::load_draft,
         database::commands::clear_draft,
         windows::acknowledge_quit,
+        windows::cancel_update_relaunch,
         windows::prepare_update_relaunch,
         windows::dismiss_quick_add,
         windows::load_shortcut_settings,

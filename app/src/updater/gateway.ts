@@ -63,7 +63,16 @@ export const tauriUpdateGateway: UpdateGateway = {
     );
   },
   async relaunch() {
-    await invoke(TauriCommand.PrepareUpdateRelaunch);
-    await relaunch();
+    const requestId = await invoke<number>(TauriCommand.PrepareUpdateRelaunch);
+    try {
+      await relaunch();
+    } catch (error) {
+      try {
+        await invoke(TauriCommand.CancelUpdateRelaunch, { requestId });
+      } catch (cleanupError) {
+        console.error("Could not release drafts after the update restart failed", cleanupError);
+      }
+      throw error;
+    }
   },
 };

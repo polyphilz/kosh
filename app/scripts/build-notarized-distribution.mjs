@@ -54,6 +54,7 @@ assert(
   `usage: node scripts/build-notarized-distribution.mjs [${ResumeArgument}]`,
 );
 const resume = arguments_.includes(ResumeArgument);
+run("pnpm", ["release:verify-source"], { stdio: "inherit" });
 const policy = readDistributionSigningPolicy();
 const notarization = takeNotarizationEnvironment();
 run("pnpm", ["release:verify-updater-signing"], { stdio: "inherit" });

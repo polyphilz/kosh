@@ -513,7 +513,7 @@ pub(crate) fn acknowledge_quit(
 }
 
 #[tauri::command]
-pub(crate) async fn prepare_update_relaunch(app: AppHandle) -> Result<(), String> {
+pub(crate) async fn prepare_update_relaunch(app: AppHandle) -> Result<u64, String> {
     let labels = [MAIN_LABEL, QUICK_ADD_LABEL]
         .into_iter()
         .filter(|label| app.get_webview_window(label).is_some())
@@ -533,7 +533,7 @@ pub(crate) async fn prepare_update_relaunch(app: AppHandle) -> Result<(), String
             .lock()
             .expect("quit context poisoned")
             .cancel(request_id);
-        return Ok(());
+        return Ok(request_id);
     }
 
     let (completion, receiver) = mpsc::sync_channel(1);
@@ -566,7 +566,7 @@ pub(crate) async fn prepare_update_relaunch(app: AppHandle) -> Result<(), String
             .await
             .map_err(|error| error.to_string())?;
     match wait {
-        Ok(result) => result,
+        Ok(result) => result.map(|()| request_id),
         Err(mpsc::RecvTimeoutError::Timeout) => {
             app.state::<WindowState>()
                 .quit
@@ -586,6 +586,16 @@ pub(crate) async fn prepare_update_relaunch(app: AppHandle) -> Result<(), String
             Err("Kosh could not confirm that open drafts were preserved".into())
         }
     }
+}
+
+#[tauri::command]
+pub(crate) fn cancel_update_relaunch(app: AppHandle, request_id: u64) {
+    cancel_quit_ui(
+        &app,
+        request_id,
+        MAIN_LABEL,
+        "Kosh could not restart after installing the update",
+    );
 }
 
 fn cancel_quit_ui(app: &AppHandle, request_id: u64, window_label: &str, error: &str) {

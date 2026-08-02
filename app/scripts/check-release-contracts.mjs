@@ -180,6 +180,18 @@ for (const contract of [
 ]) {
   assert(distributionBuild.includes(contract), `distribution build omits ${contract}`);
 }
+const sourceVerification = distributionBuild.indexOf(
+  'run("pnpm", ["release:verify-source"], { stdio: "inherit" });',
+);
+const signingVerification = distributionBuild.indexOf(
+  'run("pnpm", ["release:verify-updater-signing"], { stdio: "inherit" });',
+);
+const distributionBuildStart = distributionBuild.indexOf("buildSignedApplication(policy);");
+assert(sourceVerification >= 0, "distribution build omits clean-source verification");
+assert(
+  sourceVerification < signingVerification && sourceVerification < distributionBuildStart,
+  "distribution build must verify clean source before signing preflight or build work",
+);
 for (const platform of ['"darwin-aarch64"', '"darwin-x86_64"']) {
   assert(releaseArtifacts.includes(platform), `updater manifest omits ${platform}`);
 }
