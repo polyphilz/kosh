@@ -60,6 +60,7 @@ export interface KoshBlockNoteEditorHandle {
   insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
   insertPdfs: (pdfs: PdfRecord[]) => void;
+  revalidateCitationFocus: (citation: CitationResolution) => boolean;
 }
 
 export interface KoshBlockNoteEditorProps {
@@ -239,6 +240,8 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
           mediaController.insert(images.map((record) => ({ recordKind: "IMAGE", record }))),
         insertPdfs: (pdfs) =>
           mediaController.insert(pdfs.map((record) => ({ recordKind: "PDF", record }))),
+        revalidateCitationFocus: (citation) =>
+          revalidateCitationFocus(editor, citation, searchFocusBlockIds),
       }),
       [editor, mediaController],
     );
@@ -353,6 +356,31 @@ function clearSearchFocus(
 ): void {
   if (focusedBlockIds.current.length > 0) setSearchFocusBlocks(editor, []);
   focusedBlockIds.current = [];
+}
+
+function revalidateCitationFocus(
+  editor: KoshBlockNoteEditorInstance,
+  citation: CitationResolution,
+  focusedBlockIds: MutableRefObject<string[]>,
+): boolean {
+  if (focusedBlockIds.current.length === 0) return false;
+  const blocks = flattenBlocks(editor.document);
+  const range = citationBlockRange(blocks, citation);
+  if (!range) {
+    clearSearchFocus(editor, focusedBlockIds);
+    return false;
+  }
+  const selectedBlocks = blocks.slice(range.start, range.end + 1);
+  const sameBlocks =
+    selectedBlocks.length === focusedBlockIds.current.length &&
+    selectedBlocks.every((block, index) => block.id === focusedBlockIds.current[index]);
+  const inlineRange =
+    selectedBlocks.length === 1 ? citationInlineRange(selectedBlocks[0]!, citation) : null;
+  if (!sameBlocks || (citationHasInlineLocator(citation) && !inlineRange)) {
+    clearSearchFocus(editor, focusedBlockIds);
+    return false;
+  }
+  return true;
 }
 
 type SearchableBlock = {

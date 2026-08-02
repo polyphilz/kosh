@@ -190,6 +190,29 @@ describe("production BlockNote editor", () => {
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
   });
 
+  it("clears focused evidence when an edit removes the cited passage", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="Slow simmering preserves brightness."
+        />
+      </AppearanceProvider>,
+    );
+    const editor = await screen.findByRole("textbox", { name: "Body" });
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(true);
+    await user.clear(editor);
+    await user.type(editor, "Fast boiling changes everything.");
+
+    expect(ref.current?.revalidateCitationFocus(authoredCitation())).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
   it("preserves punctuation while validating citation evidence", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(

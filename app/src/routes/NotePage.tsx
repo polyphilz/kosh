@@ -386,7 +386,19 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
           disabled={lifecyclePreparing}
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
-          onChange={(bodyMarkdown) => coordinator.update(bodyMarkdown)}
+          onChange={(bodyMarkdown) => {
+            coordinator.update(bodyMarkdown);
+            if (
+              searchFocus?.phase === "FOCUSED" &&
+              !editorRef.current?.revalidateCitationFocus(searchFocus.citation)
+            ) {
+              setSearchFocus({
+                phase: "UNAVAILABLE",
+                message: "The cited passage is no longer present in this note.",
+                citation: searchFocus.citation,
+              });
+            }
+          }}
           onImageError={(reason) =>
             setMediaError(`Could not add attachment: ${errorMessage(reason)}`)
           }

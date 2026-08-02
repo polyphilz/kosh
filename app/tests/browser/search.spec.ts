@@ -40,6 +40,12 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   expect(page.url()).not.toContain("slow");
   expect(await searchStorageKeys(page)).toEqual([]);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+  await page.getByRole("textbox", { name: "Note" }).fill("A replacement passage.");
+  await expect(
+    page.getByText("The cited passage is no longer present in this note."),
+  ).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
 });
 
 test("search checkpoints the active note before querying", async ({ page }) => {
