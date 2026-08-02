@@ -181,6 +181,14 @@ export class NoteAutosaveCoordinator {
   private async flushNewest(_reason: NoteFlushReason): Promise<TidbitRecord | null> {
     while (true) {
       const target = authoredSnapshot(this.state);
+      if (target.editGeneration <= this.state.checkpointedGeneration) {
+        this.publish({
+          ...this.state,
+          phase: this.state.baseRevisionId === null ? "EPHEMERAL" : "CLEAN",
+          error: null,
+        });
+        return null;
+      }
       if (target.editGeneration === 0) {
         this.publish({ ...this.state, phase: "EPHEMERAL", error: null });
         return null;
@@ -383,6 +391,9 @@ export function hasMeaningfulAuthoredContent(markdown: string): boolean {
     /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu,
     "media",
   );
+  if (/<(?:[A-Za-z][A-Za-z\d+.-]*:[^<>\s]+|[^<>\s@]+@[^<>\s@]+)>/u.test(mediaAware)) {
+    return true;
+  }
   const withoutTags = mediaAware.replace(/<[^>]*>/gu, "");
   return withoutTags.replace(/[`*_#>+\-[\]()~$\\\s]/gu, "").length > 0;
 }

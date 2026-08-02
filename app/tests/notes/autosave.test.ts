@@ -187,6 +187,18 @@ describe("note autosave coordinator", () => {
     },
   );
 
+  it("does not checkpoint the same generation again across lifecycle fences", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
+    coordinator.update("already safe");
+
+    await coordinator.flush("HIDE");
+    await coordinator.flush("QUIT");
+
+    expect(backend.saveWorkingCopy).toHaveBeenCalledOnce();
+    expect(backend.checkpointWorkingCopy).toHaveBeenCalledOnce();
+  });
+
   it("does not let an older checkpoint completion mark a newer edit clean", async () => {
     const backend = gateway();
     const firstCheckpoint = deferred<WorkingCopyCheckpointResult>();
@@ -280,6 +292,9 @@ describe("note autosave primitives", () => {
   it("distinguishes structural Markdown from authored text, math, and media", () => {
     expect(hasMeaningfulAuthoredContent("# \n\n- ** **")).toBe(false);
     expect(hasMeaningfulAuthoredContent("$x$")).toBe(true);
+    expect(hasMeaningfulAuthoredContent("<https://example.com>")).toBe(true);
+    expect(hasMeaningfulAuthoredContent("<someone@example.com>")).toBe(true);
+    expect(hasMeaningfulAuthoredContent("<br><span> </span>")).toBe(false);
     expect(
       hasMeaningfulAuthoredContent("{{kosh:image:019f547b-6200-7000-8000-000000008099}}"),
     ).toBe(true);
