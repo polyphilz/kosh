@@ -51,6 +51,7 @@ interface EditableSource {
 
 export interface TidbitComposerHandle {
   focusPrimary: () => void;
+  isEditorOverlayOpen: () => boolean;
   requestCancel: () => void;
 }
 
@@ -447,6 +448,7 @@ export const TidbitComposer = forwardRef<TidbitComposerHandle, TidbitComposerPro
 
     useImperativeHandle(ref, () => ({
       focusPrimary: () => editorRef.current?.focus(),
+      isEditorOverlayOpen: () => Boolean(editorRef.current?.isSuggestionMenuOpen()),
       requestCancel,
     }));
 

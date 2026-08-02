@@ -43,6 +43,7 @@ export function QuickAddWindow({ native = quickAddNative }: QuickAddWindowProps)
     if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
     const target = event.target;
     if (target instanceof Element && target.closest('[role="dialog"]')) return;
+    if (composerRef.current?.isEditorOverlayOpen()) return;
     event.preventDefault();
     event.stopPropagation();
     composerRef.current?.requestCancel();

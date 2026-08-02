@@ -51,6 +51,7 @@ import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
 
 export interface KoshBlockNoteEditorHandle {
   focus: () => void;
+  isSuggestionMenuOpen: () => boolean;
   insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
   insertPdfs: (pdfs: PdfRecord[]) => void;
@@ -92,6 +93,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     const replacingValue = useRef(false);
     const literalSlashPending = useRef(false);
     const slashCommandSelected = useRef(false);
+    const suggestionMenuOpen = useRef(false);
     if (properties.value !== lastPropertyValue.current) {
       lastPropertyValue.current = properties.value;
       if (properties.value !== lastEmittedValue.current) {
@@ -221,6 +223,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       ref,
       () => ({
         focus: () => editor.focus(),
+        isSuggestionMenuOpen: () => suggestionMenuOpen.current,
         insertAttachments: (attachments) => mediaController.insert(attachments),
         insertImages: (images) =>
           mediaController.insert(images.map((record) => ({ recordKind: "IMAGE", record }))),
@@ -278,7 +281,12 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                   }}
                   triggerCharacter="/"
                 />
-                <KoshSlashMenuLifecycle onClosed={settleLiteralSlash} />
+                <KoshSlashMenuLifecycle
+                  onClosed={settleLiteralSlash}
+                  onOpenChange={(open) => {
+                    suggestionMenuOpen.current = open;
+                  }}
+                />
                 <SideMenuController sideMenu={KoshSideMenu} />
               </BlockNoteView>
             </div>
@@ -289,14 +297,22 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
   },
 );
 
-function KoshSlashMenuLifecycle({ onClosed }: { onClosed: () => void }) {
+function KoshSlashMenuLifecycle({
+  onClosed,
+  onOpenChange,
+}: {
+  onClosed: () => void;
+  onOpenChange: (open: boolean) => void;
+}) {
   const state = useExtensionState(SuggestionMenuExtension);
   const open = Boolean(state?.show && state.triggerCharacter === "/");
   const wasOpen = useRef(false);
   useEffect(() => {
     if (wasOpen.current && !open) onClosed();
     wasOpen.current = open;
-  }, [onClosed, open]);
+    onOpenChange(open);
+    return () => onOpenChange(false);
+  }, [onClosed, onOpenChange, open]);
   return null;
 }
 

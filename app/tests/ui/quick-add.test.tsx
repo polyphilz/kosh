@@ -72,6 +72,26 @@ describe("global quick add", () => {
     await expect(backend.loadDraft("quick-add")).resolves.toBeNull();
   });
 
+  it("lets an open slash menu consume Escape before canceling quick add", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+    await user.type(editor, "/");
+    await screen.findByText("Paragraph");
+
+    fireEvent.keyDown(editor, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText("Paragraph")).toBeNull());
+    expect(editor).toHaveTextContent("/");
+    expect(native.dismiss).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).toBeNull();
+
+    fireEvent.keyDown(editor, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Discard this draft?" })).toBeInTheDocument();
+  });
+
   it("pastes images and selects attachments through the quick-add draft lease", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();
