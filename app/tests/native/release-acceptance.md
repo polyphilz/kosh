@@ -84,8 +84,9 @@ pnpm release:acceptance launch clean-YYYYMMDD
    phrase, and open its region citation.
 2. Attach the PDF, wait for extraction, search a phrase from a known page, and
    open its page citation. Exercise native-text and OCR pages when available.
-3. Attach an arbitrary file and confirm its block survives edit, restart, and
-   reveal/open actions.
+3. Attach one UTF-8 text file and one separate opaque binary file (for example,
+   a ZIP), then confirm both blocks survive edit, restart, and reveal/open
+   actions.
 4. Start semantic setup. While downloading/verifying, repeat note capture and
    lexical search to prove they remain available.
 5. After Ready, run a paraphrase with no exact overlap and confirm the expected
@@ -99,7 +100,8 @@ pnpm release:acceptance check-journeys clean-YYYYMMDD
 ```
 
 The durable check requires URL, code, math, image/OCR, PDF extraction,
-searchable extracted text, and semantic embedding evidence.
+searchable extracted text, text and opaque-binary attachments, and semantic
+embedding evidence.
 
 ## C. Restart
 
@@ -132,11 +134,13 @@ From the clean exact candidate commit, run:
 pnpm baseline:redesign
 ```
 
-Retain `.data/redesign/release-candidate-v1.performance.json`. It must pass the
-hidden native-startup regression, editor initialization, input-paint, warm
-search-overlay, first-result, and 10,000-note lexical budgets. The automated
-native samples deliberately keep Kosh hidden and therefore do not claim shown
-window or focus latency. During the visible walkthrough, measure 20 cold
+Retain `.data/redesign/release-candidate-v1.performance.json`. On the frozen
+reference hardware it must pass the hidden native-startup regression, editor
+initialization, input-paint, warm search-overlay, and first-result budgets. On
+unlike hardware those machine timings are recorded but not asserted. The
+10,000-note lexical budget is always enforced. The automated native samples
+deliberately keep Kosh hidden and therefore do not claim shown window or focus
+latency. During the visible walkthrough, measure 20 cold
 launches from process start to a shown window with a focused editable caret;
 the p95 target is 1,000 ms. Measure 20 already-running app reactivations
 separately; the p95 target is 150 ms and cannot be inferred from a process

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 
 export async function writePrivateReport(rootPath, outputPath, contents) {
   const root = resolve(rootPath);
@@ -9,6 +9,7 @@ export async function writePrivateReport(rootPath, outputPath, contents) {
     throw new Error(`report output must be a direct child of ${root}`);
   }
 
+  await assertExistingAncestorsAreRealDirectories(root);
   await mkdir(root, { mode: 0o700, recursive: true });
   const rootMetadata = await lstat(root);
   if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
@@ -32,6 +33,20 @@ export async function writePrivateReport(rootPath, outputPath, contents) {
       if (cleanupError?.code !== "ENOENT") throw cleanupError;
     });
     throw error;
+  }
+}
+
+async function assertExistingAncestorsAreRealDirectories(path) {
+  const absolute = resolve(path);
+  const filesystemRoot = parse(absolute).root;
+  let current = filesystemRoot;
+  for (const component of absolute.slice(filesystemRoot.length).split(sep).filter(Boolean)) {
+    current = join(current, component);
+    const metadata = await metadataIfPresent(current);
+    if (!metadata) return;
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error(`report root must have only real directory ancestors: ${current}`);
+    }
   }
 }
 

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -44,6 +44,23 @@ test("rejects a report root reached through a symlink", async () => {
   await expect(
     writePrivateReport(linked, join(linked, "performance.json"), "nope\n"),
   ).rejects.toThrow(/real directory|symlinked path components/u);
+});
+
+test("rejects a symlinked ancestor before creating the report root", async () => {
+  const parent = await temporaryRoot();
+  const actual = join(parent, "actual");
+  const linked = join(parent, "linked");
+  await mkdir(actual);
+  await symlink(actual, linked);
+
+  await expect(
+    writePrivateReport(
+      join(linked, "reports"),
+      join(linked, "reports", "performance.json"),
+      "nope\n",
+    ),
+  ).rejects.toThrow("real directory ancestors");
+  await expect(lstat(join(actual, "reports"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 async function temporaryRoot() {

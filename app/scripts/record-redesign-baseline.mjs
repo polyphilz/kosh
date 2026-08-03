@@ -4,6 +4,7 @@ import { cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { assessPerformanceBudgets, referenceHardwareMatches } from "./performance-budgets.mjs";
 import { writePrivateReport } from "./private-report-output.mjs";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -102,20 +103,42 @@ try {
       searchNavigationMs: summarize(searchNavigationMs),
       firstSearchResultMs: summarize(firstSearchResultMs),
     };
-    const budgets = assessBudgets(interactive, nativeStartup, scale, frozenBaseline);
+    const environment = {
+      platform: platform(),
+      release: release(),
+      cpu: cpus()[0]?.model ?? "unknown",
+      logicalCpuCount: cpus().length,
+      totalMemoryBytes: totalmem(),
+      browser: await browser.version(),
+      node: process.version,
+    };
+    const machineTimingReferenceMatched = referenceHardwareMatches(
+      environment,
+      frozenBaseline.environment,
+    );
+    const budgets = assessPerformanceBudgets(
+      interactive,
+      nativeStartup,
+      scale,
+      frozenBaseline,
+      machineTimingReferenceMatched,
+    );
     const report = {
       schemaVersion: 1,
       baseline: "note-first-release-candidate",
       sourceRevision,
       recordedAt: new Date().toISOString(),
-      environment: {
-        platform: platform(),
-        release: release(),
-        cpu: cpus()[0]?.model ?? "unknown",
-        logicalCpuCount: cpus().length,
-        totalMemoryBytes: totalmem(),
-        browser: await browser.version(),
-        node: process.version,
+      environment,
+      referenceComparison: {
+        machineTimingReferenceMatched,
+        referenceHardware: {
+          platform: frozenBaseline.environment.platform,
+          cpu: frozenBaseline.environment.cpu,
+          logicalCpuCount: frozenBaseline.environment.logicalCpuCount,
+          totalMemoryBytes: frozenBaseline.environment.totalMemoryBytes,
+        },
+        policy:
+          "machine timing budgets are enforced only on matching reference hardware; lexical scale is always enforced",
       },
       methodology: {
         samplesPerInteractiveMetric: sampleCount,
@@ -156,7 +179,7 @@ try {
     );
     process.stdout.write(`Wrote ${outputPath}\n`);
     const failures = Object.entries(budgets)
-      .filter(([, value]) => !value.passed)
+      .filter(([, value]) => value.enforced && value.passed === false)
       .map(([name, value]) => `${name}: ${value.actual} > ${value.limit}`);
     if (failures.length > 0) {
       throw new Error(`redesign performance budgets failed:\n${failures.join("\n")}`);
@@ -386,58 +409,8 @@ function summarize(samples) {
   };
 }
 
-function assessBudgets(interactive, nativeStartup, scale, frozenBaseline) {
-  const frozen = frozenBaseline.interactive;
-  return {
-    hiddenNativeStartupP95: budget(
-      nativeStartup.freshHiddenProcessMs.p95,
-      round(frozenBaseline.nativeStartup.coldProcessMs.p95 * 1.2),
-      "hidden exact-head startup regression evidence; visible focus is measured manually",
-    ),
-    coldShellP95: budget(
-      interactive.coldShellMs.p95,
-      round(frozen.coldShellMs.p95 * 1.2),
-      "within 20% of the frozen shell baseline",
-    ),
-    editorInitializationP95: budget(
-      interactive.editorInitializationMs.p95,
-      round(frozen.editorInitializationMs.p95 * 1.3),
-      "explicitly reviewed BlockNote ceiling of 30% over the frozen ProseMirror baseline",
-    ),
-    inputPaintP95: budget(
-      interactive.inputPaintMs.p95,
-      16.67,
-      "ordinary input paints within one 60 Hz frame",
-    ),
-    searchOverlayP95: budget(interactive.searchNavigationMs.p95, 100, "warm Command-K overlay"),
-    firstSearchResultP95: budget(
-      interactive.firstSearchResultMs.p95,
-      round(frozen.firstSearchResultMs.p95 * 1.2),
-      "within 20% of the frozen deterministic result baseline",
-    ),
-    lexicalScaleP95: budget(
-      scale.queryP95Ms,
-      scale.interactiveP95BudgetMs,
-      "10,000-note production lexical path",
-    ),
-  };
-}
-
-function budget(actual, limit, rationale) {
-  return {
-    actual,
-    limit,
-    passed: actual <= limit,
-    rationale,
-  };
-}
-
 function percentile(sorted, quantile) {
   return sorted[Math.max(0, Math.ceil(sorted.length * quantile) - 1)];
-}
-
-function round(value) {
-  return Math.round(value * 100) / 100;
 }
 
 async function waitForServer(url) {

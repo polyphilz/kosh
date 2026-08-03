@@ -81,9 +81,11 @@ note-route/editor suites.
   database files against the manifest, so a damaged newer pair cannot displace
   the newest still-valid recovery point.
 
-Machine timings other than the 10k lexical budget are recorded rather than
-asserted across unlike developer hardware. A regression is investigated from
-the ignored JSON report and may not be hidden by widening a timeout.
+Machine timings other than the 10k lexical budget are asserted only when the
+CPU model, logical CPU count, and physical memory match the frozen reference
+Mac; they are recorded without a pass/fail result on unlike developer hardware.
+A regression is investigated from the ignored JSON report and may not be hidden
+by widening a timeout.
 
 ## Attachment and extraction limits
 
