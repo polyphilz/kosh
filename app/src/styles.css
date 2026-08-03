@@ -93,7 +93,10 @@ body,
 
 body {
   min-height: 100vh;
+  color: var(--ink);
   background: var(--canvas);
+  font-family: var(--font-family-app);
+  line-height: normal;
 }
 
 button,

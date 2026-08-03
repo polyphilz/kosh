@@ -1,6 +1,6 @@
 import type { Content, Root } from "mdast";
 import { parseKoshMediaToken } from "./mediaTokens";
-import { parseKoshMarkdownAst } from "./markdownConversion";
+import { parseKoshMarkdownAst } from "./markdownAst";
 
 const mediaTokenCandidate = /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu;
 

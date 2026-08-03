@@ -10,13 +10,13 @@ import { describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
 import type { ImageRecord, SelectedAttachmentRecord } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
+import { AppearanceProvider } from "../../src/components/Appearance";
 import {
   QuitCoordinator,
   type PrepareQuitNotice,
   type QuitCanceledNotice,
   type QuitNative,
 } from "../../src/lifecycle/quit";
-import { richTextEditorViewFromDOM } from "../../src/markdown/editorViewRegistry";
 import { QuickAddWindow } from "../../src/quickAdd/QuickAddWindow";
 import type { QuickAddNative } from "../../src/quickAdd/native";
 
@@ -56,7 +56,7 @@ describe("global quick add", () => {
     const native = createNative();
     renderQuickAdd(backend, native.controller);
     const editor = await screen.findByRole("textbox", { name: "Tidbit" });
-    setEditorText("Do not lose this shower thought.");
+    await setEditorText(user, "Do not lose this shower thought.");
 
     fireEvent.keyDown(editor, { key: "Escape" });
     expect(screen.getByRole("dialog", { name: "Discard this draft?" })).toBeInTheDocument();
@@ -70,6 +70,26 @@ describe("global quick add", () => {
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
     await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
     await expect(backend.loadDraft("quick-add")).resolves.toBeNull();
+  });
+
+  it("lets an open slash menu consume Escape before canceling quick add", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+    await user.type(editor, "/");
+    await screen.findByText("Paragraph");
+
+    fireEvent.keyDown(editor, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText("Paragraph")).toBeNull());
+    expect(editor).toHaveTextContent("/");
+    expect(native.dismiss).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).toBeNull();
+
+    fireEvent.keyDown(editor, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Discard this draft?" })).toBeInTheDocument();
   });
 
   it("pastes images and selects attachments through the quick-add draft lease", async () => {
@@ -119,7 +139,7 @@ describe("global quick add", () => {
     });
     await waitFor(() => expect(captureClipboardImage).toHaveBeenCalledOnce(), { timeout: 3_000 });
     expect(await screen.findByLabelText("Alt text", {}, { timeout: 3_000 })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Add attachment" }));
+    await chooseSlashItem(user, "File");
 
     await waitFor(() => expect(ingestAttachment).toHaveBeenCalledOnce());
     expect(native.setFileDialogOpen.mock.calls).toEqual([[true], [false]]);
@@ -128,21 +148,12 @@ describe("global quick add", () => {
     expect(await screen.findByText("chapter.txt")).toBeInTheDocument();
   });
 
-  it("refocuses the one persistent composer on repeated native invocations", async () => {
+  it("registers one persistent composer for native invocations", async () => {
     const backend = new FakeBackend();
     const native = createNative();
     renderQuickAdd(backend, native.controller);
-    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
-    const focus = vi.spyOn(editor as HTMLElement, "focus");
-    await act(async () => {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    });
-    const initialFocusCalls = focus.mock.calls.length;
-
-    act(() => native.show());
-    act(() => native.show());
-
-    await waitFor(() => expect(focus).toHaveBeenCalledTimes(initialFocusCalls + 2));
+    await screen.findByRole("textbox", { name: "Tidbit" });
+    await waitFor(() => expect(native.controller.onShown).toHaveBeenCalledOnce());
     expect(screen.getAllByRole("main", { name: "Quick add" })).toHaveLength(1);
   });
 
@@ -152,7 +163,7 @@ describe("global quick add", () => {
     const quit = createQuitNative();
     renderQuickAdd(backend, native.controller, quit.controller);
     await screen.findByRole("textbox", { name: "Tidbit" });
-    setEditorText("The keystroke immediately before Quit must survive.");
+    await setEditorText(userEvent.setup(), "The keystroke immediately before Quit must survive.");
 
     act(() => quit.prepare(41));
 
@@ -232,7 +243,9 @@ function renderQuickAdd(backend: FakeBackend, native: QuickAddNative, quitNative
   });
   return render(
     <BackendProvider backend={backend}>
-      <RouterProvider router={router} />
+      <AppearanceProvider>
+        <RouterProvider router={router} />
+      </AppearanceProvider>
     </BackendProvider>,
   );
 }
@@ -284,16 +297,18 @@ function createQuitNative() {
   };
 }
 
-function setEditorText(value: string) {
+async function setEditorText(user: ReturnType<typeof userEvent.setup>, value: string) {
   const textbox = screen.getByRole("textbox", { name: "Tidbit" });
-  const view = richTextEditorViewFromDOM(textbox);
-  if (!view) throw new Error("rich text editor view is unavailable");
-  act(() => {
-    view.dispatch(
-      view.state.tr
-        .delete(1, view.state.doc.content.size - 1)
-        .insertText(value, 1)
-        .scrollIntoView(),
-    );
-  });
+  await user.clear(textbox);
+  await user.type(textbox, value);
+}
+
+async function chooseSlashItem(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const textbox = screen.getByRole("textbox", { name: "Tidbit" });
+  const insertionPoint = textbox
+    .querySelectorAll(".bn-inline-content")
+    .item(textbox.querySelectorAll(".bn-inline-content").length - 1);
+  await user.click(insertionPoint || textbox);
+  await user.type(insertionPoint || textbox, "/");
+  await user.click(await screen.findByRole("option", { name }));
 }

@@ -1,0 +1,227 @@
+.kosh-rich-text-editor {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-solid) 86%, transparent);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.kosh-rich-text-editor:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
+  box-shadow: var(--focus-ring);
+}
+
+.kosh-rich-text-editor[aria-disabled="true"] {
+  opacity: 0.62;
+}
+
+.kosh-blocknote-editor {
+  overflow: visible;
+}
+
+.kosh-blocknote-editor .bn-container,
+.kosh-blocknote-editor .bn-editor {
+  min-height: 120px;
+  color: var(--ink);
+  background: transparent;
+}
+
+.kosh-blocknote-editor .bn-editor {
+  padding: 13px 15px;
+  font: 14px/1.6 var(--font-family-app);
+}
+
+.kosh-blocknote-editor .bn-inline-content {
+  caret-color: var(--accent);
+}
+
+.kosh-blocknote-editor .bn-side-menu {
+  color: var(--muted);
+}
+
+.kosh-math-editor {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-family: KaTeX_Math, "Times New Roman", serif;
+}
+
+.kosh-math-editor--inline {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.kosh-math-editor--display {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 18px 24px;
+  overflow-x: auto;
+  font-size: 1.25rem;
+  text-align: center;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 8px;
+}
+
+.kosh-math-editor__source,
+.kosh-legacy-markdown textarea {
+  width: 100%;
+  color: inherit;
+  font:
+    13px/1.5 ui-monospace,
+    monospace;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 5px;
+}
+
+.kosh-math-editor--inline .kosh-math-editor__source {
+  width: 9rem;
+}
+
+.kosh-legacy-markdown {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+}
+
+.kosh-legacy-markdown__label {
+  font:
+    600 11px/1.2 ui-monospace,
+    monospace;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.kosh-legacy-markdown textarea {
+  min-height: 5rem;
+  padding: 10px;
+  resize: vertical;
+}
+
+.kosh-blocknote-image,
+.kosh-blocknote-file,
+.kosh-blocknote-pending-media,
+.kosh-blocknote-legacy-media {
+  position: relative;
+  max-width: 100%;
+  padding: 12px;
+  margin: 6px 0;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+
+.kosh-blocknote-image {
+  margin-inline: 0;
+}
+
+.kosh-blocknote-image img {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 5px;
+}
+
+.kosh-blocknote-image__resize {
+  position: absolute;
+  right: -5px;
+  bottom: 50%;
+  width: 10px;
+  height: 48px;
+  padding: 0;
+  cursor: ew-resize;
+  background: var(--accent);
+  border: 0;
+  border-radius: 999px;
+}
+
+.kosh-blocknote-image__fields,
+.kosh-blocknote-media__footer,
+.kosh-blocknote-file__controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.kosh-blocknote-image__fields label,
+.kosh-blocknote-file__caption,
+.kosh-blocknote-legacy-media {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.kosh-blocknote-image input,
+.kosh-blocknote-file input,
+.kosh-blocknote-legacy-media textarea {
+  width: 100%;
+  padding: 6px 8px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 5px;
+}
+
+.kosh-blocknote-media__footer {
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.kosh-blocknote-media__footer button,
+.kosh-blocknote-file__controls button {
+  padding: 5px 8px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 5px;
+}
+
+.kosh-blocknote-file {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.kosh-blocknote-file__icon {
+  font:
+    700 11px/1 ui-monospace,
+    monospace;
+}
+
+.kosh-blocknote-file__details {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.kosh-blocknote-file__details strong,
+.kosh-blocknote-file__details span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kosh-blocknote-file__details span,
+.kosh-blocknote-pending-media {
+  font-size: 12px;
+  opacity: 0.68;
+}
+
+.kosh-blocknote-file__caption {
+  grid-column: 2 / -1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kosh-rich-text-editor * {
+    scroll-behavior: auto !important;
+  }
+}

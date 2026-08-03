@@ -18,6 +18,7 @@ export interface BlockNoteMediaController {
   ): boolean;
   insert(records: readonly SelectedAttachmentRecord[]): void;
   pending(): boolean;
+  track<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 interface SplitTransaction {
@@ -114,6 +115,18 @@ export function createBlockNoteMediaController(
     }
   };
 
+  const track = async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (disposed) throw new Error("the media controller is disposed");
+    const requestId = crypto.randomUUID();
+    pendingIds.add(requestId);
+    notifyPending();
+    try {
+      return await operation();
+    } finally {
+      finish(requestId);
+    }
+  };
+
   return {
     activate() {
       disposed = false;
@@ -137,6 +150,7 @@ export function createBlockNoteMediaController(
     },
     insert,
     pending: () => pendingIds.size > 0,
+    track,
   };
 }
 

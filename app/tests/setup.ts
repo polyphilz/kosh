@@ -37,6 +37,20 @@ Object.defineProperty(SVGElement.prototype, "getBBox", {
   value: () => new DOMRect(),
 });
 
+DOMRect.prototype.toJSON = function toJSON() {
+  return {
+    bottom: this.bottom,
+    height: this.height,
+    left: this.left,
+    right: this.right,
+    top: this.top,
+    width: this.width,
+    x: this.x,
+    y: this.y,
+  };
+};
+Element.prototype.getBoundingClientRect = () => new DOMRect();
+
 Object.defineProperty(globalThis, "CSS", {
   configurable: true,
   value: { supports: () => true },
@@ -61,5 +75,13 @@ if (!Range.prototype.getBoundingClientRect) {
 
 HTMLElement.prototype.scrollIntoView = () => undefined;
 document.elementFromPoint = () => null;
+Object.defineProperty(Document.prototype, "elementsFromPoint", {
+  configurable: true,
+  value: () => [],
+});
+Object.defineProperty(ShadowRoot.prototype, "elementsFromPoint", {
+  configurable: true,
+  value: () => [],
+});
 
 afterEach(cleanup);

@@ -93,17 +93,13 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
   await page.getByRole("textbox", { name: /^Title/u }).fill("Legacy vector note");
   const editor = page.getByRole("textbox", { name: "Tidbit" });
   await editor.fill("The exact baseline passage remembers contiguous arrays.");
-  await page.getByRole("button", { name: "Add image" }).click();
+  await chooseSlashItem(page, "Image");
   await expect(page.locator("[data-kosh-image='true']")).toBeVisible();
   await page.getByRole("textbox", { name: "Alt text" }).fill("Vector board");
-  await editor.press("ArrowRight");
-  await editor.press("Enter");
-  await page.getByRole("button", { name: "Add PDF" }).click();
-  await expect(page.locator(".kosh-pdf-node")).toContainText("vector-chapter.pdf");
-  await editor.press("ArrowRight");
-  await editor.press("Enter");
-  await page.getByRole("button", { name: "Add attachment" }).click();
-  await expect(page.locator(".kosh-file-node")).toContainText("vector-scraps.md");
+  await chooseSlashItem(page, "PDF");
+  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("vector-chapter.pdf");
+  await chooseSlashItem(page, "File");
+  await expect(page.locator("[data-kosh-file='true']")).toContainText("vector-scraps.md");
 
   await page.getByRole("button", { name: "Add source" }).click();
   await page.getByRole("textbox", { name: "Source 1 label" }).fill("NumPy notebook");
@@ -126,3 +122,12 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
   await expect(citation).toContainText("NumPy notebook · example.com");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
+
+async function chooseSlashItem(page: import("@playwright/test").Page, name: string) {
+  const editor = page.getByRole("textbox", { name: "Tidbit" });
+  await editor.focus();
+  await editor.press("Control+End");
+  await editor.press("Enter");
+  await editor.pressSequentially("/");
+  await page.getByRole("option", { name, exact: true }).click();
+}
