@@ -8,7 +8,7 @@
     "dev:test": "VITE_KOSH_BACKEND=fake vite --host 127.0.0.1 --port 1422",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "tauri": "KOSH_DATA_DIR=\"$PWD/.data/local\" tauri",
+    "tauri": "KOSH_DATA_DIR=\"$PWD/.data/note-first-v1\" tauri",
     "lint": "oxlint",
     "lint:native": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --features test-support -- -D warnings",
     "fmt": "oxfmt",

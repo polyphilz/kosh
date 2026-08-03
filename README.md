@@ -37,9 +37,11 @@ pnpm tauri dev
 ```
 
 Always start the development app through `pnpm tauri dev`. That script sets
-`KOSH_DATA_DIR` to `app/.data/local`, keeping test notes away from Tauri's
-release app-data directory. The Rust backend honors this override only in debug
-builds; release builds always use the platform app-data directory.
+`KOSH_DATA_DIR` to `app/.data/note-first-v1`, keeping test notes away from
+Tauri's release app-data directory. The note-first hard cutover leaves the
+former `app/.data/local` profile untouched because it is incompatible with the
+consolidated schema. The Rust backend honors this override only in debug builds;
+release builds always use the platform app-data directory.
 
 ## Global capture
 
