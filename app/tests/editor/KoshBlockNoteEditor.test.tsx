@@ -444,7 +444,11 @@ describe("production BlockNote editor", () => {
     const textbox = await screen.findByRole("textbox", { name: "Body" });
     expect(textbox).toHaveAttribute("aria-disabled", "true");
     expect(textbox).toHaveAttribute("contenteditable", "false");
-    expect(screen.getByLabelText("Inline math source")).toBeDisabled();
+    expect(screen.queryByLabelText("Inline math source")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit inline math: x" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(screen.getByLabelText("Display math source")).toBeDisabled();
 
     view.rerender(
@@ -456,7 +460,10 @@ describe("production BlockNote editor", () => {
         />
       </AppearanceProvider>,
     );
-    await waitFor(() => expect(screen.getByLabelText("Inline math source")).toBeEnabled());
+    const inlineMath = screen.getByRole("button", { name: "Edit inline math: x" });
+    await waitFor(() => expect(inlineMath).toHaveAttribute("aria-disabled", "false"));
+    fireEvent.click(inlineMath);
+    expect(await screen.findByLabelText("Inline math source")).toBeEnabled();
     expect(screen.getByLabelText("Display math source")).toBeEnabled();
   });
 

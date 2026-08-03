@@ -22,10 +22,24 @@ test("the production adapter edits math source and preserves canonical Markdown"
     (markdown) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(markdown),
     authoredMarkdown,
   );
-  await expect(page.getByLabel("Inline math source")).toHaveValue("a_i");
+  await expect(page.getByLabel("Inline math source")).toHaveCount(0);
   await expect(page.getByLabel("Display math source")).toHaveValue("\\sum_i a_i");
 
-  await page.getByLabel("Inline math source").fill("b^2");
+  await page.getByRole("button", { name: "Edit inline math: a_i" }).click();
+  const inlineSource = page.getByLabel("Inline math source");
+  await expect(inlineSource).toBeFocused();
+  await inlineSource.fill("b^");
+  await expect(page.getByRole("alert")).toContainText("Invalid equation:");
+  await expect(page.getByRole("button", { name: /Done/u })).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Edit inline math: Invalid equation" }),
+  ).toBeVisible();
+
+  await inlineSource.fill("b^2");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: /Done/u }).click();
+  await expect(inlineSource).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit inline math: b^2" })).toBeVisible();
   await page.getByLabel("Display math source").fill("\\begin{aligned}\nx &= 1\n\\end{aligned}");
   await expect.poll(() => editorMarkdown(page)).toContain("Inline $b^2$ remains editable.");
   await expect
@@ -34,7 +48,10 @@ test("the production adapter edits math source and preserves canonical Markdown"
   await expect(page.locator(".kosh-math-editor__preview .katex")).toHaveCount(2);
 
   const code = page.locator('.bn-block-content[data-content-type="codeBlock"]');
+  await page.getByRole("button", { name: "Edit inline math: b^2" }).click();
+  await expect(inlineSource).toBeVisible();
   await code.click();
+  await expect(inlineSource).toHaveCount(0);
   await page.keyboard.press("Tab");
   await expect
     .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))

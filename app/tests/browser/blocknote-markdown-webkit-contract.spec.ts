@@ -11,7 +11,10 @@ test("the Markdown adapter edits and serializes the restricted schema in WebKit"
     ),
   );
 
+  await page.getByRole("button", { name: "Edit inline math: x" }).click();
   await page.getByLabel("Inline math source").fill("x^2");
+  await page.getByRole("button", { name: /Done/u }).click();
+  await expect(page.getByLabel("Inline math source")).toHaveCount(0);
   await page.getByLabel("Display math source").fill("y = x^2");
 
   await expect
