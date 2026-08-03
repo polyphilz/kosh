@@ -1,5 +1,6 @@
 mod attachments;
 pub mod backup;
+mod clipboard;
 mod database;
 #[cfg(target_os = "macos")]
 mod distribution_signing;
@@ -43,6 +44,7 @@ fn select_data_dir(
 fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        clipboard::copy_text,
         backup::checkpoint::checkpoint_backup_status,
         backup::checkpoint::backup_now,
         backup::settings::load_backup_settings,
@@ -122,6 +124,7 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
     // logic is covered by the platform unit tests in windows.rs.
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        clipboard::copy_text,
         backup::checkpoint::checkpoint_backup_status,
         backup::checkpoint::backup_now,
         backup::settings::load_backup_settings,

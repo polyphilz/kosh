@@ -8,11 +8,18 @@ import { clearFindInNoteRequest, requestFindInNote } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
-import { ShortcutSettingsProvider } from "./shortcuts/context";
+import { ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
+import {
+  LocalShortcutCommand,
+  keyboardEventMatchesAccelerator,
+  localBindingFor,
+  noteLinkForLocation,
+} from "./shortcuts/localShortcuts";
 import { TauriEvent } from "./tauriProtocol";
 import { AppUpdater } from "./updater";
 
 const NOTE_UNDO_DURATION_MS = 10_000;
+const LINK_COPY_NOTICE_DURATION_MS = 1_800;
 const SIDEBAR_OPEN_STORAGE_KEY = "kosh.sidebar.open.v1";
 
 export function App() {
@@ -26,6 +33,7 @@ export function App() {
 
 function AppShell() {
   const backend = useBackend();
+  const { localBindings } = useShortcutSettings();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [searchOpen, setSearchOpen] = useState(false);
@@ -35,7 +43,12 @@ function AppShell() {
   const [deletedNote, setDeletedNote] = useState<TidbitRecord | null>(null);
   const [undoing, setUndoing] = useState(false);
   const [undoError, setUndoError] = useState<string | null>(null);
+  const [linkCopyNotice, setLinkCopyNotice] = useState<{
+    message: string;
+    tone: "danger" | "success";
+  } | null>(null);
   const undoTimer = useRef<number | null>(null);
+  const linkCopyTimer = useRef<number | null>(null);
   const openNewNote = useCallback(
     () =>
       navigate({
@@ -74,6 +87,13 @@ function AppShell() {
   useEffect(() => () => clearUndoTimer(), [clearUndoTimer]);
 
   useEffect(() => () => clearFindInNoteRequest(pathname), [pathname]);
+
+  useEffect(
+    () => () => {
+      if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     try {
@@ -122,6 +142,53 @@ function AppShell() {
       unlisten?.();
     };
   }, [openNewNote, openSearch, toggleSidebar]);
+
+  useEffect(() => {
+    const copyNoteLink = localBindingFor(localBindings, LocalShortcutCommand.CopyNoteLink);
+    const copyExactNoteLink = localBindingFor(
+      localBindings,
+      LocalShortcutCommand.CopyExactNoteLink,
+    );
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!noteRouteOpen || event.isComposing || event.repeat) return;
+      const exact =
+        copyExactNoteLink !== undefined &&
+        keyboardEventMatchesAccelerator(event, copyExactNoteLink.accelerator);
+      const clean =
+        copyNoteLink !== undefined &&
+        keyboardEventMatchesAccelerator(event, copyNoteLink.accelerator);
+      if (!exact && !clean) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const link = noteLinkForLocation(window.location.href, exact);
+      void backend.copyText(link).then(
+        () => {
+          if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+          setLinkCopyNotice({
+            message: exact ? "Exact note link copied" : "Note link copied",
+            tone: "success",
+          });
+          linkCopyTimer.current = window.setTimeout(() => {
+            linkCopyTimer.current = null;
+            setLinkCopyNotice(null);
+          }, LINK_COPY_NOTICE_DURATION_MS);
+        },
+        (reason: unknown) => {
+          if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+          setLinkCopyNotice({
+            message: `Could not copy note link: ${errorMessage(reason)}`,
+            tone: "danger",
+          });
+          linkCopyTimer.current = window.setTimeout(() => {
+            linkCopyTimer.current = null;
+            setLinkCopyNotice(null);
+          }, LINK_COPY_NOTICE_DURATION_MS);
+        },
+      );
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [backend, localBindings, noteRouteOpen]);
 
   useEffect(() => {
     let pendingFrame: number | null = null;
@@ -328,6 +395,15 @@ function AppShell() {
               >
                 ×
               </button>
+            </div>
+          )}
+          {linkCopyNotice && (
+            <div
+              className="link-copy-notice"
+              data-tone={linkCopyNotice.tone}
+              role={linkCopyNotice.tone === "danger" ? "alert" : "status"}
+            >
+              {linkCopyNotice.message}
             </div>
           )}
         </div>

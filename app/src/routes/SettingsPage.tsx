@@ -13,6 +13,12 @@ import { ShortcutRecorder } from "../components/ShortcutRecorder";
 import { Status } from "../components/Status";
 import { Toggle } from "../components/Toggle";
 import { bindingFor, useShortcutSettings } from "../shortcuts/context";
+import {
+  DEFAULT_COPY_EXACT_NOTE_LINK_ACCELERATOR,
+  DEFAULT_COPY_NOTE_LINK_ACCELERATOR,
+  LocalShortcutCommand,
+  localBindingFor,
+} from "../shortcuts/localShortcuts";
 import { BackupSettings } from "./BackupSettings";
 import { SettingsDiagnostics } from "./SettingsDiagnostics";
 
@@ -25,7 +31,16 @@ const appearanceOptions = [
 export function SettingsPage() {
   const { appearance, setAppearance } = useAppearance();
   const [shortcutResetToken, setShortcutResetToken] = useState(0);
-  const { error, loading, settings, update, updateAutomaticChecks } = useShortcutSettings();
+  const {
+    error,
+    loading,
+    localBindings,
+    resetLocalBindings,
+    settings,
+    update,
+    updateAutomaticChecks,
+    updateLocalBinding,
+  } = useShortcutSettings();
   const bindings = settings?.keyboardBindings ?? DEFAULT_KEYBOARD_BINDINGS;
 
   const setBinding = (command: KeyboardBinding["command"], accelerator: string) => {
@@ -42,6 +57,7 @@ export function SettingsPage() {
   const resetBindings = () => {
     if (!settings) return;
     setShortcutResetToken((value) => value + 1);
+    resetLocalBindings();
     void update({
       expectedRevision: settings.revision,
       keyboardBindings: DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
@@ -71,6 +87,42 @@ export function SettingsPage() {
             onValueChange={setAppearance}
             options={appearanceOptions}
             value={appearance}
+          />
+        </label>
+        <label>
+          <span>
+            <strong>Copy note link shortcut</strong>
+            <small>Copy the current note URL without search-result parameters.</small>
+          </span>
+          <ShortcutRecorder
+            accelerator={
+              localBindingFor(localBindings, LocalShortcutCommand.CopyNoteLink)?.accelerator ??
+              DEFAULT_COPY_NOTE_LINK_ACCELERATOR
+            }
+            disabled={loading || !settings}
+            label="Copy note link shortcut"
+            onCapture={(accelerator) =>
+              updateLocalBinding(LocalShortcutCommand.CopyNoteLink, accelerator)
+            }
+            resetToken={shortcutResetToken}
+          />
+        </label>
+        <label>
+          <span>
+            <strong>Copy exact link shortcut</strong>
+            <small>Copy the complete note URL, including search-result parameters.</small>
+          </span>
+          <ShortcutRecorder
+            accelerator={
+              localBindingFor(localBindings, LocalShortcutCommand.CopyExactNoteLink)?.accelerator ??
+              DEFAULT_COPY_EXACT_NOTE_LINK_ACCELERATOR
+            }
+            disabled={loading || !settings}
+            label="Copy exact link shortcut"
+            onCapture={(accelerator) =>
+              updateLocalBinding(LocalShortcutCommand.CopyExactNoteLink, accelerator)
+            }
+            resetToken={shortcutResetToken}
           />
         </label>
         <label>

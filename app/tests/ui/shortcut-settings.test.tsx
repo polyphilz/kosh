@@ -1,7 +1,7 @@
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
 import {
   DEFAULT_MAIN_WINDOW_ACCELERATOR,
@@ -13,6 +13,8 @@ import { AppearanceProvider } from "../../src/components/Appearance";
 import { createAppRouter } from "../../src/router";
 
 describe("shortcut settings", () => {
+  beforeEach(() => window.localStorage.clear());
+
   it("persists the automatic update preference", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();
@@ -104,5 +106,48 @@ describe("shortcut settings", () => {
           ?.accelerator,
       ).toBe(DEFAULT_QUICK_ADD_ACCELERATOR);
     });
+  });
+
+  it("configures local note-link shortcuts and rejects reserved commands", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const router = createAppRouter(
+      createMemoryHistory({
+        initialEntries: ["/settings"],
+      }),
+    );
+    render(
+      <BackendProvider backend={backend}>
+        <AppearanceProvider>
+          <RouterProvider router={router} />
+        </AppearanceProvider>
+      </BackendProvider>,
+    );
+
+    const copyNoteLink = await screen.findByRole("button", {
+      name: "Copy note link shortcut: ⌘L",
+    });
+    await user.click(copyNoteLink);
+    fireEvent.keyDown(window, {
+      code: "KeyC",
+      key: "c",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(screen.getByRole("button", { name: "Copy note link shortcut: ⇧⌘C" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Copy exact link shortcut: ⇧⌘L" }));
+    fireEvent.keyDown(window, {
+      code: "KeyF",
+      key: "f",
+      metaKey: true,
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That shortcut is reserved by another Kosh command.",
+    );
+    expect(screen.getByRole("button", { name: "Copy exact link shortcut: ⇧⌘L" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Reset shortcuts" }));
+    expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌘L" })).toBeVisible();
   });
 });

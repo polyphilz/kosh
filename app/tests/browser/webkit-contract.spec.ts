@@ -53,6 +53,21 @@ test("Command-F finds and cycles through the current note in WebKit", async ({ p
   await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(0);
 });
 
+test("Command-L copies the current note route in WebKit", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("WebKit copies this note route without moving focus.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const noteUrl = page.url();
+
+  await page.keyboard.press("Meta+l");
+  await expect(page.getByRole("status")).toHaveText("Note link copied");
+  expect(await page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest())).toBe(
+    noteUrl,
+  );
+  await expect(editor).toBeFocused();
+});
+
 test("deleting the first edit stays empty across WebKit autosave boundaries", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

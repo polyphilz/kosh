@@ -14,14 +14,25 @@ import type {
   SetShortcutSettingsInput,
   ShortcutSettingsSnapshot,
 } from "../backend/contracts";
+import {
+  DEFAULT_LOCAL_KEYBOARD_BINDINGS,
+  type LocalKeyboardBinding,
+  type LocalShortcutCommand,
+  readLocalKeyboardBindings,
+  validateLocalKeyboardBindings,
+  writeLocalKeyboardBindings,
+} from "./localShortcuts";
 import { TauriEvent } from "../tauriProtocol";
 
 interface ShortcutSettingsContextValue {
+  localBindings: readonly LocalKeyboardBinding[];
   error: string | null;
   loading: boolean;
   settings: ShortcutSettingsSnapshot | null;
   updateAutomaticChecks: (enabled: boolean) => Promise<void>;
   update: (input: SetShortcutSettingsInput) => Promise<void>;
+  updateLocalBinding: (command: LocalShortcutCommand, accelerator: string) => void;
+  resetLocalBindings: () => void;
 }
 
 const ShortcutSettingsContext = createContext<ShortcutSettingsContextValue | null>(null);
@@ -29,6 +40,7 @@ const ShortcutSettingsContext = createContext<ShortcutSettingsContextValue | nul
 export function ShortcutSettingsProvider({ children }: { children: ReactNode }) {
   const backend = useBackend();
   const [settings, setSettings] = useState<ShortcutSettingsSnapshot | null>(null);
+  const [localBindings, setLocalBindings] = useState(readLocalKeyboardBindings);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,6 +59,15 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!settings) return;
+    const conflict = validateLocalKeyboardBindings(
+      localBindings,
+      settings.keyboardBindings.map((binding) => binding.accelerator),
+    );
+    if (conflict) setError(conflict);
+  }, [localBindings, settings]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -72,6 +93,11 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
       setLoading(true);
       setError(null);
       try {
+        const conflict = validateLocalKeyboardBindings(
+          localBindings,
+          input.keyboardBindings.map((binding) => binding.accelerator),
+        );
+        if (conflict) throw new Error(conflict);
         setSettings(await backend.setShortcutSettings(input));
       } catch (reason) {
         setError(errorMessage(reason));
@@ -85,8 +111,44 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
         setLoading(false);
       }
     },
-    [backend],
+    [backend, localBindings],
   );
+
+  const replaceLocalBindings = useCallback(
+    (next: LocalKeyboardBinding[]) => {
+      const conflict = validateLocalKeyboardBindings(
+        next,
+        settings?.keyboardBindings.map((binding) => binding.accelerator),
+      );
+      if (conflict) {
+        setError(conflict);
+        return;
+      }
+      try {
+        writeLocalKeyboardBindings(next);
+        setLocalBindings(next);
+        setError(null);
+      } catch (reason) {
+        setError(errorMessage(reason));
+      }
+    },
+    [settings],
+  );
+
+  const updateLocalBinding = useCallback(
+    (command: LocalShortcutCommand, accelerator: string) => {
+      replaceLocalBindings(
+        localBindings.map((binding) =>
+          binding.command === command ? { ...binding, accelerator } : { ...binding },
+        ),
+      );
+    },
+    [localBindings, replaceLocalBindings],
+  );
+
+  const resetLocalBindings = useCallback(() => {
+    replaceLocalBindings(DEFAULT_LOCAL_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })));
+  }, [replaceLocalBindings]);
 
   const updateAutomaticChecks = useCallback(
     async (enabled: boolean) => {
@@ -116,8 +178,26 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
   );
 
   const value = useMemo(
-    () => ({ error, loading, settings, update, updateAutomaticChecks }),
-    [error, loading, settings, update, updateAutomaticChecks],
+    () => ({
+      error,
+      loading,
+      localBindings,
+      resetLocalBindings,
+      settings,
+      update,
+      updateAutomaticChecks,
+      updateLocalBinding,
+    }),
+    [
+      error,
+      loading,
+      localBindings,
+      resetLocalBindings,
+      settings,
+      update,
+      updateAutomaticChecks,
+      updateLocalBinding,
+    ],
   );
   return (
     <ShortcutSettingsContext.Provider value={value}>{children}</ShortcutSettingsContext.Provider>

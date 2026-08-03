@@ -251,6 +251,35 @@ test("a queued Command-F request does not leak after leaving a loading note", as
   await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
 });
 
+test("note link shortcuts copy clean and exact routes", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("A linkable note with an exact search destination.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const cleanUrl = page.url();
+  await page.evaluate(() => {
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}${window.location.hash}?passage=passage-1&query=linkable`,
+    );
+  });
+  const exactUrl = page.url();
+
+  await page.keyboard.press("Meta+l");
+  await expect(page.getByRole("status")).toHaveText("Note link copied");
+  expect(await page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest())).toBe(
+    cleanUrl,
+  );
+
+  await page.keyboard.press("Meta+Shift+l");
+  await expect(page.getByRole("status")).toHaveText("Exact note link copied");
+  expect(await page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest())).toBe(
+    exactUrl,
+  );
+  await expect(page).toHaveURL(exactUrl);
+});
+
 test("valid sources autosave while invalid partial edits remain local", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
