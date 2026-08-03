@@ -205,7 +205,12 @@ function InlineMathSource({
     return () => document.removeEventListener("click", closeOnOutsideClick);
   }, [open]);
 
-  const close = () => setOpen(false);
+  const close = () => {
+    setOpen(false);
+    window.requestAnimationFrame(() => {
+      rootRef.current?.closest<HTMLElement>('.ProseMirror[contenteditable="true"]')?.focus();
+    });
+  };
   const accessibleEquation = rendering.error ? "Invalid equation" : latex || "empty equation";
 
   return (

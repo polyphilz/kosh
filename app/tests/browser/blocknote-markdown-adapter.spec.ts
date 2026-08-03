@@ -40,6 +40,21 @@ test("the production adapter edits math source and preserves canonical Markdown"
   await page.getByRole("button", { name: /Done/u }).click();
   await expect(inlineSource).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Edit inline math: b^2" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
+  await page.getByRole("button", { name: "Edit inline math: b^2" }).click();
+  await inlineSource.press("Escape");
+  await expect(inlineSource).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
+  await page.getByRole("button", { name: "Edit inline math: b^2" }).click();
+  await inlineSource.press("Enter");
+  await expect(inlineSource).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
   await page.getByLabel("Display math source").fill("\\begin{aligned}\nx &= 1\n\\end{aligned}");
   await expect.poll(() => editorMarkdown(page)).toContain("Inline $b^2$ remains editable.");
   await expect
