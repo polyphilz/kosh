@@ -324,7 +324,9 @@ const QuickAddSession = forwardRef<
     <div className="quick-add-editor" data-phase={snapshot.phase}>
       <NoteActions
         canEditSources={
-          snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
+          snapshot.baseRevisionId !== null ||
+          snapshot.sources.length > 0 ||
+          hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
         }
         canDelete={false}
         deleteError={null}

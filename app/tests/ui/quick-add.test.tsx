@@ -229,6 +229,26 @@ describe("global quick add", () => {
     expect(await backend.listWorkingCopies()).toEqual([]);
   });
 
+  it("keeps existing sources editable after the note body is cleared", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "Source-backed draft");
+
+    await user.click(screen.getByRole("button", { name: "Sources" }));
+    await user.type(screen.getByLabelText("URL"), "https://example.com/source");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Sources 1" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Close sources" }));
+    await user.clear(screen.getByRole("textbox", { name: "Quick note" }));
+
+    const sources = screen.getByRole("button", { name: "Sources 1" });
+    expect(sources).toBeEnabled();
+    await user.click(sources);
+    await user.click(screen.getByRole("button", { name: "Remove source 1" }));
+    await waitFor(() => expect(backend.listWorkingCopies()).resolves.toEqual([]));
+  });
+
   it("coalesces repeated dismissal requests into one checkpoint", async () => {
     const backend = new FakeBackend();
     const native = createNative();
