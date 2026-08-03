@@ -29,10 +29,11 @@ test("research completes with trusted citations, durable history, and save-as-ti
   await page.getByRole("button", { name: "Save answer as tidbit" }).click();
   await expect(page.getByRole("link", { name: "Open saved tidbit" })).toBeVisible();
   const navigation = page.getByRole("navigation", { name: "Primary" });
-  await navigation.getByRole("link", { name: "Search", exact: true }).click();
+  await navigation.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await navigation.getByRole("link", { name: "Research", exact: true }).click();
+  await expect(navigation.getByText("Research", { exact: true })).toHaveCount(0);
+  await page.goto("/#/research");
   await expect(page.getByText(/Kosh found a durable answer/u)).toBeVisible();
   await expect(page.getByRole("link", { name: "Open saved tidbit" })).toBeVisible();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);

@@ -56,6 +56,8 @@ const VIEW_MENU_TEXT: &str = "View";
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum NavigationCommand {
     NewNote,
+    Search,
+    ToggleSidebar,
     Back,
     Forward,
 }
@@ -64,15 +66,23 @@ impl NavigationCommand {
     const fn menu_id(self) -> &'static str {
         match self {
             Self::NewNote => "new-note",
+            Self::Search => "search",
+            Self::ToggleSidebar => "toggle-sidebar",
             Self::Back => "navigate-back",
             Self::Forward => "navigate-forward",
         }
     }
 
     fn from_menu_id(id: &str) -> Option<Self> {
-        [Self::NewNote, Self::Back, Self::Forward]
-            .into_iter()
-            .find(|command| command.menu_id() == id)
+        [
+            Self::NewNote,
+            Self::Search,
+            Self::ToggleSidebar,
+            Self::Back,
+            Self::Forward,
+        ]
+        .into_iter()
+        .find(|command| command.menu_id() == id)
     }
 }
 
@@ -320,8 +330,11 @@ fn install_application_menu(app: &mut App) -> tauri::Result<()> {
         let new_note = MenuItemBuilder::with_id(NavigationCommand::NewNote.menu_id(), "New Note")
             .accelerator("CmdOrCtrl+N")
             .build(app)?;
+        let search = MenuItemBuilder::with_id(NavigationCommand::Search.menu_id(), "Search Notes…")
+            .accelerator("CmdOrCtrl+K")
+            .build(app)?;
         let separator = PredefinedMenuItem::separator(app)?;
-        file_menu.prepend_items(&[&new_note, &separator])?;
+        file_menu.prepend_items(&[&new_note, &search, &separator])?;
     }
     if let Some(view_menu) = menu.items()?.into_iter().find_map(|item| match item {
         MenuItemKind::Submenu(submenu)
@@ -337,8 +350,19 @@ fn install_application_menu(app: &mut App) -> tauri::Result<()> {
         let forward = MenuItemBuilder::with_id(NavigationCommand::Forward.menu_id(), "Forward")
             .accelerator("CmdOrCtrl+]")
             .build(app)?;
+        let toggle_sidebar =
+            MenuItemBuilder::with_id(NavigationCommand::ToggleSidebar.menu_id(), "Toggle Sidebar")
+                .accelerator("CmdOrCtrl+/")
+                .build(app)?;
         let separator = PredefinedMenuItem::separator(app)?;
-        view_menu.prepend_items(&[&back, &forward, &separator])?;
+        let sidebar_separator = PredefinedMenuItem::separator(app)?;
+        view_menu.prepend_items(&[
+            &back,
+            &forward,
+            &separator,
+            &toggle_sidebar,
+            &sidebar_separator,
+        ])?;
     }
     app.on_menu_event(|app, event| match event.id().as_ref() {
         SETTINGS_MENU_ID => dispatch_logged(app, "show settings", show_settings_inner),
@@ -1297,15 +1321,34 @@ mod tests {
     #[test]
     fn navigation_commands_share_stable_menu_and_webview_contracts() {
         assert_eq!(NavigationCommand::NewNote.menu_id(), "new-note");
+        assert_eq!(NavigationCommand::Search.menu_id(), "search");
+        assert_eq!(NavigationCommand::ToggleSidebar.menu_id(), "toggle-sidebar");
         assert_eq!(NavigationCommand::Back.menu_id(), "navigate-back");
         assert_eq!(NavigationCommand::Forward.menu_id(), "navigate-forward");
         assert!(matches!(
             NavigationCommand::from_menu_id("navigate-back"),
             Some(NavigationCommand::Back)
         ));
+        assert!(matches!(
+            NavigationCommand::from_menu_id("search"),
+            Some(NavigationCommand::Search)
+        ));
+        assert!(matches!(
+            NavigationCommand::from_menu_id("toggle-sidebar"),
+            Some(NavigationCommand::ToggleSidebar)
+        ));
         assert_eq!(
             serde_json::to_value(NavigationCommand::NewNote).expect("serialize new note"),
             serde_json::json!("NEW_NOTE")
+        );
+        assert_eq!(
+            serde_json::to_value(NavigationCommand::Search).expect("serialize search"),
+            serde_json::json!("SEARCH")
+        );
+        assert_eq!(
+            serde_json::to_value(NavigationCommand::ToggleSidebar)
+                .expect("serialize sidebar command"),
+            serde_json::json!("TOGGLE_SIDEBAR")
         );
     }
 

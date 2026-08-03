@@ -10,7 +10,7 @@ test("editor and search keyboard contracts hold in WebKit", async ({ page }) => 
 
   await page
     .getByRole("navigation", { name: "Primary" })
-    .getByRole("link", {
+    .getByRole("button", {
       name: "Search",
       exact: true,
     })

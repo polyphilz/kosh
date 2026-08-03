@@ -67,6 +67,7 @@ import type {
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
 import { TIDBIT_PURGE_DELAY_MS } from "./contracts";
 import { neutralizeUntrustedMediaReferences } from "../markdown/mediaTokens";
+import { hasMeaningfulAuthoredContent } from "../notes/content";
 
 interface FakeCitationSnapshot {
   revision: TidbitRecord;
@@ -1726,18 +1727,6 @@ function validateEditGeneration(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${field} must be a positive JavaScript-safe integer`);
   }
-}
-
-function hasMeaningfulAuthoredContent(markdown: string): boolean {
-  const mediaAware = markdown.replace(
-    /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu,
-    "media",
-  );
-  if (/<(?:[A-Za-z][A-Za-z\d+.-]*:[^<>\s]+|[^<>\s@]+@[^<>\s@]+)>/u.test(mediaAware)) {
-    return true;
-  }
-  const withoutTags = mediaAware.replace(/<[^>]*>/gu, "");
-  return withoutTags.replace(/[`*_#>+\-[\]()~$\\\s]/gu, "").length > 0;
 }
 
 function cloneShortcutSettings(settings: ShortcutSettingsSnapshot): ShortcutSettingsSnapshot {

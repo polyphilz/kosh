@@ -2,9 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
 const primaryRoutes = [
-  { path: "/#/add", heading: "Add a tidbit" },
-  { path: "/#/library", heading: "Library" },
-  { path: "/#/research", heading: "Research" },
+  { path: "/#/", heading: "Note" },
   { path: "/#/settings", heading: "Settings" },
 ] as const;
 
@@ -47,12 +45,15 @@ test("all primary destinations are reachable in order without a pointer", async 
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("link", { name: "Kosh home" })).toBeFocused();
-  const expected = ["New note", "Search", "Add", "Library", "Research", "Settings"];
-  for (const name of expected) {
+  await expect(page.getByRole("button", { name: "Hide sidebar" })).toBeFocused();
+  for (const [role, name] of [
+    ["button", "New note"],
+    ["button", "Search"],
+    ["link", "Settings"],
+  ] as const) {
     await page.keyboard.press("Tab");
     await expect(
-      page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
+      page.getByRole("navigation", { name: "Primary" }).getByRole(role, {
         name,
         exact: true,
       }),
@@ -74,9 +75,9 @@ test("minimum supported window reflows at 200 percent text without hidden contro
   });
 
   const navigation = page.getByRole("navigation", { name: "Primary" });
-  for (const name of ["Search", "Add", "Library", "Research", "Settings"]) {
-    await expect(navigation.getByRole("link", { name, exact: true })).toBeVisible();
-  }
+  await expect(navigation.getByRole("button", { name: "New note", exact: true })).toBeVisible();
+  await expect(navigation.getByRole("button", { name: "Search", exact: true })).toBeVisible();
+  await expect(navigation.getByRole("link", { name: "Settings", exact: true })).toBeVisible();
   const overflow = await page.evaluate(() => ({
     viewport: document.documentElement.clientWidth,
     content: document.documentElement.scrollWidth,
@@ -86,8 +87,8 @@ test("minimum supported window reflows at 200 percent text without hidden contro
 
 test("reduced-motion preference removes sustained animation and transition", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/#/research");
-  await expect(page.getByRole("heading", { name: "Research" })).toBeVisible();
+  await page.goto("/#/");
+  await expect(page.getByRole("heading", { name: "Note" })).toBeVisible();
   await expect(
     page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches),
   ).resolves.toBe(true);
@@ -122,11 +123,11 @@ test("reduced-motion preference removes sustained animation and transition", asy
 
 test("high-density rendering keeps focus targets and accessible names", async ({ page }) => {
   expect(await page.evaluate(() => window.devicePixelRatio)).toBe(2);
-  await page.goto("/#/add");
-  const editor = page.getByRole("textbox", { name: "Tidbit" });
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
   await editor.focus();
   await expect(editor).toBeFocused();
-  await expect(page.getByRole("button", { name: "Save tidbit" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sources" })).toBeVisible();
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
 });

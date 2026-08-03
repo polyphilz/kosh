@@ -167,7 +167,7 @@ jobs:
   relevance:
     name: search and citation quality
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: app

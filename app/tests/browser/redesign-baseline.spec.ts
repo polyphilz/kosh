@@ -114,7 +114,7 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
   await expect(page.getByRole("figure", { name: "PDF attachment" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Attachment" })).toBeVisible();
 
-  await page.getByRole("link", { name: "Search", exact: true }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByRole("combobox", { name: "Search notes" }).fill("contiguous arrays");
   const citation = page.getByRole("option", { name: /Legacy vector note/u });
   await expect(citation).toContainText("The exact baseline passage remembers contiguous arrays.");

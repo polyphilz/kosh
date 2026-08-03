@@ -93,13 +93,13 @@ for (const theme of ["LIGHT", "DARK"] as const) {
 
 test("library surface stays visually stable", async ({ page }) => {
   await createTidbit(page, "Alpha note", "A compact thought.");
-  await page.getByRole("link", { name: "Add" }).click();
+  await page.goto("/#/add");
   await page.getByRole("textbox", { name: /^Title/u }).fill("Beta chapter notes");
   await page
     .getByRole("textbox", { name: "Tidbit" })
     .fill("# Chapter 2\n\nA longer observation with `code` and $x^2$.");
   await page.getByRole("button", { name: "Save tidbit" }).click();
-  await page.getByRole("link", { name: "Library", exact: true }).click();
+  await page.goto("/#/library");
 
   await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
   await expect(page).toHaveScreenshot("library-recent.png", {
@@ -110,6 +110,35 @@ test("library surface stays visually stable", async ({ page }) => {
     maxDiffPixelRatio: 0.04,
     threshold: 0.35,
   });
+});
+
+test("note source and delete actions stay visually stable", async ({ page }) => {
+  await page.goto("/#/");
+  await page.getByRole("textbox", { name: "Note" }).fill("A note with compact actions.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+
+  await page.getByRole("button", { name: "Sources" }).click();
+  const sources = page.getByRole("dialog", { name: "Note sources" });
+  await sources.getByLabel("Label").fill("Reference");
+  await sources.getByLabel("URL").fill("https://example.com/reference");
+  await expect(sources).toHaveScreenshot("note-sources.png", {
+    animations: "disabled",
+    caret: "hide",
+    maxDiffPixelRatio: 0.04,
+    threshold: 0.35,
+  });
+
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Delete note" }).click();
+  await expect(page.getByRole("dialog", { name: "Delete this note?" })).toHaveScreenshot(
+    "note-delete-dialog.png",
+    {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.04,
+      threshold: 0.35,
+    },
+  );
 });
 
 test("diagnostics and maintenance settings stay visually stable", async ({ page }) => {
