@@ -1,60 +1,89 @@
-import { randomUUID } from "node:crypto";
-import { lstat, mkdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import { spawn } from "node:child_process";
+import { platform } from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export async function writePrivateReport(rootPath, outputPath, contents) {
+const helper = resolve(dirname(fileURLToPath(import.meta.url)), "private-report-writer.py");
+
+export async function writePrivateReport(rootPath, outputPath, contents, hooks = {}) {
   const root = resolve(rootPath);
   const output = resolve(outputPath);
   if (dirname(output) !== root) {
     throw new Error(`report output must be a direct child of ${root}`);
   }
 
-  await assertExistingAncestorsAreRealDirectories(root);
-  await mkdir(root, { mode: 0o700, recursive: true });
-  const rootMetadata = await lstat(root);
-  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
-    throw new Error(`report root must be a real directory: ${root}`);
-  }
-  if ((await realpath(root)) !== root) {
-    throw new Error(`report root must not contain symlinked path components: ${root}`);
-  }
+  const command = platform() === "darwin" ? "/usr/bin/xcrun" : "python3";
+  const arguments_ =
+    platform() === "darwin" ? ["python3", helper, root, output] : [helper, root, output];
+  const child = spawn(command, arguments_, {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
 
-  const outputMetadata = await metadataIfPresent(output);
-  if (outputMetadata && (outputMetadata.isSymbolicLink() || !outputMetadata.isFile())) {
-    throw new Error(`report output must be absent or a regular file: ${output}`);
-  }
-
-  const temporary = join(root, `.${basename(output)}.${process.pid}.${randomUUID()}.tmp`);
   try {
-    await writeFile(temporary, contents, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    await rename(temporary, output);
+    await waitForReady(
+      child,
+      () => stdout,
+      () => stderr,
+    );
+    await hooks.afterDirectoryOpened?.();
+    child.stdin.end(contents, "utf8");
+    await waitForExit(child, () => stderr);
   } catch (error) {
-    await unlink(temporary).catch((cleanupError) => {
-      if (cleanupError?.code !== "ENOENT") throw cleanupError;
+    child.stdin.destroy();
+    child.kill("SIGTERM");
+    throw error;
+  }
+}
+
+async function waitForReady(child, stdout, stderr) {
+  await new Promise((resolveReady, rejectReady) => {
+    const inspect = () => {
+      if (stdout().includes("READY\n")) {
+        cleanup();
+        resolveReady();
+      }
+    };
+    const fail = (error) => {
+      cleanup();
+      rejectReady(error);
+    };
+    const exit = (code) => fail(reportError(code, stderr()));
+    const cleanup = () => {
+      child.stdout.off("data", inspect);
+      child.off("error", fail);
+      child.off("exit", exit);
+    };
+    child.stdout.on("data", inspect);
+    child.once("error", fail);
+    child.once("exit", exit);
+    inspect();
+  });
+}
+
+async function waitForExit(child, stderr) {
+  if (child.exitCode !== null) {
+    if (child.exitCode === 0) return;
+    throw reportError(child.exitCode, stderr());
+  }
+  await new Promise((resolveExit, rejectExit) => {
+    child.once("error", rejectExit);
+    child.once("exit", (code) => {
+      if (code === 0) resolveExit();
+      else rejectExit(reportError(code, stderr()));
     });
-    throw error;
-  }
+  });
 }
 
-async function assertExistingAncestorsAreRealDirectories(path) {
-  const absolute = resolve(path);
-  const filesystemRoot = parse(absolute).root;
-  let current = filesystemRoot;
-  for (const component of absolute.slice(filesystemRoot.length).split(sep).filter(Boolean)) {
-    current = join(current, component);
-    const metadata = await metadataIfPresent(current);
-    if (!metadata) return;
-    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-      throw new Error(`report root must have only real directory ancestors: ${current}`);
-    }
-  }
-}
-
-async function metadataIfPresent(path) {
-  try {
-    return await lstat(path);
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
+function reportError(code, stderr) {
+  return new Error(stderr.trim() || `private report writer exited ${code}`);
 }

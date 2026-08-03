@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, realpath, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -61,6 +61,28 @@ test("rejects a symlinked ancestor before creating the report root", async () =>
     ),
   ).rejects.toThrow("real directory ancestors");
   await expect(lstat(join(actual, "reports"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("keeps a report bound to the opened directory when its path is replaced", async () => {
+  const parent = await temporaryRoot();
+  const root = join(parent, "reports");
+  const displaced = join(parent, "displaced");
+  const replacement = join(parent, "replacement");
+  const output = join(root, "performance.json");
+  await mkdir(root);
+  await mkdir(replacement);
+
+  await writePrivateReport(root, output, "private\n", {
+    afterDirectoryOpened: async () => {
+      await rename(root, displaced);
+      await symlink(replacement, root);
+    },
+  });
+
+  await expect(readFile(join(displaced, "performance.json"), "utf8")).resolves.toBe("private\n");
+  await expect(lstat(join(replacement, "performance.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
 });
 
 async function temporaryRoot() {
