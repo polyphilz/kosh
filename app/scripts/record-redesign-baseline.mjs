@@ -209,21 +209,25 @@ async function measureSearchNavigation(page) {
     const root = document.documentElement;
     delete root.dataset.koshSearchFocusMs;
     const started = performance.now();
-    document.addEventListener(
-      "focusin",
-      (event) => {
-        if (!(event.target instanceof HTMLInputElement)) return;
-        if (!event.target.matches("[data-kosh-search-input]")) return;
+    const recordFocusedOverlay = () => {
+      if (document.activeElement?.matches("[data-kosh-search-input]")) {
         root.dataset.koshSearchFocusMs = String(performance.now() - started);
-      },
-      { capture: true, once: true },
-    );
+        return;
+      }
+      requestAnimationFrame(recordFocusedOverlay);
+    };
+    requestAnimationFrame(recordFocusedOverlay);
   });
   await page.keyboard.press("Meta+k");
   const search = page.getByRole("combobox", { name: "Search notes" });
   await search.waitFor({ state: "visible" });
   await search.focus();
-  const measured = Number(await page.locator("html").getAttribute("data-kosh-search-focus-ms"));
+  await page.waitForFunction(
+    () => document.documentElement.dataset.koshSearchFocusMs !== undefined,
+  );
+  const attribute = await page.locator("html").getAttribute("data-kosh-search-focus-ms");
+  if (attribute === null) throw new Error("Command-K focus timing was not recorded");
+  const measured = Number(attribute);
   if (!Number.isFinite(measured)) throw new Error("Command-K focus timing was not recorded");
   return measured;
 }
