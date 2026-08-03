@@ -27,6 +27,7 @@ export interface BlockNoteSpikeBridge {
     styles: readonly string[];
   };
   setCursorOffset(offset: number): void;
+  setTextSelectionOffsets(from: number, to: number): void;
   selectBlocks(startId: string, endId: string): void;
   setEditable(editable: boolean): void;
   snapshot(): BlockNoteSpikeSnapshot;
@@ -147,6 +148,17 @@ export function installSpikeBridge(
       }
       const selection = editor._tiptapEditor.state.selection;
       editor._tiptapEditor.commands.setTextSelection(selection.from + offset);
+      editor.focus();
+    },
+    setTextSelectionOffsets(from, to) {
+      if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to <= from) {
+        throw new Error("selection offsets must be increasing non-negative integers");
+      }
+      const selection = editor._tiptapEditor.state.selection;
+      editor._tiptapEditor.commands.setTextSelection({
+        from: selection.from + from,
+        to: selection.from + to,
+      });
       editor.focus();
     },
     selectBlocks(startId, endId) {

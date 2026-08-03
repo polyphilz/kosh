@@ -50,10 +50,11 @@ export function createBlockNoteMediaController(
   const begin = async (label: string, ingest: () => Promise<SelectedAttachmentRecord | null>) => {
     if (disposed) return;
     const requestId = crypto.randomUUID();
-    const pendingBlock = insertPendingAtCursor(editor, {
+    const insertion = insertPendingAtCursor(editor, {
       type: "koshPendingMedia",
       props: { label, requestId },
     });
+    const pendingBlock = insertion?.block;
     if (!pendingBlock) throw new Error("BlockNote did not insert the pending media block");
     pendingIds.add(pendingBlock.id);
     notifyPending();
@@ -63,7 +64,7 @@ export function createBlockNoteMediaController(
       const current = editor.getBlock(pendingBlock.id);
       if (!current) return;
       if (!record) {
-        editor.removeBlocks([current]);
+        removePendingAndRollback(editor, current, insertion.split);
         return;
       }
       editor.replaceBlocks(
@@ -73,7 +74,7 @@ export function createBlockNoteMediaController(
     } catch (error) {
       if (!disposed) {
         const current = editor.getBlock(pendingBlock.id);
-        if (current) editor.removeBlocks([current]);
+        if (current) removePendingAndRollback(editor, current, insertion.split);
         options.onError?.(error);
       }
     } finally {
@@ -116,8 +117,14 @@ function currentReference(editor: KoshBlockNoteEditor) {
 }
 
 function insertPendingAtCursor(editor: KoshBlockNoteEditor, pending: KoshBlockNotePartialBlock) {
+  let selection = editor._tiptapEditor.state.selection;
+  if (!selection.empty) {
+    if (!editor._tiptapEditor.commands.setTextSelection(selection.to)) {
+      throw new Error("BlockNote could not preserve the selected text before media insertion");
+    }
+    selection = editor._tiptapEditor.state.selection;
+  }
   const reference = currentReference(editor);
-  const selection = editor._tiptapEditor.state.selection;
   const isTextCursor = selection.$from.parent.isTextblock;
   const isAtStart = selection.empty && selection.$from.parentOffset === 0;
   const isAtEnd =
@@ -127,7 +134,7 @@ function insertPendingAtCursor(editor: KoshBlockNoteEditor, pending: KoshBlockNo
     const [inserted] = editor.insertBlocks([pending], reference, "before");
     editor.setTextCursorPosition(reference, "start");
     editor.focus();
-    return inserted;
+    return inserted ? { block: inserted } : undefined;
   }
 
   if (isTextCursor && !isAtEnd) {
@@ -137,13 +144,44 @@ function insertPendingAtCursor(editor: KoshBlockNoteEditor, pending: KoshBlockNo
       const [inserted] = editor.insertBlocks([pending], tail, "before");
       editor.setTextCursorPosition(tail, "start");
       editor.focus();
-      return inserted;
+      return inserted
+        ? { block: inserted, split: { headId: reference.id, tailId: tail.id } }
+        : undefined;
     }
   }
 
   const [inserted] = editor.insertBlocks([pending], reference, "after");
   focusAfterMedia(editor, inserted);
-  return inserted;
+  return inserted ? { block: inserted } : undefined;
+}
+
+function removePendingAndRollback(
+  editor: KoshBlockNoteEditor,
+  pending: { id: string },
+  split: { headId: string; tailId: string } | undefined,
+) {
+  const activeBlockId = currentReference(editor).id;
+  editor.removeBlocks([pending]);
+  if (!split) return;
+  const head = editor.getBlock(split.headId);
+  const tail = editor.getBlock(split.tailId);
+  if (
+    !head ||
+    !tail ||
+    editor.getNextBlock(head)?.id !== tail.id ||
+    !Array.isArray(head.content) ||
+    !Array.isArray(tail.content)
+  ) {
+    return;
+  }
+  editor.updateBlock(head, {
+    content: [...head.content, ...tail.content],
+  } as KoshBlockNotePartialBlock);
+  editor.removeBlocks([tail]);
+  if (activeBlockId === head.id || activeBlockId === tail.id) {
+    editor.setTextCursorPosition(head, "end");
+    editor.focus();
+  }
 }
 
 function focusAfterMedia(editor: KoshBlockNoteEditor, media: { id: string } | undefined) {
