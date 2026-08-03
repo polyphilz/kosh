@@ -172,6 +172,7 @@ try {
       lexicalScale: scale,
       budgets,
     };
+    await assertSourceUnchanged();
     await writePrivateReport(
       join(appRoot, ".data/redesign"),
       outputPath,
@@ -202,7 +203,9 @@ async function measureColdNote(browser) {
   await page.goto(`${baseUrl}/#/`);
   const editor = page.getByRole("textbox", { name: "Note" });
   await editor.waitFor({ state: "visible" });
-  await editor.focus();
+  await page.waitForFunction(
+    () => document.activeElement?.matches("[role='textbox'][aria-label='Note']") === true,
+  );
   const duration = performance.now() - started;
   await context.close();
   return duration;
@@ -496,4 +499,25 @@ async function commandOutput(command, arguments_, cwd) {
       else rejectOutput(new Error(`${command} exited ${code}: ${stderr}`));
     });
   });
+}
+
+async function assertSourceUnchanged() {
+  const currentRevision = (
+    await commandOutput("git", ["rev-parse", "HEAD"], repositoryRoot)
+  ).trim();
+  if (currentRevision !== sourceRevision) {
+    throw new Error(
+      `baseline source changed during recording: expected ${sourceRevision}, found ${currentRevision}`,
+    );
+  }
+  const currentStatus = await commandOutput(
+    "git",
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    repositoryRoot,
+  );
+  if (currentStatus.trim().length > 0) {
+    throw new Error(
+      `baseline source changed during recording; refusing to publish:\n${currentStatus}`,
+    );
+  }
 }
