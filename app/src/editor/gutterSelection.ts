@@ -118,3 +118,11 @@ export function setGutterBlockSelection(
   editor.focus();
   return true;
 }
+
+export function clearGutterBlockSelection(editor: KoshBlockNoteEditor): void {
+  const state = editor.prosemirrorView.state;
+  const transaction = state.tr
+    .setSelection(Selection.near(state.doc.resolve(state.selection.from)))
+    .setMeta(GUTTER_SELECTION_KEY, EMPTY_GUTTER_SELECTION);
+  editor.prosemirrorView.dispatch(transaction);
+}

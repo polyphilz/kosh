@@ -141,8 +141,9 @@ test("the page gutter selects contiguous blocks beside the add and move controls
   const sidebarBox = await page.locator(".app-sidebar").boundingBox();
   const addBox = await addBelow.boundingBox();
   const firstBox = await blocks.nth(0).boundingBox();
+  const secondBox = await blocks.nth(1).boundingBox();
   const thirdBox = await blocks.nth(2).boundingBox();
-  if (!railBox || !sidebarBox || !addBox || !firstBox || !thirdBox) {
+  if (!railBox || !sidebarBox || !addBox || !firstBox || !secondBox || !thirdBox) {
     throw new Error("the gutter layout is not rendered");
   }
   expect(railBox.width).toBeGreaterThanOrEqual(40);
@@ -167,10 +168,32 @@ test("the page gutter selects contiguous blocks beside the add and move controls
   ).toBe("note-gutter-selection-rail");
   await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
   await page.mouse.down();
-  await page.mouse.move(railX, thirdBox.y + thirdBox.height / 2, { steps: 12 });
-  await page.mouse.up();
+  const selectionX = thirdBox.x + Math.min(250, thirdBox.width - 2);
+  const thirdY = thirdBox.y + thirdBox.height / 2;
+  await page.mouse.move(selectionX, thirdY, { steps: 12 });
+
+  const marquee = page.getByTestId("note-gutter-selection-marquee");
+  await expect(marquee).toBeVisible();
+  const marqueeBox = await marquee.boundingBox();
+  if (!marqueeBox) throw new Error("the gutter marquee is not rendered");
+  expect(marqueeBox.x).toBeLessThan(firstBox.x);
+  expect(marqueeBox.x + marqueeBox.width).toBeGreaterThan(firstBox.x);
 
   const selected = editor.locator('[data-kosh-gutter-selected="true"]');
+  await expect(selected).toHaveCount(3);
+  await page.mouse.move(selectionX, secondBox.y + secondBox.height / 2, { steps: 8 });
+  await expect(selected).toHaveCount(2);
+  await expect(selected.nth(0)).toContainText("First gutter block.");
+  await expect(selected.nth(1)).toContainText("Second gutter block.");
+  await page.mouse.move(selectionX, thirdY, { steps: 8 });
+  await expect(selected).toHaveCount(3);
+  await page.mouse.move(railX, thirdY, { steps: 8 });
+  await expect(selected).toHaveCount(0);
+  await page.mouse.move(selectionX, thirdY, { steps: 8 });
+  await expect(selected).toHaveCount(3);
+  await page.mouse.up();
+
+  await expect(marquee).toBeHidden();
   await expect(selected).toHaveCount(3);
   await expect(selected.nth(0)).toContainText("First gutter block.");
   await expect(selected.nth(1)).toContainText("Second gutter block.");

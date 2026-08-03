@@ -165,6 +165,15 @@
   user-select: none;
 }
 
+.kosh-blocknote-gutter-selection-marquee {
+  position: fixed;
+  z-index: 4;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
 .kosh-blocknote-editor--page
   .bn-block-outer[data-kosh-gutter-selected="true"]
   > .bn-block

@@ -115,11 +115,14 @@ test("the block gutter selects a range containing an atomic block in WebKit", as
   if (!railBox || !firstBox || !thirdBox) throw new Error("the WebKit gutter is not rendered");
 
   const railX = railBox.x + railBox.width / 2;
+  const selectionX = thirdBox.x + Math.min(250, thirdBox.width - 2);
   await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
   await page.mouse.down();
-  await page.mouse.move(railX, thirdBox.y + thirdBox.height / 2, { steps: 12 });
+  await page.mouse.move(selectionX, thirdBox.y + thirdBox.height / 2, { steps: 12 });
+  await expect(page.getByTestId("note-gutter-selection-marquee")).toBeVisible();
   await page.mouse.up();
 
+  await expect(page.getByTestId("note-gutter-selection-marquee")).toBeHidden();
   await expect(editor.locator('[data-kosh-gutter-selected="true"]')).toHaveCount(3);
   await page.keyboard.press("Backspace");
   await expect(blocks).toHaveCount(1);

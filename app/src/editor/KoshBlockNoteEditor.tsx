@@ -42,7 +42,11 @@ import type {
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
 import { KoshEditorInteractionProvider, useKoshEditorDisabled } from "./interactionState";
-import { KoshGutterSelectionExtension, setGutterBlockSelection } from "./gutterSelection";
+import {
+  clearGutterBlockSelection,
+  KoshGutterSelectionExtension,
+  setGutterBlockSelection,
+} from "./gutterSelection";
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
@@ -347,37 +351,41 @@ function KoshGutterSelectionRail({
   disabled: boolean;
   editor: KoshBlockNoteEditorInstance;
 }) {
-  const anchorBlockId = useRef<string | null>(null);
+  const drag = useRef<{
+    anchorBlockId: string;
+    dragging: boolean;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const [marquee, setMarquee] = useState<GutterMarquee | null>(null);
 
-  const installSelection = useCallback(
-    (headBlockId: string) => {
-      const anchorId = anchorBlockId.current;
-      if (!anchorId) return;
+  const installMarqueeSelection = useCallback(
+    (bounds: GutterMarquee) => {
       const root = editor.domElement;
       if (!root) return;
       const blockIds = topLevelBlockElements(root)
+        .filter((element) => intersectsMarquee(element.getBoundingClientRect(), bounds))
         .map((element) => element.dataset.id)
         .filter((id): id is string => Boolean(id));
-      const anchorIndex = blockIds.indexOf(anchorId);
-      const headIndex = blockIds.indexOf(headBlockId);
-      if (anchorIndex < 0 || headIndex < 0) return;
-      const firstIndex = Math.min(anchorIndex, headIndex);
-      const lastIndex = Math.max(anchorIndex, headIndex);
-      const selectedIds = blockIds.slice(firstIndex, lastIndex + 1);
-      setGutterBlockSelection(editor, selectedIds);
+      if (blockIds.length > 0) {
+        setGutterBlockSelection(editor, blockIds);
+      } else {
+        clearGutterBlockSelection(editor);
+      }
     },
     [editor],
   );
 
-  const selectAtPointer = useCallback(
-    (clientY: number) => {
-      const root = editor.domElement;
-      if (!root) return;
-      const block = blockElementAtY(topLevelBlockElements(root), clientY);
-      const blockId = block?.dataset.id;
-      if (blockId) installSelection(blockId);
+  const updateMarquee = useCallback(
+    (clientX: number, clientY: number) => {
+      const activeDrag = drag.current;
+      if (!activeDrag) return;
+      const bounds = marqueeBetween(activeDrag.startX, activeDrag.startY, clientX, clientY);
+      setMarquee(bounds);
+      installMarqueeSelection(bounds);
     },
-    [editor, installSelection],
+    [installMarqueeSelection],
   );
 
   return (
@@ -386,7 +394,8 @@ function KoshGutterSelectionRail({
       className="kosh-blocknote-gutter-selection-rail"
       data-testid="note-gutter-selection-rail"
       onPointerCancel={(event) => {
-        anchorBlockId.current = null;
+        drag.current = null;
+        setMarquee(null);
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
           event.currentTarget.releasePointerCapture(event.pointerId);
         }
@@ -400,25 +409,86 @@ function KoshGutterSelectionRail({
         const blockId = block?.dataset.id;
         if (!blockId) return;
         event.preventDefault();
-        anchorBlockId.current = blockId;
+        drag.current = {
+          anchorBlockId: blockId,
+          dragging: false,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+        };
+        setMarquee(null);
         event.currentTarget.setPointerCapture(event.pointerId);
-        installSelection(blockId);
+        setGutterBlockSelection(editor, [blockId]);
       }}
       onPointerMove={(event) => {
-        if (anchorBlockId.current === null || (event.buttons & 1) === 0) return;
+        const activeDrag = drag.current;
+        if (!activeDrag || activeDrag.pointerId !== event.pointerId || (event.buttons & 1) === 0) {
+          return;
+        }
+        if (
+          !activeDrag.dragging &&
+          Math.hypot(event.clientX - activeDrag.startX, event.clientY - activeDrag.startY) < 3
+        ) {
+          return;
+        }
         event.preventDefault();
-        selectAtPointer(event.clientY);
+        activeDrag.dragging = true;
+        updateMarquee(event.clientX, event.clientY);
       }}
       onPointerUp={(event) => {
-        if (anchorBlockId.current === null) return;
+        const activeDrag = drag.current;
+        if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
         event.preventDefault();
-        selectAtPointer(event.clientY);
-        anchorBlockId.current = null;
+        if (activeDrag.dragging) {
+          updateMarquee(event.clientX, event.clientY);
+        } else {
+          setGutterBlockSelection(editor, [activeDrag.anchorBlockId]);
+        }
+        drag.current = null;
+        setMarquee(null);
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
           event.currentTarget.releasePointerCapture(event.pointerId);
         }
       }}
-    />
+    >
+      {marquee && (
+        <div
+          className="kosh-blocknote-gutter-selection-marquee"
+          data-testid="note-gutter-selection-marquee"
+          style={{
+            height: marquee.height,
+            left: marquee.left,
+            top: marquee.top,
+            width: marquee.width,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+interface GutterMarquee {
+  height: number;
+  left: number;
+  top: number;
+  width: number;
+}
+
+function marqueeBetween(startX: number, startY: number, endX: number, endY: number): GutterMarquee {
+  return {
+    height: Math.abs(endY - startY),
+    left: Math.min(startX, endX),
+    top: Math.min(startY, endY),
+    width: Math.abs(endX - startX),
+  };
+}
+
+function intersectsMarquee(bounds: DOMRect, marquee: GutterMarquee): boolean {
+  return (
+    marquee.left <= bounds.right &&
+    marquee.left + marquee.width >= bounds.left &&
+    marquee.top <= bounds.bottom &&
+    marquee.top + marquee.height >= bounds.top
   );
 }
 
