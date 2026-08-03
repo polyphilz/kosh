@@ -261,7 +261,6 @@ async function measureSearchNavigation(page) {
   await page.keyboard.press("Meta+k");
   const search = page.getByRole("combobox", { name: "Search notes" });
   await search.waitFor({ state: "visible" });
-  await search.focus();
   await page.waitForFunction(
     () => document.documentElement.dataset.koshSearchFocusMs !== undefined,
   );
