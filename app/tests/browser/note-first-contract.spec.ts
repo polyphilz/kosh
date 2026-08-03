@@ -122,8 +122,8 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
   await expect(citation).toContainText("The exact note passage remembers contiguous arrays.");
   await expect(citation).toContainText("NumPy notebook · example.com");
   await citation.click();
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("contiguous arrays");
+  await expect(page.getByLabel("Search result location")).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 

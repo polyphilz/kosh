@@ -180,6 +180,37 @@ describe("production BlockNote editor", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("marks every block in a contiguous citation range", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"First matched block.\n\nSecond matched block."}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("Second matched block.");
+    const citation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "First matched block. Second matched block.",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startBlock: 0,
+        endBlock: 1,
+      },
+    };
+
+    expect(ref.current?.focusCitation(citation)).toBe(true);
+    const matches = document.querySelectorAll('[data-kosh-search-hit="true"]');
+    expect(matches).toHaveLength(2);
+    expect(matches[0]).toHaveTextContent("First matched block.");
+    expect(matches[1]).toHaveTextContent("Second matched block.");
+  });
+
   it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(
@@ -356,7 +387,7 @@ describe("production BlockNote editor", () => {
 
     expect(ref.current?.focusCitation(characterCitation)).toBe(true);
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
-      "exact slice",
+      "zero αβ exact slice omega",
     );
 
     view.rerender(
@@ -382,9 +413,11 @@ describe("production BlockNote editor", () => {
     };
 
     expect(ref.current?.focusCitation(lineCitation)).toBe(true);
-    expect(document.querySelector('[data-kosh-search-hit="true"]')?.textContent).toBe(
-      "second target\nthird",
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent("first");
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      "second target",
     );
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent("fourth");
 
     const mismatchedLocator: CitationResolution = {
       ...characterCitation,
@@ -425,7 +458,7 @@ describe("production BlockNote editor", () => {
 
     expect(ref.current?.focusCitation(citation)).toBe(true);
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
-      "exact slice",
+      "zero x<y exact slice omega",
     );
   });
 

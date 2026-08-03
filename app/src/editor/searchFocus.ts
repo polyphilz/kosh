@@ -30,7 +30,10 @@ export const KoshSearchFocusExtension = createExtension({
       state: {
         init: () => EMPTY_SEARCH_FOCUS,
         apply(transaction, current) {
-          return transaction.getMeta(SEARCH_FOCUS_KEY) ?? current;
+          return (
+            transaction.getMeta(SEARCH_FOCUS_KEY) ??
+            (transaction.docChanged ? EMPTY_SEARCH_FOCUS : current)
+          );
         },
       },
       props: {
@@ -41,22 +44,11 @@ export const KoshSearchFocusExtension = createExtension({
           state.doc.descendants((node, position) => {
             const id = typeof node.attrs.id === "string" ? node.attrs.id : null;
             if (!id || !target.blockIds.has(id)) return;
-            if (target.inlineRange?.blockId === id) {
-              const range = resolveInlineRange(node, position, target.inlineRange);
-              if (range) {
-                decorations.push(
-                  Decoration.inline(range.from, range.to, {
-                    "data-kosh-search-hit": "true",
-                  }),
-                );
-              }
-            } else {
-              decorations.push(
-                Decoration.node(position, position + node.nodeSize, {
-                  "data-kosh-search-hit": "true",
-                }),
-              );
-            }
+            decorations.push(
+              Decoration.node(position, position + node.nodeSize, {
+                "data-kosh-search-hit": "true",
+              }),
+            );
           });
           return DecorationSet.create(state.doc, decorations);
         },

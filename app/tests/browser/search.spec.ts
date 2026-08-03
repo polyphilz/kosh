@@ -34,16 +34,19 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   await search.press("Enter");
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Search result location")).toHaveCount(0);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCSS(
+    "animation-name",
+    "kosh-search-match-flash",
+  );
   expect(page.url()).not.toContain("slow");
   expect(await searchStorageKeys(page)).toEqual([]);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0, { timeout: 3_000 });
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
 
   await page.getByRole("textbox", { name: "Note" }).fill("A replacement passage.");
-  await expect(
-    page.getByText("The cited passage is no longer present in this note."),
-  ).toBeVisible();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
 });
 
@@ -73,7 +76,8 @@ test("a route-backed search result remains on its cited note", async ({ page }) 
 
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=fake-passage%3A`, "u"));
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("cedar passage");
+  await expect(page.getByLabel("Search result location")).toHaveCount(0);
 });
 
 test("dismissal clears transient search and stale responses cannot replace newer results", async ({
@@ -247,12 +251,8 @@ test("attachment results retain their exact page evidence after opening the owni
   await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
   await page.getByRole("option", { name: /Vector chapter/u }).click();
 
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
-  await expect(page.locator(".note-search-focus span")).toHaveText("Vector chapter · page 7");
-  await expect(page.locator(".note-search-focus q")).toHaveText(
-    "Page-seven matrix evidence remains exact.",
-  );
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
+  await expect(page.getByLabel("Search result location")).toHaveCount(0);
 });
 
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {

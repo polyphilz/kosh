@@ -20,10 +20,10 @@ test("editor and search keyboard contracts hold in WebKit", async ({ page }) => 
   await search.press("ArrowDown");
   await expect(search).toBeFocused();
   await search.press("Enter");
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(
     "a portable editor passage",
   );
+  await expect(page.getByLabel("Search result location")).toHaveCount(0);
 });
 
 test("the titleless note route focuses and checkpoints in WebKit", async ({ page }) => {
