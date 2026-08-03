@@ -25,3 +25,13 @@ test("editor and search keyboard contracts hold in WebKit", async ({ page }) => 
   await expect(page.locator("#search-citation-detail")).toBeFocused();
   await expect(page.locator("#search-citation-detail")).toContainText("A portable editor passage");
 });
+
+test("the titleless note route focuses and checkpoints in WebKit", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await expect(editor).toBeFocused();
+  await editor.fill("WebKit preserves this titleless note automatically.");
+
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  await expect(editor).toContainText("WebKit preserves this titleless note automatically.");
+});

@@ -11,9 +11,11 @@ export interface QuitCanceledNotice {
   requestId: number;
 }
 
+export type LifecyclePrepareReason = "QUIT" | "UPDATE_RESTART";
+
 interface QuitParticipant {
   cancel: () => void;
-  prepare: () => Promise<void>;
+  prepare: (reason: LifecyclePrepareReason) => Promise<void>;
 }
 
 export interface QuitNative {
@@ -41,11 +43,11 @@ export function registerQuitParticipant(participant: QuitParticipant): () => voi
   return () => participants.delete(participant);
 }
 
-async function prepareParticipants(): Promise<void> {
-  await Promise.all([...participants].map((participant) => participant.prepare()));
+export async function prepareLifecycleParticipants(reason: LifecyclePrepareReason): Promise<void> {
+  await Promise.all([...participants].map((participant) => participant.prepare(reason)));
 }
 
-function cancelParticipants() {
+export function cancelLifecycleParticipants() {
   for (const participant of participants) participant.cancel();
 }
 
@@ -60,7 +62,7 @@ export function QuitCoordinator({ native = quitNative }: { native?: QuitNative }
       const [prepare, canceled] = await Promise.all([
         native.onPrepare((notice) => {
           activeRequestId.current = notice.requestId;
-          void prepareParticipants()
+          void prepareLifecycleParticipants("QUIT")
             .then(() => native.acknowledge(notice.requestId, null))
             .catch(async (reason: unknown) => {
               const error = errorMessage(reason);
@@ -68,14 +70,14 @@ export function QuitCoordinator({ native = quitNative }: { native?: QuitNative }
                 await native.acknowledge(notice.requestId, error);
               } catch {
                 activeRequestId.current = null;
-                cancelParticipants();
+                cancelLifecycleParticipants();
               }
             });
         }),
         native.onCanceled((notice) => {
           if (activeRequestId.current !== notice.requestId) return;
           activeRequestId.current = null;
-          cancelParticipants();
+          cancelLifecycleParticipants();
         }),
       ]);
       if (active) {

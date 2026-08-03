@@ -1,24 +1,50 @@
 import {
   createHashHistory,
+  redirect,
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   type RouterHistory,
 } from "@tanstack/react-router";
 import { App } from "./App";
-import { AddPage } from "./routes/AddPage";
-import { CatalogPage } from "./routes/CatalogPage";
-import { ResearchPage } from "./routes/ResearchPage";
-import { LibraryPage } from "./routes/LibraryPage";
-import { RuntimePage } from "./routes/RuntimePage";
-import { SearchPage } from "./routes/SearchPage";
-import { SettingsPage } from "./routes/SettingsPage";
-import { TidbitPage } from "./routes/TidbitPage";
+import { NotePage } from "./routes/NotePage";
+import { createUuidV7 } from "./notes/autosave";
+
+const AddPage = lazyRouteComponent(() => import("./routes/AddPage"), "AddPage");
+const CatalogPage = lazyRouteComponent(() => import("./routes/CatalogPage"), "CatalogPage");
+const LibraryPage = lazyRouteComponent(() => import("./routes/LibraryPage"), "LibraryPage");
+const ResearchPage = lazyRouteComponent(() => import("./routes/ResearchPage"), "ResearchPage");
+const RuntimePage = lazyRouteComponent(() => import("./routes/RuntimePage"), "RuntimePage");
+const SearchPage = lazyRouteComponent(() => import("./routes/SearchPage"), "SearchPage");
+const SettingsPage = lazyRouteComponent(() => import("./routes/SettingsPage"), "SettingsPage");
+const TidbitPage = lazyRouteComponent(() => import("./routes/TidbitPage"), "TidbitPage");
 
 const rootRoute = createRootRoute({ component: App });
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  beforeLoad: () => {
+    throw redirect({
+      to: "/new/$noteId",
+      params: { noteId: createUuidV7() },
+      replace: true,
+    });
+  },
+});
+const newNoteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/new/$noteId",
+  component: NewNoteRoute,
+});
+const noteRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/notes/$noteId",
+  component: DurableNoteRoute,
+});
+const searchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/search",
   component: SearchPage,
   validateSearch: librarySearch,
 });
@@ -61,6 +87,9 @@ const tidbitRoute = createRoute({
 });
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  newNoteRoute,
+  noteRoute,
+  searchRoute,
   addRoute,
   researchRoute,
   libraryRoute,
@@ -69,6 +98,16 @@ const routeTree = rootRoute.addChildren([
   runtimeRoute,
   tidbitRoute,
 ]);
+
+function NewNoteRoute() {
+  const { noteId } = newNoteRoute.useParams();
+  return <NotePage key={`ephemeral:${noteId}`} mode="ephemeral" noteId={noteId} />;
+}
+
+function DurableNoteRoute() {
+  const { noteId } = noteRoute.useParams();
+  return <NotePage key={`durable:${noteId}`} mode="durable" noteId={noteId} />;
+}
 
 export function createAppRouter(history: RouterHistory = createHashHistory()) {
   return createRouter({ history, routeTree });

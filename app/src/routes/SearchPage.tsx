@@ -20,8 +20,12 @@ const SEARCH_RESULT_LIMIT = 40;
 
 export function SearchPage() {
   const backend = useBackend();
-  const navigate = useNavigate({ from: "/" });
-  const { exact: routeExact, passage: routePassage, q: routeQuery } = useSearch({ from: "/" });
+  const navigate = useNavigate({ from: "/search" });
+  const {
+    exact: routeExact,
+    passage: routePassage,
+    q: routeQuery,
+  } = useSearch({ from: "/search" });
   const inputRef = useRef<HTMLInputElement>(null);
   const resultRefs = useRef(new Map<string, HTMLButtonElement>());
   const detailRef = useRef<HTMLElement>(null);
@@ -132,7 +136,7 @@ export function SearchPage() {
     void navigate({
       replace: true,
       search: searchRouteState(query, exact),
-      to: "/",
+      to: "/search",
     });
   }, [exact, navigate, query, routePassage]);
 
@@ -141,7 +145,7 @@ export function SearchPage() {
     void navigate({
       replace: true,
       search: searchRouteState(value, exact),
-      to: "/",
+      to: "/search",
     });
   };
 
@@ -150,7 +154,7 @@ export function SearchPage() {
     void navigate({
       replace: true,
       search: searchRouteState(query, checked),
-      to: "/",
+      to: "/search",
     });
   };
 
@@ -162,7 +166,7 @@ export function SearchPage() {
     focusDetailAfterLoad.current = focusDetail;
     void navigate({
       search: searchRouteState(query, exact, passageId),
-      to: "/",
+      to: "/search",
     });
   };
 

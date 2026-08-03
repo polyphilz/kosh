@@ -76,6 +76,7 @@ export interface KoshBlockNoteEditorProps {
   revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
   retryPdfExtraction?: (attachmentId: string) => Promise<PdfStatusRecord>;
+  variant?: "default" | "page";
   value: string;
 }
 
@@ -239,7 +240,9 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
           <KoshMediaActionsProvider actions={mediaActions}>
             <div
               aria-disabled={properties.disabled || undefined}
-              className="kosh-rich-text-editor kosh-blocknote-editor"
+              className={`kosh-rich-text-editor kosh-blocknote-editor${
+                properties.variant === "page" ? " kosh-blocknote-editor--page" : ""
+              }`}
               data-testid={`${properties.ariaLabel.toLowerCase().replace(/\s+/gu, "-")}-editor`}
               onPasteCapture={(event) => {
                 if (properties.disabled || !capabilities.pasteImage) return;

@@ -28,6 +28,40 @@ for (const theme of ["LIGHT", "DARK"] as const) {
   });
 }
 
+for (const theme of ["LIGHT", "DARK"] as const) {
+  test(`full-page note stays visually stable in ${theme.toLowerCase()} mode`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/#/search");
+    const note = await page.evaluate(async () => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      return backend.createTidbit({
+        title: null,
+        bodyMarkdown:
+          "# NumPy scrap notes\n\nArrays keep shape and dtype together.\n\n- contiguous memory\n  - predictable strides\n- vectorized operations\n\n```python\na = np.array([[1, 2], [3, 4]])\n```\n\n$$a_{ij} = i + j$$",
+        sources: [],
+      });
+    });
+    await page.evaluate(
+      ({ appearance, noteId }) => {
+        document.documentElement.dataset.appearance = appearance;
+        window.location.hash = `/notes/${noteId}`;
+      },
+      { appearance: theme, noteId: note.id },
+    );
+    await expect(page.getByRole("textbox", { name: "Note" })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+
+    await expect(page).toHaveScreenshot(`note-${theme.toLowerCase()}.png`, {
+      animations: "disabled",
+      caret: "hide",
+      fullPage: true,
+      maxDiffPixelRatio: 0.04,
+      threshold: 0.35,
+    });
+  });
+}
+
 test("library surface stays visually stable", async ({ page }) => {
   await createTidbit(page, "Alpha note", "A compact thought.");
   await page.getByRole("link", { name: "Add" }).click();
@@ -84,4 +118,5 @@ async function createTidbit(page: Page, title: string, body: string) {
   await page.getByRole("textbox", { name: /^Title/u }).fill(title);
   await page.getByRole("textbox", { name: "Tidbit" }).fill(body);
   await page.getByRole("button", { name: "Save tidbit" }).click();
+  await expect(page.getByRole("heading", { name: title })).toBeVisible();
 }

@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
 const primaryRoutes = [
-  { path: "/#/", heading: "Search" },
+  { path: "/#/search", heading: "Search" },
   { path: "/#/add", heading: "Add a tidbit" },
   { path: "/#/library", heading: "Library" },
   { path: "/#/research", heading: "Research" },
@@ -36,7 +36,7 @@ test("all primary destinations are reachable in order without a pointer", async 
 
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: "Kosh home" })).toBeFocused();
-  const expected = ["Search", "Add", "Library", "Research", "Settings"];
+  const expected = ["New note", "Search", "Add", "Library", "Research", "Settings"];
   for (const name of expected) {
     await page.keyboard.press("Tab");
     await expect(
@@ -56,7 +56,7 @@ test("minimum supported window reflows at 200 percent text without hidden contro
   page,
 }) => {
   await page.setViewportSize({ width: 720, height: 700 });
-  await page.goto("/#/");
+  await page.goto("/#/search");
   await page.evaluate(() => {
     document.documentElement.style.fontSize = "200%";
   });

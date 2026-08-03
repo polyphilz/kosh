@@ -7,7 +7,7 @@ test("search-as-you-type renders cited passages, exact mode, and keyboard histor
   page,
 }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.goto("/#/");
+  await page.goto("/#/search");
   const search = page.getByRole("searchbox", { name: "Search tidbits" });
   await expect(search).toBeFocused();
   await seedTidbit(page, {
@@ -64,7 +64,7 @@ test("search-as-you-type renders cited passages, exact mode, and keyboard histor
 });
 
 test("superseded and failed searches cannot replace a newer result", async ({ page }) => {
-  await page.goto("/#/");
+  await page.goto("/#/search");
   await seedTidbit(page, {
     title: "Slow response",
     bodyMarkdown: "Only the slow query should find this passage.",
@@ -124,7 +124,7 @@ test("superseded and failed searches cannot replace a newer result", async ({ pa
 test("a citation edited after search opens as historical and focuses its exact passage", async ({
   page,
 }) => {
-  await page.goto("/#/");
+  await page.goto("/#/search");
   const created = await seedTidbit(page, {
     title: "Revision evidence",
     bodyMarkdown: "The original immutable passage mentions cobalt.",
@@ -197,7 +197,7 @@ test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
       get: () => semanticTimers.size,
     });
   });
-  await page.goto("/#/");
+  await page.goto("/#/search");
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_TIMER_COUNT__")))
     .toBe(1);

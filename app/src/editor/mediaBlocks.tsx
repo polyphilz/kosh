@@ -15,6 +15,7 @@ import type {
   SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { attachmentMediaUrl } from "../media/gateway";
+import { useKoshEditorDisabled } from "./interactionState";
 import { clampImageWidth, initialImageWidth } from "./mediaSizing";
 
 const ACTIVE_IMAGE_STATUSES = new Set(["PENDING", "RUNNING", "RETRY_WAIT"]);
@@ -154,18 +155,11 @@ const legacyMedia = createReactBlockSpec(
   {
     meta: { isolating: true, selectable: true },
     render: ({ block, editor }) => (
-      <label className="kosh-blocknote-legacy-media" contentEditable={false}>
-        <span>Legacy media reference</span>
-        <textarea
-          aria-label="Legacy media source"
-          disabled={!editor.isEditable}
-          onChange={(event) =>
-            editor.updateBlock(block, { props: { markdown: event.currentTarget.value } })
-          }
-          spellCheck={false}
-          value={block.props.markdown}
-        />
-      </label>
+      <LegacyMediaSource
+        editable={editor.isEditable}
+        markdown={block.props.markdown}
+        onChange={(markdown) => editor.updateBlock(block, { props: { markdown } })}
+      />
     ),
   },
 );
@@ -244,8 +238,35 @@ type ImageRenderProps = ReactCustomBlockRenderProps<typeof imageConfig>;
 type PdfRenderProps = ReactCustomBlockRenderProps<typeof pdfConfig>;
 type FileRenderProps = ReactCustomBlockRenderProps<typeof fileAttachmentConfig>;
 
+function LegacyMediaSource({
+  editable,
+  markdown,
+  onChange,
+}: {
+  editable: boolean;
+  markdown: string;
+  onChange: (markdown: string) => void;
+}) {
+  const locked = useKoshEditorDisabled() || !editable;
+  return (
+    <label className="kosh-blocknote-legacy-media" contentEditable={false}>
+      <span>Legacy media reference</span>
+      <textarea
+        aria-label="Legacy media source"
+        disabled={locked}
+        onChange={(event) => {
+          if (!locked) onChange(event.currentTarget.value);
+        }}
+        spellCheck={false}
+        value={markdown}
+      />
+    </label>
+  );
+}
+
 function KoshImageBlock({ block, editor }: ImageRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
+  const locked = useKoshEditorDisabled() || !editor.isEditable;
   const [pollRevision, setPollRevision] = useState(0);
   const [status, setStatus] = useState<ImageStatusRecord | null>(null);
   const figureRef = useRef<HTMLElement>(null);
@@ -275,11 +296,13 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
     };
   }, [actions, attachmentId, pollRevision]);
 
-  const updateWidth = (widthPercent: number) =>
+  const updateWidth = (widthPercent: number) => {
+    if (locked) return;
     editor.updateBlock(block, { props: { widthPercent: clampImageWidth(widthPercent) } });
+  };
 
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!editor.isEditable || event.button !== 0) return;
+    if (locked || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     const parentWidth = figureRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
@@ -330,7 +353,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
       <button
         aria-label="Resize image"
         className="kosh-blocknote-image__resize"
-        disabled={!editor.isEditable}
+        disabled={locked}
         onPointerDown={beginResize}
         type="button"
       />
@@ -338,7 +361,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
         <label>
           <span>Alt text</span>
           <input
-            disabled={!editor.isEditable}
+            disabled={locked}
             maxLength={500}
             onChange={(event) =>
               editor.updateBlock(block, { props: { altText: event.currentTarget.value } })
@@ -350,7 +373,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
         <label>
           <span>Caption</span>
           <input
-            disabled={!editor.isEditable}
+            disabled={locked}
             maxLength={2_000}
             onChange={(event) =>
               editor.updateBlock(block, { props: { caption: event.currentTarget.value } })
@@ -366,7 +389,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
         </span>
         {renderedStatus === "FAILED" && actions.retryImageOcr && (
           <button
-            disabled={!editor.isEditable}
+            disabled={locked}
             onClick={() =>
               void actions.retryImageOcr!(attachmentId)
                 .then((record) => {
@@ -382,11 +405,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
             Retry text recognition
           </button>
         )}
-        <button
-          disabled={!editor.isEditable}
-          onClick={() => editor.removeBlocks([block])}
-          type="button"
-        >
+        <button disabled={locked} onClick={() => editor.removeBlocks([block])} type="button">
           Remove
         </button>
       </div>
@@ -463,6 +482,7 @@ function KoshPdfBlock({ block, editor }: PdfRenderProps) {
 
 function KoshFileBlock({ block, editor }: FileRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
+  const locked = useKoshEditorDisabled() || !editor.isEditable;
   const [status, setStatus] = useState<GenericAttachmentStatusRecord | null>(null);
   const [replacing, setReplacing] = useState(false);
   const attachmentId = block.props.attachmentId;
@@ -483,7 +503,7 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
   const filename = status?.displayFilename ?? block.props.displayFilename;
   const replace = actions.pickReplacement
     ? async () => {
-        if (replacing || !editor.isEditable) return;
+        if (replacing || locked) return;
         setReplacing(true);
         try {
           const replacement = await actions.pickReplacement!();
@@ -534,7 +554,7 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
         <span>Caption</span>
         <input
           aria-label="Attachment caption"
-          disabled={!editor.isEditable}
+          disabled={locked}
           maxLength={2_000}
           onChange={(event) =>
             editor.updateBlock(block, { props: { caption: event.currentTarget.value } })
@@ -565,6 +585,7 @@ function MediaButtons({
   replacing?: boolean;
 }) {
   const actions = useContext(KoshMediaActionsContext);
+  const locked = useKoshEditorDisabled() || !editor.isEditable;
   const invoke = (action: (() => Promise<unknown>) | undefined) =>
     action ? void action().catch((error: unknown) => actions.onError?.(error)) : undefined;
   return (
@@ -580,20 +601,16 @@ function MediaButtons({
         </button>
       )}
       {onRetry && (
-        <button disabled={!editor.isEditable} onClick={() => invoke(onRetry)} type="button">
+        <button disabled={locked} onClick={() => invoke(onRetry)} type="button">
           Retry extraction
         </button>
       )}
       {onReplace && (
-        <button
-          disabled={!editor.isEditable || replacing}
-          onClick={() => invoke(onReplace)}
-          type="button"
-        >
+        <button disabled={locked || replacing} onClick={() => invoke(onReplace)} type="button">
           Replace
         </button>
       )}
-      <button disabled={!editor.isEditable} onClick={onRemove} type="button">
+      <button disabled={locked} onClick={onRemove} type="button">
         Remove
       </button>
     </div>
