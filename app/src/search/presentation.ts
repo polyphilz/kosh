@@ -133,14 +133,6 @@ export function citationCopyText(citation: CitationResolution): string {
   return lines.join("\n");
 }
 
-export function resultTitle(result: PassageSearchResult): string {
-  return (
-    result.citation.tidbit?.displayTitle ??
-    result.citation.attachment?.displayFilename ??
-    "Untitled"
-  );
-}
-
 export function resultHighlights(result: PassageSearchResult | undefined): SearchHighlight[] {
   return result?.highlights ?? [];
 }

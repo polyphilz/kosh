@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { SelectedAttachmentRecord } from "../../src/backend/contracts";
+import type { CitationResolution, SelectedAttachmentRecord } from "../../src/backend/contracts";
 import { AppearanceProvider } from "../../src/components/Appearance";
 import {
   KoshBlockNoteEditor,
@@ -119,6 +119,286 @@ describe("production BlockNote editor", () => {
       ),
     );
     expect(onChange.mock.calls.flat().join("\n")).not.toContain("private-lease");
+  });
+
+  it("focuses exact authored and media citation blocks without editing the note", async () => {
+    const onChange = vi.fn();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={onChange}
+          ref={ref}
+          value={
+            "# Slow recipe\n\nSlow simmering preserves brightness.\n\n{{kosh:image:019f547b-6200-7000-8000-000000000201;width=70%;alt=Diagram}}"
+          }
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("Slow simmering preserves brightness.");
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      "Slow simmering preserves brightness.",
+    );
+
+    expect(ref.current?.focusCitation(mediaCitation())).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toContainElement(
+      screen.getByLabelText("Image: Diagram"),
+    );
+    act(() => ref.current?.clearSearchFocus());
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="A recovered working copy replaced the cited paragraph."
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("A recovered working copy replaced the cited paragraph.");
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("refuses to retarget a citation when its fallback excerpt is ambiguous", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={
+            "An inserted block moved the citation.\n\nSlow simmering preserves brightness.\n\nSlow simmering preserves brightness."
+          }
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findAllByText("Slow simmering preserves brightness.");
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("clears focused evidence when an edit removes the cited passage", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="Slow simmering preserves brightness."
+        />
+      </AppearanceProvider>,
+    );
+    const editor = await screen.findByRole("textbox", { name: "Body" });
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(true);
+    await user.clear(editor);
+    await user.type(editor, "Fast boiling changes everything.");
+
+    expect(ref.current?.revalidateCitationFocus(authoredCitation())).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("clears stale focus without re-entering the controlled change callback", async () => {
+    const user = userEvent.setup();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    const onChange = vi.fn();
+    function RevalidatingEditor() {
+      const [value, setValue] = useState("Slow simmering preserves brightness.");
+      return (
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={(nextValue) => {
+            onChange(nextValue);
+            setValue(nextValue);
+            ref.current?.revalidateCitationFocus(authoredCitation());
+          }}
+          ref={ref}
+          value={value}
+        />
+      );
+    }
+    render(
+      <AppearanceProvider>
+        <RevalidatingEditor />
+      </AppearanceProvider>,
+    );
+    const editor = await screen.findByRole("textbox", { name: "Body" });
+
+    expect(ref.current?.focusCitation(authoredCitation())).toBe(true);
+    await user.clear(editor);
+    await user.type(editor, "Fast boiling changes everything.");
+
+    expect(onChange.mock.calls.length).toBeLessThan(40);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("preserves punctuation while validating citation evidence", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="The budget must remain > 5."
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("The budget must remain > 5.");
+    const exactCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "budget must remain > 5",
+    };
+
+    expect(ref.current?.focusCitation(exactCitation)).toBe(true);
+    act(() => ref.current?.clearSearchFocus());
+    expect(
+      ref.current?.focusCitation({ ...exactCitation, excerpt: "budget must remain < 5" }),
+    ).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("validates authored math with its citation delimiters", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"Use `code` and $x < y$ when bounded.\n\n$$\na_i > 0\n$$"}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText(/Use/);
+    const inlineCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "Use `code` and $x < y$ when bounded.",
+    };
+
+    expect(ref.current?.focusCitation(inlineCitation)).toBe(true);
+    act(() => ref.current?.clearSearchFocus());
+    expect(
+      ref.current?.focusCitation({
+        ...inlineCitation,
+        excerpt: "$$a_i > 0$$",
+        locator: { ...inlineCitation.locator, kind: "MARKDOWN_BLOCKS", startBlock: 1, endBlock: 1 },
+      }),
+    ).toBe(true);
+  });
+
+  it("focuses exact character and line slices within long authored blocks", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    const view = render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="zero αβ exact slice omega"
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("zero αβ exact slice omega");
+    const characterCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "exact slice",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startChar: 8,
+        endChar: 19,
+      },
+    };
+
+    expect(ref.current?.focusCitation(characterCitation)).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      "exact slice",
+    );
+
+    view.rerender(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"```python\nfirst\nsecond target\nthird\nfourth\n```\n"}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText(/second target/);
+    const lineCitation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "second target\nthird",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startLine: 2,
+        endLine: 3,
+      },
+    };
+
+    expect(ref.current?.focusCitation(lineCitation)).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')?.textContent).toBe(
+      "second target\nthird",
+    );
+
+    const mismatchedLocator: CitationResolution = {
+      ...characterCitation,
+      locator: {
+        ...characterCitation.locator,
+        kind: "MARKDOWN_BLOCKS",
+        startChar: 0,
+        endChar: 4,
+      },
+    };
+    expect(ref.current?.focusCitation(mismatchedLocator)).toBe(false);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toBeNull();
+  });
+
+  it("maps citation offsets across inline math evidence", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="zero $x < y$ exact slice omega"
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText(/exact slice omega/);
+    const citation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "exact slice",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startChar: 13,
+        endChar: 24,
+      },
+    };
+
+    expect(ref.current?.focusCitation(citation)).toBe(true);
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      "exact slice",
+    );
   });
 
   it("makes disabled state explicit to assistive technology and BlockNote", async () => {
@@ -241,4 +521,48 @@ function editorTree(value: string, onChange: (value: string) => void) {
       <KoshBlockNoteEditor ariaLabel="Body" onChange={onChange} value={value} />
     </AppearanceProvider>
   );
+}
+
+function authoredCitation(): CitationResolution {
+  return {
+    passageId: "passage-authored",
+    excerpt: "Slow simmering preserves brightness.",
+    headingContext: ["Slow recipe"],
+    constructionVersion: "test-v1",
+    state: "CURRENT",
+    locator: {
+      kind: "MARKDOWN_BLOCKS",
+      startBlock: 0,
+      endBlock: 0,
+      sourceStartByte: null,
+      sourceEndByte: null,
+      startChar: null,
+      endChar: null,
+      startLine: null,
+      endLine: null,
+    },
+    tidbit: null,
+    attachment: null,
+    sources: [],
+  };
+}
+
+function mediaCitation(): CitationResolution {
+  return {
+    passageId: "passage-image",
+    excerpt: "Diagram",
+    headingContext: ["Slow recipe"],
+    constructionVersion: "test-v1",
+    state: "CURRENT",
+    locator: { kind: "OCR_REGION", page: null, region: null },
+    tidbit: null,
+    attachment: {
+      id: "019f547b-6200-7000-8000-000000000201",
+      extractionId: "extraction-image",
+      displayFilename: "diagram.png",
+      mediaType: "image/png",
+      deleted: false,
+    },
+    sources: [],
+  };
 }

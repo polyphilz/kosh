@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 use super::{
-    embedding_index, passages, CitationLocator, CitationResolution, DatabaseError, Result,
+    embedding_index, passages, CitationLocator, CitationResolution, CitationTidbit, DatabaseError,
+    Result,
 };
 
 const MAX_QUERY_CHARACTERS: usize = 512;
@@ -28,7 +29,7 @@ const SEMANTIC_RERANK_EXPANSION: u32 = 2;
 const MAX_SEMANTIC_RERANK_CANDIDATES: u32 = 1_024;
 const SEMANTIC_EVIDENCE_PENALTY: f64 = 0.1;
 const INITIAL_RESULTS_PER_ATTACHMENT: usize = 2;
-pub(crate) const FTS_BM25_WEIGHTS: &str = "8.0, 6.0, 3.5, 4.5, 5.0, 5.0, 2.25";
+pub(crate) const FTS_BM25_WEIGHTS: &str = "6.0, 6.0, 3.5, 4.5, 5.0, 5.0, 2.25";
 pub(super) const FTS_VERSION: &str = "lexical-v3";
 
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
@@ -73,7 +74,7 @@ pub enum SearchField {
 impl SearchField {
     const fn weight(self, evidence_kind: SearchEvidenceKind) -> f64 {
         match self {
-            Self::Title => 8.0,
+            Self::Title => 6.0,
             Self::HeadingContext => 6.0,
             Self::Body => 3.5,
             Self::SourceLabel => 4.5,
@@ -156,6 +157,7 @@ pub struct PassageSearchResult {
     pub score: f64,
     pub matched_fields: Vec<SearchField>,
     pub highlights: Vec<SearchHighlight>,
+    pub note: CitationTidbit,
     pub citation: CitationResolution,
 }
 
@@ -778,6 +780,7 @@ fn hydrate_ranked_passages(
 ) -> Result<Vec<PassageSearchResult>> {
     struct HydratedCandidate {
         ranked: RankedLexicalDocument,
+        note: CitationTidbit,
         citation: CitationResolution,
     }
 
@@ -791,6 +794,9 @@ fn hydrate_ranked_passages(
                 reason: format!("search returned non-current passage {}", ranked.passage_id),
             });
         }
+        let Some(note) = search_result_note(connection, &ranked.passage_id, &citation)? else {
+            continue;
+        };
         if collapse_tidbits {
             if let Some(tidbit) = citation.tidbit.as_ref() {
                 let locators = seen_tidbit_locators.entry(tidbit.id.clone()).or_default();
@@ -804,7 +810,14 @@ fn hydrate_ranked_passages(
             }
         }
         let diversity_key = citation_diversity_key(&citation);
-        if diversified.push(HydratedCandidate { ranked, citation }, diversity_key) {
+        if diversified.push(
+            HydratedCandidate {
+                ranked,
+                note,
+                citation,
+            },
+            diversity_key,
+        ) {
             break;
         }
     }
@@ -816,9 +829,66 @@ fn hydrate_ranked_passages(
             score: candidate.ranked.score,
             matched_fields: candidate.ranked.matched_fields,
             highlights: candidate.ranked.highlights,
+            note: candidate.note,
             citation: candidate.citation,
         })
         .collect())
+}
+
+fn search_result_note(
+    connection: &Connection,
+    passage_id: &str,
+    citation: &CitationResolution,
+) -> Result<Option<CitationTidbit>> {
+    if let Some(note) = citation.tidbit.as_ref() {
+        return Ok(Some(note.clone()));
+    }
+    let attachment_id = citation
+        .attachment
+        .as_ref()
+        .map(|attachment| attachment.id.as_str())
+        .ok_or_else(|| DatabaseError::Validation {
+            kind: "main",
+            reason: format!("search passage {passage_id} has no note or attachment owner"),
+        })?;
+    match connection.query_row(
+        "SELECT
+                tidbit.id,
+                revision.id,
+                revision.revision_number,
+                revision.title,
+                revision.body_markdown
+             FROM tidbit_revision_attachment AS membership
+             JOIN tidbit_revision AS revision
+               ON revision.id = membership.tidbit_revision_id
+             JOIN tidbit
+               ON tidbit.id = revision.tidbit_id
+              AND tidbit.current_revision_id = revision.id
+              AND tidbit.deleted_at IS NULL
+             WHERE membership.attachment_id = ?1
+             ORDER BY tidbit.updated_at DESC, tidbit.id
+             LIMIT 1",
+        params![attachment_id],
+        |row| {
+            let title = row.get::<_, Option<String>>(3)?;
+            let body_markdown = row.get::<_, String>(4)?;
+            Ok(CitationTidbit {
+                id: row.get(0)?,
+                revision_id: row.get(1)?,
+                revision_number: row.get(2)?,
+                display_title: super::tidbits::derive_display_title(
+                    title.as_deref(),
+                    &body_markdown,
+                ),
+                title,
+                deleted: false,
+            })
+        },
+    ) {
+        Ok(note) => Ok(Some(note)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn citation_diversity_key(citation: &CitationResolution) -> SearchDiversityKey {
@@ -2007,6 +2077,37 @@ mod tests {
     }
 
     #[test]
+    fn titleless_first_heading_has_title_level_relevance() {
+        let parsed = parse_lexical_query("sentinel", LexicalSearchMode::Default)
+            .expect("valid query")
+            .expect("nonempty query");
+        let title = document(
+            "legacy-title",
+            [(SearchField::Title, "Sentinel architecture")],
+        );
+        let heading = document(
+            "titleless-heading",
+            [(SearchField::HeadingContext, "Sentinel architecture")],
+        );
+        let body = document(
+            "body-mention",
+            [(SearchField::Body, "A sentinel appears in ordinary prose.")],
+        );
+
+        let ranked = rank_lexical_documents(&parsed, vec![body, heading, title], 10);
+        let score = |passage_id: &str| {
+            ranked
+                .iter()
+                .find(|result| result.passage_id == passage_id)
+                .expect("ranked passage")
+                .score
+        };
+
+        assert_eq!(score("legacy-title"), score("titleless-heading"));
+        assert!(score("titleless-heading") > score("body-mention"));
+    }
+
+    #[test]
     fn empty_and_punctuation_only_queries_have_no_executable_plan() {
         assert!(parse_lexical_query("  ", LexicalSearchMode::Default)
             .expect("empty query")
@@ -2428,6 +2529,19 @@ mod tests {
             .contains(&SearchField::ExtractedText));
         assert!(results[0].citation.tidbit.is_none());
         assert_eq!(
+            (
+                results[0].note.id.as_str(),
+                results[0].note.revision_id.as_str(),
+                results[0].note.display_title.as_str(),
+            ),
+            (
+                "019f547b-6200-7000-8000-000000009511",
+                "019f547b-6200-7000-8000-000000009512",
+                "Attachment metadata host",
+            ),
+            "attachment results retain the current note and revision needed for exact navigation"
+        );
+        assert_eq!(
             results[0].citation.locator,
             CitationLocator::PdfPage { page: 7 }
         );
@@ -2747,6 +2861,22 @@ mod tests {
             .state,
             crate::database::CitationState::Historical
         );
+        connection
+            .execute(
+                "UPDATE tidbit SET deleted_at = 80, updated_at = 80 WHERE id = ?1",
+                params!["019f547b-6200-7000-8000-000000009511"],
+            )
+            .expect("delete the attachment's only current note owner");
+        assert!(super::search_passages(
+            &connection,
+            SearchPassagesInput {
+                query: "nova_needle".into(),
+                mode: LexicalSearchMode::Default,
+                limit: 10,
+            },
+        )
+        .expect("skip attachment evidence without a current note owner")
+        .is_empty());
     }
 
     #[test]

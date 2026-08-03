@@ -1,10 +1,11 @@
-import { Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_QUICK_ADD_ACCELERATOR, KoshCommand } from "./backend/contracts";
 import { ErrorBoundary } from "./components/States";
 import { Shortcut } from "./components/Shortcut";
 import { createUuidV7 } from "./notes/autosave";
+import { SearchOverlay } from "./search/SearchOverlay";
 import { acceleratorKeys, describeAccelerator } from "./shortcuts/accelerator";
 import { bindingFor, ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
 import { TauriEvent } from "./tauriProtocol";
@@ -30,6 +31,9 @@ export function App() {
 
 function AppShell() {
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRouteOpen = pathname === "/search";
   const { settings } = useShortcutSettings();
   const quickAddAccelerator =
     bindingFor(settings?.keyboardBindings ?? [], KoshCommand.QuickAdd)?.accelerator ??
@@ -98,6 +102,29 @@ function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [openNewNote]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        !event.metaKey ||
+        event.key.toLowerCase() !== "k"
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setSearchOpen(true);
+      window.requestAnimationFrame(() => {
+        document.querySelector<HTMLInputElement>("[data-kosh-search-input]")?.focus();
+      });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
   return (
     <ErrorBoundary>
       <div className="app-shell">
@@ -115,6 +142,11 @@ function AppShell() {
                 activeProps={{ "aria-current": "page", className: "app-nav-link--active" }}
                 className="app-nav-link"
                 key={destination.to}
+                onClick={(event) => {
+                  if (destination.to !== "/search") return;
+                  event.preventDefault();
+                  setSearchOpen(true);
+                }}
                 to={destination.to}
               >
                 <span aria-hidden="true" />
@@ -133,6 +165,14 @@ function AppShell() {
         <div className="app-content">
           <Outlet />
         </div>
+        <SearchOverlay
+          onClose={() => {
+            setSearchOpen(false);
+            if (searchRouteOpen) void navigate({ to: "/", replace: true });
+          }}
+          onResultOpen={() => setSearchOpen(false)}
+          open={searchOpen || searchRouteOpen}
+        />
       </div>
     </ErrorBoundary>
   );

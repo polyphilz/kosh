@@ -15,15 +15,17 @@ test("editor and search keyboard contracts hold in WebKit", async ({ page }) => 
       exact: true,
     })
     .click();
-  const search = page.getByRole("searchbox", { name: "Search tidbits" });
+  const search = page.getByRole("combobox", { name: "Search notes" });
   await search.fill("portable");
   const result = page.getByRole("option", { name: /WebKit contract/u });
   await expect(result).toBeVisible();
   await search.press("ArrowDown");
-  await expect(result).toBeFocused();
-  await result.press("Enter");
-  await expect(page.locator("#search-citation-detail")).toBeFocused();
-  await expect(page.locator("#search-citation-detail")).toContainText("A portable editor passage");
+  await expect(search).toBeFocused();
+  await search.press("Enter");
+  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(
+    "A portable editor passage",
+  );
 });
 
 test("the titleless note route focuses and checkpoints in WebKit", async ({ page }) => {

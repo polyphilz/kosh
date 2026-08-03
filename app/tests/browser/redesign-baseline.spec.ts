@@ -115,11 +115,13 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
   await expect(page.getByRole("link", { name: "Attachment" })).toBeVisible();
 
   await page.getByRole("link", { name: "Search", exact: true }).click();
-  await page.getByRole("searchbox", { name: "Search tidbits" }).fill("contiguous arrays");
-  await page.getByRole("option", { name: /Legacy vector note/u }).click();
-  const citation = page.locator("#search-citation-detail");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("contiguous arrays");
+  const citation = page.getByRole("option", { name: /Legacy vector note/u });
   await expect(citation).toContainText("The exact baseline passage remembers contiguous arrays.");
   await expect(citation).toContainText("NumPy notebook · example.com");
+  await citation.click();
+  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("contiguous arrays");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 

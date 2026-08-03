@@ -71,7 +71,7 @@ describe("tidbit capture and editing routes", () => {
     expect(screen.getByRole("dialog", { name: "Discard this draft?" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
 
-    expect(await screen.findByRole("heading", { name: "Search" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Search notes" })).toBeInTheDocument();
     await expect(backend.loadDraft("capture")).resolves.toBeNull();
   });
 
@@ -136,7 +136,7 @@ describe("tidbit capture and editing routes", () => {
     expect(ingestSelectedImage).not.toHaveBeenCalled();
     await expect(backend.loadDraft("capture")).resolves.toBeNull();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(await screen.findByRole("heading", { name: "Search" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Search notes" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).toBeNull();
   });
 

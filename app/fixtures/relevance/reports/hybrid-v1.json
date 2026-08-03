@@ -762,25 +762,6 @@
           ]
         },
         {
-          "passageId": "passage-misspelling-concurrency",
-          "score": 0.02975563909774436,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 113,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "title",
-            "body"
-          ]
-        },
-        {
           "passageId": "passage-unicode-cafe",
           "score": 0.029738015607580826,
           "locator": {
@@ -801,14 +782,14 @@
           ]
         },
         {
-          "passageId": "passage-formula-bayes",
-          "score": 0.02911764705882353,
+          "passageId": "passage-misspelling-concurrency",
+          "score": 0.029239766081871347,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
-            "sourceStartByte": 15,
-            "sourceEndByte": 59,
+            "sourceStartByte": 12,
+            "sourceEndByte": 113,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -816,8 +797,19 @@
           },
           "matchedFields": [
             "title",
-            "headingContext",
             "body"
+          ]
+        },
+        {
+          "passageId": "passage-pdf-distributed-113",
+          "score": 0.02916263204225352,
+          "locator": {
+            "kind": "PDF_PAGE",
+            "page": 113
+          },
+          "matchedFields": [
+            "attachmentName",
+            "extractedText"
           ]
         }
       ]
@@ -1381,7 +1373,7 @@
         },
         {
           "passageId": "passage-unicode-cafe",
-          "score": 0.030735930735930735,
+          "score": 0.03103896103896104,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1413,7 +1405,7 @@
         },
         {
           "passageId": "passage-formula-fourier",
-          "score": 0.030000000000000002,
+          "score": 0.029696969696969694,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,

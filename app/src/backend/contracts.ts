@@ -460,6 +460,7 @@ export interface PassageSearchResult {
   score: number;
   matchedFields: SearchField[];
   highlights: SearchHighlight[];
+  note: CitationTidbit;
   citation: CitationResolution;
 }
 

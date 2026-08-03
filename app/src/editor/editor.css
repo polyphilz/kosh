@@ -60,6 +60,13 @@
   min-height: calc(100vh - 128px);
 }
 
+.kosh-blocknote-editor [data-kosh-search-hit="true"] {
+  border-radius: 5px;
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 3px;
+  background: color-mix(in srgb, var(--accent-soft) 48%, transparent);
+}
+
 .kosh-blocknote-editor--page .bn-editor {
   padding: 0 0 40vh;
   font-size: 15px;

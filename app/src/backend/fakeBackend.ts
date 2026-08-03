@@ -988,6 +988,14 @@ export class FakeBackend implements Backend {
           score,
           matchedFields,
           highlights,
+          note: {
+            id: tidbit.id,
+            revisionId: tidbit.currentRevisionId,
+            revisionNumber: tidbit.revisionNumber,
+            title: tidbit.title,
+            displayTitle: tidbit.displayTitle,
+            deleted: false,
+          },
           citation: await this.resolveCitation(passageId),
         };
       }),

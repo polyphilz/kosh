@@ -2,77 +2,93 @@ import AxeBuilder from "@axe-core/playwright";
 import type { TidbitDraft, TidbitRecord } from "../../src/backend/contracts";
 import { expect, test, type Page } from "./fixtures";
 
-test("search-as-you-type renders cited passages, exact mode, and keyboard history", async ({
-  context,
-  page,
-}) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.goto("/#/search");
-  const search = page.getByRole("searchbox", { name: "Search tidbits" });
-  await expect(search).toBeFocused();
-  await seedTidbit(page, {
-    title: "Tomato technique",
-    bodyMarkdown: "Slow simmering preserves a bright tomato sauce.",
+test("Command-K searches locally and opens the exact cited note block", async ({ page }) => {
+  await page.goto("/#/");
+  await expect(page.getByRole("textbox", { name: "Note" })).toBeFocused();
+  const originalUrl = page.url();
+  const first = await seedTidbit(page, {
+    title: null,
+    bodyMarkdown: "Tomato technique: slow simmering preserves a bright tomato sauce.",
     sources: [{ label: "Cookbook", url: "https://www.example.com/tomato" }],
   });
   await seedTidbit(page, {
-    title: "Second tomato note",
-    bodyMarkdown: "Roast tomato halves before blending the sauce.",
+    title: null,
+    bodyMarkdown: "Second tomato note: roast tomato halves before blending the sauce.",
     sources: [{ label: "Kitchen log", url: "https://notes.example.org/roasting" }],
   });
 
-  await search.fill("tomato");
-  const options = page.getByRole("option");
-  await expect(options).toHaveCount(2);
-  await expect(page.getByText("Lexical matches", { exact: true })).toBeVisible();
-  await expect(
-    page.getByText("Semantic search is off · lexical search still works", { exact: true }),
-  ).toBeVisible();
-  await expect(options.first().locator("mark").first()).toHaveText(/tomato/iu);
-  await expect(options.first()).toContainText("example.org");
-  await page.getByRole("button", { name: "Enable semantic" }).click();
-  await expect(page.getByText("Semantic ready", { exact: true })).toBeVisible();
-  await expect(
-    page.getByText("Semantic index ready · this result used lexical retrieval", { exact: true }),
-  ).toBeVisible();
+  await page.keyboard.press("Meta+k");
+  const dialog = page.getByRole("dialog", { name: "Search notes" });
+  await expect(dialog).toBeVisible();
+  const search = page.getByRole("combobox", { name: "Search notes" });
+  await expect(search).toBeFocused();
+  expect(page.url()).toBe(originalUrl);
 
-  await search.press("ArrowDown");
-  await expect(options.first()).toBeFocused();
-  await expect(page.locator("#search-citation-detail")).toContainText("Second tomato note");
-  await options.first().press("ArrowDown");
-  await expect(options.nth(1)).toBeFocused();
-  await options.nth(1).press("Enter");
-  await expect(page.locator("#search-citation-detail")).toBeFocused();
-  await expect(page.locator("#search-citation-detail")).toContainText("Cookbook · example.com");
+  await search.fill("slow simmering");
+  const result = page.getByRole("option", { name: /Tomato technique/u });
+  await expect(result).toBeVisible();
+  await expect(result).toContainText("Cookbook · example.com");
+  await expect(page.getByText("Lexical ready", { exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Exact" })).toHaveCount(0);
+  await expect(result.locator("mark")).toHaveText([/slow/iu, /simmering/iu]);
 
-  await page.getByRole("button", { name: "Copy citation" }).click();
-  await expect(page.getByText("Citation copied", { exact: true })).toBeVisible();
-
-  await page.goBack();
-  await expect(page.locator("#search-citation-detail")).toContainText("Second tomato note");
-  await expect(search).toHaveValue("tomato");
-  await page.goForward();
-  await expect(page.locator("#search-citation-detail")).toContainText("Tomato technique");
-
-  await page.getByRole("checkbox", { name: "Exact" }).check();
-  await expect(page.getByText("Exact lexical matches", { exact: true })).toBeVisible();
-  await expect(
-    page.getByText("Exact mode uses lexical retrieval by design", { exact: true }),
-  ).toBeVisible();
-  await expect(page.locator(".search-command__research")).toHaveAttribute("href", "/#/research");
+  await search.press("Enter");
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
+  expect(page.url()).not.toContain("slow");
+  expect(await searchStorageKeys(page)).toEqual([]);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+  await page.getByRole("textbox", { name: "Note" }).fill("A replacement passage.");
+  await expect(
+    page.getByText("The cited passage is no longer present in this note."),
+  ).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
 });
 
-test("superseded and failed searches cannot replace a newer result", async ({ page }) => {
+test("search checkpoints the active note before querying", async ({ page }) => {
+  await page.goto("/#/");
+  await page
+    .getByRole("textbox", { name: "Note" })
+    .fill("A just-authored quokka detail must be searchable immediately.");
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("quokka detail");
+
+  await expect(page.getByRole("option", { name: /quokka detail/u })).toBeVisible();
+});
+
+test("a route-backed search result remains on its cited note", async ({ page }) => {
+  await page.goto("/#/");
+  const note = await seedTidbit(page, {
+    title: null,
+    bodyMarkdown: "Route-backed evidence names the exact cedar passage.",
+    sources: [],
+  });
   await page.goto("/#/search");
+  const dialog = page.getByRole("dialog", { name: "Search notes" });
+  await dialog.getByRole("combobox", { name: "Search notes" }).fill("cedar passage");
+  await dialog.getByRole("option", { name: /cedar passage/u }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+});
+
+test("dismissal clears transient search and stale responses cannot replace newer results", async ({
+  page,
+}) => {
+  await page.goto("/#/");
   await seedTidbit(page, {
-    title: "Slow response",
-    bodyMarkdown: "Only the slow query should find this passage.",
+    title: null,
+    bodyMarkdown: "Slow response: only the slow query should find this passage.",
     sources: [],
   });
   await seedTidbit(page, {
-    title: "Fast response",
-    bodyMarkdown: "Only the fast query should find this passage.",
+    title: null,
+    bodyMarkdown: "Fast response: only the fast query should find this passage.",
     sources: [],
   });
   await page.evaluate(() => {
@@ -99,7 +115,8 @@ test("superseded and failed searches cannot replace a newer result", async ({ pa
     Reflect.set(window, "__KOSH_RELEASE_SLOW_SEARCH__", releaseSlow);
   });
 
-  const input = page.getByRole("searchbox", { name: "Search tidbits" });
+  await page.keyboard.press("Meta+k");
+  const input = page.getByRole("combobox", { name: "Search notes" });
   await input.fill("slow");
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SLOW_SEARCH_STARTED__")))
@@ -116,55 +133,136 @@ test("superseded and failed searches cannot replace a newer result", async ({ pa
   await input.fill("explode");
   await expect(page.getByRole("alert")).toContainText("controlled search failure");
   await page.getByRole("button", { name: "Try again" }).click();
-  await expect(page.getByRole("heading", { name: "No supporting passages" })).toBeVisible();
+  await expect(page.getByText("No passages found", { exact: true })).toBeVisible();
   await input.fill("fast");
   await expect(page.getByRole("option", { name: /Fast response/u })).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Search notes" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Note" })).toBeFocused();
+  await page.keyboard.press("Meta+k");
+  await expect(page.getByRole("combobox", { name: "Search notes" })).toHaveValue("");
+  await expect(page.getByRole("option")).toHaveCount(0);
+  expect(await searchStorageKeys(page)).toEqual([]);
 });
 
-test("a citation edited after search opens as historical and focuses its exact passage", async ({
-  page,
-}) => {
-  await page.goto("/#/search");
+test("a result edited after retrieval opens honest historical evidence", async ({ page }) => {
+  await page.goto("/#/");
   const created = await seedTidbit(page, {
-    title: "Revision evidence",
-    bodyMarkdown: "The original immutable passage mentions cobalt.",
+    title: null,
+    bodyMarkdown: "Revision evidence: the original immutable passage mentions cobalt.",
     sources: [{ label: "Lab notebook", url: "https://example.com/lab" }],
   });
-  const search = page.getByRole("searchbox", { name: "Search tidbits" });
+  await page.keyboard.press("Meta+k");
+  const search = page.getByRole("combobox", { name: "Search notes" });
   await search.fill("cobalt");
   const result = page.getByRole("option", { name: /Revision evidence/u });
   await expect(result).toBeVisible();
 
-  await page.evaluate(async (tidbitId) => {
+  await page.evaluate(async (noteId) => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
-    const current = await backend.loadTidbit(tidbitId);
+    const current = await backend.loadTidbit(noteId);
     await backend.editTidbit({
       id: current.id,
       expectedRevisionId: current.currentRevisionId,
       title: current.title,
-      bodyMarkdown: "The current passage now mentions indigo.",
+      bodyMarkdown: "Revision evidence: the current passage now mentions indigo.",
       sources: current.sources,
     });
   }, created.id);
 
   await result.click();
-  await expect(page.getByText("Historical passage", { exact: true })).toBeVisible();
-  await expect(page.locator("#search-citation-detail")).toContainText(
-    "The original immutable passage mentions cobalt.",
+  await expect(
+    page.getByText("This exact passage is from an older revision; the current note is open."),
+  ).toBeVisible();
+  await expect(page.getByText(/original immutable passage mentions cobalt/u)).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
+    "the current passage now mentions indigo.",
   );
-  await page.getByRole("link", { name: "Open tidbit at passage" }).click();
-  const citedPassage = page.getByRole("region", { name: "Revision evidence" });
-  await expect(citedPassage).toBeFocused();
-  await expect(citedPassage).toContainText("The original immutable passage mentions cobalt.");
-  await expect(page.getByText("The current passage now mentions indigo.")).toBeVisible();
-  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await page.getByRole("link", { name: "← Back to search" }).click();
-  await expect(page.getByRole("searchbox", { name: "Search tidbits" })).toHaveValue("cobalt");
-  await expect(page.getByRole("heading", { name: "No supporting passages" })).toBeVisible();
+  expect(page.url()).not.toContain("cobalt");
 });
 
-test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
+test("attachment results retain their exact page evidence after opening the owning note", async ({
+  page,
+}) => {
+  await page.goto("/#/");
+  const note = await seedTidbit(page, {
+    title: null,
+    bodyMarkdown: "# Vector chapter\n\n{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
+    sources: [],
+  });
+  await page.evaluate((seeded) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const passageId = "fake-pdf-passage:page-7";
+    const citation = {
+      passageId,
+      excerpt: "Page-seven matrix evidence remains exact.",
+      headingContext: ["Vector chapter"],
+      constructionVersion: "fake-pdf-pages-v1",
+      state: "CURRENT" as const,
+      locator: { kind: "PDF_PAGE" as const, page: 7 },
+      tidbit: null,
+      attachment: {
+        id: "019f547b-6200-7000-8000-00000000d001",
+        extractionId: "fake-pdf-extraction",
+        displayFilename: "vectors.pdf",
+        mediaType: "application/pdf",
+        deleted: false,
+      },
+      sources: [],
+    };
+    backend.pdfStatus = async (attachmentId) => ({
+      attachmentId,
+      displayFilename: "vectors.pdf",
+      pageCount: 9,
+      extractedPageCount: 9,
+      unavailablePageCount: 0,
+      extractionStatus: "READY",
+      extractionError: null,
+      nextAttemptAtMs: null,
+    });
+    backend.resolveCitation = async (requestedPassageId) => {
+      if (requestedPassageId !== passageId) throw new Error("unexpected passage");
+      return citation;
+    };
+    backend.searchPassages = async () => ({
+      executionMode: "LEXICAL_ONLY",
+      semanticReadiness: "WAITING_FOR_RUNTIME",
+      results: [
+        {
+          passageId,
+          score: 10,
+          matchedFields: ["EXTRACTED_TEXT"],
+          highlights: [],
+          note: {
+            id: seeded.id,
+            revisionId: seeded.currentRevisionId,
+            revisionNumber: seeded.revisionNumber,
+            title: seeded.title,
+            displayTitle: seeded.displayTitle,
+            deleted: false,
+          },
+          citation,
+        },
+      ],
+    });
+  }, note);
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
+  await page.getByRole("option", { name: /Vector chapter/u }).click();
+
+  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.locator(".note-search-focus span")).toHaveText("Vector chapter · page 7");
+  await expect(page.locator(".note-search-focus q")).toHaveText(
+    "Page-seven matrix evidence remains exact.",
+  );
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
+});
+
+test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {
   await page.addInitScript(() => {
     const nativeSetTimeout = window.setTimeout.bind(window);
     const nativeClearTimeout = window.clearTimeout.bind(window);
@@ -172,7 +270,7 @@ test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
     let nextTimerId = 900_000;
 
     window.setTimeout = ((handler: TimerHandler, timeout?: number, ...arguments_: unknown[]) => {
-      if (timeout === 1_500) {
+      if (timeout === 2_000) {
         const timerId = nextTimerId++;
         semanticTimers.set(timerId, () => {
           if (typeof handler === "function") handler(...arguments_);
@@ -197,32 +295,21 @@ test("StrictMode keeps one semantic status polling loop", async ({ page }) => {
       get: () => semanticTimers.size,
     });
   });
-  await page.goto("/#/search");
+  await page.goto("/#/");
+  expect(await page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_TIMER_COUNT__"))).toBe(0);
+  await page.keyboard.press("Meta+k");
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_TIMER_COUNT__")))
     .toBe(1);
-  await page.evaluate(() => {
-    const backend = window.__KOSH_FAKE_BACKEND__;
-    if (!backend) throw new Error("fake backend is unavailable");
-    const status = backend.semanticRuntimeStatus.bind(backend);
-    let polls = 0;
-    backend.semanticRuntimeStatus = async () => {
-      polls += 1;
-      return status();
-    };
-    Object.defineProperty(window, "__KOSH_SEMANTIC_POLL_COUNT__", {
-      configurable: true,
-      get: () => polls,
-    });
-  });
 
   await page.evaluate(() => Reflect.get(window, "__KOSH_RUN_SEMANTIC_TIMER__")());
   await expect
-    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_POLL_COUNT__")))
-    .toBe(1);
-  await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_TIMER_COUNT__")))
     .toBe(1);
+  await page.keyboard.press("Escape");
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_SEMANTIC_TIMER_COUNT__")))
+    .toBe(0);
 });
 
 async function seedTidbit(page: Page, input: TidbitDraft): Promise<TidbitRecord> {
@@ -231,4 +318,10 @@ async function seedTidbit(page: Page, input: TidbitDraft): Promise<TidbitRecord>
     if (!backend) throw new Error("fake backend is unavailable");
     return backend.createTidbit(draft);
   }, input);
+}
+
+async function searchStorageKeys(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    Object.keys(localStorage).filter((key) => /search|query|history/iu.test(key)),
+  );
 }
