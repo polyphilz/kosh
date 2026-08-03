@@ -1,10 +1,12 @@
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
@@ -212,14 +214,49 @@ function checkCore(values) {
   verifyDatabasePair(profile);
   assert(
     numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL") >= 1,
-    "create at least one active tidbit before checking core acceptance",
+    "create at least one active note before checking core acceptance",
+  );
+  assertEqual(
+    numberSql(profile.main, "SELECT count(*) FROM draft"),
+    0,
+    "working copies after quit",
+  );
+  assertEqual(
+    numberSql(
+      profile.main,
+      `SELECT count(*)
+       FROM pragma_table_info('tidbit_revision')
+       WHERE name = 'title'`,
+    ),
+    0,
+    "authored title columns",
+  );
+  assertEqual(
+    numberSql(
+      profile.main,
+      `SELECT count(*)
+       FROM sqlite_schema
+       WHERE type = 'table'
+         AND lower(name) IN (
+           'draft_context',
+           'purge_authorization',
+           'recent_search',
+           'research_citation',
+           'research_run',
+           'research_run_attachment',
+           'search_history',
+           'search_query'
+         )`,
+    ),
+    0,
+    "retired or query-history tables",
   );
   assert(
     numberSql(profile.main, "SELECT count(*) FROM passage_search_document") >= 1,
     "lexical search projection is empty",
   );
   console.info(
-    `Core packaged acceptance passed: ${logicalEvidence(profile).activeTidbits} active notes, healthy WAL databases, current migrations, and lexical search available without a semantic model.`,
+    `Core packaged acceptance passed: ${logicalEvidence(profile).activeNotes} active notes, no pending working copies, authored titles, retired tables, or query history, healthy WAL databases, current migrations, and lexical search without a semantic model.`,
   );
 }
 
@@ -253,6 +290,8 @@ function checkJourneys(values) {
       "searchable extracted attachment text",
       "SELECT count(*) FROM passage_search_document WHERE length(extracted_text) > 0",
     ],
+    ["a text attachment", "SELECT count(*) FROM attachment WHERE kind = 'TEXT'"],
+    ["an opaque attachment", "SELECT count(*) FROM attachment WHERE kind = 'BINARY'"],
     ["a semantic passage embedding", "SELECT count(*) FROM passage_embedding"],
   ];
   for (const [label, statement] of requirements) {
@@ -262,7 +301,7 @@ function checkJourneys(values) {
     );
   }
   console.info(
-    "Packaged journey acceptance passed: rich capture, source citations, image OCR, PDF extraction/search, and semantic indexing are durable.",
+    "Packaged journey acceptance passed: titleless rich notes, source citations, image OCR, PDF/text extraction, opaque files, search, and semantic indexing are durable.",
   );
 }
 
@@ -289,7 +328,7 @@ function checkRestart(values) {
   const checkpoint = readJson(join(profile.root, "restart-checkpoint.json"));
   assertEqual(logicalEvidence(profile), checkpoint.evidence, "logical restart evidence");
   console.info(
-    "Packaged restart passed: authored, attachment, search, and semantic counts survived unchanged.",
+    "Packaged restart passed: authored note, working-copy, attachment, provenance, search, and semantic counts survived unchanged.",
   );
 }
 
@@ -322,11 +361,22 @@ function verifyDatabasePair(profile) {
 
 function logicalEvidence(profile) {
   return {
-    activeTidbits: numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL"),
+    activeNotes: numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL"),
+    deletedNotes: numberSql(
+      profile.main,
+      "SELECT count(*) FROM tidbit WHERE deleted_at IS NOT NULL",
+    ),
+    workingCopies: numberSql(profile.main, "SELECT count(*) FROM draft"),
     revisions: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision"),
     sources: numberSql(profile.main, "SELECT count(*) FROM source"),
+    revisionSources: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_source"),
     attachments: numberSql(profile.main, "SELECT count(*) FROM attachment"),
+    revisionAttachments: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_attachment"),
     passages: numberSql(profile.main, "SELECT count(*) FROM passage"),
+    attachmentPassageRevisions: numberSql(
+      profile.main,
+      "SELECT count(*) FROM attachment_passage_revision",
+    ),
     searchDocuments: numberSql(profile.main, "SELECT count(*) FROM passage_search_document"),
     embeddings: numberSql(profile.main, "SELECT count(*) FROM passage_embedding"),
   };

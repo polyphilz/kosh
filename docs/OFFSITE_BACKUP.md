@@ -6,7 +6,7 @@ is disaster recovery for one writing installation. It is not multi-device
 sync, collaboration, or a replacement for retaining the original Mac until a
 recovery drill has passed.
 
-Capture, editing, Exact search, and local citations never wait for R2,
+Note capture, autosave, Command-K search, and local citations never wait for R2,
 Litestream, or the network.
 
 ## Set up the R2 target
@@ -120,8 +120,8 @@ The packaged command:
 - emits a bounded JSON receipt with counts, never credentials.
 
 After a `PASSED` receipt, clear the shell variables, launch Kosh normally, and
-inspect notes, revision history, attachments, Exact search results, and source
-links before declaring recovery complete:
+inspect notes, attachments, Command-K results, historical citation resolution,
+and source links before declaring recovery complete:
 
 ```sh
 unset KOSH_LITESTREAM_R2_ACCOUNT_ID

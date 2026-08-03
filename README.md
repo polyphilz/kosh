@@ -3,6 +3,26 @@
 Kosh is a macOS-first, local-first note taker for capturing loose tidbits and
 finding the exact passage that matters.
 
+## Using Kosh
+
+Kosh opens directly into a focused blank note. The note remains ephemeral until
+you type or add media, then saves automatically; there is no title field or Save
+button. The editor supports paragraphs, H1-H3, nested ordered and unordered
+lists, bold, italic, strikethrough, inline and fenced code, inline and display
+math, images, PDFs, and files.
+
+- `⌘N` starts another blank note.
+- `⌘K` opens hybrid search. Lexical results remain available when the optional
+  semantic model is not ready.
+- `⌘/` toggles the sidebar. `⌘B` remains editor bold.
+- Back/forward navigation and the macOS backswipe move between visited notes.
+- `⌘Q` waits for the active note to become durable; a failed save cancels quit
+  and leaves a visible retry state.
+
+Search results are passage-level citations. Opening one navigates to its note,
+focuses the matching block or attachment, and preserves the source URL when the
+note has one. Kosh stores no query or search-history feature.
+
 ## Development
 
 Install Node 22.12.0, pnpm 10.4.0, Rust 1.97.0, and the Xcode command line
@@ -53,26 +73,28 @@ pnpm relevance:empty
 pnpm relevance:lexical
 pnpm relevance:scale
 pnpm relevance:lexical-scale
+pnpm acceptance:redesign
 pnpm hardening:report
 ```
 
-`pnpm hardening:report` is commit-bound and therefore requires a clean
-worktree.
+`pnpm acceptance:redesign` is the final redesign gate and writes its
+commit-bound performance report beneath ignored `app/.data/redesign/`.
+`pnpm hardening:report` is also commit-bound; both require a clean worktree.
 
 The relevance commands validate the checked-in search corpus, emit the
 intentionally failing empty-retrieval baseline, record the current lexical
-baseline, and generate the deterministic 10,000-tidbit performance workload
+baseline, and generate the deterministic 10,000-note performance workload
 under ignored `app/.data/relevance/`. The release-mode lexical benchmark uses a
-real migrated, WAL-backed Kosh library and the production write, FTS,
+fresh WAL-backed Kosh database and the production write, FTS,
 authoritative hydration, ranking, and citation-resolution paths. It enforces a
 100 ms p95 interactive budget and writes machine/runtime metadata beside its
 ignored report.
 
 ## Supported scale and limits
 
-Kosh's v1 target is a 10,000-tidbit local library. The release-mode lexical
+Kosh's v1 target is a 10,000-note local library. The release-mode lexical
 gate must keep interactive query latency at or below 100 ms p95 on its
-deterministic 200-query workload. Each draft supports up to 32 attachments;
+deterministic 200-query workload. Each working copy supports up to 32 attachments;
 each direct attachment, source image, or PDF may be up to 32 MiB. PDFs may
 contain up to 2,000 pages, with OCR bounded to 128 image-only pages. Searchable
 text extraction reads at most 4 MiB and 5,000 passages per attachment.
@@ -81,13 +103,13 @@ See [docs/hardening.md](docs/hardening.md) for the complete performance,
 recovery, security, accessibility, and supported-input matrix, plus the
 reproducible hardening report command.
 
-## Lexical search
+## Search and citations
 
 The native backend projects current citation passages into separate word and
 trigram FTS5 indexes. Search covers heading context, passage body,
 source labels and URLs/domains, attachment filenames, and extracted text.
 Queries are parsed as literal data before FTS execution; quoted phrases and
-explicit Exact mode never forward raw user syntax into `MATCH`.
+safe internal literal matching never forward raw user syntax into `MATCH`.
 
 Results carry Kosh-resolved citation snapshots, matched field names, and
 character-offset highlight spans. Edits, soft deletion, and restoration update

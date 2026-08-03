@@ -60,7 +60,7 @@ The supervisor polls for configuration changes and process exit independently
 of the database writer. Transient launch, Keychain, device-identity, process,
 and remote-sync failures use exponential backoff capped at five minutes. A
 structural binary, path, socket, PID-record, or configuration failure blocks
-only the current configuration revision. Capture, editing, and Exact search
+only the current configuration revision. Note autosave, editing, and local search
 continue through all of these states. A remote owner belonging to another
 hardware-bound writer identity blocks Litestream before launch; network failure
 while claiming or verifying the owner remains retryable. Remote owner acquisition runs in a

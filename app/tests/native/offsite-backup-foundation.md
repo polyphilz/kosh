@@ -2,7 +2,7 @@
 
 Relational replication is supervised only when backup is enabled. When backup
 is absent or disabled, ordinary startup performs no network or Keychain
-operation. Capture and Exact search therefore remain independent of backup
+operation. Note autosave and local search therefore remain independent of backup
 configuration.
 
 ## Persistence contract
