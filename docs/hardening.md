@@ -53,8 +53,10 @@ note-route/editor suites.
 - Cold process launch to a focused blank editor targets 1,000 ms p95. Ordinary
   input must paint within one 60 Hz frame, and the warm Command-K overlay must
   open within 100 ms on the reference Mac. The commit-bound redesign report
-  also rejects editor/input regressions over 20% from the frozen pre-redesign
-  measurement. Already-running window reactivation is measured visibly with a
+  rejects shell regressions over 20% from the frozen pre-redesign measurement.
+  BlockNote initialization has an explicitly reviewed 30% ceiling over the
+  smaller ProseMirror editor it replaces; ordinary input retains the stricter
+  frame budget. Already-running window reactivation is measured visibly with a
   150 ms p95 target because process restart is not an honest substitute.
 - Both real WKWebViews must render and return startup/search/citation IPC within
   the 30-second native readiness ceiling on fresh and restarted profiles. This
