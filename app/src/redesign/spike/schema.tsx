@@ -70,6 +70,9 @@ export const supportedSpikeBlockTypes = Object.freeze([
   "numberedListItem",
   "codeBlock",
   "displayMath",
+  "koshImage",
+  "koshPdf",
+  "koshFileAttachment",
 ]);
 export const supportedSpikeInlineTypes = supportedKoshInlineTypes;
 export const supportedSpikeStyleTypes = supportedKoshStyleTypes;

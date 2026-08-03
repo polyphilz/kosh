@@ -34,6 +34,14 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
   const resizedWidth = await image.evaluate((element) => Number.parseInt(element.style.width, 10));
   expect(resizedWidth).toBeGreaterThan(beforeWidth - 5);
 
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setEditable(false));
+  await image.focus();
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect
+    .poll(() => image.evaluate((element) => Number.parseInt(element.style.width, 10)))
+    .toBe(resizedWidth);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setEditable(true));
+
   const snapshot = await readSnapshot(page);
   const pdfBlock = snapshot.blocks.find((block) => block.type === "koshPdf")!;
   await page.locator(`.bn-block-outer[data-id="${pdfBlock.id}"]`).hover();
@@ -116,8 +124,9 @@ test("paste, native-drop insertion, cancellation, and failure retain authored co
     await expect(page.getByRole("status", { name: "Adding deferred image" })).toHaveCount(0);
   }
 
-  expect(await editorMarkdown(page)).toContain("Keep this text");
-  expect(await editorMarkdown(page)).not.toContain("koshPendingMedia");
+  const markdown = await editorMarkdown(page);
+  expect(markdown.replace(/\{\{kosh:[^}]+\}\}|\s/gu, "")).toContain("Keepthistext");
+  expect(markdown).not.toContain("koshPendingMedia");
 });
 
 test("slow media ingest preserves the active writing cursor", async ({ page }) => {
@@ -140,6 +149,32 @@ test("slow media ingest preserves the active writing cursor", async ({ page }) =
 
   const markdown = await editorMarkdown(page);
   expect(markdown).toContain("Keep writing while loading after completion");
+});
+
+test("deferred media inserts at the active caret without stealing it on completion", async ({
+  page,
+}) => {
+  await openSpike(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("Before after"));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setCursorOffset(6));
+
+  const requestId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+  );
+  await expect
+    .poll(async () => (await readSnapshot(page)).blocks.map((block) => block.type))
+    .toEqual(["paragraph", "koshPendingMedia", "paragraph"]);
+  await page.keyboard.type("inserted");
+  await page.evaluate(
+    (id) => window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(id, "success"),
+    requestId,
+  );
+  await expect(page.locator("[data-kosh-image='true']")).toHaveCount(1);
+  await page.keyboard.type(" still here");
+
+  const markdown = await editorMarkdown(page);
+  expect(markdown).toContain("Before\n\n{{kosh:image:");
+  expect(markdown).toContain("inserted still here after");
 });
 
 test("image and PDF retries restart status polling", async ({ page }) => {

@@ -317,7 +317,8 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
       contentEditable={false}
       data-kosh-image="true"
       onKeyDown={(event) => {
-        if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        if (!editor.isEditable || !event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key))
+          return;
         event.preventDefault();
         updateWidth(block.props.widthPercent + (event.key === "ArrowLeft" ? -5 : 5));
       }}

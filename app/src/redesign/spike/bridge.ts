@@ -26,7 +26,9 @@ export interface BlockNoteSpikeBridge {
     inlineContent: readonly string[];
     styles: readonly string[];
   };
+  setCursorOffset(offset: number): void;
   selectBlocks(startId: string, endId: string): void;
+  setEditable(editable: boolean): void;
   snapshot(): BlockNoteSpikeSnapshot;
 }
 
@@ -139,9 +141,20 @@ export function installSpikeBridge(
       if (outcome === "failure") deferred.reject(new Error("Synthetic media failure"));
       else deferred.resolve(outcome === "success" ? mediaFixtureRecords()[0]! : null);
     },
+    setCursorOffset(offset) {
+      if (!Number.isSafeInteger(offset) || offset < 0) {
+        throw new Error("offset must be a non-negative integer");
+      }
+      const selection = editor._tiptapEditor.state.selection;
+      editor._tiptapEditor.commands.setTextSelection(selection.from + offset);
+      editor.focus();
+    },
     selectBlocks(startId, endId) {
       editor.setSelection(startId, endId);
       editor.focus();
+    },
+    setEditable(editable) {
+      editor.isEditable = editable;
     },
     snapshot() {
       return {

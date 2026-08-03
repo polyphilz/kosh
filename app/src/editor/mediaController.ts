@@ -50,11 +50,10 @@ export function createBlockNoteMediaController(
   const begin = async (label: string, ingest: () => Promise<SelectedAttachmentRecord | null>) => {
     if (disposed) return;
     const requestId = crypto.randomUUID();
-    const [pendingBlock] = editor.insertBlocks(
-      [{ type: "koshPendingMedia", props: { label, requestId } }],
-      currentReference(editor),
-      "after",
-    );
+    const pendingBlock = insertPendingAtCursor(editor, {
+      type: "koshPendingMedia",
+      props: { label, requestId },
+    });
     if (!pendingBlock) throw new Error("BlockNote did not insert the pending media block");
     pendingIds.add(pendingBlock.id);
     notifyPending();
@@ -114,6 +113,37 @@ function currentReference(editor: KoshBlockNoteEditor) {
     if (!reference) throw new Error("BlockNote editor document is empty");
     return reference;
   }
+}
+
+function insertPendingAtCursor(editor: KoshBlockNoteEditor, pending: KoshBlockNotePartialBlock) {
+  const reference = currentReference(editor);
+  const selection = editor._tiptapEditor.state.selection;
+  const isTextCursor = selection.$from.parent.isTextblock;
+  const isAtStart = selection.empty && selection.$from.parentOffset === 0;
+  const isAtEnd =
+    selection.empty && selection.$from.parentOffset === selection.$from.parent.content.size;
+
+  if (isTextCursor && isAtStart) {
+    const [inserted] = editor.insertBlocks([pending], reference, "before");
+    editor.setTextCursorPosition(reference, "start");
+    editor.focus();
+    return inserted;
+  }
+
+  if (isTextCursor && !isAtEnd) {
+    const split = editor._tiptapEditor.commands.keyboardShortcut("Enter");
+    if (split) {
+      const tail = currentReference(editor);
+      const [inserted] = editor.insertBlocks([pending], tail, "before");
+      editor.setTextCursorPosition(tail, "start");
+      editor.focus();
+      return inserted;
+    }
+  }
+
+  const [inserted] = editor.insertBlocks([pending], reference, "after");
+  focusAfterMedia(editor, inserted);
+  return inserted;
 }
 
 function focusAfterMedia(editor: KoshBlockNoteEditor, media: { id: string } | undefined) {
