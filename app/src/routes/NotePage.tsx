@@ -108,6 +108,9 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
   const pendingWaitersRef = useRef(new Set<() => void>());
   const disposeTimerRef = useRef<number | null>(null);
   const leavingNoteRef = useRef(false);
+  const lifecyclePreparingRef = useRef(false);
+  const lifecyclePreparationRef = useRef<Promise<void> | null>(null);
+  const [lifecyclePreparing, setLifecyclePreparing] = useState(false);
   const [mediaPending, setMediaPending] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getSnapshot);
@@ -125,6 +128,30 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
     if (!editorMediaPendingRef.current && dropCountRef.current === 0) return Promise.resolve();
     return new Promise<void>((resolve) => pendingWaitersRef.current.add(resolve));
   }, []);
+
+  const cancelLifecyclePreparation = useCallback(() => {
+    lifecyclePreparationRef.current = null;
+    lifecyclePreparingRef.current = false;
+    setLifecyclePreparing(false);
+  }, []);
+
+  const prepareForLifecycle = useCallback(
+    (reason: "QUIT" | "UPDATE_RESTART") => {
+      const current = lifecyclePreparationRef.current;
+      if (current) return current;
+      lifecyclePreparingRef.current = true;
+      setLifecyclePreparing(true);
+      const operation = waitForPendingMedia().then(async () => {
+        await coordinator.flush(reason);
+      });
+      lifecyclePreparationRef.current = operation;
+      return operation.catch((error: unknown) => {
+        if (lifecyclePreparationRef.current === operation) cancelLifecyclePreparation();
+        throw error;
+      });
+    },
+    [cancelLifecyclePreparation, coordinator, waitForPendingMedia],
+  );
 
   const flushForNavigation = useCallback(async () => {
     await waitForPendingMedia();
@@ -184,13 +211,10 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
   useEffect(
     () =>
       registerQuitParticipant({
-        cancel: () => undefined,
-        prepare: async (reason) => {
-          await waitForPendingMedia();
-          await coordinator.flush(reason);
-        },
+        cancel: cancelLifecyclePreparation,
+        prepare: prepareForLifecycle,
       }),
-    [coordinator, waitForPendingMedia],
+    [cancelLifecyclePreparation, prepareForLifecycle],
   );
 
   useEffect(() => {
@@ -212,7 +236,7 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
       TauriEvent.FileDrop,
       (event) => {
         const selectionIds = event.payload.selections.map((selection) => selection.selectionId);
-        if (!active) {
+        if (!active || lifecyclePreparingRef.current) {
           void backend.discardFileDropSelections(selectionIds);
           return;
         }
@@ -254,6 +278,9 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
 
   const withMediaReservation = useCallback(
     async <Record,>(operation: (draftId: string) => Promise<Record>): Promise<Record> => {
+      if (lifecyclePreparingRef.current) {
+        throw new Error("The note is preparing for an application lifecycle action");
+      }
       const reservation = await coordinator.prepareMedia();
       try {
         return await operation(reservation.draftId);
@@ -267,11 +294,12 @@ function NoteEditorSession({ coordinator, mode, noteId }: NoteEditorSessionProps
 
   const error = snapshot.error ?? mediaError;
   return (
-    <main aria-busy={mediaPending || undefined} className="note-page">
+    <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
       <div className="note-page__document">
         <KoshBlockNoteEditor
           ariaLabel="Note"
           attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
+          disabled={lifecyclePreparing}
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(bodyMarkdown) => coordinator.update(bodyMarkdown)}
           onImageError={(reason) =>

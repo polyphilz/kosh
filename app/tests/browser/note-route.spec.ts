@@ -62,6 +62,59 @@ test("navigation fences an edit before the working-copy debounce", async ({ page
   ]);
 });
 
+test("lifecycle preparation locks note input until cancellation", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const saveWorkingCopy = backend.saveWorkingCopy.bind(backend);
+    backend.saveWorkingCopy = async (input) => {
+      await new Promise<void>((resolve) => {
+        Reflect.set(window, "__KOSH_RELEASE_LIFECYCLE_SAVE__", resolve);
+      });
+      return saveWorkingCopy(input);
+    };
+  });
+  await editor.fill("Fence this note before the save debounce.");
+
+  await page.evaluate(async () => {
+    const modulePath = "/src/lifecycle/quit.tsx";
+    const lifecycle = (await import(/* @vite-ignore */ modulePath)) as {
+      prepareLifecycleParticipants(reason: "QUIT"): Promise<void>;
+    };
+    Reflect.set(
+      window,
+      "__KOSH_LIFECYCLE_PREPARATION__",
+      lifecycle.prepareLifecycleParticipants("QUIT"),
+    );
+  });
+  await expect(editor).toHaveAttribute("aria-disabled", "true");
+  await expect(editor).toHaveAttribute("contenteditable", "false");
+
+  await page.evaluate(() => {
+    const release = Reflect.get(window, "__KOSH_RELEASE_LIFECYCLE_SAVE__") as
+      | (() => void)
+      | undefined;
+    if (!release) throw new Error("lifecycle save did not start");
+    release();
+  });
+  await page.evaluate(async () => {
+    const preparation = Reflect.get(window, "__KOSH_LIFECYCLE_PREPARATION__") as
+      | Promise<void>
+      | undefined;
+    if (!preparation) throw new Error("lifecycle preparation is unavailable");
+    await preparation;
+    const modulePath = "/src/lifecycle/quit.tsx";
+    const lifecycle = (await import(/* @vite-ignore */ modulePath)) as {
+      cancelLifecycleParticipants(): void;
+    };
+    lifecycle.cancelLifecycleParticipants();
+  });
+  await expect(editor).toHaveAttribute("aria-disabled", "false");
+  await expect(editor).toHaveAttribute("contenteditable", "true");
+});
+
 test("an interrupted new note finishes recovery before accepting input", async ({ page }) => {
   const noteId = "019f547b-6200-7000-8000-00000000e001";
   await page.goto("/#/search");
