@@ -26,9 +26,11 @@ test("the production adapter edits math source and preserves canonical Markdown"
   await expect(page.getByLabel("Display math source")).toHaveValue("\\sum_i a_i");
 
   await page.getByLabel("Inline math source").fill("b^2");
-  await page.getByLabel("Display math source").fill("\\int_0^1 x dx");
+  await page.getByLabel("Display math source").fill("\\begin{aligned}\nx &= 1\n\\end{aligned}");
   await expect.poll(() => editorMarkdown(page)).toContain("Inline $b^2$ remains editable.");
-  await expect.poll(() => editorMarkdown(page)).toContain("\\int_0^1 x dx");
+  await expect
+    .poll(() => editorMarkdown(page))
+    .toContain("\\begin{aligned}\nx &= 1\n\\end{aligned}");
   await expect(page.locator(".kosh-math-editor__preview .katex")).toHaveCount(2);
 
   const code = page.locator('.bn-block-content[data-content-type="codeBlock"]');

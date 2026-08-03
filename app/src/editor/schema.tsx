@@ -37,7 +37,7 @@ const displayMath = createReactBlockSpec(
     render: ({ block, editor }) => (
       <span className="kosh-math-editor kosh-math-editor--display" contentEditable={false}>
         <MathPreview display latex={block.props.latex} />
-        <input
+        <textarea
           aria-label="Display math source"
           className="kosh-math-editor__source"
           onChange={(event) =>
@@ -46,6 +46,7 @@ const displayMath = createReactBlockSpec(
             })
           }
           onKeyDown={(event) => event.stopPropagation()}
+          rows={1}
           spellCheck={false}
           value={block.props.latex}
         />

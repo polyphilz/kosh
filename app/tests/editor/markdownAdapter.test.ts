@@ -117,6 +117,43 @@ describe("restricted BlockNote Markdown adapter", () => {
     }
   });
 
+  it("preserves reference links and fenced-code metadata losslessly", () => {
+    expect(
+      koshBlocksToMarkdown(
+        markdownToKoshBlocks("Read [the docs][docs].\n\n[docs]: https://example.com/reference"),
+      ),
+    ).toBe("Read [the docs](https://example.com/reference).");
+    const code = '```js title="example"\nconst answer = 42;\n```';
+    expect(koshBlocksToMarkdown(markdownToKoshBlocks(code))).toBe(code);
+  });
+
+  it("flattens nested non-list blocks without dropping their authored content", () => {
+    expect(
+      koshBlocksToMarkdown([
+        {
+          type: "paragraph",
+          content: "Parent",
+          children: [
+            { type: "paragraph", content: "Nested paragraph" },
+            { type: "heading", props: { level: 2 }, content: "Nested heading" },
+          ],
+        },
+      ]),
+    ).toBe("Parent\n\nNested paragraph\n\n## Nested heading");
+  });
+
+  it("keeps punctuation inside its authored style", () => {
+    const markdown = koshBlocksToMarkdown([
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "Hello!", styles: { bold: true } }],
+      },
+    ]);
+
+    expect(markdown).toBe("**Hello!**");
+    expect(koshBlocksToMarkdown(markdownToKoshBlocks(markdown))).toBe(markdown);
+  });
+
   it("omits structural empty cursor paragraphs from persisted Markdown", () => {
     expect(
       koshBlocksToMarkdown([
@@ -141,7 +178,7 @@ describe("restricted BlockNote Markdown adapter", () => {
     ] as const;
     const markdown = koshBlocksToMarkdown(blocks);
 
-    expect(markdown).toBe("**Bold**, *italic*, ~~strike~~`, and code`");
+    expect(markdown).toBe("**Bold**_, italic_~~, strike~~`, and code`");
     expect(koshBlocksToMarkdown(markdownToKoshBlocks(markdown))).toBe(markdown);
   });
 });
