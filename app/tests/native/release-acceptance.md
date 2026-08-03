@@ -133,10 +133,14 @@ pnpm baseline:redesign
 ```
 
 Retain `.data/redesign/release-candidate-v1.performance.json`. It must pass the
-cold-process, editor initialization, input-paint, warm search-overlay,
-first-result, and 10,000-note lexical budgets. Measure already-running app
-reactivation separately during the visible walkthrough; its p95 target is
-150 ms and cannot be inferred from a process-restart measurement.
+hidden native-startup regression, editor initialization, input-paint, warm
+search-overlay, first-result, and 10,000-note lexical budgets. The automated
+native samples deliberately keep Kosh hidden and therefore do not claim shown
+window or focus latency. During the visible walkthrough, measure 20 cold
+launches from process start to a shown window with a focused editable caret;
+the p95 target is 1,000 ms. Measure 20 already-running app reactivations
+separately; the p95 target is 150 ms and cannot be inferred from a process
+restart measurement.
 
 ## E. Installed application
 

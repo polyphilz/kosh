@@ -50,14 +50,18 @@ note-route/editor suites.
 - The supported library target is 10,000 notes. Release lexical search must
   remain at or below 100 ms p95 for 200 deterministic queries through the
   WAL-backed production path.
-- Cold process launch to a focused blank editor targets 1,000 ms p95. Ordinary
-  input must paint within one 60 Hz frame, and the warm Command-K overlay must
-  open within 100 ms on the reference Mac. The commit-bound redesign report
-  rejects shell regressions over 20% from the frozen pre-redesign measurement.
-  BlockNote initialization has an explicitly reviewed 30% ceiling over the
-  smaller ProseMirror editor it replaces; ordinary input retains the stricter
-  frame budget. Already-running window reactivation is measured visibly with a
-  150 ms p95 target because process restart is not an honest substitute.
+- Visible cold process launch to a focused blank editor targets 1,000 ms p95.
+  It is measured during the explicit macOS walkthrough because hidden startup
+  automation cannot certify native visibility or focus without disrupting the
+  active desktop. The automated report labels its native samples as hidden
+  startup regression evidence only. Ordinary input must paint within one 60 Hz
+  frame, and the warm Command-K overlay must open within 100 ms on the reference
+  Mac. The report rejects shell regressions over 20% from the frozen
+  pre-redesign measurement. BlockNote initialization has an explicitly
+  reviewed 30% ceiling over the smaller ProseMirror editor it replaces;
+  ordinary input retains the stricter frame budget. Already-running window
+  reactivation is also measured visibly with a 150 ms p95 target because
+  process restart is not an honest substitute.
 - Both real WKWebViews must render and return startup/search/citation IPC within
   the 30-second native readiness ceiling on fresh and restarted profiles. This
   is a failure ceiling, not a desired launch time; the receipt retains exact

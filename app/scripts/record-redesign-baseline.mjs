@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { writePrivateReport } from "./private-report-output.mjs";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(appRoot, "..");
@@ -124,19 +125,35 @@ try {
         editorInitialization: "new browser context to the visible BlockNote editor",
         inputPaint: "beforeinput event through the next animation frame",
         searchNavigation:
-          "Playwright wall time from the note editor to the focused Command-K overlay",
+          "browser performance time from command dispatch to the focused Command-K overlay",
         firstSearchResult: "Playwright wall time from fill to first deterministic result option",
         lexicalScale: "existing release-mode 10,000-note / 200-query benchmark",
         nativeStartup:
-          "process spawn through the complete exact-head Tauri startup-smoke receipt; cold uses a fresh profile and warm reopens one preserved profile",
+          "hidden process spawn through the complete exact-head Tauri startup-smoke receipt; fresh uses a new profile and restart reopens one preserved profile; this does not measure a shown or focused native window",
+      },
+      manualMeasurementsRequired: {
+        visibleColdLaunch: {
+          samples: 20,
+          targetP95Ms: 1_000,
+          contract: "process launch to a shown native window with a focused editable caret",
+        },
+        warmWindowReactivation: {
+          samples: 20,
+          targetP95Ms: 150,
+          contract:
+            "reactivation of the already-running app with route, selection, and scroll intact",
+        },
       },
       interactive,
       nativeStartup,
       lexicalScale: scale,
       budgets,
     };
-    await mkdir(dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    await writePrivateReport(
+      join(appRoot, ".data/redesign"),
+      outputPath,
+      `${JSON.stringify(report, null, 2)}\n`,
+    );
     process.stdout.write(`Wrote ${outputPath}\n`);
     const failures = Object.entries(budgets)
       .filter(([, value]) => !value.passed)
@@ -285,11 +302,11 @@ async function measureNativeStartup() {
       appRoot,
     );
 
-    const coldMs = [];
+    const freshMs = [];
     for (let index = 0; index < nativeSampleCount; index += 1) {
       const profile = await mkdtemp(join(tmpdir(), "kosh-redesign-cold-"));
       try {
-        coldMs.push(await runNativeStartup(binary, profile, "absent", index));
+        freshMs.push(await runNativeStartup(binary, profile, "absent", index));
       } finally {
         await rm(profile, { force: true, recursive: true });
       }
@@ -298,13 +315,13 @@ async function measureNativeStartup() {
     const warmProfile = await mkdtemp(join(tmpdir(), "kosh-redesign-warm-"));
     try {
       await runNativeStartup(binary, warmProfile, "absent", "seed");
-      const warmMs = [];
+      const restartMs = [];
       for (let index = 0; index < nativeSampleCount; index += 1) {
-        warmMs.push(await runNativeStartup(binary, warmProfile, "present", index));
+        restartMs.push(await runNativeStartup(binary, warmProfile, "present", index));
       }
       return {
-        coldProcessMs: summarize(coldMs),
-        warmProcessMs: summarize(warmMs),
+        freshHiddenProcessMs: summarize(freshMs),
+        restartHiddenProcessMs: summarize(restartMs),
       };
     } finally {
       await rm(warmProfile, { force: true, recursive: true });
@@ -372,7 +389,11 @@ function summarize(samples) {
 function assessBudgets(interactive, nativeStartup, scale, frozenBaseline) {
   const frozen = frozenBaseline.interactive;
   return {
-    coldProcessP95: budget(nativeStartup.coldProcessMs.p95, 1_000, "focused cold launch"),
+    hiddenNativeStartupP95: budget(
+      nativeStartup.freshHiddenProcessMs.p95,
+      round(frozenBaseline.nativeStartup.coldProcessMs.p95 * 1.2),
+      "hidden exact-head startup regression evidence; visible focus is measured manually",
+    ),
     coldShellP95: budget(
       interactive.coldShellMs.p95,
       round(frozen.coldShellMs.p95 * 1.2),
