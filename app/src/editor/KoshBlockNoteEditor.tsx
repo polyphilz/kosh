@@ -90,6 +90,7 @@ export interface KoshBlockNoteEditorProps {
   revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
   retryPdfExtraction?: (attachmentId: string) => Promise<PdfStatusRecord>;
+  selectionRail?: boolean;
   variant?: "default" | "page";
   value: string;
 }
@@ -293,7 +294,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                 }));
               }}
             >
-              {properties.variant === "page" && (
+              {properties.variant === "page" && properties.selectionRail && (
                 <KoshGutterSelectionRail disabled={Boolean(properties.disabled)} editor={editor} />
               )}
               <BlockNoteView

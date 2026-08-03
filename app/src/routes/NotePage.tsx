@@ -506,6 +506,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           }
           retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}
           retryPdfExtraction={(attachmentId) => backend.retryPdfExtraction(attachmentId)}
+          selectionRail
           value={editorInitialValue}
           variant="page"
         />

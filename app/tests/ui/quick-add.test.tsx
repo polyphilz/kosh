@@ -53,6 +53,7 @@ describe("global quick add", () => {
     renderQuickAdd(new FakeBackend(), native.controller);
 
     await waitFor(() => expect(native.controller.markReady).toHaveBeenCalledOnce());
+    expect(screen.queryByTestId("note-gutter-selection-rail")).not.toBeInTheDocument();
     expect(native.controller.onDismissRequested.mock.invocationCallOrder[0]!).toBeLessThan(
       native.controller.markReady.mock.invocationCallOrder[0]!,
     );
