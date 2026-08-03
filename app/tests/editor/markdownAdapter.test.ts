@@ -158,24 +158,14 @@ describe("restricted BlockNote Markdown adapter", () => {
     }
   });
 
-  it("preserves reference links and fenced-code metadata losslessly", () => {
-    expect(
-      koshBlocksToMarkdown(
-        markdownToKoshBlocks("Read [the docs][docs].\n\n[docs]: https://example.com/reference"),
-      ),
-    ).toBe("Read [the docs](https://example.com/reference).");
-    const code = '```js title="example"\nconst answer = 42;\n```';
-    expect(koshBlocksToMarkdown(markdownToKoshBlocks(code))).toBe(code);
-  });
-
-  it("preserves titled links as legacy Markdown instead of degrading them to text", () => {
+  it("rejects reference links, titled links, and fenced-code metadata", () => {
     for (const markdown of [
+      "Read [the docs][docs].\n\n[docs]: https://example.com/reference",
       'Read [the docs](https://example.com/reference "Reference").',
       'Read [the docs][docs].\n\n[docs]: https://example.com/reference "Reference"',
+      '```js title="example"\nconst answer = 42;\n```',
     ]) {
-      const blocks = markdownToKoshBlocks(markdown);
-      expect(blocks[0]?.type).toBe("legacyMarkdown");
-      expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
+      expect(() => markdownToKoshBlocks(markdown)).toThrow(/Unsupported Markdown block/u);
     }
   });
 

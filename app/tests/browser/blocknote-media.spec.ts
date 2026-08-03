@@ -185,7 +185,7 @@ test("slow media ingest preserves the active writing cursor", async ({ page }) =
 test("deferred media inserts at the active caret without stealing it on completion", async ({
   page,
 }) => {
-  await openSpike(page);
+  await openHarness(page);
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Before after"));
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setCursorOffset(6));
 
@@ -209,31 +209,33 @@ test("deferred media inserts at the active caret without stealing it on completi
 });
 
 test("cancelled or failed media restores the unsplit authored text", async ({ page }) => {
-  await openSpike(page);
+  await openHarness(page);
   for (const outcome of ["cancel", "failure"] as const) {
     const original = "Before selected text after";
     await page.evaluate(
-      (markdown) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(markdown),
+      (markdown) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(markdown),
       original,
     );
     if (outcome === "cancel") {
-      await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setCursorOffset(6));
+      await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setCursorOffset(6));
     } else {
-      await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setTextSelectionOffsets(7, 20));
+      await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setTextSelectionOffsets(7, 20));
     }
 
     const requestId = await page.evaluate(() =>
-      window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+      window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
     );
     await expect(page.getByRole("status", { name: "Adding deferred image" })).toBeVisible();
     await page.evaluate(
-      ({ id, result }) => window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(id, result),
+      ({ id, result }) => window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(id, result),
       { id: requestId, result: outcome },
     );
 
     await expect(page.getByRole("status", { name: "Adding deferred image" })).toHaveCount(0);
     await expect.poll(() => editorMarkdown(page)).toBe(original);
-    expect((await readSnapshot(page)).blocks.map((block) => block.type)).toEqual(["paragraph"]);
+    expect((await readHarnessSnapshot(page)).blocks.map((block) => block.type)).toEqual([
+      "paragraph",
+    ]);
   }
 });
 

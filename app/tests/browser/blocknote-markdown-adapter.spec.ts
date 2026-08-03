@@ -43,9 +43,9 @@ test("the production adapter edits math source and preserves canonical Markdown"
 });
 
 test("math previews bound user-controlled dimensions", async ({ page }) => {
-  await openSpike(page);
+  await openHarness(page);
   await page.evaluate(() =>
-    window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("$$\n\\rule{1000000em}{1em}\n$$"),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("$$\n\\rule{1000000em}{1em}\n$$"),
   );
 
   await expect(page.locator(".kosh-math-editor__preview .katex")).toHaveCount(1);
