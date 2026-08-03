@@ -113,6 +113,12 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         database::commands::save_draft,
         database::commands::load_draft,
         database::commands::clear_draft,
+        database::commands::save_working_copy,
+        database::commands::reserve_working_copy_for_media,
+        database::commands::load_working_copy,
+        database::commands::list_working_copies,
+        database::commands::checkpoint_working_copy,
+        database::commands::discard_working_copy,
         windows::acknowledge_quit,
         windows::cancel_update_relaunch,
         windows::prepare_update_relaunch,
@@ -201,6 +207,12 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         database::commands::save_draft,
         database::commands::load_draft,
         database::commands::clear_draft,
+        database::commands::save_working_copy,
+        database::commands::reserve_working_copy_for_media,
+        database::commands::load_working_copy,
+        database::commands::list_working_copies,
+        database::commands::checkpoint_working_copy,
+        database::commands::discard_working_copy,
     ])
 }
 

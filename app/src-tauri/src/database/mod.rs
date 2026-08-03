@@ -18,6 +18,7 @@ pub(crate) mod search;
 pub(crate) mod settings;
 pub(crate) mod tidbits;
 mod validation;
+mod working_copies;
 mod writer;
 
 #[cfg(test)]
@@ -110,6 +111,10 @@ pub use tidbits::{
     PurgeTidbitInput, RestoreTidbitInput, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor,
     TidbitListItem, TidbitListPage, TidbitListScope, TidbitRevision, TidbitRevisionAttachment,
     TidbitRevisionPage, TidbitRevisionSummary, TidbitSource, TIDBIT_PURGE_DELAY_MS,
+};
+pub use working_copies::{
+    CheckpointWorkingCopyInput, DiscardWorkingCopyInput, SaveWorkingCopyInput, WorkingCopy,
+    WorkingCopyCheckpointResult, WorkingCopySaveResult,
 };
 pub(crate) use writer::LexicalBenchmarkAttachmentWrite;
 use writer::MediaMaintenanceSnapshotState;
@@ -993,6 +998,25 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(drafts::clear_draft(&mut main, input, now_ms));
+            }
+            WriterMessage::SaveWorkingCopy { write, reply } => {
+                let _ = reply.send(working_copies::save(&mut main, write));
+            }
+            WriterMessage::LoadWorkingCopy { note_id, reply } => {
+                let _ = reply.send(working_copies::load(&main, &note_id));
+            }
+            WriterMessage::ListWorkingCopies { reply } => {
+                let _ = reply.send(working_copies::list(&main));
+            }
+            WriterMessage::CheckpointWorkingCopy { write, reply } => {
+                let _ = reply.send(working_copies::checkpoint(&mut main, write));
+            }
+            WriterMessage::DiscardWorkingCopy {
+                input,
+                now_ms,
+                reply,
+            } => {
+                let _ = reply.send(working_copies::discard(&mut main, input, now_ms));
             }
             WriterMessage::LoadShortcutSettings { reply } => {
                 let _ = reply.send(settings::load_shortcut_settings(&main));

@@ -417,7 +417,7 @@ fn startup_reconciles_preexisting_revisions_and_retains_old_builder_versions() {
 }
 
 #[test]
-fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
+fn empty_legacy_revisions_are_reconciled_without_blocking_valid_content() {
     let root = tempfile::tempdir().expect("temporary recoverable library");
     let paths = DatabasePaths::new(root.path());
     drop(Database::initialize(paths.clone()).expect("initial schema"));
@@ -431,7 +431,7 @@ fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
              )
              VALUES(
                 '019f547b-6200-7000-8000-000000002301',
-                10, 11, 11, '019f547b-6200-7000-8000-000000002302'
+                10, 11, NULL, '019f547b-6200-7000-8000-000000002302'
              );
              INSERT INTO tidbit_revision(
                 id, tidbit_id, revision_number, created_at, body_markdown, content_hash
@@ -465,20 +465,33 @@ fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
         .load_tidbit("019f547b-6200-7000-8000-000000002301".into())
         .expect("authored content loads");
     assert_eq!(tidbit.body_markdown, "");
-    assert!(opened.client().reconcile_author_passages().is_err());
-    let (status, error): (String, Option<String>) = opened
+    opened
+        .client()
+        .reconcile_author_passages()
+        .expect("reconcile empty and valid revisions");
+    opened
+        .client()
+        .reconcile_author_passages()
+        .expect("empty revision marker makes reconciliation idempotent");
+    let (status, error, empty_markers): (String, Option<String>, i64) = opened
         .open_main_read_only()
         .expect("read passage build state")
         .query_row(
-            "SELECT status, error
+            "SELECT
+                status,
+                error,
+                (SELECT count(*)
+                 FROM empty_author_passage_revision
+                 WHERE tidbit_revision_id = '019f547b-6200-7000-8000-000000002302')
              FROM index_state
              WHERE name = 'PASSAGE_BUILD'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("passage build status");
-    assert_eq!(status, "FAILED");
-    assert!(error.is_some_and(|message| message.contains("did not produce")));
+    assert_eq!(status, "IDLE");
+    assert_eq!(error, None);
+    assert_eq!(empty_markers, 1);
 
     let restored_valid = opened
         .client()
@@ -491,17 +504,6 @@ fn failed_legacy_backfill_does_not_prevent_authored_content_from_opening() {
         )
         .expect("valid revision restores with on-demand passages");
     assert_eq!(restored_valid.deleted_at_ms, None);
-    let restored_malformed = opened
-        .client()
-        .restore_tidbit(
-            RestoreTidbitInput {
-                id: "019f547b-6200-7000-8000-000000002301".into(),
-                expected_revision_id: "019f547b-6200-7000-8000-000000002302".into(),
-            },
-            23,
-        )
-        .expect("malformed revision restores without derived passages");
-    assert_eq!(restored_malformed.deleted_at_ms, None);
     let (valid_active, malformed_active): (i64, i64) = opened
         .open_main_read_only()
         .expect("read restored active passages")
