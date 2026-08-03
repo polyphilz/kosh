@@ -11,20 +11,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[cfg(test)]
 use crate::database::CitationLocator;
 use crate::database::{
-    drafts::SaveDraftWrite,
-    passages,
-    tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    AttachmentIngestInput, CitationResolution, CitationState, Database, DatabasePaths,
-    EditTidbitInput, LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput, SaveDraftInput,
-    SaveOffsiteBackupConfigInput, SearchPassagesInput, SourceDraft, TidbitDraft,
+    passages, AttachmentIngestInput, CitationResolution, CitationState, Database, DatabasePaths,
+    LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput, SaveOffsiteBackupConfigInput,
+    SearchPassagesInput, SourceDraft,
 };
 
 use super::{
@@ -45,16 +42,13 @@ use super::{
         PutObjectRequest, R2ObjectStore,
     },
     owner::claim_remote_owner,
-    restore::{
-        discover_checkpoints, drill_checkpoint, install_checkpoint, stage_checkpoint,
-        RemoteCheckpoint,
-    },
+    recovery_cli::install_staged_for_test,
+    restore::{discover_checkpoints, drill_checkpoint, stage_checkpoint, RemoteCheckpoint},
 };
 
 const STARTUP_CANARY: &str = "koshstartupcanaryv1";
-const STARTUP_CANARY_TITLE: &str = "Kosh progressive startup canary";
 const STARTUP_CANARY_SOURCE: &str = "https://example.invalid/kosh-progressive-operability";
-const INTERRUPTED_REPLICATION_DRAFT_BYTES: usize = 4 * 1024 * 1024;
+const INTERRUPTED_REPLICATION_WORKING_COPY_BYTES: usize = 4 * 1024 * 1024;
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -84,7 +78,7 @@ struct CanaryReport {
     normal_database_reopen: CanaryOutcome,
     search_rebuild: CanaryOutcome,
     citation_resolution: CanaryOutcome,
-    research_citation_resolution: CanaryOutcome,
+    historical_citation_resolution: CanaryOutcome,
     restored: RestoredEvidence,
     removed_remote_objects: u64,
     remote_residue_objects: u64,
@@ -100,33 +94,10 @@ struct RestoredEvidence {
     attachments: u64,
     media_blobs: u64,
     search_documents: u64,
-    research_runs: u64,
-    research_citations: u64,
     exact_result_count: u64,
     resolved_source_url: String,
-    historical_research_citations: u64,
-    interrupted_replication_drafts: u64,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum LegacyEvidenceKind {
-    AuthoredTidbit,
-    PdfPage,
-    ImageOcr,
-    TextLines,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyGroundedCitation {
-    evidence_kind: LegacyEvidenceKind,
-    evidence: CitationResolution,
-}
-
-#[derive(Debug, Deserialize)]
-struct LegacyGroundedAnswer {
-    citations: Vec<LegacyGroundedCitation>,
+    historical_citations: u64,
+    interrupted_replication_working_copies: u64,
 }
 
 struct SourceFixture {
@@ -134,6 +105,7 @@ struct SourceFixture {
     paths: DatabasePaths,
     backup_set_id: BackupSetId,
     epoch: ReplicaEpochId,
+    historical_citation: CitationResolution,
     database: Option<Database>,
 }
 
@@ -371,18 +343,19 @@ fn live_r2_canary_restores_complete_kosh_library_and_cleans_unique_backup_set() 
         );
         "PACKAGED"
     } else {
-        run_library_restore(
-            &cleanup.store,
-            &keyspace,
-            &checkpoint,
-            &target,
-            &credentials,
-            &evidence_root,
-            &restored_root,
-        );
+        run_library_restore(LibraryRestoreRequest {
+            store: &cleanup.store,
+            keyspace: &keyspace,
+            checkpoint: &checkpoint,
+            backup_set_id: &source.backup_set_id,
+            target: &target,
+            credentials: &credentials,
+            evidence_root: &evidence_root,
+            restored_root: &restored_root,
+        });
         "LIBRARY"
     };
-    let restored = verify_restored_library(&restored_root);
+    let restored = verify_restored_library(&restored_root, &source.historical_citation);
     let removed_remote_objects = cleanup.cleanup().expect("clean unique backup set");
     let report = CanaryReport {
         schema_version: 1,
@@ -408,7 +381,7 @@ fn live_r2_canary_restores_complete_kosh_library_and_cleans_unique_backup_set() 
         normal_database_reopen: CanaryOutcome::Passed,
         search_rebuild: CanaryOutcome::Passed,
         citation_resolution: CanaryOutcome::Passed,
-        research_citation_resolution: CanaryOutcome::Passed,
+        historical_citation_resolution: CanaryOutcome::Passed,
         restored,
         removed_remote_objects,
         remote_residue_objects: 0,
@@ -435,27 +408,15 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
         })
         .expect("configure canary backup");
 
-    let draft_id = Uuid::now_v7().to_string();
+    let note_id = Uuid::now_v7().to_string();
     database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: String::new(),
-                sources: Vec::new(),
-            },
-            now_ms: 20,
-            draft_id: draft_id.clone(),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("canary draft");
+        .save_working_copy_for_test(note_id.clone(), None, 1, String::new(), Vec::new(), 20)
+        .expect("reserve canary working copy");
     let attachment = database
         .ingest_attachment(
             AttachmentIngestInput {
-                draft_id,
+                draft_id: note_id.clone(),
                 display_filename: "recovery-evidence.txt".into(),
                 media_type: "text/plain".into(),
                 now_ms: 21,
@@ -464,28 +425,34 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             Cursor::new(b"immutable attachment evidence".to_vec()),
         )
         .expect("canary attachment");
-    let tidbit_id = Uuid::now_v7().to_string();
     let original_revision_id = Uuid::now_v7().to_string();
     let attachment_token = format!("{{{{kosh:attachment:{}}}}}", attachment.id);
+    database
+        .client()
+        .save_working_copy_for_test(
+            note_id.clone(),
+            None,
+            2,
+            format!("The durable historical fact is forty-two.\n\n{attachment_token}"),
+            vec![SourceDraft {
+                label: Some("Historical source".into()),
+                url: Some("https://example.com/historical-recovery".into()),
+            }],
+            22,
+        )
+        .expect("save original canary working copy");
     let original = database
         .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some("Historical recovery evidence".into()),
-                body_markdown: format!(
-                    "The durable historical fact is forty-two.\n\n{attachment_token}"
-                ),
-                sources: vec![SourceDraft {
-                    label: Some("Historical source".into()),
-                    url: Some("https://example.com/historical-recovery".into()),
-                }],
-            },
-            now_ms: 30,
-            tidbit_id: tidbit_id.clone(),
-            revision_id: original_revision_id.clone(),
-            source_ids: vec![Uuid::now_v7().to_string()],
-        })
-        .expect("canary original tidbit");
+        .checkpoint_working_copy_for_test(
+            note_id.clone(),
+            2,
+            30,
+            original_revision_id.clone(),
+            vec![Uuid::now_v7().to_string()],
+        )
+        .expect("checkpoint original canary note")
+        .note
+        .expect("checkpointed original canary note");
     let connection = database
         .open_main_read_only()
         .expect("canary citation read");
@@ -496,55 +463,58 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             |row| row.get::<_, String>(0),
         )
         .expect("canary historical passage");
-    let citation =
+    let historical_citation =
         passages::resolve_citation(&connection, &passage_id).expect("canary citation resolution");
     drop(connection);
-    let run_id = Uuid::now_v7().to_string();
-    let answer = grounded_answer(&citation);
-    seed_legacy_research_run(
-        &paths,
-        &run_id,
-        "What is the durable historical fact?",
-        &answer,
-        &[],
-        40,
-        43,
-    );
     database
         .client()
-        .edit_tidbit(EditTidbitWrite {
-            input: EditTidbitInput {
-                id: tidbit_id,
-                expected_revision_id: original.current_revision_id,
-                title: Some("Current recovery evidence".into()),
-                body_markdown: format!("Exact citrine recovery evidence.\n\n{attachment_token}"),
-                sources: vec![SourceDraft {
-                    label: Some("Current source".into()),
-                    url: Some("https://example.com/current-recovery".into()),
-                }],
-            },
-            now_ms: 50,
-            revision_id: Uuid::now_v7().to_string(),
-            source_ids: vec![Uuid::now_v7().to_string()],
-        })
-        .expect("canary current revision");
+        .save_working_copy_for_test(
+            note_id.clone(),
+            Some(original.current_revision_id),
+            3,
+            format!("Exact citrine recovery evidence.\n\n{attachment_token}"),
+            vec![SourceDraft {
+                label: Some("Current source".into()),
+                url: Some("https://example.com/current-recovery".into()),
+            }],
+            50,
+        )
+        .expect("save current canary working copy");
     database
         .client()
-        .create_tidbit(CreateTidbitWrite {
-            input: TidbitDraft {
-                title: Some(STARTUP_CANARY_TITLE.into()),
-                body_markdown: STARTUP_CANARY.into(),
-                sources: vec![SourceDraft {
-                    label: Some("Startup canary source".into()),
-                    url: Some(STARTUP_CANARY_SOURCE.into()),
-                }],
-            },
-            now_ms: 60,
-            tidbit_id: Uuid::now_v7().to_string(),
-            revision_id: Uuid::now_v7().to_string(),
-            source_ids: vec![Uuid::now_v7().to_string()],
-        })
-        .expect("canary startup tidbit");
+        .checkpoint_working_copy_for_test(
+            note_id,
+            3,
+            51,
+            Uuid::now_v7().to_string(),
+            vec![Uuid::now_v7().to_string()],
+        )
+        .expect("checkpoint current canary note");
+    let startup_note_id = Uuid::now_v7().to_string();
+    database
+        .client()
+        .save_working_copy_for_test(
+            startup_note_id.clone(),
+            None,
+            1,
+            STARTUP_CANARY.into(),
+            vec![SourceDraft {
+                label: Some("Startup canary source".into()),
+                url: Some(STARTUP_CANARY_SOURCE.into()),
+            }],
+            60,
+        )
+        .expect("save startup canary working copy");
+    database
+        .client()
+        .checkpoint_working_copy_for_test(
+            startup_note_id,
+            1,
+            61,
+            Uuid::now_v7().to_string(),
+            vec![Uuid::now_v7().to_string()],
+        )
+        .expect("checkpoint startup canary note");
 
     let mut lease = 0_u64;
     while let Some(upload) = database
@@ -570,83 +540,23 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
         paths,
         backup_set_id,
         epoch,
+        historical_citation,
         database: Some(database),
     }
 }
 
-fn seed_legacy_research_run(
-    paths: &DatabasePaths,
-    run_id: &str,
-    query: &str,
-    answer: &Value,
-    attachment_ids: &[&str],
-    created_at_ms: i64,
-    completed_at_ms: i64,
-) {
-    let mut connection = rusqlite::Connection::open(&paths.main).expect("legacy canary writer");
-    connection
-        .pragma_update(None, "foreign_keys", "ON")
-        .expect("legacy canary foreign keys");
-    let transaction = connection.transaction().expect("legacy canary transaction");
-    transaction
-        .execute(
-            "INSERT INTO research_run(
-                id, query, status, created_at, started_at, completed_at,
-                updated_at, final_answer_json
-             ) VALUES(?1, ?2, 'COMPLETED', ?3, ?3, ?4, ?4, ?5)",
-            rusqlite::params![
-                run_id,
-                query,
-                created_at_ms,
-                completed_at_ms,
-                answer.to_string()
-            ],
-        )
-        .expect("legacy canary research row");
-    for attachment_id in attachment_ids {
-        transaction
-            .execute(
-                "INSERT INTO research_run_attachment(research_run_id, attachment_id)
-                 VALUES(?1, ?2)",
-                rusqlite::params![run_id, attachment_id],
-            )
-            .expect("legacy canary attachment membership");
-    }
-    transaction.commit().expect("legacy canary commit");
-}
-
-fn grounded_answer(citation: &crate::database::CitationResolution) -> Value {
-    let markdown = "The durable historical fact is forty-two.【1】";
-    let start = markdown.find('【').expect("citation marker");
-    json!({
-        "markdown": markdown,
-        "citations": [{
-            "number": 1,
-            "label": "Historical recovery evidence",
-            "evidenceKind": "AUTHORED_TIDBIT",
-            "evidence": citation,
-        }],
-        "mentions": [{
-            "citationNumber": 1,
-            "startByte": start,
-            "endByte": markdown.len(),
-        }],
-        "issues": [],
-    })
-}
-
 fn interrupted_replication_payload() -> String {
     let salt = Uuid::now_v7();
-    let mut payload = String::with_capacity(INTERRUPTED_REPLICATION_DRAFT_BYTES);
+    let mut payload = String::with_capacity(INTERRUPTED_REPLICATION_WORKING_COPY_BYTES);
     let mut block = 0_u64;
-    while payload.len() < INTERRUPTED_REPLICATION_DRAFT_BYTES {
+    while payload.len() < INTERRUPTED_REPLICATION_WORKING_COPY_BYTES {
         let mut hasher = Sha256::new();
         hasher.update(salt.as_bytes());
         hasher.update(block.to_le_bytes());
         payload.push_str(&format!("{:x}", hasher.finalize()));
         block = block.checked_add(1).expect("canary payload block overflow");
     }
-    payload.truncate(INTERRUPTED_REPLICATION_DRAFT_BYTES);
+    payload.truncate(INTERRUPTED_REPLICATION_WORKING_COPY_BYTES);
     payload
 }
 
@@ -735,25 +645,20 @@ fn replicate_and_publish(
         .sync_remote(&source.paths.main)
         .expect("establish remotely restorable canary baseline")
         .txid;
-    let interrupted_draft = database
+    let interrupted_working_copy = database
         .client()
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: Some("Interrupted replication fence".into()),
-                body_markdown: interrupted_replication_payload(),
-                sources: Vec::new(),
-            },
-            now_ms: 90,
-            draft_id: Uuid::now_v7().to_string(),
-            media_limits: MediaLimits::default(),
-        })
+        .save_working_copy_for_test(
+            Uuid::now_v7().to_string(),
+            None,
+            1,
+            interrupted_replication_payload(),
+            Vec::new(),
+            90,
+        )
         .expect("write interrupted replication fence");
     assert_eq!(
-        interrupted_draft.body_markdown.len(),
-        INTERRUPTED_REPLICATION_DRAFT_BYTES
+        interrupted_working_copy.body_markdown.len(),
+        INTERRUPTED_REPLICATION_WORKING_COPY_BYTES
     );
     let interrupted_txid = interrupted_control
         .sync_local(&source.paths.main)
@@ -917,15 +822,28 @@ fn upload_referenced_media(paths: &DatabasePaths, store: &R2ObjectStore, keyspac
     }
 }
 
-fn run_library_restore(
-    store: &R2ObjectStore,
-    keyspace: &R2Keyspace,
-    checkpoint: &RemoteCheckpoint,
-    target: &R2Target,
-    credentials: &R2Credentials,
-    evidence_root: &Path,
-    restored_root: &Path,
-) {
+struct LibraryRestoreRequest<'a> {
+    store: &'a R2ObjectStore,
+    keyspace: &'a R2Keyspace,
+    checkpoint: &'a RemoteCheckpoint,
+    backup_set_id: &'a BackupSetId,
+    target: &'a R2Target,
+    credentials: &'a R2Credentials,
+    evidence_root: &'a Path,
+    restored_root: &'a Path,
+}
+
+fn run_library_restore(request: LibraryRestoreRequest<'_>) {
+    let LibraryRestoreRequest {
+        store,
+        keyspace,
+        checkpoint,
+        backup_set_id,
+        target,
+        credentials,
+        evidence_root,
+        restored_root,
+    } = request;
     let mut runtime =
         EphemeralLitestreamRuntime::create().expect("isolated canary restore runtime");
     let verified = VerifiedLitestreamBinary::resolve_staged_for_test(Path::new(
@@ -955,9 +873,8 @@ fn run_library_restore(
         &staging_root,
     )
     .expect("stage canary recovery");
-    let install = install_checkpoint(&DatabasePaths::new(restored_root), &staged)
+    install_staged_for_test(restored_root, &staged, backup_set_id, checkpoint)
         .expect("install canary recovery");
-    assert!(install.safety_snapshot_id.is_none());
     drop(engine);
     drop(binary);
     runtime.cleanup().expect("clean restore runtime");
@@ -1022,7 +939,10 @@ fn run_packaged_restore(
     );
 }
 
-fn verify_restored_library(root: &Path) -> RestoredEvidence {
+fn verify_restored_library(
+    root: &Path,
+    historical_citation: &CitationResolution,
+) -> RestoredEvidence {
     let database = Database::initialize(DatabasePaths::new(root)).expect("reopen restored library");
     let client = database.client();
     let before = client
@@ -1067,12 +987,6 @@ fn verify_restored_library(root: &Path) -> RestoredEvidence {
         attachments: query_count(&main, "SELECT count(*) FROM attachment"),
         media_blobs: query_count(&media, "SELECT count(*) FROM media_blob"),
         search_documents: query_count(&main, "SELECT count(*) FROM passage_search_document"),
-        research_runs: query_count(&main, "SELECT count(*) FROM research_run"),
-        research_citations: query_count(
-            &main,
-            "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0)
-             FROM research_run WHERE final_answer_json IS NOT NULL",
-        ),
         exact_result_count: u64::try_from(after.len()).expect("exact result count"),
         resolved_source_url: after[0]
             .citation
@@ -1080,8 +994,8 @@ fn verify_restored_library(root: &Path) -> RestoredEvidence {
             .iter()
             .find_map(|source| source.url.clone())
             .expect("restored result source"),
-        historical_research_citations: verify_historical_research_citations(&main),
-        interrupted_replication_drafts: interrupted_replication_draft_count(&main),
+        historical_citations: verify_historical_citation(&main, historical_citation),
+        interrupted_replication_working_copies: interrupted_replication_working_copy_count(&main),
     };
     assert!(evidence.active_tidbits >= 2);
     assert!(evidence.revisions >= 3);
@@ -1089,38 +1003,25 @@ fn verify_restored_library(root: &Path) -> RestoredEvidence {
     assert!(evidence.attachments >= 1);
     assert!(evidence.media_blobs >= 1);
     assert!(evidence.search_documents >= 2);
-    assert_eq!(evidence.research_runs, 1);
-    assert_eq!(evidence.research_citations, 1);
-    assert_eq!(evidence.historical_research_citations, 1);
-    assert_eq!(evidence.interrupted_replication_drafts, 1);
+    assert_eq!(evidence.historical_citations, 1);
+    assert_eq!(evidence.interrupted_replication_working_copies, 1);
     drop(media);
     drop(main);
     database.shutdown().expect("close restored library");
     evidence
 }
 
-fn verify_historical_research_citations(connection: &rusqlite::Connection) -> u64 {
-    let answer_json = connection
-        .query_row(
-            "SELECT final_answer_json
-             FROM research_run
-             WHERE status = 'COMPLETED' AND final_answer_json IS NOT NULL",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("restored grounded research answer");
-    let answer = serde_json::from_str::<LegacyGroundedAnswer>(&answer_json)
-        .expect("restored grounded research answer contract");
-    assert_eq!(answer.citations.len(), 1);
-    let citation = &answer.citations[0];
-    assert_eq!(citation.evidence_kind, LegacyEvidenceKind::AuthoredTidbit);
-    assert_eq!(citation.evidence.state, CitationState::Current);
-    let resolved = passages::resolve_citation(connection, &citation.evidence.passage_id)
-        .expect("resolve restored historical research passage");
+fn verify_historical_citation(
+    connection: &rusqlite::Connection,
+    stored: &CitationResolution,
+) -> u64 {
+    assert_eq!(stored.state, CitationState::Current);
+    let resolved = passages::resolve_citation(connection, &stored.passage_id)
+        .expect("resolve restored historical passage");
     assert_eq!(resolved.state, CitationState::Historical);
     assert!(
-        same_citation_provenance(&citation.evidence, &resolved),
-        "restored research citation changed its passage, revision, locator, or source provenance"
+        same_citation_provenance(stored, &resolved),
+        "restored citation changed its passage, revision, locator, or source provenance"
     );
     let tidbit = resolved
         .tidbit
@@ -1134,7 +1035,7 @@ fn verify_historical_research_citations(connection: &rusqlite::Connection) -> u6
         )
         .expect("current revision for restored historical citation");
     assert_ne!(current_revision_id, tidbit.revision_id);
-    u64::try_from(answer.citations.len()).expect("historical citation count")
+    1
 }
 
 fn same_citation_provenance(stored: &CitationResolution, resolved: &CitationResolution) -> bool {
@@ -1148,21 +1049,19 @@ fn same_citation_provenance(stored: &CitationResolution, resolved: &CitationReso
         && stored.sources == resolved.sources
 }
 
-fn interrupted_replication_draft_count(connection: &rusqlite::Connection) -> u64 {
-    let expected_bytes =
-        i64::try_from(INTERRUPTED_REPLICATION_DRAFT_BYTES).expect("interrupted draft byte count");
+fn interrupted_replication_working_copy_count(connection: &rusqlite::Connection) -> u64 {
+    let expected_bytes = i64::try_from(INTERRUPTED_REPLICATION_WORKING_COPY_BYTES)
+        .expect("interrupted working-copy byte count");
     let count = connection
         .query_row(
             "SELECT count(*)
              FROM draft
-             JOIN draft_context ON draft_context.draft_id = draft.id
-             WHERE draft_context.context_key = 'capture'
-               AND length(CAST(draft.body_markdown AS BLOB)) = ?1",
+             WHERE length(CAST(draft.body_markdown AS BLOB)) = ?1",
             [expected_bytes],
             |row| row.get::<_, i64>(0),
         )
-        .expect("restored interrupted replication draft");
-    u64::try_from(count).expect("non-negative interrupted draft count")
+        .expect("restored interrupted replication working copy");
+    u64::try_from(count).expect("non-negative interrupted working-copy count")
 }
 
 #[test]
@@ -1176,18 +1075,8 @@ fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
     let mut source = create_source_fixture(&target);
     let database = source.database.as_ref().expect("test canary database");
     let connection = database.open_main_read_only().expect("test canary read");
-    assert_eq!(verify_historical_research_citations(&connection), 1);
-
-    let answer_json = connection
-        .query_row(
-            "SELECT final_answer_json FROM research_run WHERE status = 'COMPLETED'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("test grounded answer");
-    let answer = serde_json::from_str::<LegacyGroundedAnswer>(&answer_json)
-        .expect("test grounded answer contract");
-    let stored = &answer.citations[0].evidence;
+    let stored = &source.historical_citation;
+    assert_eq!(verify_historical_citation(&connection, stored), 1);
     let resolved = passages::resolve_citation(&connection, &stored.passage_id)
         .expect("test historical passage resolution");
     assert!(same_citation_provenance(stored, &resolved));

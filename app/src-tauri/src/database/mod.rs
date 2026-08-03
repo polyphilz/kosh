@@ -2,17 +2,15 @@ mod backup_media;
 mod backup_state;
 pub(crate) mod commands;
 pub(crate) mod connection;
-pub(crate) mod drafts;
 pub(crate) mod embedding_index;
 mod error;
-mod legacy_research;
 mod maintenance;
 pub(crate) mod media;
 mod migrations;
 mod offsite_checkpoint;
 pub(crate) mod passages;
 mod paths;
-mod restore_install;
+mod restore_validation;
 mod safety_snapshot;
 pub(crate) mod search;
 pub(crate) mod settings;
@@ -26,8 +24,6 @@ mod backup_media_tests;
 #[cfg(test)]
 mod backup_state_tests;
 #[cfg(test)]
-mod drafts_tests;
-#[cfg(test)]
 mod embedding_index_tests;
 #[cfg(test)]
 mod maintenance_tests;
@@ -36,15 +32,11 @@ mod media_tests;
 #[cfg(test)]
 mod offsite_checkpoint_tests;
 #[cfg(test)]
-mod redesign_baseline_tests;
-#[cfg(test)]
 mod reliability_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tidbits_tests;
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
@@ -64,7 +56,6 @@ pub(crate) use backup_state::{
     CredentialIntentAction, OffsiteBackupConfig, OffsiteBackupConfigIntent,
     OffsiteBackupTakeoverIntent, OffsiteOperationState, SaveOffsiteBackupConfigInput,
 };
-pub use drafts::{ClearDraftInput, Draft, SaveDraftInput};
 pub use error::{DatabaseError, Result};
 pub use maintenance::MaintenanceDatabaseSnapshot;
 pub use media::{
@@ -81,15 +72,10 @@ pub use passages::{
     CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
 };
 pub use paths::DatabasePaths;
-pub(crate) use restore_install::{
+pub(crate) use restore_validation::{
     create_empty_media_at as create_empty_restore_media_database_at,
     open_main_read_only_at as open_restore_main_read_only_at,
     validate_pair_at as validate_restored_pair_at,
-};
-#[cfg(test)]
-pub(crate) use restore_install::{
-    inspect_completed_install as inspect_completed_restore_install,
-    install as install_restored_pair, RestoreInstallReport,
 };
 pub(crate) use safety_snapshot::available_space_bytes as available_storage_bytes;
 pub(crate) use safety_snapshot::SafetySnapshotReason;
@@ -103,10 +89,7 @@ pub use settings::{
     DEFAULT_QUICK_ADD_ACCELERATOR,
 };
 pub use tidbits::{
-    DeleteTidbitInput, EditTidbitInput, ListTidbitRevisionsInput, ListTidbitsInput,
-    PurgeTidbitInput, RestoreTidbitInput, SourceDraft, Tidbit, TidbitDraft, TidbitListCursor,
-    TidbitListItem, TidbitListPage, TidbitListScope, TidbitRevision, TidbitRevisionAttachment,
-    TidbitRevisionPage, TidbitRevisionSummary, TidbitSource, TIDBIT_PURGE_DELAY_MS,
+    DeleteTidbitInput, RestoreTidbitInput, SourceDraft, Tidbit, TidbitDraft, TidbitSource,
 };
 pub use working_copies::{
     CheckpointWorkingCopyInput, DiscardWorkingCopyInput, SaveWorkingCopyInput, WorkingCopy,
@@ -152,8 +135,6 @@ impl Database {
             }
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
-        restore_install::recover_interrupted(&paths)?;
-
         let main_state = connection::inspect_file(&paths.main)?;
         let media_state = connection::inspect_file(&paths.media)?;
         if main_state != media_state {
@@ -227,7 +208,6 @@ impl Database {
                 library_lock: Some(ownership_lock),
             }),
         };
-        database.client.schedule_author_passage_reconciliation()?;
         Ok(database)
     }
 
@@ -533,10 +513,6 @@ fn writer_loop(
             WriterMessage::ReconcileFts { reply } => {
                 let _ = reply.send(validation::reconcile_fts(&mut main));
             }
-            WriterMessage::ReconcileAuthorPassages { reply } => {
-                let result = passages::reconcile_author_passages(&mut main);
-                let _ = reply.send(result);
-            }
             WriterMessage::MaintenanceSnapshot { reply } => {
                 let _ = reply.send(maintenance::snapshot(&main));
             }
@@ -548,16 +524,6 @@ fn writer_loop(
             }
             WriterMessage::RetryFailedExtractions { now_ms, reply } => {
                 let _ = reply.send(maintenance::retry_failed_extractions(&mut main, now_ms));
-            }
-            WriterMessage::ReconcileAuthorPassageBatch => {
-                if passages::reconcile_author_passage_batch(
-                    &mut main,
-                    passages::BACKGROUND_RECONCILE_BATCH_SIZE,
-                )
-                .is_ok_and(|has_more| has_more)
-                {
-                    let _ = sender.send(WriterMessage::ReconcileAuthorPassageBatch);
-                }
             }
             WriterMessage::LoadEmbeddingReconciliationBatch { limit, reply } => {
                 let _ = reply.send(embedding_index::load_reconciliation_batch(&mut main, limit));
@@ -890,28 +856,8 @@ fn writer_loop(
             WriterMessage::LoadTidbit { id, reply } => {
                 let _ = reply.send(tidbits::load_tidbit(&main, &id));
             }
-            WriterMessage::ListTidbits { input, reply } => {
-                let _ = reply.send(tidbits::list_tidbits(&main, input));
-            }
-            WriterMessage::ListTidbitRevisions { input, reply } => {
-                let _ = reply.send(tidbits::list_tidbit_revisions(&main, input));
-            }
-            WriterMessage::LoadTidbitRevision {
-                tidbit_id,
-                revision_id,
-                reply,
-            } => {
-                let _ = reply.send(tidbits::load_tidbit_revision(
-                    &main,
-                    &tidbit_id,
-                    &revision_id,
-                ));
-            }
             WriterMessage::LoadSourceUrl { source_id, reply } => {
                 let _ = reply.send(tidbits::load_source_url(&main, &source_id));
-            }
-            WriterMessage::EditTidbit { write, reply } => {
-                let _ = reply.send(tidbits::edit_tidbit(&mut main, write));
             }
             WriterMessage::DeleteTidbit {
                 input,
@@ -926,13 +872,6 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(tidbits::restore_tidbit(&mut main, input, now_ms));
-            }
-            WriterMessage::PurgeTidbit {
-                input,
-                now_ms,
-                reply,
-            } => {
-                let _ = reply.send(tidbits::purge_tidbit(&mut main, input, now_ms));
             }
             WriterMessage::ResolveCitation { passage_id, reply } => {
                 let _ = reply.send(passages::resolve_citation(&main, &passage_id));
@@ -963,22 +902,6 @@ fn writer_loop(
                 let _ = reply.send(writer::install_lexical_benchmark_attachments(
                     &mut main, writes,
                 ));
-            }
-            WriterMessage::SaveDraft { write, reply } => {
-                let _ = reply.send(drafts::save_draft(&mut main, write));
-            }
-            WriterMessage::LoadDraft { context_key, reply } => {
-                let _ = reply.send(drafts::load_draft(&main, &context_key));
-            }
-            WriterMessage::ClearDraft {
-                input,
-                now_ms,
-                reply,
-            } => {
-                let _ = reply.send(drafts::clear_draft(&mut main, input, now_ms));
-            }
-            WriterMessage::AdoptLegacyQuickAddDraft { now_ms, reply } => {
-                let _ = reply.send(working_copies::adopt_legacy_quick_add(&mut main, now_ms));
             }
             WriterMessage::SaveWorkingCopy { write, reply } => {
                 let _ = reply.send(working_copies::save(&mut main, write));

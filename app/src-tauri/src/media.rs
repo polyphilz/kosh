@@ -1029,9 +1029,8 @@ mod tests {
     #[test]
     fn protocol_serves_only_authorized_bounded_draft_bytes_without_caching() {
         use crate::database::{
-            drafts::SaveDraftWrite,
             media::{IngestAttachmentMetadata, StagedAttachment},
-            MediaLimits, SaveDraftInput,
+            MediaLimits,
         };
 
         let data_root = crate::test_support::TestDataRoot::new();
@@ -1039,20 +1038,15 @@ mod tests {
         let state = app.state::<RuntimeState>();
         let draft = state
             .database_client()
-            .save_draft(SaveDraftWrite {
-                input: SaveDraftInput {
-                    context_key: "capture".into(),
-                    tidbit_id: None,
-                    base_revision_id: None,
-                    title: None,
-                    body_markdown: String::new(),
-                    sources: Vec::new(),
-                },
-                now_ms: 90,
-                draft_id: "019f547b-6200-7000-8000-000000000901".into(),
-                media_limits: MediaLimits::default(),
-            })
-            .expect("protocol draft");
+            .save_working_copy_for_test(
+                "019f547b-6200-7000-8000-000000000901".into(),
+                None,
+                1,
+                String::new(),
+                Vec::new(),
+                90,
+            )
+            .expect("protocol working copy");
         let staged = StagedAttachment::from_reader(
             std::io::Cursor::new(b"protocol bytes"),
             &state.media_staging_directory(),

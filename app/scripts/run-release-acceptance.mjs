@@ -1,7 +1,5 @@
-import { createHash } from "node:crypto";
 import {
   closeSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -13,8 +11,6 @@ import {
 import { basename, join, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-import { selectMigrationSnapshot } from "./select-migration-snapshot.mjs";
-
 const command = process.argv[2] ?? "help";
 const arguments_ = process.argv.slice(3);
 const appRoot = resolve(import.meta.dirname, "..");
@@ -23,7 +19,6 @@ const defaultApp = resolve(
   appRoot,
   "src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app",
 );
-const fixtureRoot = resolve(appRoot, "src-tauri/src/database/fixtures/v16-profile");
 
 mkdirSync(acceptanceRoot, { recursive: true });
 
@@ -48,15 +43,6 @@ switch (command) {
     break;
   case "check-restart":
     checkRestart(arguments_);
-    break;
-  case "prepare-upgrade":
-    prepareUpgrade(arguments_);
-    break;
-  case "check-upgrade":
-    checkUpgrade(arguments_);
-    break;
-  case "prove-upgrade-recovery":
-    proveUpgradeRecovery(arguments_);
     break;
   case "help":
     printUsage();
@@ -303,97 +289,7 @@ function checkRestart(values) {
   const checkpoint = readJson(join(profile.root, "restart-checkpoint.json"));
   assertEqual(logicalEvidence(profile), checkpoint.evidence, "logical restart evidence");
   console.info(
-    "Packaged restart passed: authored, attachment, search, semantic, and legacy row counts survived unchanged.",
-  );
-}
-
-function prepareUpgrade(values) {
-  assert(values.length === 1, "prepare-upgrade accepts exactly one profile name");
-  const profile = newProfile(values[0]);
-  initializeProfile(profile);
-  mkdirSync(profile.data, { recursive: true });
-  materializeSql(profile.main, readFileSync(join(fixtureRoot, "main-v16.sql"), "utf8"));
-  materializeSql(profile.media, readFileSync(join(fixtureRoot, "media-v2.sql"), "utf8"));
-  console.info(
-    `Prepared previous-release V16/V2 profile: ${profile.data}. Launch it, inspect the fixture, and quit with Cmd+Q before check-upgrade.`,
-  );
-}
-
-function checkUpgrade(values) {
-  assert(values.length === 1, "check-upgrade accepts exactly one profile name");
-  const profile = existingProfile(values[0]);
-  assertStopped(profile);
-  verifyDatabasePair(profile);
-  const fixture = readJson(join(fixtureRoot, "manifest.json"));
-  assertEqual(
-    textSql(
-      profile.main,
-      `SELECT current_revision_id FROM tidbit WHERE id = '${fixture.tidbitId}'`,
-    ),
-    fixture.revisionId,
-    "upgraded fixture revision",
-  );
-  assertEqual(
-    textSql(
-      profile.main,
-      `SELECT normalized_url
-       FROM source
-       JOIN tidbit_revision_source ON tidbit_revision_source.source_id = source.id
-       WHERE tidbit_revision_source.tidbit_revision_id = '${fixture.revisionId}'`,
-    ),
-    fixture.sourceUrl,
-    "upgraded fixture source",
-  );
-  assert(
-    numberSql(
-      profile.main,
-      `SELECT count(*) FROM passage_search_document WHERE body LIKE '%amber%'`,
-    ) >= 1,
-    "upgraded fixture is absent from lexical search",
-  );
-  const snapshot = migrationSnapshot(
-    profile,
-    fixture.mainMigrationHead,
-    fixture.mediaMigrationHead,
-  );
-  verifySnapshot(snapshot);
-  assertEqual(
-    textSql(snapshot.main, "SELECT max(version) FROM refinery_schema_history"),
-    String(fixture.mainMigrationHead),
-    "snapshot main migration head",
-  );
-  assertEqual(
-    textSql(snapshot.media, "SELECT max(version) FROM refinery_schema_history"),
-    String(fixture.mediaMigrationHead),
-    "snapshot media migration head",
-  );
-  console.info(
-    `Packaged upgrade passed: V${fixture.mainMigrationHead}/V${fixture.mediaMigrationHead} content, exact search, and citation source survived; ${basename(snapshot.directory)} is a verified pre-migration recovery point.`,
-  );
-}
-
-function proveUpgradeRecovery(values) {
-  assert(values.length === 2, "prove-upgrade-recovery accepts source and new target profile names");
-  const source = existingProfile(values[0]);
-  assertStopped(source);
-  const fixture = readJson(join(fixtureRoot, "manifest.json"));
-  const snapshot = migrationSnapshot(source, fixture.mainMigrationHead, fixture.mediaMigrationHead);
-  verifySnapshot(snapshot);
-  const target = newProfile(values[1]);
-  initializeProfile(target);
-  mkdirSync(target.data, { recursive: true });
-  copyFileSync(snapshot.main, target.main);
-  copyFileSync(snapshot.media, target.media);
-  writeJson(join(target.root, "recovery-evidence.json"), {
-    schemaVersion: 1,
-    recoveredAt: new Date().toISOString(),
-    sourceProfile: basename(source.root),
-    sourceSnapshot: snapshot.directory,
-    mainSha256: sha256File(target.main),
-    mediaSha256: sha256File(target.media),
-  });
-  console.info(
-    `Recovered the verified pre-migration pair into ${target.data}. Launch ${basename(target.root)}, quit, then run check-upgrade on it to prove the replacement profile upgrades and reopens.`,
+    "Packaged restart passed: authored, attachment, search, and semantic counts survived unchanged.",
   );
 }
 
@@ -433,48 +329,7 @@ function logicalEvidence(profile) {
     passages: numberSql(profile.main, "SELECT count(*) FROM passage"),
     searchDocuments: numberSql(profile.main, "SELECT count(*) FROM passage_search_document"),
     embeddings: numberSql(profile.main, "SELECT count(*) FROM passage_embedding"),
-    legacyResearchRows: numberSql(profile.main, "SELECT count(*) FROM research_run"),
   };
-}
-
-function migrationSnapshot(profile, expectedMainHead, expectedMediaHead) {
-  const root = join(profile.data, "safety-snapshots");
-  return selectMigrationSnapshot({
-    root,
-    expectedMainHead,
-    expectedMediaHead,
-    inspect(snapshot) {
-      verifySnapshot(snapshot);
-      return {
-        main: numberSql(snapshot.main, "SELECT max(version) FROM refinery_schema_history"),
-        media: numberSql(snapshot.media, "SELECT max(version) FROM refinery_schema_history"),
-      };
-    },
-  });
-}
-
-function verifySnapshot(snapshot) {
-  const manifest = readJson(snapshot.manifest);
-  assertEqual(manifest.schemaVersion, 1, "snapshot schema");
-  assertEqual(manifest.reason, "migration", "snapshot reason");
-  assertEqual(manifest.id, basename(snapshot.directory), "snapshot directory ownership");
-  for (const [key, path] of [
-    ["main", snapshot.main],
-    ["media", snapshot.media],
-  ]) {
-    assertRegularFile(path, `snapshot ${key}`);
-    assertEqual(lstatSync(path).size, manifest[key].bytes, `${key} snapshot bytes`);
-    assertEqual(sha256File(path), manifest[key].sha256, `${key} snapshot SHA-256`);
-    assertEqual(textSql(path, "PRAGMA integrity_check"), "ok", `${key} snapshot integrity`);
-  }
-}
-
-function materializeSql(path, sql) {
-  const result = spawnSync("sqlite3", ["-batch", path], {
-    encoding: "utf8",
-    input: sql,
-  });
-  requireSuccess(result, `materialize ${basename(path)}`);
 }
 
 function migrationCount(kind) {
@@ -562,10 +417,6 @@ function profileFor(name) {
   };
 }
 
-function sha256File(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -621,8 +472,5 @@ function printUsage() {
   pnpm release:acceptance check-core <profile>
   pnpm release:acceptance check-journeys <profile>
   pnpm release:acceptance checkpoint-restart <profile>
-  pnpm release:acceptance check-restart <profile>
-  pnpm release:acceptance prepare-upgrade <profile>
-  pnpm release:acceptance check-upgrade <profile>
-  pnpm release:acceptance prove-upgrade-recovery <source> <new-target>`);
+  pnpm release:acceptance check-restart <profile>`);
 }

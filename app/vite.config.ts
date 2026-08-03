@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [react()],
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   optimizeDeps: {
-    entries: ["index.html", "quick-add.html", "blocknote-spike.html"],
+    entries: ["index.html", "quick-add.html", "editor-harness.html"],
     include: [
       "@blocknote/core",
       "@blocknote/mantine",

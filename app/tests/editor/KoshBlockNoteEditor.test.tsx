@@ -408,7 +408,7 @@ describe("production BlockNote editor", () => {
           ariaLabel="Body"
           disabled
           onChange={() => undefined}
-          value={"Locked $x$.\n\n$$\ny\n$$\n\n> legacy"}
+          value={"Locked $x$.\n\n$$\ny\n$$"}
         />
       </AppearanceProvider>,
     );
@@ -418,20 +418,18 @@ describe("production BlockNote editor", () => {
     expect(textbox).toHaveAttribute("contenteditable", "false");
     expect(screen.getByLabelText("Inline math source")).toBeDisabled();
     expect(screen.getByLabelText("Display math source")).toBeDisabled();
-    expect(screen.getByLabelText("Legacy Markdown source")).toBeDisabled();
 
     view.rerender(
       <AppearanceProvider>
         <KoshBlockNoteEditor
           ariaLabel="Body"
           onChange={() => undefined}
-          value={"Locked $x$.\n\n$$\ny\n$$\n\n> legacy"}
+          value={"Locked $x$.\n\n$$\ny\n$$"}
         />
       </AppearanceProvider>,
     );
     await waitFor(() => expect(screen.getByLabelText("Inline math source")).toBeEnabled());
     expect(screen.getByLabelText("Display math source")).toBeEnabled();
-    expect(screen.getByLabelText("Legacy Markdown source")).toBeEnabled();
   });
 
   it("tracks attachment replacement until the native ingest settles", async () => {

@@ -66,21 +66,6 @@ if (
 fi
 
 git -C "$temp_dir" restore --source=HEAD --staged --worktree .env.example
-printf '%s=%s\n%s=\n' \
-  "KOSH_R2_ACCESS_KEY_ID" \
-  'abcdef0123456789abcdef0123456789' \
-  "KOSH_R2_SECRET_ACCESS_KEY" \
-  >"$temp_dir/.env.example"
-git -C "$temp_dir" add .env.example
-if (
-  cd "$temp_dir"
-  KOSH_DIFF_BASE='' scripts/check-secrets.sh >/dev/null 2>&1
-); then
-  echo "secret checker accepted a populated legacy R2 credential" >&2
-  exit 1
-fi
-
-git -C "$temp_dir" restore --source=HEAD --staged --worktree .env.example
 readonly fine_grained_prefix="github_pat_"
 printf '%s%s\n' \
   "$fine_grained_prefix" \

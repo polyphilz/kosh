@@ -104,17 +104,17 @@ pub(crate) fn fixture_candidate_ranks(
     connection
         .execute_batch(
             "CREATE VIRTUAL TABLE fixture_word USING fts5(
-                title, heading_context, body, source_labels, source_domains,
+                heading_context, body, source_labels, source_domains,
                 attachment_names, extracted_text,
                 tokenize = 'unicode61 remove_diacritics 2 tokenchars ''_'''
              );
              CREATE VIRTUAL TABLE fixture_trigram USING fts5(
-                title, heading_context, body, source_labels, source_domains,
+                heading_context, body, source_labels, source_domains,
                 attachment_names, extracted_text,
                 tokenize = 'trigram'
              );
              CREATE VIRTUAL TABLE fixture_short USING fts5(
-                title, heading_context, body, source_labels, source_domains,
+                heading_context, body, source_labels, source_domains,
                 attachment_names, extracted_text,
                 tokenize = 'unicode61'
              );",
@@ -125,7 +125,6 @@ pub(crate) fn fixture_candidate_ranks(
         let fields = fixture_fields(passage);
         let values = params![
             rowid,
-            normalize_for_search(&fields[&SearchField::Title]),
             normalize_for_search(&fields[&SearchField::HeadingContext]),
             normalize_for_search(&fields[&SearchField::Body]),
             normalize_for_search(&fields[&SearchField::SourceLabel]),
@@ -136,15 +135,14 @@ pub(crate) fn fixture_candidate_ranks(
         connection
             .execute(
                 "INSERT INTO fixture_word(
-                    rowid, title, heading_context, body, source_labels,
+                    rowid, heading_context, body, source_labels,
                     source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 values,
             )
             .map_err(|error| error.to_string())?;
         let short_values = params![
             rowid,
-            short_grams_for_search(&fields[&SearchField::Title]),
             short_grams_for_search(&fields[&SearchField::HeadingContext]),
             short_grams_for_search(&fields[&SearchField::Body]),
             short_grams_for_search(&fields[&SearchField::SourceLabel]),
@@ -155,18 +153,18 @@ pub(crate) fn fixture_candidate_ranks(
         connection
             .execute(
                 "INSERT INTO fixture_short(
-                    rowid, title, heading_context, body, source_labels,
+                    rowid, heading_context, body, source_labels,
                     source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 short_values,
             )
             .map_err(|error| error.to_string())?;
         connection
             .execute(
                 "INSERT INTO fixture_trigram(
-                    rowid, title, heading_context, body, source_labels,
+                    rowid, heading_context, body, source_labels,
                     source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 values,
             )
             .map_err(|error| error.to_string())?;
@@ -247,10 +245,6 @@ fn install_fixture_ranks(
 pub(crate) fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchField, String> {
     let authored = passage.owner_kind == EvaluationOwnerKind::Author;
     [
-        (
-            SearchField::Title,
-            passage.title.clone().unwrap_or_default(),
-        ),
         (
             SearchField::HeadingContext,
             passage.heading_context.join("\n"),
@@ -471,7 +465,6 @@ pub fn benchmark_scale_lexical(
         let now_ms = i64::try_from(tidbit.created_at_ms)
             .map_err(|error| benchmark_error("convert tidbit timestamp", error))?;
         let input = TidbitDraft {
-            title: tidbit.title.clone(),
             body_markdown: tidbit.body_markdown.clone(),
             sources: tidbit
                 .sources

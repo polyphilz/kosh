@@ -1,11 +1,10 @@
 # Durable off-site media reconciliation
 
-Main migration V19 adds a non-secret outbox for immutable media objects. Each
-row is scoped to the current backup-set UUID and content SHA-256. Source blobs
-and canonical image previews are seeded on enable, during a V18 upgrade with an
-enabled configuration, and by the same SQLite transaction that creates a new
-attachment, preview, authored revision membership, or retained research
-evidence membership.
+The canonical main schema includes a non-secret outbox for immutable media
+objects. Each row is scoped to the current backup-set UUID and content SHA-256.
+Source blobs and canonical image previews are seeded when backup is enabled and
+by the same SQLite transaction that creates a new attachment, preview, or
+authored revision membership.
 
 Changing the R2 destination resets the current set's upload evidence. Changing
 backup sets removes stale local work and seeds the replacement namespace.
@@ -49,7 +48,7 @@ and verified metadata completes the same digest idempotently.
 
 The native suite proves:
 
-- existing V18 references seed during migration;
+- existing retained references seed when backup is enabled;
 - source and preview hashes enqueue transactionally, including rollback;
 - enable/disable, target rotation, and backup-set replacement reconcile all
   retained hashes;

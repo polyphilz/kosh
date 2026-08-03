@@ -21,11 +21,9 @@ The native test suite proves:
 - the rebuilt pair must have current checksummed migration heads, application
   IDs, full SQLite integrity, foreign-key integrity, exact media relationships,
   content bytes, search documents, and citation provenance;
-- replacement creates a verified pre-restore safety snapshot, while a
-  clean-directory install needs none;
-- the offline two-file installer is receipt-idempotent and journaled. Startup
-  rolls back an interrupted unreceipted replacement, retains a receipted pair,
-  and never follows or recursively removes unowned paths;
+- the offline two-file installer accepts only a newly reserved directory,
+  publishes both files through descriptor-bound operations, and writes a
+  durable completion receipt for idempotent retry;
 - a complete clean-directory recovery reopens through normal `Database`
   initialization and restores Exact search, a source-bearing tidbit citation,
   and attachment bytes;
@@ -41,8 +39,6 @@ Run the focused backend proof from the repository root:
 ```sh
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
   --features test-support --lib backup::restore::tests
-cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
-  --features test-support --lib database::restore_install::tests
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml \
   --features test-support --lib backup::owner::tests
 ```
@@ -67,5 +63,5 @@ The canary uses a unique backup set, retries interrupted replication, drills
 the published point, executes the package's `recovery remote-restore` command
 into a brand-new isolated data directory, then starts the restored app with
 hidden windows. Its redacted receipt proves tidbits, immutable revisions,
-media bytes, rebuilt search, URL citations, historical Research citations, and
+media bytes, rebuilt search, URL citations, historical note citations, and
 zero remaining objects under the canary prefix.

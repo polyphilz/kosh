@@ -10,9 +10,9 @@
 - Search results operate on citation-sized passages. A trusted citation must
   resolve to the exact stored revision, attachment page, OCR evidence, or text
   line range supplied for that result.
-- Research is a retired product surface in the approved redesign. Do not add
-  new Research behavior; its code is removed only in the designated cleanup
-  slice while applied migrations and historical rows remain compatible.
+- Research is a retired product surface. The redesign is a hard cutover with
+  no deployed profiles to migrate, so do not retain its schema, rows, runtime
+  adapters, fixtures, or migrations for compatibility.
 - Tidbit revisions and media blobs are immutable. Background extraction and
   embedding work must be content-hash checked before stale results can install.
 - R2 is single-writer backup/recovery, not multi-device synchronization.
@@ -28,8 +28,7 @@
 - Run targeted verification and the complete available check suite before
   committing.
 - After committing, run `scripts/loop/runtime-gate.sh` for the exact head before
-  pushing. On a new workstation only, establish the preserved profile with
-  `scripts/loop/runtime-gate.sh --bootstrap-persistent`.
+  pushing.
 - Commit messages are one succinct, descriptive line.
 - Never commit `.env`, credentials, tokens, local databases, model weights, or
   `.kosh-loop/` state.
@@ -52,14 +51,11 @@ scripts/check-repository.sh
 Once `app/package.json` exists, prefer the repository's aggregate `pnpm check`
 command from `app/` plus targeted Rust or UI tests for the active slice.
 Every slice must also leave the real Tauri application progressively operable:
-the exact committed head must launch from a fresh profile, restart against that
-profile without losing a searchable cited canary, and launch against the
-preserved `.kosh-loop/progressive-profile/` created by the preceding slices.
-Every native launch must also load both exact-head frontend entries, render
-their React roots, and complete an IPC probe against the same runtime data
-directory before it can produce a passing receipt.
-The runtime gate owns these profiles; never replace or clear them to make a
-migration failure pass.
+the exact committed head must launch from a fresh profile and restart against
+that profile without losing a searchable cited canary. Every native launch must
+also load both exact-head frontend entries, render their React roots, and
+complete an IPC probe against the same runtime data directory before it can
+produce a passing receipt.
 
 The comprehensive test architecture lives in the ignored
 `.plans/002-testing.md`; the redesign matrix and rollout live in

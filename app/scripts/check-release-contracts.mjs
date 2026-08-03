@@ -12,6 +12,7 @@ const cargo = readFileSync("src-tauri/Cargo.toml", "utf8");
 const main = readFileSync("src-tauri/src/main.rs", "utf8");
 const distributionBuild = readFileSync("scripts/build-notarized-distribution.mjs", "utf8");
 const releaseArtifacts = readFileSync("scripts/create-release-artifacts.mjs", "utf8");
+const recoveredPackageSmoke = readFileSync("scripts/run-recovered-package-smoke.mjs", "utf8");
 
 assertEqual(local.productName, "Kosh", "product name");
 assertEqual(local.identifier, "com.rohan.kosh", "bundle identifier");
@@ -214,6 +215,23 @@ const applicationEntry = main.indexOf("kosh_lib::run()");
 assert(
   recoveryEntry >= 0 && applicationEntry > recoveryEntry,
   "packaged recovery command must run before Tauri application startup",
+);
+for (const contract of [
+  "JOIN tidbit_revision AS revision ON revision.id = passage.tidbit_revision_id",
+  "JOIN tidbit ON tidbit.id = revision.tidbit_id",
+  "WHERE revision.id <> tidbit.current_revision_id",
+  "tidbit_revision_source.tidbit_revision_id = revision.id",
+]) {
+  assert(
+    recoveredPackageSmoke.includes(contract),
+    `packaged recovery historical-citation query omits ${contract}`,
+  );
+}
+assert(
+  !recoveredPackageSmoke.includes("passage.tidbit_id") &&
+    !recoveredPackageSmoke.includes("passage.revision_id") &&
+    !recoveredPackageSmoke.includes("tidbit_revision_source.revision_id"),
+  "packaged recovery historical-citation query uses retired schema columns",
 );
 
 console.info(

@@ -58,7 +58,7 @@ describe("restricted BlockNote Markdown adapter", () => {
     expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
   });
 
-  it("keeps legacy constructs available but outside the creation schema", () => {
+  it("exposes only the product block schema and rejects unsupported Markdown", () => {
     expect(Object.keys(koshBlockNoteSchema.blockSchema)).toEqual([
       "paragraph",
       "heading",
@@ -70,17 +70,20 @@ describe("restricted BlockNote Markdown adapter", () => {
       "koshPendingMedia",
       "koshPdf",
       "koshFileAttachment",
-      "koshLegacyMedia",
-      "legacyMarkdown",
     ]);
     expect(Object.keys(koshBlockNoteSchema.blockSchema)).not.toEqual(
       expect.arrayContaining(["table", "quote", "checkListItem", "image", "audio", "video"]),
     );
 
-    const legacy = markdownToKoshBlocks(
-      "> quote\n\n---\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- [x] retained",
-    );
-    expect(legacy.every((block) => block.type === "legacyMarkdown")).toBe(true);
+    for (const unsupported of [
+      "> quote",
+      "---",
+      "| a | b |\n| - | - |\n| 1 | 2 |",
+      "- [x] task",
+      "#### deep heading",
+    ]) {
+      expect(() => markdownToKoshBlocks(unsupported)).toThrow(/Unsupported Markdown block/u);
+    }
   });
 
   it("round-trips canonical media as opaque Kosh blocks", () => {
@@ -108,11 +111,9 @@ describe("restricted BlockNote Markdown adapter", () => {
     expect(JSON.stringify(blocks)).not.toMatch(/(?:blob:|data:|file:|\/Users\/)/u);
   });
 
-  it("keeps malformed media references explicit and never persists pending placeholders", () => {
+  it("keeps malformed media references as text and never persists pending placeholders", () => {
     const malformed = "{{kosh:image:not-a-uuid;width=70%}}";
-    expect(markdownToKoshBlocks(malformed)).toEqual([
-      { type: "koshLegacyMedia", props: { markdown: malformed } },
-    ]);
+    expect(koshBlocksToMarkdown(markdownToKoshBlocks(malformed))).toBe(malformed);
     expect(
       koshBlocksToMarkdown([
         { type: "paragraph", content: "Before" },
@@ -122,20 +123,19 @@ describe("restricted BlockNote Markdown adapter", () => {
     ).toBe("Before\n\nAfter");
   });
 
-  it("neutralizes unsafe links and inline or block HTML", () => {
+  it("neutralizes unsafe links and inline HTML and rejects block HTML", () => {
     const once = koshBlocksToMarkdown(
-      markdownToKoshBlocks(
-        "[click](javascript:alert(1)) <img src=x onerror=alert(1)>\n\n<script>alert(2)</script>",
-      ),
+      markdownToKoshBlocks("[click](javascript:alert(1)) <img src=x onerror=alert(1)>"),
     );
     const twice = koshBlocksToMarkdown(markdownToKoshBlocks(once));
 
     expect(once).not.toContain("](javascript:");
     expect(once).toContain("\\<img");
     expect(once).not.toMatch(/(^|[^\\])<img/u);
-    expect(once).toContain("\\<script");
-    expect(once).not.toMatch(/(^|[^\\])<script/u);
     expect(twice).toBe(once);
+    expect(() => markdownToKoshBlocks("<script>alert(2)</script>")).toThrow(
+      /Unsupported Markdown block/u,
+    );
   });
 
   it("is idempotent across deterministic mixed documents", () => {
@@ -144,7 +144,6 @@ describe("restricted BlockNote Markdown adapter", () => {
       "- one\n  - nested",
       "```rust\nlet answer = 42;\n```",
       "Inline $x^2$ and ~~old~~ context.",
-      "#### Preserved legacy heading",
     ];
     for (let offset = 0; offset < snippets.length; offset += 1) {
       const source = [...snippets.slice(offset), ...snippets.slice(0, offset)].join("\n\n");
@@ -153,32 +152,22 @@ describe("restricted BlockNote Markdown adapter", () => {
     }
   });
 
-  it("retains styled or linked inline math without silently dropping its context", () => {
+  it("rejects inline math in unsupported styled or linked contexts", () => {
     for (const markdown of ["**$x$**", "~~$x$~~", "[$x$](https://example.com)"]) {
-      const blocks = markdownToKoshBlocks(markdown);
-      expect(blocks).toEqual([{ type: "legacyMarkdown", props: { markdown } }]);
-      expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
+      expect(() => markdownToKoshBlocks(markdown)).toThrow(/Unsupported Markdown block/u);
     }
   });
 
-  it("preserves reference links and fenced-code metadata losslessly", () => {
-    expect(
-      koshBlocksToMarkdown(
-        markdownToKoshBlocks("Read [the docs][docs].\n\n[docs]: https://example.com/reference"),
-      ),
-    ).toBe("Read [the docs](https://example.com/reference).");
-    const code = '```js title="example"\nconst answer = 42;\n```';
-    expect(koshBlocksToMarkdown(markdownToKoshBlocks(code))).toBe(code);
-  });
-
-  it("preserves titled links as legacy Markdown instead of degrading them to text", () => {
+  it("rejects reference links, remote images, and fenced-code metadata", () => {
     for (const markdown of [
+      "Read [the docs][docs].\n\n[docs]: https://example.com/reference",
       'Read [the docs](https://example.com/reference "Reference").',
       'Read [the docs][docs].\n\n[docs]: https://example.com/reference "Reference"',
+      "![diagram](https://example.com/diagram.png)",
+      "![diagram][image]\n\n[image]: https://example.com/diagram.png",
+      '```js title="example"\nconst answer = 42;\n```',
     ]) {
-      const blocks = markdownToKoshBlocks(markdown);
-      expect(blocks[0]?.type).toBe("legacyMarkdown");
-      expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
+      expect(() => markdownToKoshBlocks(markdown)).toThrow(/Unsupported Markdown block/u);
     }
   });
 

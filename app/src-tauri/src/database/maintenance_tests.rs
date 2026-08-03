@@ -2,9 +2,7 @@ use tempfile::TempDir;
 
 use super::{
     connection::{self, DatabaseKind, FileState},
-    maintenance,
-    tidbits::EditTidbitWrite,
-    Database, DatabasePaths, EditTidbitInput, LexicalSearchMode, SearchPassagesInput, TidbitDraft,
+    maintenance, Database, DatabasePaths, LexicalSearchMode, SearchPassagesInput, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -31,7 +29,6 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
     let original = client
         .create_tidbit_with_ids(
             TidbitDraft {
-                title: Some("Maintenance evidence".into()),
                 body_markdown: "Original exact citation evidence.".into(),
                 sources: Vec::new(),
             },
@@ -52,20 +49,21 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
         .expect("original result")
         .passage_id
         .clone();
+    client
+        .save_working_copy_for_test(
+            original.id.clone(),
+            Some(original.current_revision_id.clone()),
+            1,
+            "Updated searchable citation evidence.".into(),
+            Vec::new(),
+            20,
+        )
+        .expect("save edited working copy");
     let edited = client
-        .edit_tidbit(EditTidbitWrite {
-            input: EditTidbitInput {
-                id: original.id.clone(),
-                expected_revision_id: original.current_revision_id.clone(),
-                title: original.title.clone(),
-                body_markdown: "Updated searchable citation evidence.".into(),
-                sources: Vec::new(),
-            },
-            now_ms: 20,
-            revision_id: uuid_v7(),
-            source_ids: Vec::new(),
-        })
-        .expect("edit tidbit");
+        .checkpoint_working_copy_for_test(original.id.clone(), 1, 21, uuid_v7(), Vec::new())
+        .expect("checkpoint edit")
+        .note
+        .expect("edited note");
     install_all_embeddings(&client, 30);
     client
         .activate_passage_embedding_index_if_complete(31)

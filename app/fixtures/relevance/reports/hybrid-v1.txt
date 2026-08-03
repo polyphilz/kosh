@@ -1,5 +1,5 @@
 Kosh relevance report v1
-fixture: kosh-relevance-v1 (b07562f04a0a9999cb98ea754f6cef9cf80354b81a7c8d60f3941310c6c5ffae)
+fixture: kosh-relevance-v1 (9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8)
 retriever: kosh-hybrid-jina-v1
 status: PASS
 queries: 25/25 passed

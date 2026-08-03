@@ -30,7 +30,6 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const DEVELOPMENT_FRONTEND_ORIGIN: &str = "http://127.0.0.1:1420";
 const RELEASE_FRONTEND_ORIGIN: &str = "tauri://localhost";
 const CANARY: &str = "koshstartupcanaryv1";
-const CANARY_TITLE: &str = "Kosh progressive startup canary";
 const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
 const REQUIRED_SURFACES: [&str; 2] = ["main", "quick-add"];
 const BUILD_GIT_SHA: &str = env!("KOSH_BUILD_GIT_SHA");
@@ -462,10 +461,7 @@ fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {
     let loaded = client
         .load_tidbit(tidbit.id.clone())
         .map_err(database_error)?;
-    if loaded.current_revision_id != tidbit.revision_id
-        || loaded.body_markdown != CANARY
-        || loaded.title.as_deref() != Some(CANARY_TITLE)
-    {
+    if loaded.current_revision_id != tidbit.revision_id || loaded.body_markdown != CANARY {
         return Err(invalid(
             "the startup smoke citation did not resolve to the stored authored revision",
         ));

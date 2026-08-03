@@ -3178,12 +3178,12 @@ mod tests {
     }
 
     #[test]
-    fn bounded_sidecar_log_trims_legacy_files_and_removes_excess_archives() {
+    fn bounded_sidecar_log_trims_existing_files_and_removes_excess_archives() {
         let directory = tempfile::tempdir().expect("temporary directory");
         fs::write(sidecar_log_path(directory.path(), None), b"0123456789ab")
-            .expect("legacy active log");
+            .expect("existing active log");
         fs::write(sidecar_log_path(directory.path(), Some(1)), b"abcdefghijkl")
-            .expect("legacy archive");
+            .expect("existing archive");
         fs::write(
             sidecar_log_path(directory.path(), Some(3)),
             b"excess archive",
@@ -3192,7 +3192,7 @@ mod tests {
 
         drop(
             BoundedSidecarLog::open_with_limits(directory.path(), 8, 2)
-                .expect("bounded legacy log"),
+                .expect("bounded existing log"),
         );
 
         assert_eq!(

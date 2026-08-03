@@ -446,10 +446,6 @@ fn capture_references(
                         SELECT 1 FROM tidbit_revision_attachment
                         WHERE attachment_id = attachment.id
                    )
-                   OR EXISTS (
-                        SELECT 1 FROM research_run_attachment
-                        WHERE attachment_id = attachment.id
-                   )
                 UNION ALL
                 SELECT image.preview_sha256, image.preview_byte_length
                 FROM attachment_image AS image
@@ -457,10 +453,6 @@ fn capture_references(
                 WHERE attachment.deleted_at IS NULL
                    OR EXISTS (
                         SELECT 1 FROM tidbit_revision_attachment
-                        WHERE attachment_id = attachment.id
-                   )
-                   OR EXISTS (
-                        SELECT 1 FROM research_run_attachment
                         WHERE attachment_id = attachment.id
                    )
              )
@@ -492,10 +484,6 @@ fn capture_references(
                     SELECT 1 FROM tidbit_revision_attachment
                     WHERE attachment_id = attachment.id
                )
-               OR EXISTS (
-                    SELECT 1 FROM research_run_attachment
-                    WHERE attachment_id = attachment.id
-               )
             UNION ALL
             SELECT image.preview_sha256, image.preview_byte_length
             FROM attachment_image AS image
@@ -503,10 +491,6 @@ fn capture_references(
             WHERE attachment.deleted_at IS NULL
                OR EXISTS (
                     SELECT 1 FROM tidbit_revision_attachment
-                    WHERE attachment_id = attachment.id
-               )
-               OR EXISTS (
-                    SELECT 1 FROM research_run_attachment
                     WHERE attachment_id = attachment.id
                )
          )

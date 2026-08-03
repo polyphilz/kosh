@@ -11,7 +11,7 @@ may claim only the boundary it actually crosses.
 | --- | --- | --- |
 | repository policy | `scripts/check-repository.sh` | shell syntax, secret and ignored-data hygiene, negative tests for merge/runtime/bundle guards |
 | frontend unit and type contracts | TypeScript, Oxlint, Oxfmt, Vitest | types, reducers, parsers, React state, typed Tauri protocol registry and Rust drift detection |
-| browser functional and accessibility | Chromium Playwright plus axe | stateful capture, library, search, citation, research, settings, focus and accessibility journeys |
+| browser functional and accessibility | Chromium Playwright plus axe | stateful capture, editing, search, citation, settings, focus and accessibility journeys |
 | browser hardening | pinned DPR-2 Chromium Playwright plus axe | every primary route in light/dark, keyboard order, 200% reflow, reduced motion, high-DPI semantics |
 | WebKit editor and keyboard contracts | WebKit Playwright | ProseMirror input, save, search selection and citation-focus behavior in Tauri's browser engine family |
 | pinned visual contracts | single-worker Chromium Playwright | light/dark catalog, dialog, library and settings pixels at fixed viewports |
@@ -23,14 +23,13 @@ may claim only the boundary it actually crosses.
 | durable off-site media reconciliation | Rust queue/worker tests in `app/tests/native/offsite-backup-media.md` | transactional source/preview seeding, guarded leases, off-writer bounded reads, create-only upload verification, offline/restart replay and writer independence |
 | supervised Litestream runtime | Rust supervisor/process tests in `app/tests/native/offsite-backup-litestream-runtime.md` | disabled inertness, private config/socket/PID ownership, bounded status, crash backoff, configuration reload, graceful final sync and local database independence |
 | complete off-site recovery matrix | `pnpm backup:verify-fault-matrix` plus Rust restore/install tests | 64 named failures across snapshot, configuration, media, replication, checkpoint, discovery, restore, install and reopen; exact mapping to executable tests and non-destructive invariants |
-| packaged real-R2 recovery | scheduled/manual `Packaged real-R2 recovery canary` workflow and `scripts/run-litestream-r2-canary.sh` | unique-prefix interrupted replication, manifest-last publication, drill, packaged clean-directory exact-TXID/media restore, normal hidden startup, search rebuild, authored/historical citations and verified remote cleanup |
+| packaged real-R2 recovery | scheduled/manual `Packaged real-R2 recovery canary` workflow and `scripts/run-litestream-r2-canary.sh` | unique-prefix interrupted replication, manifest-last publication, drill, packaged clean-directory exact-TXID/media restore, normal hidden startup, search rebuild, authored citations and verified remote cleanup |
 | native startup, restart, search and citation | `scripts/loop/runtime-gate.sh --ci` | real macOS Tauri process, both WKWebViews, fresh/restart persistence and actual runtime/search/citation IPC |
-| universal release structure and smoke | `pnpm release:build:app && pnpm release:smoke` | icons/metadata/CSP/capabilities/entitlements, dual-architecture app and sidecar, signatures/resources, executable-to-source commit binding, packaged React/capture/search/citation IPC, fresh restart identity, no Claude/model |
-| packaged release journeys | `app/tests/native/release-acceptance.md` | clean installed capture/search, media extraction, hybrid retrieval, grounded citations, restart, previous-release migration and separate-profile snapshot recovery |
+| universal release structure and smoke | `pnpm release:build:app && pnpm release:smoke` | icons/metadata/CSP/capabilities/entitlements, dual-architecture app and sidecar, signatures/resources, executable-to-source commit binding, packaged React/capture/search/citation IPC, fresh restart identity, no semantic model |
+| packaged release journeys | `app/tests/native/release-acceptance.md` | clean installed capture/search, media extraction, hybrid retrieval, grounded citations, restart and separate-profile recovery |
 
-The branch loop additionally runs the native gate against the preserved local
-profile. Its receipt must name the exact committed HEAD before a PR can be
-merged.
+The branch loop's native receipt must name the exact committed HEAD before a
+PR can be merged.
 
 ## Determinism and isolation
 
@@ -49,16 +48,7 @@ merged.
   `.kosh-loop`; it refuses unknown or symlinked profile paths and never resets a
   user's database.
 
-## Upgrade and citation evidence
-
-`src-tauri/src/database/fixtures/v16-profile/` is a reviewed, hashed plaintext
-SQL serialization containing authored text, immutable revision, exact-search
-passage, URL-bearing source, and historical refinery checksums. The normal
-suite validates its manifest, materializes a temporary database pair, upgrades
-it, proves exact search and citation provenance, closes the database, then
-repeats the proof after restart. Changing an already-shipped migration blocks
-the upgrade rather than silently rewriting history. No local database file is
-committed.
+## Search and citation evidence
 
 The relevance suite has at least 25 realistic queries and checked model vectors.
 The release gate requires:

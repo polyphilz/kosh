@@ -11,22 +11,22 @@ body {
   margin: 0;
 }
 
-.kosh-blocknote-spike {
+.kosh-editor-harness {
   --accent: #d97745;
-  --spike-bg: #f6f4ef;
-  --spike-ink: #24201c;
+  --harness-bg: #f6f4ef;
+  --harness-ink: #24201c;
   min-height: 100vh;
   padding: 32px max(48px, calc((100vw - 900px) / 2));
-  color: var(--spike-ink);
-  background: var(--spike-bg);
+  color: var(--harness-ink);
+  background: var(--harness-bg);
 }
 
-.kosh-blocknote-spike[data-theme="dark"] {
-  --spike-bg: #1d1a18;
-  --spike-ink: #f0ece5;
+.kosh-editor-harness[data-theme="dark"] {
+  --harness-bg: #1d1a18;
+  --harness-ink: #f0ece5;
 }
 
-.kosh-blocknote-spike__label {
+.kosh-editor-harness__label {
   margin: 0 0 24px;
   font:
     600 12px/1.2 ui-monospace,
@@ -36,9 +36,9 @@ body {
   opacity: 0.58;
 }
 
-.kosh-blocknote-spike .bn-container,
-.kosh-blocknote-spike .bn-editor {
+.kosh-editor-harness .bn-container,
+.kosh-editor-harness .bn-editor {
   min-height: 75vh;
-  color: var(--spike-ink);
+  color: var(--harness-ink);
   background: transparent;
 }

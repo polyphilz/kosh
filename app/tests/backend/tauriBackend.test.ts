@@ -1,21 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  ClearDraftInput,
+  CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
-  EditTidbitInput,
-  ListTidbitRevisionsInput,
-  ListTidbitsInput,
-  PurgeTidbitInput,
+  DiscardWorkingCopyInput,
   RestoreTidbitInput,
-  SaveDraftInput,
+  SaveWorkingCopyInput,
   SearchPassagesInput,
   SetAutomaticUpdateChecksInput,
   SetShortcutSettingsInput,
   TakeOverBackupInput,
   TestBackupConnectionInput,
-  TidbitDraft,
 } from "../../src/backend/contracts";
 import { tauriBackend } from "../../src/backend/tauriBackend";
 
@@ -30,42 +26,23 @@ describe("tauriBackend tidbit gateway", () => {
 
   it("uses typed command names and payload envelopes", async () => {
     vi.mocked(invoke).mockResolvedValue({});
-    const draft: TidbitDraft = {
-      title: null,
+    const workingCopy: SaveWorkingCopyInput = {
+      noteId: "tidbit-1",
+      baseRevisionId: null,
+      editGeneration: 1,
       bodyMarkdown: "A shower thought",
       sources: [{ label: "Notebook", url: null }],
     };
-    const edit: EditTidbitInput = {
-      ...draft,
-      id: "tidbit-1",
-      expectedRevisionId: "revision-1",
+    const checkpoint: CheckpointWorkingCopyInput = {
+      noteId: "tidbit-1",
+      expectedEditGeneration: 1,
     };
+    const discard: DiscardWorkingCopyInput = { ...checkpoint };
     const deletion: DeleteTidbitInput = {
       id: "tidbit-1",
       expectedRevisionId: "revision-2",
     };
     const restoration: RestoreTidbitInput = { ...deletion };
-    const purge: PurgeTidbitInput = { ...deletion };
-    const list: ListTidbitsInput = {
-      limit: 50,
-      cursor: { updatedAtMs: 42, id: "tidbit-1" },
-      scope: "ACTIVE",
-    };
-    const revisions: ListTidbitRevisionsInput = {
-      tidbitId: "tidbit-1",
-      limit: 20,
-      beforeRevisionNumber: 3,
-    };
-    const savedDraft: SaveDraftInput = {
-      contextKey: "capture",
-      tidbitId: null,
-      baseRevisionId: null,
-      ...draft,
-    };
-    const clearDraft: ClearDraftInput = {
-      contextKey: "capture",
-      expectedUpdatedAtMs: 42,
-    };
     const search: SearchPassagesInput = {
       query: '"exact phrase"',
       mode: "EXACT",
@@ -83,21 +60,18 @@ describe("tauriBackend tidbit gateway", () => {
       expectedRevision: 1,
     };
 
-    await tauriBackend.createTidbit(draft);
     await tauriBackend.loadTidbit("tidbit-1");
-    await tauriBackend.listTidbits(list);
-    await tauriBackend.listTidbitRevisions(revisions);
-    await tauriBackend.loadTidbitRevision("tidbit-1", "revision-1");
-    await tauriBackend.editTidbit(edit);
     await tauriBackend.deleteTidbit(deletion);
     await tauriBackend.restoreTidbit(restoration);
-    await tauriBackend.purgeTidbit(purge);
     await tauriBackend.openSourceUrl("source-1");
     await tauriBackend.resolveCitation("passage-1");
     await tauriBackend.searchPassages(search);
-    await tauriBackend.saveDraft(savedDraft);
-    await tauriBackend.loadDraft("capture");
-    await tauriBackend.clearDraft(clearDraft);
+    await tauriBackend.saveWorkingCopy(workingCopy);
+    await tauriBackend.reserveWorkingCopyForMedia(workingCopy);
+    await tauriBackend.loadWorkingCopy("tidbit-1");
+    await tauriBackend.listWorkingCopies();
+    await tauriBackend.checkpointWorkingCopy(checkpoint);
+    await tauriBackend.discardWorkingCopy(discard);
     await tauriBackend.loadShortcutSettings();
     await tauriBackend.setAutomaticUpdateChecks(automaticUpdates);
     await tauriBackend.setShortcutSettings(shortcuts);
@@ -123,21 +97,18 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.openPdfExternal("pdf-attachment-1");
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
-      ["create_tidbit", { input: draft }],
       ["load_tidbit", { id: "tidbit-1" }],
-      ["list_tidbits", { input: list }],
-      ["list_tidbit_revisions", { input: revisions }],
-      ["load_tidbit_revision", { tidbitId: "tidbit-1", revisionId: "revision-1" }],
-      ["edit_tidbit", { input: edit }],
       ["delete_tidbit", { input: deletion }],
       ["restore_tidbit", { input: restoration }],
-      ["purge_tidbit", { input: purge }],
       ["open_source_url", { sourceId: "source-1" }],
       ["resolve_citation", { passageId: "passage-1" }],
       ["search_passages", { input: search }],
-      ["save_draft", { input: savedDraft }],
-      ["load_draft", { contextKey: "capture" }],
-      ["clear_draft", { input: clearDraft }],
+      ["save_working_copy", { input: workingCopy }],
+      ["reserve_working_copy_for_media", { input: workingCopy }],
+      ["load_working_copy", { noteId: "tidbit-1" }],
+      ["list_working_copies"],
+      ["checkpoint_working_copy", { input: checkpoint }],
+      ["discard_working_copy", { input: discard }],
       ["load_shortcut_settings"],
       ["set_automatic_update_checks", { input: automaticUpdates }],
       ["set_shortcut_settings", { input: shortcuts }],

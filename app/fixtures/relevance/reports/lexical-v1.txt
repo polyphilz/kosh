@@ -1,13 +1,13 @@
 Kosh relevance report v1
-fixture: kosh-relevance-v1 (b07562f04a0a9999cb98ea754f6cef9cf80354b81a7c8d60f3941310c6c5ffae)
+fixture: kosh-relevance-v1 (9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8)
 retriever: kosh-lexical-v1
-status: FAIL
-queries: 24/25 passed
-recall@5: 0.9067
-recall@10: 0.9600
-MRR: 0.8950
-nDCG@10: 0.9056
-citation locator accuracy: 0.9600
+status: PASS
+queries: 25/25 passed
+recall@5: 0.9467
+recall@10: 1.0000
+MRR: 0.9383
+nDCG@10: 0.9484
+citation locator accuracy: 1.0000
 exact/phrase success: 1.0000
 forbidden hits@10: 0
 
@@ -19,12 +19,12 @@ query results:
 - [PASS] query-ocr-invoice (Ocr): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-ocr-receipt
 - [PASS] query-pdf-attention (Pdf): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-pdf-transformer
 - [PASS] query-car-upkeep (Synonym): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-synonym-automobile
-- [FAIL] query-concurrency-misspelling (Misspelling): recall@10=0.0000, rr=0.0000, citation=missing/invalid, top=-
+- [PASS] query-concurrency-misspelling (Misspelling): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-misspelling-concurrency
 - [PASS] query-obsolete-caloric (NearDuplicate): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-caloric
 - [PASS] query-resolve-citation-exact (Exact): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-code-resolve-citation
 - [PASS] query-unicode-diacritics (Unicode): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-unicode-cafe
 - [PASS] query-model-filename (Exact): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-filename-model
-- [PASS] query-herb-hydration (Synonym): recall@10=1.0000, rr=0.2500, citation=valid, top=passage-source-rust
+- [PASS] query-herb-hydration (Synonym): recall@10=1.0000, rr=0.3333, citation=valid, top=passage-source-rust
 - [PASS] query-dough-phrase (Phrase): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-phrase-dough
 - [PASS] query-fourier-formula (Formula): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-formula-fourier
 - [PASS] query-rust-domain (SourceDomain): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-source-rust

@@ -17,11 +17,6 @@ const REFERENCED_MEDIA_SELECT: &str = "
             FROM tidbit_revision_attachment AS membership
             WHERE membership.attachment_id = attachment.id
        )
-       OR EXISTS (
-            SELECT 1
-            FROM research_run_attachment AS research_membership
-            WHERE research_membership.attachment_id = attachment.id
-       )
     UNION
     SELECT image.preview_sha256
     FROM attachment_image AS image
@@ -31,11 +26,6 @@ const REFERENCED_MEDIA_SELECT: &str = "
             SELECT 1
             FROM tidbit_revision_attachment AS membership
             WHERE membership.attachment_id = attachment.id
-       )
-       OR EXISTS (
-            SELECT 1
-            FROM research_run_attachment AS research_membership
-            WHERE research_membership.attachment_id = attachment.id
        )
 ";
 
@@ -174,11 +164,6 @@ pub(super) fn reconcile(connection: &mut Connection, now_ms: i64) -> Result<u64>
                            FROM tidbit_revision_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                       )
-                      OR EXISTS (
-                           SELECT 1
-                           FROM research_run_attachment AS research_membership
-                           WHERE research_membership.attachment_id = attachment.id
-                      )
                    UNION
                    SELECT image.preview_sha256
                    FROM attachment_image AS image
@@ -188,11 +173,6 @@ pub(super) fn reconcile(connection: &mut Connection, now_ms: i64) -> Result<u64>
                            SELECT 1
                            FROM tidbit_revision_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
-                      )
-                      OR EXISTS (
-                           SELECT 1
-                           FROM research_run_attachment AS research_membership
-                           WHERE research_membership.attachment_id = attachment.id
                       )
                )
            )",

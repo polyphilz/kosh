@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
-import type { TidbitDraft, TidbitRecord } from "../../src/backend/contracts";
+import type { TidbitRecord } from "../../src/backend/contracts";
+import type { FakeNoteInput } from "../../src/backend/fakeBackend";
 import { expect, test, type Page } from "./fixtures";
 
 test("Command-K searches locally and opens the exact cited note block", async ({ page }) => {
@@ -7,12 +8,10 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   await expect(page.getByRole("textbox", { name: "Note" })).toBeFocused();
   const originalUrl = page.url();
   const first = await seedTidbit(page, {
-    title: null,
     bodyMarkdown: "Tomato technique: slow simmering preserves a bright tomato sauce.",
     sources: [{ label: "Cookbook", url: "https://www.example.com/tomato" }],
   });
   await seedTidbit(page, {
-    title: null,
     bodyMarkdown: "Second tomato note: roast tomato halves before blending the sauce.",
     sources: [{ label: "Kitchen log", url: "https://notes.example.org/roasting" }],
   });
@@ -82,12 +81,10 @@ test("dismissal clears transient search and stale responses cannot replace newer
 }) => {
   await page.goto("/#/");
   await seedTidbit(page, {
-    title: null,
     bodyMarkdown: "Slow response: only the slow query should find this passage.",
     sources: [],
   });
   await seedTidbit(page, {
-    title: null,
     bodyMarkdown: "Fast response: only the fast query should find this passage.",
     sources: [],
   });
@@ -149,7 +146,6 @@ test("dismissal clears transient search and stale responses cannot replace newer
 test("a result edited after retrieval opens honest historical evidence", async ({ page }) => {
   await page.goto("/#/");
   const created = await seedTidbit(page, {
-    title: null,
     bodyMarkdown: "Revision evidence: the original immutable passage mentions cobalt.",
     sources: [{ label: "Lab notebook", url: "https://example.com/lab" }],
   });
@@ -163,10 +159,9 @@ test("a result edited after retrieval opens honest historical evidence", async (
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
     const current = await backend.loadTidbit(noteId);
-    await backend.editTidbit({
+    await backend.replaceNoteForTest({
       id: current.id,
       expectedRevisionId: current.currentRevisionId,
-      title: current.title,
       bodyMarkdown: "Revision evidence: the current passage now mentions indigo.",
       sources: current.sources,
     });
@@ -188,7 +183,6 @@ test("attachment results retain their exact page evidence after opening the owni
 }) => {
   await page.goto("/#/");
   const note = await seedTidbit(page, {
-    title: null,
     bodyMarkdown: "# Vector chapter\n\n{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
     sources: [],
   });
@@ -240,7 +234,6 @@ test("attachment results retain their exact page evidence after opening the owni
             id: seeded.id,
             revisionId: seeded.currentRevisionId,
             revisionNumber: seeded.revisionNumber,
-            title: seeded.title,
             displayTitle: seeded.displayTitle,
             deleted: false,
           },
@@ -312,11 +305,11 @@ test("StrictMode keeps semantic polling bounded to the open overlay", async ({ p
     .toBe(0);
 });
 
-async function seedTidbit(page: Page, input: TidbitDraft): Promise<TidbitRecord> {
+async function seedTidbit(page: Page, input: FakeNoteInput): Promise<TidbitRecord> {
   return page.evaluate(async (draft) => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
-    return backend.createTidbit(draft);
+    return backend.seedNote(draft);
   }, input);
 }
 

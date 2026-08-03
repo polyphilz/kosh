@@ -118,8 +118,7 @@
   border-radius: 8px;
 }
 
-.kosh-math-editor__source,
-.kosh-legacy-markdown textarea {
+.kosh-math-editor__source {
   width: 100%;
   color: inherit;
   font:
@@ -134,30 +133,9 @@
   width: 9rem;
 }
 
-.kosh-legacy-markdown {
-  display: grid;
-  width: 100%;
-  gap: 6px;
-}
-
-.kosh-legacy-markdown__label {
-  font:
-    600 11px/1.2 ui-monospace,
-    monospace;
-  text-transform: uppercase;
-  opacity: 0.6;
-}
-
-.kosh-legacy-markdown textarea {
-  min-height: 5rem;
-  padding: 10px;
-  resize: vertical;
-}
-
 .kosh-blocknote-image,
 .kosh-blocknote-file,
-.kosh-blocknote-pending-media,
-.kosh-blocknote-legacy-media {
+.kosh-blocknote-pending-media {
   position: relative;
   max-width: 100%;
   padding: 12px;
@@ -203,8 +181,7 @@
 }
 
 .kosh-blocknote-image__fields label,
-.kosh-blocknote-file__caption,
-.kosh-blocknote-legacy-media {
+.kosh-blocknote-file__caption {
   display: grid;
   flex: 1;
   gap: 4px;
@@ -212,8 +189,7 @@
 }
 
 .kosh-blocknote-image input,
-.kosh-blocknote-file input,
-.kosh-blocknote-legacy-media textarea {
+.kosh-blocknote-file input {
   width: 100%;
   padding: 6px 8px;
   color: inherit;

@@ -29,15 +29,13 @@ commits that invalidate an in-flight review.
 
 Every committed slice must run as an application, not merely compile as a
 collection of components. `scripts/loop/runtime-gate.sh` launches the real
-debug Tauri binary three times:
+debug Tauri binary twice:
 
 1. against a unique empty data root, where it migrates both databases, creates
    a canary tidbit through the production writer, finds it through exact lexical
    search, and resolves its source-bearing citation;
 2. against that same root, where the canary must already exist and resolve to
-   the identical tidbit revision and passage; and
-3. against `.kosh-loop/progressive-profile/data`, where the canary and database
-   pair from prior slices must survive all forward migrations.
+   the identical tidbit revision and passage.
 
 Each launch also starts the exact-head Vite frontend and proves that the main
 and quick-add windows are constructed, both React roots render, both surfaces
@@ -48,22 +46,8 @@ The receipt rejects a wrong execution mode, stale citation, changed passage or
 revision, missing source URL, or more than one match. Both database files must
 also use WAL and foreign keys with every embedded migration applied. A blank,
 stale, disconnected, or error webview therefore cannot issue a passing
-receipt. The fresh profile is disposable. The preserved profile is not: never
-delete, replace, or edit it to make a slice pass. On a genuinely new
-workstation, initialize it exactly once with:
-
-```bash
-scripts/loop/runtime-gate.sh --bootstrap-persistent
-```
-
-Bootstrap is recoverable: the gate first establishes an owned staging profile,
-idempotently ensures its canary, atomically promotes the profile, and launches
-the promoted path again before marking it established. An interrupted
-bootstrap resumes only this gate-owned state; it never asks the operator to
-delete a database whose provenance is uncertain.
-The marker pins the canary's tidbit, revision, and passage IDs. Its one-time
-schema-v1 upgrade establishes the passage baseline from a verified live
-receipt without replacing or editing the preserved database profile.
+receipt. The gate-owned profile is disposable and exists only for the duration
+of the fresh/restart proof.
 
 Normal slice verification uses `scripts/loop/runtime-gate.sh` with no flags.
 The script requires a clean worktree and writes an ignored, exact-commit

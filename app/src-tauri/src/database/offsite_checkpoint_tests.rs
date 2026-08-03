@@ -23,10 +23,8 @@ use crate::backup::{
 use super::{
     backup_state::SaveOffsiteBackupConfigInput, settings::SetShortcutSettingsInput, Database,
     DatabaseError, DatabasePaths, MediaLimits, OffsiteBackupConfig, PrepareOffsiteCheckpointInput,
-    SaveDraftInput,
 };
 use super::{
-    drafts::SaveDraftWrite,
     media::{IngestAttachmentMetadata, StagedAttachment},
     offsite_checkpoint::FAILED_CHECKPOINT_RETENTION,
 };
@@ -337,20 +335,8 @@ fn checkpoint_media_snapshot_is_persisted_and_read_in_bounded_keyset_pages() {
     let client = database.client();
     let draft_id = "019f547b-6200-7000-8000-000000008001";
     client
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: String::new(),
-                sources: Vec::new(),
-            },
-            now_ms: 2,
-            draft_id: draft_id.into(),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("save draft");
+        .save_working_copy_for_test(draft_id.into(), None, 1, String::new(), Vec::new(), 2)
+        .expect("save working copy");
 
     let staging = root.path().join("staging");
     for index in 0_u64..19 {
@@ -576,20 +562,8 @@ fn retired_upload_rows_do_not_invalidate_historical_checkpoint_facts() {
     let client = database.client();
     let draft_id = "019f547b-6200-7000-8000-000000009001";
     client
-        .save_draft(SaveDraftWrite {
-            input: SaveDraftInput {
-                context_key: "capture".into(),
-                tidbit_id: None,
-                base_revision_id: None,
-                title: None,
-                body_markdown: String::new(),
-                sources: Vec::new(),
-            },
-            now_ms: 2,
-            draft_id: draft_id.into(),
-            media_limits: MediaLimits::default(),
-        })
-        .expect("save draft");
+        .save_working_copy_for_test(draft_id.into(), None, 1, String::new(), Vec::new(), 2)
+        .expect("save working copy");
     let staging = root.path().join("staging");
     let staged = StagedAttachment::from_reader(
         Cursor::new(b"historical checkpoint media"),

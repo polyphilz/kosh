@@ -19,7 +19,6 @@ import {
 import { NoteActions } from "../notes/NoteActions";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
 import { useNoteDeletion } from "../notes/deletion";
-import { projectLegacyTitle } from "../notes/legacyTitle";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { citationLocation } from "../search/presentation";
 import { registerSearchCheckpoint } from "../search/checkpoint";
@@ -571,7 +570,7 @@ function coordinatorForDurableNote(
   return new NoteAutosaveCoordinator(backend, {
     noteId: note.id,
     baseRevisionId: note.currentRevisionId,
-    bodyMarkdown: projectLegacyTitle(note.title, note.bodyMarkdown),
+    bodyMarkdown: note.bodyMarkdown,
     sources: note.sources.map(({ label, url }) => ({ label, url })),
   });
 }

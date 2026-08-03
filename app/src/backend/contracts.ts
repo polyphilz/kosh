@@ -338,28 +338,12 @@ export interface SourceDraft {
   url: string | null;
 }
 
-export interface TidbitDraft {
-  title: string | null;
-  bodyMarkdown: string;
-  sources: SourceDraft[];
-}
-
-export interface EditTidbitInput extends TidbitDraft {
-  id: string;
-  expectedRevisionId: string;
-}
-
 export interface DeleteTidbitInput {
   id: string;
   expectedRevisionId: string;
 }
 
 export interface RestoreTidbitInput {
-  id: string;
-  expectedRevisionId: string;
-}
-
-export interface PurgeTidbitInput {
   id: string;
   expectedRevisionId: string;
 }
@@ -397,7 +381,6 @@ export interface CitationTidbit {
   id: string;
   revisionId: string;
   revisionNumber: number;
-  title: string | null;
   displayTitle: string;
   deleted: boolean;
 }
@@ -425,7 +408,6 @@ export interface CitationResolution {
 export type LexicalSearchMode = "DEFAULT" | "EXACT";
 
 export type SearchField =
-  | "TITLE"
   | "HEADING_CONTEXT"
   | "BODY"
   | "SOURCE_LABEL"
@@ -469,17 +451,6 @@ export interface SearchPassagesResponse {
   semanticReadiness: SemanticSearchReadiness;
 }
 
-export interface SaveDraftInput extends TidbitDraft {
-  contextKey: string;
-  tidbitId: string | null;
-  baseRevisionId: string | null;
-}
-
-export interface ClearDraftInput {
-  contextKey: string;
-  expectedUpdatedAtMs: number;
-}
-
 export const KoshCommand = {
   MainWindow: "MAIN_WINDOW",
   QuickAdd: "QUICK_ADD",
@@ -521,12 +492,6 @@ export const DEFAULT_KEYBOARD_BINDINGS: readonly KeyboardBinding[] = [
     command: KoshCommand.MainWindow,
   },
 ];
-
-export interface DraftRecord extends SaveDraftInput {
-  id: string;
-  createdAtMs: number;
-  updatedAtMs: number;
-}
 
 export interface SaveWorkingCopyInput {
   noteId: string;
@@ -680,90 +645,10 @@ export interface TidbitRecord {
   createdAtMs: number;
   updatedAtMs: number;
   deletedAtMs: number | null;
-  title: string | null;
   displayTitle: string;
   bodyMarkdown: string;
   sources: TidbitSource[];
 }
-
-export interface TidbitListCursor {
-  updatedAtMs: number;
-  id: string;
-}
-
-export interface ListTidbitsInput {
-  limit: number;
-  cursor: TidbitListCursor | null;
-  scope: "ACTIVE" | "DELETED";
-}
-
-export interface TidbitListItem {
-  id: string;
-  currentRevisionId: string;
-  createdAtMs: number;
-  updatedAtMs: number;
-  deletedAtMs: number | null;
-  purgeEligibleAtMs: number | null;
-  title: string | null;
-  displayTitle: string;
-  bodyPreview: string;
-}
-
-export interface TidbitListPage {
-  items: TidbitListItem[];
-  nextCursor: TidbitListCursor | null;
-}
-
-export interface ListTidbitRevisionsInput {
-  tidbitId: string;
-  limit: number;
-  beforeRevisionNumber: number | null;
-}
-
-export interface TidbitRevisionSummary {
-  id: string;
-  revisionNumber: number;
-  createdAtMs: number;
-  title: string | null;
-  displayTitle: string;
-  bodyPreview: string;
-  sourceCount: number;
-  attachmentCount: number;
-  isCurrent: boolean;
-}
-
-export interface TidbitRevisionPage {
-  items: TidbitRevisionSummary[];
-  nextBeforeRevisionNumber: number | null;
-}
-
-export interface TidbitRevisionAttachment {
-  id: string;
-  displayFilename: string;
-  mediaType: string;
-  byteLength: number;
-  kind: "IMAGE" | "PDF" | "TEXT" | "BINARY";
-  extractionState: "PENDING" | "READY" | "FAILED" | "NOT_APPLICABLE";
-  displayRole: "INLINE" | "ATTACHMENT";
-  sortOrder: number;
-  deletedAtMs: number | null;
-}
-
-export interface TidbitRevisionRecord {
-  id: string;
-  tidbitId: string;
-  revisionNumber: number;
-  createdAtMs: number;
-  title: string | null;
-  displayTitle: string;
-  bodyMarkdown: string;
-  sources: TidbitSource[];
-  attachments: TidbitRevisionAttachment[];
-  isCurrent: boolean;
-  tidbitDeleted: boolean;
-}
-
-export const TIDBIT_PURGE_DELAY_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export interface Backend {
   runtimeProbe(): Promise<RuntimeProbe>;
@@ -788,21 +673,12 @@ export interface Backend {
   rebuildEmbeddingIndex(): Promise<MaintenanceOutcome>;
   retryFailedExtractions(): Promise<MaintenanceOutcome>;
   reclaimEligibleMedia(): Promise<MaintenanceOutcome>;
-  createTidbit(input: TidbitDraft): Promise<TidbitRecord>;
   loadTidbit(id: string): Promise<TidbitRecord>;
-  listTidbits(input: ListTidbitsInput): Promise<TidbitListPage>;
-  listTidbitRevisions(input: ListTidbitRevisionsInput): Promise<TidbitRevisionPage>;
-  loadTidbitRevision(tidbitId: string, revisionId: string): Promise<TidbitRevisionRecord>;
-  editTidbit(input: EditTidbitInput): Promise<TidbitRecord>;
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
   restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord>;
-  purgeTidbit(input: PurgeTidbitInput): Promise<boolean>;
   openSourceUrl(sourceId: string): Promise<void>;
   resolveCitation(passageId: string): Promise<CitationResolution>;
   searchPassages(input: SearchPassagesInput): Promise<SearchPassagesResponse>;
-  saveDraft(input: SaveDraftInput): Promise<DraftRecord>;
-  loadDraft(contextKey: string): Promise<DraftRecord | null>;
-  clearDraft(input: ClearDraftInput): Promise<boolean>;
   saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
   reserveWorkingCopyForMedia(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
   discardWorkingCopy(input: DiscardWorkingCopyInput): Promise<boolean>;

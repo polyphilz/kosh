@@ -5,21 +5,16 @@ import type {
   BackupRestorePreview,
   BackupSettingsSnapshot,
   CitationResolution,
-  ClearDraftInput,
   CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
   DiscardWorkingCopyInput,
-  DraftRecord,
-  EditTidbitInput,
   GenericAttachmentStatusRecord,
   ImageDropIngestResult,
   ImageOcrDiagnostics,
   ImageRecord,
   ImageStatusRecord,
   IntegrityCheckOutcome,
-  ListTidbitsInput,
-  ListTidbitRevisionsInput,
   MaintenanceDiagnostics,
   MaintenanceOutcome,
   PassageEmbeddingIndexStatus,
@@ -29,8 +24,6 @@ import type {
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
   RestoreTidbitInput,
-  PurgeTidbitInput,
-  SaveDraftInput,
   SaveWorkingCopyInput,
   SearchField,
   SearchPassagesInput,
@@ -42,11 +35,7 @@ import type {
   SetShortcutSettingsInput,
   ShortcutSettingsSnapshot,
   SourceDraft,
-  TidbitDraft,
-  TidbitListPage,
   TidbitRecord,
-  TidbitRevisionPage,
-  TidbitRevisionRecord,
   TidbitSource,
   WorkingCopyCheckpointResult,
   WorkingCopyRecord,
@@ -56,11 +45,26 @@ import type {
   RestoreCheckpointInput,
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
-import { TIDBIT_PURGE_DELAY_MS } from "./contracts";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
 
 interface FakeCitationSnapshot {
   revision: TidbitRecord;
+}
+
+export interface FakeNoteInput {
+  bodyMarkdown: string;
+  sources: SourceDraft[];
+}
+
+interface ReplaceNoteForTestInput extends FakeNoteInput {
+  id: string;
+  expectedRevisionId: string;
+}
+
+interface ListNotesForTestInput {
+  limit: number;
+  cursor: { updatedAtMs: number; id: string } | null;
+  scope: "ACTIVE" | "DELETED";
 }
 
 export const browserRuntimeProbe: RuntimeProbe = {
@@ -85,13 +89,10 @@ export class FakeBackend implements Backend {
     verified: false,
     message: null,
   };
-  private readonly drafts = new Map<string, DraftRecord>();
   private readonly workingCopies = new Map<string, WorkingCopyRecord>();
-  private readonly revisionOwners = new Map<string, string>();
   private readonly citations = new Map<string, FakeCitationSnapshot>();
   private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
-  private readonly revisions = new Map<string, TidbitRevisionRecord>();
   private shortcutSettings: ShortcutSettingsSnapshot = {
     revision: 1,
     automaticUpdateChecksEnabled: true,
@@ -141,8 +142,6 @@ export class FakeBackend implements Backend {
     this.probe = probe;
     for (const tidbit of tidbits) {
       this.tidbits.set(tidbit.id, cloneTidbit(tidbit));
-      this.revisions.set(tidbit.currentRevisionId, revisionFromTidbit(tidbit));
-      this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
       this.registerCitation(tidbit);
       this.sequence = Math.max(
         this.sequence,
@@ -412,7 +411,7 @@ export class FakeBackend implements Backend {
     return {
       applicationVersion: "0.1.0-fixture",
       database: {
-        migrationHeads: { main: 17, media: 3 },
+        migrationHeads: { main: 1, media: 1 },
         mainJournalMode: "wal",
         mediaJournalMode: "wal",
         mainForeignKeys: true,
@@ -421,8 +420,8 @@ export class FakeBackend implements Backend {
       library: {
         activeTidbits,
         trashedTidbits,
-        revisions: this.revisions.size,
-        authoredPassages: this.revisions.size,
+        revisions: this.citations.size,
+        authoredPassages: this.citations.size,
         attachmentPassages: 0,
         searchDocuments: activeTidbits,
         attachments: 0,
@@ -442,8 +441,7 @@ export class FakeBackend implements Backend {
           failed: 0,
         },
         indexes: [
-          { name: "PASSAGE_BUILD", version: "markdown-v1", status: "IDLE", error: null },
-          { name: "PASSAGE_FTS", version: "fts-v1", status: "IDLE", error: null },
+          { name: "PASSAGE_FTS", version: "lexical-v4", status: "IDLE", error: null },
           {
             name: "PASSAGE_EMBEDDING",
             version: "jina_v1",
@@ -635,10 +633,9 @@ export class FakeBackend implements Backend {
     throw new Error("Opening PDFs externally is unavailable in the browser fixture");
   }
 
-  async createTidbit(input: TidbitDraft): Promise<TidbitRecord> {
+  async seedNote(input: FakeNoteInput): Promise<TidbitRecord> {
     const sequence = this.nextSequence();
     const bodyMarkdown = validateBody(input.bodyMarkdown);
-    const title = normalizeText(input.title);
     const sources = this.prepareSources(input.sources);
     const tidbit: TidbitRecord = {
       id: `fake-tidbit-${sequence}`,
@@ -647,14 +644,11 @@ export class FakeBackend implements Backend {
       createdAtMs: this.probe.nowMs + sequence,
       updatedAtMs: this.probe.nowMs + sequence,
       deletedAtMs: null,
-      title,
-      displayTitle: deriveDisplayTitle(title, bodyMarkdown),
+      displayTitle: deriveDisplayTitle(bodyMarkdown),
       bodyMarkdown,
       sources,
     };
     this.tidbits.set(tidbit.id, tidbit);
-    this.revisions.set(tidbit.currentRevisionId, revisionFromTidbit(tidbit));
-    this.revisionOwners.set(tidbit.currentRevisionId, tidbit.id);
     this.registerCitation(tidbit);
     return cloneTidbit(tidbit);
   }
@@ -663,7 +657,7 @@ export class FakeBackend implements Backend {
     return cloneTidbit(this.requireTidbit(id));
   }
 
-  async listTidbits(input: ListTidbitsInput): Promise<TidbitListPage> {
+  async listNotesForTest(input: ListNotesForTestInput) {
     if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
       throw new Error("limit must be between 1 and 100");
     }
@@ -691,9 +685,6 @@ export class FakeBackend implements Backend {
         createdAtMs: tidbit.createdAtMs,
         updatedAtMs: tidbit.updatedAtMs,
         deletedAtMs: tidbit.deletedAtMs,
-        purgeEligibleAtMs:
-          tidbit.deletedAtMs === null ? null : tidbit.deletedAtMs + TIDBIT_PURGE_DELAY_MS,
-        title: tidbit.title,
         displayTitle: tidbit.displayTitle,
         bodyPreview: collapseAndTruncate(tidbit.bodyMarkdown, 240),
       })),
@@ -707,53 +698,7 @@ export class FakeBackend implements Backend {
     };
   }
 
-  async listTidbitRevisions(input: ListTidbitRevisionsInput): Promise<TidbitRevisionPage> {
-    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
-      throw new Error("limit must be between 1 and 100");
-    }
-    const current = this.requireTidbit(input.tidbitId);
-    const revisions = [...this.revisions.values()]
-      .filter(
-        (revision) =>
-          revision.tidbitId === input.tidbitId &&
-          (input.beforeRevisionNumber === null ||
-            revision.revisionNumber < input.beforeRevisionNumber),
-      )
-      .sort((left, right) => right.revisionNumber - left.revisionNumber);
-    const hasMore = revisions.length > input.limit;
-    const page = revisions.slice(0, input.limit);
-    return {
-      items: page.map((revision) => ({
-        id: revision.id,
-        revisionNumber: revision.revisionNumber,
-        createdAtMs: revision.createdAtMs,
-        title: revision.title,
-        displayTitle: revision.displayTitle,
-        bodyPreview: collapseAndTruncate(revision.bodyMarkdown, 240),
-        sourceCount: revision.sources.length,
-        attachmentCount: revision.attachments.length,
-        isCurrent: revision.id === current.currentRevisionId,
-      })),
-      nextBeforeRevisionNumber:
-        hasMore && page.length ? page[page.length - 1]!.revisionNumber : null,
-    };
-  }
-
-  async loadTidbitRevision(tidbitId: string, revisionId: string): Promise<TidbitRevisionRecord> {
-    this.requireTidbit(tidbitId);
-    const revision = this.revisions.get(revisionId);
-    if (!revision || revision.tidbitId !== tidbitId) {
-      throw new Error(`tidbit revision ${revisionId} was not found`);
-    }
-    const current = this.requireTidbit(tidbitId);
-    return cloneValue({
-      ...revision,
-      isCurrent: revision.id === current.currentRevisionId,
-      tidbitDeleted: current.deletedAtMs !== null,
-    });
-  }
-
-  async editTidbit(input: EditTidbitInput): Promise<TidbitRecord> {
+  async replaceNoteForTest(input: ReplaceNoteForTestInput): Promise<TidbitRecord> {
     const current = this.requireTidbit(input.id);
     if (current.deletedAtMs !== null) {
       throw new Error(`tidbit ${input.id} is deleted`);
@@ -763,20 +708,16 @@ export class FakeBackend implements Backend {
     }
     const sequence = this.nextSequence();
     const bodyMarkdown = validateBody(input.bodyMarkdown);
-    const title = normalizeText(input.title);
     const updated: TidbitRecord = {
       ...current,
       currentRevisionId: `fake-revision-${sequence}`,
       revisionNumber: current.revisionNumber + 1,
       updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
-      title,
-      displayTitle: deriveDisplayTitle(title, bodyMarkdown),
+      displayTitle: deriveDisplayTitle(bodyMarkdown),
       bodyMarkdown,
       sources: this.prepareSources(input.sources),
     };
     this.tidbits.set(updated.id, updated);
-    this.revisions.set(updated.currentRevisionId, revisionFromTidbit(updated));
-    this.revisionOwners.set(updated.currentRevisionId, updated.id);
     this.registerCitation(updated);
     return cloneTidbit(updated);
   }
@@ -816,35 +757,9 @@ export class FakeBackend implements Backend {
     return cloneTidbit(restored);
   }
 
-  async purgeTidbit(input: PurgeTidbitInput): Promise<boolean> {
-    const current = this.requireTidbit(input.id);
-    if (current.currentRevisionId !== input.expectedRevisionId) {
-      throw new Error(`tidbit ${input.id} is stale`);
-    }
-    if (current.deletedAtMs === null) {
-      throw new Error(`tidbit ${input.id} is not deleted`);
-    }
-    if (this.probe.nowMs < current.deletedAtMs + TIDBIT_PURGE_DELAY_MS) {
-      throw new Error(
-        `tidbit ${input.id} cannot be permanently deleted until ${
-          current.deletedAtMs + TIDBIT_PURGE_DELAY_MS
-        }`,
-      );
-    }
-    this.tidbits.delete(input.id);
-    for (const [revisionId, revision] of this.revisions) {
-      if (revision.tidbitId === input.id) {
-        this.revisions.delete(revisionId);
-        this.revisionOwners.delete(revisionId);
-        this.citations.delete(`fake-passage:${revisionId}`);
-      }
-    }
-    return true;
-  }
-
   async openSourceUrl(sourceId: string): Promise<void> {
-    const source = [...this.revisions.values()]
-      .flatMap((revision) => revision.sources)
+    const source = [...this.citations.values()]
+      .flatMap(({ revision }) => revision.sources)
       .find((candidate) => candidate.id === sourceId && candidate.url !== null);
     if (!source) {
       throw new Error(`source URL ${sourceId} was not found`);
@@ -881,7 +796,6 @@ export class FakeBackend implements Backend {
         id: snapshot.revision.id,
         revisionId: snapshot.revision.currentRevisionId,
         revisionNumber: snapshot.revision.revisionNumber,
-        title: snapshot.revision.title,
         displayTitle: snapshot.revision.displayTitle,
         deleted: current.deletedAtMs !== null,
       },
@@ -909,7 +823,6 @@ export class FakeBackend implements Backend {
       .filter((tidbit) => tidbit.deletedAtMs === null)
       .flatMap((tidbit) => {
         const fields: Array<[SearchField, string]> = [
-          ["TITLE", tidbit.title ?? ""],
           ["BODY", tidbit.bodyMarkdown],
           ["SOURCE_LABEL", tidbit.sources.flatMap((source) => source.label ?? []).join("\n")],
           ["SOURCE_DOMAIN", tidbit.sources.flatMap((source) => source.url ?? []).join("\n")],
@@ -964,7 +877,6 @@ export class FakeBackend implements Backend {
             id: tidbit.id,
             revisionId: tidbit.currentRevisionId,
             revisionNumber: tidbit.revisionNumber,
-            title: tidbit.title,
             displayTitle: tidbit.displayTitle,
             deleted: false,
           },
@@ -973,45 +885,6 @@ export class FakeBackend implements Backend {
       }),
     );
     return { results, executionMode, semanticReadiness };
-  }
-
-  async saveDraft(input: SaveDraftInput): Promise<DraftRecord> {
-    this.validateDraftContext(input);
-    const existing = this.drafts.get(input.contextKey);
-    const sequence = this.nextSequence();
-    const draft: DraftRecord = {
-      id: existing?.id ?? `fake-draft-${sequence}`,
-      contextKey: input.contextKey,
-      tidbitId: input.tidbitId,
-      baseRevisionId: input.baseRevisionId,
-      createdAtMs: existing?.createdAtMs ?? this.probe.nowMs + sequence,
-      updatedAtMs: existing
-        ? Math.max(existing.updatedAtMs + 1, this.probe.nowMs + sequence)
-        : this.probe.nowMs + sequence,
-      title: input.title === "" ? null : input.title,
-      bodyMarkdown: input.bodyMarkdown,
-      sources: input.sources.map((source) => ({ ...source })),
-    };
-    this.drafts.set(draft.contextKey, draft);
-    return cloneDraft(draft);
-  }
-
-  async loadDraft(contextKey: string): Promise<DraftRecord | null> {
-    validateDraftContextKey(contextKey);
-    const draft = this.drafts.get(contextKey);
-    return draft ? cloneDraft(draft) : null;
-  }
-
-  async clearDraft(input: ClearDraftInput): Promise<boolean> {
-    validateDraftContextKey(input.contextKey);
-    if (!Number.isSafeInteger(input.expectedUpdatedAtMs) || input.expectedUpdatedAtMs < 0) {
-      throw new Error("draft timestamp must be a non-negative JavaScript-safe integer");
-    }
-    const draft = this.drafts.get(input.contextKey);
-    if (!draft || draft.updatedAtMs !== input.expectedUpdatedAtMs) {
-      return false;
-    }
-    return this.drafts.delete(input.contextKey);
   }
 
   async saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult> {
@@ -1148,8 +1021,7 @@ export class FakeBackend implements Backend {
           currentRevisionId: `fake-revision-${sequence}`,
           revisionNumber: current.revisionNumber + 1,
           updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
-          title: null,
-          displayTitle: deriveDisplayTitle(null, workingCopy.bodyMarkdown),
+          displayTitle: deriveDisplayTitle(workingCopy.bodyMarkdown),
           bodyMarkdown: workingCopy.bodyMarkdown,
           sources,
         }
@@ -1160,14 +1032,11 @@ export class FakeBackend implements Backend {
           createdAtMs: this.probe.nowMs + sequence,
           updatedAtMs: this.probe.nowMs + sequence,
           deletedAtMs: null,
-          title: null,
-          displayTitle: deriveDisplayTitle(null, workingCopy.bodyMarkdown),
+          displayTitle: deriveDisplayTitle(workingCopy.bodyMarkdown),
           bodyMarkdown: workingCopy.bodyMarkdown,
           sources,
         };
     this.tidbits.set(note.id, note);
-    this.revisions.set(note.currentRevisionId, revisionFromTidbit(note));
-    this.revisionOwners.set(note.currentRevisionId, note.id);
     this.registerCitation(note);
     this.workingCopies.delete(input.noteId);
     return {
@@ -1266,22 +1135,6 @@ export class FakeBackend implements Backend {
       return { ...source, id };
     });
   }
-
-  private validateDraftContext(input: SaveDraftInput): void {
-    validateDraftContextKey(input.contextKey);
-    if (input.contextKey === "capture" || input.contextKey === "quick-add") {
-      if (input.tidbitId !== null || input.baseRevisionId !== null) {
-        throw new Error("capture draft must not have edit metadata");
-      }
-      return;
-    }
-    if (!input.tidbitId || !input.baseRevisionId || input.contextKey !== `edit:${input.tidbitId}`) {
-      throw new Error("edit draft needs matching edit metadata");
-    }
-    if (this.revisionOwners.get(input.baseRevisionId) !== input.tidbitId) {
-      throw new Error("draft base revision must belong to its tidbit");
-    }
-  }
 }
 
 function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
@@ -1341,29 +1194,6 @@ function validateFakeCredentials(
   }
 }
 
-function revisionFromTidbit(tidbit: TidbitRecord): TidbitRevisionRecord {
-  return {
-    id: tidbit.currentRevisionId,
-    tidbitId: tidbit.id,
-    revisionNumber: tidbit.revisionNumber,
-    createdAtMs: tidbit.revisionNumber === 1 ? tidbit.createdAtMs : tidbit.updatedAtMs,
-    title: tidbit.title,
-    displayTitle: tidbit.displayTitle,
-    bodyMarkdown: tidbit.bodyMarkdown,
-    sources: tidbit.sources.map((source) => ({ ...source })),
-    attachments: [],
-    isCurrent: true,
-    tidbitDeleted: tidbit.deletedAtMs !== null,
-  };
-}
-
-function cloneDraft(draft: DraftRecord): DraftRecord {
-  return {
-    ...draft,
-    sources: draft.sources.map((source) => ({ ...source })),
-  };
-}
-
 function cloneWorkingCopy(workingCopy: WorkingCopyRecord): WorkingCopyRecord {
   return {
     ...workingCopy,
@@ -1391,17 +1221,6 @@ function cloneShortcutSettings(settings: ShortcutSettingsSnapshot): ShortcutSett
     keyboardBindings: settings.keyboardBindings.map((binding) => ({ ...binding })),
     shortcutErrors: [...settings.shortcutErrors],
   };
-}
-
-function cloneValue<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function validateDraftContextKey(contextKey: string): void {
-  if (contextKey === "capture" || contextKey === "quick-add" || /^edit:.+/u.test(contextKey)) {
-    return;
-  }
-  throw new Error("draft context must be capture, quick-add, or edit:<tidbitId>");
 }
 
 function normalizeText(value: string | null): string | null {
@@ -1438,15 +1257,12 @@ function validateBody(value: string): string {
   return value;
 }
 
-function deriveDisplayTitle(title: string | null, bodyMarkdown: string): string {
-  if (title) {
-    return truncate(title, 96);
-  }
+function deriveDisplayTitle(bodyMarkdown: string): string {
   const line = bodyMarkdown
     .split(/\r?\n/u)
     .map((candidate) => candidate.trim())
     .find((candidate) => candidate && !candidate.startsWith("```") && !candidate.startsWith("~~~"));
-  const stripped = line?.replace(/^[#>*+\-\s]+/u, "") || "Untitled tidbit";
+  const stripped = line?.replace(/^[#>*+\-\s]+/u, "") || "Untitled note";
   return truncate(stripped, 96);
 }
 

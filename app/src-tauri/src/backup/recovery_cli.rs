@@ -49,9 +49,7 @@ const MAIN_TEMP_FILENAME: &str = ".kosh-recovery-main-v1.tmp";
 const MEDIA_TEMP_FILENAME: &str = ".kosh-recovery-media-v1.tmp";
 const MAIN_FILENAME: &str = "kosh.sqlite3";
 const MEDIA_FILENAME: &str = "media.sqlite3";
-const RESERVATION_SCHEMA_VERSION: u32 = 3;
-const PREVIOUS_RESERVATION_SCHEMA_VERSION: u32 = 2;
-const LEGACY_RESERVATION_SCHEMA_VERSION: u32 = 1;
+const RESERVATION_SCHEMA_VERSION: u32 = 1;
 const MAX_RESERVATION_BYTES: u64 = 4 * 1024;
 const COMPLETION_SCHEMA_VERSION: u32 = 1;
 const MAX_COMPLETION_BYTES: u64 = 32 * 1024;
@@ -88,8 +86,6 @@ struct RemoteRestoreReport {
     attachments: u64,
     media_blobs: u64,
     search_documents_rebuilt: u64,
-    research_runs: u64,
-    research_citations: u64,
     safety_snapshot_created: bool,
 }
 
@@ -101,8 +97,6 @@ struct StagedAcceptanceEvidence {
     attachments: u64,
     media_blobs: u64,
     search_documents_rebuilt: u64,
-    research_runs: u64,
-    research_citations: u64,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -254,8 +248,6 @@ fn restore_remote(
         attachments: evidence.attachments,
         media_blobs: evidence.media_blobs,
         search_documents_rebuilt: evidence.search_documents_rebuilt,
-        research_runs: evidence.research_runs,
-        research_citations: evidence.research_citations,
         safety_snapshot_created: false,
     };
 
@@ -267,6 +259,39 @@ fn restore_remote(
     reservation.finish_after_staging_cleanup(&staged, backup_set_id, selector, &report)?;
 
     Ok(report)
+}
+
+#[cfg(test)]
+pub(crate) fn install_staged_for_test(
+    target_root: &Path,
+    staged: &StagedRestore,
+    backup_set_id: &BackupSetId,
+    checkpoint: &RemoteCheckpoint,
+) -> Result<(), String> {
+    let mut reservation = RecoveryTargetReservation::reserve(target_root)?;
+    let evidence = audit_staged_database(staged.staging_directory())?;
+    let report = RemoteRestoreReport {
+        schema_version: 1,
+        result: "PASSED".into(),
+        backup_set_id: backup_set_id.to_string(),
+        checkpoint_id: checkpoint.checkpoint_id().to_string(),
+        target_data_directory: target_root.to_string_lossy().into_owned(),
+        restored_media_count: staged.restored_media_count,
+        restored_media_bytes: staged.restored_media_bytes,
+        active_tidbits: evidence.active_tidbits,
+        revisions: evidence.revisions,
+        sources: evidence.sources,
+        attachments: evidence.attachments,
+        media_blobs: evidence.media_blobs,
+        search_documents_rebuilt: evidence.search_documents_rebuilt,
+        safety_snapshot_created: false,
+    };
+    let staged_pair = staged
+        .open_validated_database_pair()
+        .map_err(|_| "the independently staged recovery pair is no longer valid")?;
+    reservation.install_validated_pair(&staged_pair)?;
+    reservation.verify_installed_pair_matches(&staged_pair)?;
+    reservation.finish_after_staging_cleanup(staged, backup_set_id, LATEST, &report)
 }
 
 #[derive(Debug)]
@@ -1038,14 +1063,8 @@ fn reservation_target_identity(
 }
 
 fn reservation_control_matches(path: &Path, control: &RecoveryReservationControl) -> bool {
-    let target_identity_is_valid = match control.schema_version {
-        RESERVATION_SCHEMA_VERSION => reservation_target_identity(control).is_some(),
-        PREVIOUS_RESERVATION_SCHEMA_VERSION | LEGACY_RESERVATION_SCHEMA_VERSION => {
-            control.target_device.is_none() && control.target_inode.is_none()
-        }
-        _ => false,
-    };
-    target_identity_is_valid
+    control.schema_version == RESERVATION_SCHEMA_VERSION
+        && reservation_target_identity(control).is_some()
         && path.to_str() == Some(control.target_data_directory.as_str())
         && uuid::Uuid::parse_str(&control.token)
             .ok()
@@ -1481,13 +1500,6 @@ fn audit_staged_database(directory: &File) -> Result<StagedAcceptanceEvidence, S
             attachments: count(&main, "SELECT count(*) FROM attachment")?,
             media_blobs: count(&media, "SELECT count(*) FROM media_blob")?,
             search_documents_rebuilt,
-            research_runs: count(&main, "SELECT count(*) FROM research_run")?,
-            research_citations: count(
-                &main,
-                "SELECT coalesce(sum(json_array_length(final_answer_json, '$.citations')), 0)
-                 FROM research_run
-                 WHERE final_answer_json IS NOT NULL",
-            )?,
         };
         drop(media);
         drop(main);
@@ -1579,8 +1591,6 @@ mod tests {
             attachments: 0,
             media_blobs: 0,
             search_documents_rebuilt: 0,
-            research_runs: 0,
-            research_citations: 0,
             safety_snapshot_created: false,
         }
     }

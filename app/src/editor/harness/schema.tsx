@@ -4,17 +4,17 @@ import {
   supportedKoshStyleTypes,
   type KoshBlockNoteEditor,
   type KoshBlockNotePartialBlock,
-} from "../../editor/schema";
+} from "../schema";
 
-export const koshSpikeSchema = koshBlockNoteSchema;
-export type KoshSpikeEditor = KoshBlockNoteEditor;
-export type KoshSpikePartialBlock = KoshBlockNotePartialBlock;
+export const koshHarnessSchema = koshBlockNoteSchema;
+export type KoshHarnessEditor = KoshBlockNoteEditor;
+export type KoshHarnessPartialBlock = KoshBlockNotePartialBlock;
 
-export const initialSpikeBlocks: KoshSpikePartialBlock[] = [
+export const initialHarnessBlocks: KoshHarnessPartialBlock[] = [
   {
     type: "heading",
     props: { level: 1 },
-    content: "BlockNote feasibility",
+    content: "BlockNote editor",
   },
   {
     type: "heading",
@@ -63,7 +63,7 @@ export const initialSpikeBlocks: KoshSpikePartialBlock[] = [
   },
 ];
 
-export const supportedSpikeBlockTypes = Object.freeze([
+export const supportedHarnessBlockTypes = Object.freeze([
   "paragraph",
   "heading",
   "bulletListItem",
@@ -74,5 +74,5 @@ export const supportedSpikeBlockTypes = Object.freeze([
   "koshPdf",
   "koshFileAttachment",
 ]);
-export const supportedSpikeInlineTypes = supportedKoshInlineTypes;
-export const supportedSpikeStyleTypes = supportedKoshStyleTypes;
+export const supportedHarnessInlineTypes = supportedKoshInlineTypes;
+export const supportedHarnessStyleTypes = supportedKoshStyleTypes;

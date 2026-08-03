@@ -531,7 +531,6 @@ function searchableBlockEvidenceText(block: {
     const latex = stringFromRecord(props, "latex");
     return latex ? `$$${latex}$$` : "";
   }
-  if (block.type === "legacyMarkdown") return "";
   if (block.type === "koshImage") {
     return [stringFromRecord(props, "altText"), stringFromRecord(props, "caption")]
       .filter(Boolean)

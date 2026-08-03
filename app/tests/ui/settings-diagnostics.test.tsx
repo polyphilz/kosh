@@ -12,8 +12,7 @@ describe("settings diagnostics and maintenance", () => {
   it("shows exact local state and requires confirmation before an idempotent rebuild", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();
-    await backend.createTidbit({
-      title: "Maintenance fixture",
+    await backend.seedNote({
       bodyMarkdown: "A searchable local passage.",
       sources: [],
     });

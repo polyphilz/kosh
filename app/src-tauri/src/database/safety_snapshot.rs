@@ -46,7 +46,6 @@ struct SnapshotId {
 pub(crate) enum SafetySnapshotReason {
     Migration,
     MediaReclaim,
-    Restore,
 }
 
 impl SafetySnapshotReason {
@@ -54,12 +53,11 @@ impl SafetySnapshotReason {
         match self {
             Self::Migration => "migration",
             Self::MediaReclaim => "media-reclaim",
-            Self::Restore => "restore",
         }
     }
 
     fn verifies_derived_media(self) -> bool {
-        matches!(self, Self::MediaReclaim | Self::Restore)
+        matches!(self, Self::MediaReclaim)
     }
 }
 
@@ -203,30 +201,14 @@ fn verify_pair(paths: &DatabasePaths, reason: SafetySnapshotReason) -> Result<()
     verify_pair_connections(&main, &media, reason)
 }
 
-#[cfg(test)]
-pub(super) fn verify_restore_pair(paths: &DatabasePaths) -> Result<()> {
-    verify_pair(paths, SafetySnapshotReason::Restore)
-}
-
-pub(super) fn verify_restore_pair_connections(main: &Connection, media: &Connection) -> Result<()> {
-    verify_pair_connections(main, media, SafetySnapshotReason::Restore)
-}
-
-#[cfg(test)]
-pub(super) fn create_pre_restore(paths: &DatabasePaths) -> Result<SafetySnapshotReport> {
-    let main_state = connection::inspect_file(&paths.main)?;
-    let media_state = connection::inspect_file(&paths.media)?;
-    if main_state != connection::FileState::Existing
-        || media_state != connection::FileState::Existing
-    {
-        return Err(DatabaseError::IncompletePair {
-            main_state: main_state.label(),
-            media_state: media_state.label(),
-        });
-    }
-    let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, main_state)?;
-    let mut media = connection::open_writer(&paths.media, DatabaseKind::Media, media_state)?;
-    create(&mut main, &mut media, paths, SafetySnapshotReason::Restore)
+pub(super) fn verify_recovery_pair_connections(
+    main: &Connection,
+    media: &Connection,
+) -> Result<()> {
+    validation::full_integrity_check_pair(main, media)?;
+    validation::validate_foreign_keys(main, DatabaseKind::Main)?;
+    validation::validate_foreign_keys(media, DatabaseKind::Media)?;
+    validate_attachment_blob_relationship(main, media, true)
 }
 
 fn verify_pair_connections(
@@ -253,14 +235,6 @@ fn validate_attachment_blob_relationship(
         retained.push(
             "EXISTS (
                 SELECT 1 FROM tidbit_revision_attachment AS membership
-                WHERE membership.attachment_id = attachment.id
-            )",
-        );
-    }
-    if table_exists(main, "research_run_attachment")? {
-        retained.push(
-            "EXISTS (
-                SELECT 1 FROM research_run_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
             )",
         );
@@ -672,8 +646,6 @@ fn is_owned_snapshot_name(id: &str) -> bool {
 fn parse_owned_snapshot_id(id: &str) -> Option<SnapshotId> {
     let (reason, tail) = if let Some(tail) = id.strip_prefix("migration-") {
         (SafetySnapshotReason::Migration, tail)
-    } else if let Some(tail) = id.strip_prefix("restore-") {
-        (SafetySnapshotReason::Restore, tail)
     } else {
         (
             SafetySnapshotReason::MediaReclaim,
@@ -765,14 +737,10 @@ mod tests {
     use super::*;
     use crate::database::{
         connection::FileState,
-        drafts::{SaveDraftInput, SaveDraftWrite},
         media::{CanonicalImage, IngestAttachmentMetadata, IngestImageWrite, StagedAttachment},
-        migrations,
-        tidbits::{self, CreateTidbitWrite},
         AttachmentIngestInput, LexicalSearchMode, MediaLimits, SearchPassagesInput, SourceDraft,
         TidbitDraft,
     };
-    use refinery::Target;
     use std::io::{Cursor, Seek, SeekFrom};
 
     #[test]
@@ -797,7 +765,6 @@ mod tests {
         let tidbit = client
             .create_tidbit_with_ids(
                 TidbitDraft {
-                    title: Some("Recovery drill".into()),
                     body_markdown: "Exact safety snapshot evidence.".into(),
                     sources: vec![SourceDraft {
                         label: Some("Snapshot source".into()),
@@ -1139,20 +1106,8 @@ mod tests {
         let draft_id = Uuid::now_v7().to_string();
         database
             .client()
-            .save_draft(SaveDraftWrite {
-                input: SaveDraftInput {
-                    context_key: "capture".into(),
-                    tidbit_id: None,
-                    base_revision_id: None,
-                    title: None,
-                    body_markdown: String::new(),
-                    sources: Vec::new(),
-                },
-                now_ms: 1,
-                draft_id: draft_id.clone(),
-                media_limits: MediaLimits::default(),
-            })
-            .expect("attachment draft");
+            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), Vec::new(), 1)
+            .expect("attachment working copy");
         let bytes = b"content-addressed evidence";
         database
             .ingest_attachment(
@@ -1206,20 +1161,8 @@ mod tests {
         let draft_id = Uuid::now_v7().to_string();
         database
             .client()
-            .save_draft(SaveDraftWrite {
-                input: SaveDraftInput {
-                    context_key: "capture".into(),
-                    tidbit_id: None,
-                    base_revision_id: None,
-                    title: None,
-                    body_markdown: String::new(),
-                    sources: Vec::new(),
-                },
-                now_ms: 1,
-                draft_id: draft_id.clone(),
-                media_limits: MediaLimits::default(),
-            })
-            .expect("image draft");
+            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), Vec::new(), 1)
+            .expect("image working copy");
         let limits = MediaLimits::default();
         let staged = StagedAttachment::from_reader(
             Cursor::new(b"original image"),
@@ -1291,78 +1234,5 @@ mod tests {
 
         assert_eq!(report.reason, SafetySnapshotReason::Migration);
         assert!(report.directory.join("manifest.json").is_file());
-    }
-
-    #[test]
-    fn pending_migration_publishes_verified_pre_migration_pair_before_changes() {
-        let root = tempfile::tempdir().expect("pre-migration snapshot");
-        let paths = DatabasePaths::new(root.path());
-        let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Fresh)
-            .expect("old main");
-        let mut media =
-            connection::open_writer(&paths.media, DatabaseKind::Media, FileState::Fresh)
-                .expect("old media");
-        migrations::main_runner()
-            .set_target(Target::Version(15))
-            .run(&mut main)
-            .expect("main at V15");
-        migrations::media_runner()
-            .set_target(Target::Version(1))
-            .run(&mut media)
-            .expect("media at V1");
-        tidbits::create_tidbit(
-            &mut main,
-            CreateTidbitWrite {
-                input: TidbitDraft {
-                    title: Some("Before migration".into()),
-                    body_markdown: "Pre-migration authored evidence.".into(),
-                    sources: Vec::new(),
-                },
-                now_ms: 10,
-                tidbit_id: Uuid::now_v7().to_string(),
-                revision_id: Uuid::now_v7().to_string(),
-                source_ids: Vec::new(),
-            },
-        )
-        .expect("old authored note");
-        drop(main);
-        drop(media);
-
-        let upgraded =
-            crate::database::Database::initialize(paths.clone()).expect("upgrade database pair");
-        upgraded
-            .client()
-            .full_integrity_check()
-            .expect("upgraded integrity");
-
-        let snapshot_root = paths.root.join(SNAPSHOT_DIRECTORY);
-        let snapshot = fs::read_dir(snapshot_root)
-            .expect("migration snapshots")
-            .filter_map(|entry| entry.ok())
-            .find(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.starts_with("migration-"))
-            })
-            .expect("pre-migration snapshot")
-            .path();
-        let snapshot_paths = DatabasePaths::new(snapshot);
-        let old_main =
-            connection::open_read_only(&snapshot_paths.main, DatabaseKind::Main).expect("snapshot");
-        let head: i32 = old_main
-            .query_row(
-                "SELECT max(version) FROM refinery_schema_history",
-                [],
-                |row| row.get(0),
-            )
-            .expect("snapshot migration head");
-        let body: String = old_main
-            .query_row("SELECT body_markdown FROM tidbit_revision", [], |row| {
-                row.get(0)
-            })
-            .expect("snapshot authored note");
-        assert_eq!(head, 15);
-        assert_eq!(body, "Pre-migration authored evidence.");
     }
 }

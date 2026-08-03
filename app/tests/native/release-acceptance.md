@@ -19,7 +19,7 @@ Use unique names in place of the examples.
 ## A. Clean note-first core
 
 Before the visible walkthrough, the same exact package can run its commit-bound
-startup, migration, React-root, IPC, lexical-search, and citation preflight
+startup, schema, React-root, IPC, lexical-search, and citation preflight
 with both windows hidden:
 
 ```sh
@@ -112,53 +112,16 @@ pnpm release:acceptance check-restart clean-YYYYMMDD
 ```
 
 The check requires unchanged logical counts across authored, media, passage,
-FTS, embedding, and retained legacy-research compatibility state.
+FTS, and embedding state.
 
-## D. Previous-release upgrade and local recovery
-
-Prepare the reviewed plaintext V16/V2 profile:
-
-```sh
-pnpm release:acceptance prepare-upgrade upgrade-YYYYMMDD
-pnpm release:acceptance launch upgrade-YYYYMMDD
-```
-
-Confirm the amber migration note appears, Command-K search returns it, and its
-URL citation opens. Historical Research rows need no product UI, but must not
-block launch, migration, backup, or restore. Quit normally:
-
-```sh
-pnpm release:acceptance check-upgrade upgrade-YYYYMMDD
-```
-
-The check requires current live heads plus a hashed, integrity-checked
-pre-migration V16/V2 safety snapshot. Prove the recovery point without
-modifying the upgraded source profile:
-
-```sh
-pnpm release:acceptance prove-upgrade-recovery \
-  upgrade-YYYYMMDD \
-  recovered-YYYYMMDD
-pnpm release:acceptance launch recovered-YYYYMMDD
-```
-
-Inspect the restored note/search/citation, quit, then run:
-
-```sh
-pnpm release:acceptance check-upgrade recovered-YYYYMMDD
-```
-
-This proves a verified pre-migration pair can populate a replacement profile,
-migrate, and reopen. It is not an off-site backup claim.
-
-## E. Installed application
+## D. Installed application
 
 After the isolated profile passes, install the exact candidate in
 `/Applications` using `docs/RELEASE.md`. Repeat a short titleless note, Quick
 Add, Command-K citation, normal quit, and reopen against the intended
 production profile. No development tools are required on the installed Mac.
 
-## F. Packaged off-site recovery
+## E. Packaged off-site recovery
 
 Follow `docs/OFFSITE_BACKUP.md` using a dedicated private test bucket. From a
 clean exact-HEAD checkout, build the candidate and run:
@@ -171,7 +134,7 @@ This is intentionally not a pull-request lane. Retain its bounded redacted
 `canary-report-v1.json`, `checkpoint-manifest-v1.json`, and
 `packaged-recovery-smoke-v1.json`. The report must say `PACKAGED`, name the
 exact clean commit, prove interrupted replication recovery and manifest-last
-publication, restore notes/revisions/media/search/legacy citation data, and
+publication, restore notes/revisions/media/search/historical note citations, and
 show zero remote residue. The normal startup proof uses hidden app windows and
 an isolated home.
 
@@ -191,8 +154,6 @@ an isolated home.
 | PDF search and page citation               | pending |
 | Arbitrary attachment lifecycle             | pending |
 | Semantic setup and degraded fallback       | pending |
-| V16/V2 upgrade and snapshot verification   | pending |
-| Separate-profile recovery proof            | pending |
 | Packaged real-R2 clean-directory recovery  | pending |
 | `/Applications` installed smoke            | pending |
 

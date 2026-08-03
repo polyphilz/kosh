@@ -18,7 +18,6 @@ scripts/check-secrets.sh
 scripts/test-secret-check.sh
 scripts/test-bundle-check.sh
 node app/scripts/test-release-source.mjs
-node app/scripts/test-select-migration-snapshot.mjs
 node app/scripts/check-backup-fault-matrix.mjs
 (
   cd app

@@ -26,7 +26,6 @@ function note(revisionId = REVISION_1, revisionNumber = 1, bodyMarkdown = "alpha
     createdAtMs: 1,
     updatedAtMs: revisionNumber,
     deletedAtMs: null,
-    title: null,
     displayTitle: bodyMarkdown || "Untitled note",
     bodyMarkdown,
     sources: [],
@@ -216,7 +215,6 @@ describe("note autosave coordinator", () => {
 
       await expect(coordinator.flush(reason)).resolves.toMatchObject({
         currentRevisionId: REVISION_1,
-        title: null,
       });
 
       expect(backend.saveWorkingCopy).toHaveBeenCalledOnce();
@@ -374,10 +372,7 @@ describe("note autosave coordinator", () => {
 
     const reservation = await coordinator.prepareMedia();
     coordinator.update("{{kosh:image:019f547b-6200-7000-8000-000000008099}}");
-    await expect(coordinator.flush("QUIT")).resolves.toMatchObject({
-      id: NOTE_ID,
-      title: null,
-    });
+    await expect(coordinator.flush("QUIT")).resolves.toMatchObject({ id: NOTE_ID });
 
     expect(reservation).toEqual({ draftId: "draft-1", generation: 1, discardable: true });
     expect(backend.reserveWorkingCopyForMedia).toHaveBeenCalledOnce();

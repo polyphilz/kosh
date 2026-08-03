@@ -146,30 +146,11 @@ const fileAttachment = createReactBlockSpec(fileAttachmentConfig, {
   render: ({ block, editor }) => <KoshFileBlock block={block} editor={editor} />,
 });
 
-const legacyMedia = createReactBlockSpec(
-  {
-    type: "koshLegacyMedia",
-    propSchema: { markdown: { default: "" } },
-    content: "none",
-  },
-  {
-    meta: { isolating: true, selectable: true },
-    render: ({ block, editor }) => (
-      <LegacyMediaSource
-        editable={editor.isEditable}
-        markdown={block.props.markdown}
-        onChange={(markdown) => editor.updateBlock(block, { props: { markdown } })}
-      />
-    ),
-  },
-);
-
 export const koshMediaBlockSpecs = {
   koshImage: image(),
   koshPendingMedia: pendingMedia(),
   koshPdf: pdf(),
   koshFileAttachment: fileAttachment(),
-  koshLegacyMedia: legacyMedia(),
 };
 
 interface MediaPartialBlock {
@@ -237,32 +218,6 @@ export function selectedAttachmentToMediaBlock(
 type ImageRenderProps = ReactCustomBlockRenderProps<typeof imageConfig>;
 type PdfRenderProps = ReactCustomBlockRenderProps<typeof pdfConfig>;
 type FileRenderProps = ReactCustomBlockRenderProps<typeof fileAttachmentConfig>;
-
-function LegacyMediaSource({
-  editable,
-  markdown,
-  onChange,
-}: {
-  editable: boolean;
-  markdown: string;
-  onChange: (markdown: string) => void;
-}) {
-  const locked = useKoshEditorDisabled() || !editable;
-  return (
-    <label className="kosh-blocknote-legacy-media" contentEditable={false}>
-      <span>Legacy media reference</span>
-      <textarea
-        aria-label="Legacy media source"
-        disabled={locked}
-        onChange={(event) => {
-          if (!locked) onChange(event.currentTarget.value);
-        }}
-        spellCheck={false}
-        value={markdown}
-      />
-    </label>
-  );
-}
 
 function KoshImageBlock({ block, editor }: ImageRenderProps) {
   const actions = useContext(KoshMediaActionsContext);

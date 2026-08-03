@@ -1,7 +1,6 @@
 import type {
   BlockContent,
   Content,
-  Definition,
   DefinitionContent,
   List,
   ListItem,
@@ -28,15 +27,6 @@ type AdapterBlock = {
 };
 
 type TextStyles = Partial<Record<"bold" | "code" | "italic" | "strike", true>>;
-interface MarkdownDefinition {
-  node: Definition;
-  title: string | null;
-  url: string;
-}
-interface MarkdownContext {
-  consumedDefinitions: Set<Definition>;
-  definitions: ReadonlyMap<string, MarkdownDefinition>;
-}
 type AdapterInline =
   | { styles: TextStyles; text: string; type: "text" }
   | {
@@ -48,25 +38,7 @@ type AdapterInline =
 
 export function markdownToKoshBlocks(source: string): KoshBlockNotePartialBlock[] {
   const tree = parseKoshMarkdownAst(source);
-  const definitions = new Map<string, MarkdownDefinition>();
-  for (const node of tree.children) {
-    if (node.type === "definition" && !definitions.has(node.identifier.toLowerCase())) {
-      definitions.set(node.identifier.toLowerCase(), {
-        node,
-        title: node.title ?? null,
-        url: node.url,
-      });
-    }
-  }
-  const context: MarkdownContext = { consumedDefinitions: new Set(), definitions };
-  if (containsTitledLinkReference(tree, context)) {
-    return [{ type: "legacyMarkdown", props: { markdown: source } }];
-  }
-  const content = tree.children.filter((node) => node.type !== "definition");
-  const definitionNodes = tree.children.filter((node) => node.type === "definition");
-  const blocks = [...content, ...definitionNodes].flatMap((node) =>
-    blockFromMarkdown(node, source, context),
-  );
+  const blocks = tree.children.flatMap((node) => blockFromMarkdown(node, source));
   return blocks.length > 0 ? blocks : [{ type: "paragraph" }];
 }
 
@@ -117,40 +89,28 @@ function textAttentionStyles(value: unknown): string | null {
   return attention || null;
 }
 
-function blockFromMarkdown(
-  node: RootContent,
-  source: string,
-  context: MarkdownContext,
-): KoshBlockNotePartialBlock[] {
-  if (containsTitledLink(node)) return [legacyBlock(node)];
-  if (containsUnsupportedInlineMathContext(node)) return [legacyBlock(node)];
+function blockFromMarkdown(node: RootContent, source: string): KoshBlockNotePartialBlock[] {
+  if (containsTitledLink(node)) return unsupportedMarkdown(node);
+  if (containsUnsupportedInlineContext(node)) return unsupportedMarkdown(node);
   switch (node.type) {
     case "paragraph":
       if (node.children.length === 1 && node.children[0]?.type === "text") {
         const media = parseKoshMediaToken(node.children[0].value);
         if (media) return [mediaBlock(media)];
-        if (looksLikeKoshMediaToken(node.children[0].value)) {
-          return [
-            {
-              type: "koshLegacyMedia",
-              props: { markdown: node.children[0].value },
-            },
-          ];
-        }
       }
-      return [{ type: "paragraph", content: inlineFromMarkdown(node.children, source, context) }];
+      return [{ type: "paragraph", content: inlineFromMarkdown(node.children, source) }];
     case "heading":
       return node.depth <= 3
         ? [
             {
               type: "heading",
               props: { level: headingDepth(node.depth) },
-              content: inlineFromMarkdown(node.children, source, context),
+              content: inlineFromMarkdown(node.children, source),
             },
           ]
-        : [legacyBlock(node)];
+        : unsupportedMarkdown(node);
     case "code":
-      if (node.meta !== null && node.meta !== undefined) return [legacyBlock(node)];
+      if (node.meta !== null && node.meta !== undefined) return unsupportedMarkdown(node);
       return [
         {
           type: "codeBlock",
@@ -162,19 +122,12 @@ function blockFromMarkdown(
       return [{ type: "displayMath", props: { latex: node.value } }];
     case "list":
       return canConvertList(node)
-        ? node.children.map((item) => listItemFromMarkdown(item, node.ordered, source, context))
-        : [legacyBlock(node)];
-    case "definition":
-      return context.consumedDefinitions.has(node) ? [] : [legacyBlock(node)];
+        ? node.children.map((item) => listItemFromMarkdown(item, node.ordered, source))
+        : unsupportedMarkdown(node);
     case "html":
-      return [
-        {
-          type: "paragraph",
-          content: node.value ? [{ type: "text", text: node.value, styles: {} }] : [],
-        },
-      ];
+      return unsupportedMarkdown(node);
     default:
-      return [legacyBlock(node)];
+      return unsupportedMarkdown(node);
   }
 }
 
@@ -188,18 +141,6 @@ function containsTitledLink(node: RootContent): boolean {
     return true;
   }
   return candidate.children?.some((child) => containsTitledLink(child)) ?? false;
-}
-
-function containsTitledLinkReference(node: Root | RootContent, context: MarkdownContext): boolean {
-  const candidate = node as (Root | RootContent) & {
-    children?: RootContent[];
-    identifier?: string;
-  };
-  if (candidate.type === "linkReference" && candidate.identifier) {
-    const definition = context.definitions.get(candidate.identifier.toLowerCase());
-    return definition?.title !== null && definition?.title !== undefined;
-  }
-  return candidate.children?.some((child) => containsTitledLinkReference(child, context)) ?? false;
 }
 
 function canConvertList(list: List): boolean {
@@ -218,18 +159,15 @@ function listItemFromMarkdown(
   item: ListItem,
   ordered: boolean | null | undefined,
   source: string,
-  context: MarkdownContext,
 ): KoshBlockNotePartialBlock {
   const [paragraph, ...nestedLists] = item.children;
   if (paragraph?.type !== "paragraph") throw new Error("convertible list item has no paragraph");
   return {
     type: ordered ? "numberedListItem" : "bulletListItem",
-    content: inlineFromMarkdown(paragraph.children, source, context),
+    content: inlineFromMarkdown(paragraph.children, source),
     children: nestedLists.flatMap((list) => {
       if (list.type !== "list") return [];
-      return list.children.map((child) =>
-        listItemFromMarkdown(child, list.ordered, source, context),
-      );
+      return list.children.map((child) => listItemFromMarkdown(child, list.ordered, source));
     }),
   };
 }
@@ -237,7 +175,6 @@ function listItemFromMarkdown(
 function inlineFromMarkdown(
   nodes: readonly PhrasingContent[],
   source: string,
-  context: MarkdownContext,
   styles: TextStyles = {},
 ): AdapterInline[] {
   return nodes.flatMap((node): AdapterInline[] => {
@@ -245,11 +182,11 @@ function inlineFromMarkdown(
       case "text":
         return node.value ? [{ type: "text", text: node.value, styles }] : [];
       case "emphasis":
-        return inlineFromMarkdown(node.children, source, context, { ...styles, italic: true });
+        return inlineFromMarkdown(node.children, source, { ...styles, italic: true });
       case "strong":
-        return inlineFromMarkdown(node.children, source, context, { ...styles, bold: true });
+        return inlineFromMarkdown(node.children, source, { ...styles, bold: true });
       case "delete":
-        return inlineFromMarkdown(node.children, source, context, { ...styles, strike: true });
+        return inlineFromMarkdown(node.children, source, { ...styles, strike: true });
       case "inlineCode":
         return node.value
           ? [{ type: "text", text: node.value, styles: { ...styles, code: true } }]
@@ -261,22 +198,10 @@ function inlineFromMarkdown(
       case "link": {
         const href =
           node.title === null || node.title === undefined ? externalHttpUrl(node.url) : null;
-        const content = href
-          ? styledTextFromMarkdown(node.children, source, context, styles)
-          : null;
+        const content = href ? styledTextFromMarkdown(node.children, source, styles) : null;
         return href && content
           ? [{ type: "link", href, content }]
           : literalInline(node, source, styles);
-      }
-      case "linkReference": {
-        const definition = context.definitions.get(node.identifier.toLowerCase());
-        const href = definition?.title === null ? externalHttpUrl(definition.url) : null;
-        const content = href
-          ? styledTextFromMarkdown(node.children, source, context, styles)
-          : null;
-        if (!definition || !href || !content) return literalInline(node, source, styles);
-        context.consumedDefinitions.add(definition.node);
-        return [{ type: "link", href, content }];
       }
       default:
         return literalInline(node, source, styles);
@@ -287,10 +212,9 @@ function inlineFromMarkdown(
 function styledTextFromMarkdown(
   nodes: readonly PhrasingContent[],
   source: string,
-  context: MarkdownContext,
   styles: TextStyles,
 ): Array<{ styles: TextStyles; text: string; type: "text" }> | null {
-  const content = inlineFromMarkdown(nodes, source, context, styles);
+  const content = inlineFromMarkdown(nodes, source, styles);
   return content.every((item) => item.type === "text") ? content : null;
 }
 
@@ -304,13 +228,8 @@ function literalInline(node: PhrasingContent, source: string, styles: TextStyles
   return text ? [{ type: "text", text, styles }] : [];
 }
 
-function legacyBlock(node: RootContent): KoshBlockNotePartialBlock {
-  return {
-    type: "legacyMarkdown",
-    props: {
-      markdown: serializeKoshMarkdownAst({ type: "root", children: [node] }),
-    },
-  };
+function unsupportedMarkdown(node: RootContent): never {
+  throw new Error(`Unsupported Markdown block: ${node.type}`);
 }
 
 function blocksToMarkdown(
@@ -406,20 +325,6 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
       );
     case "koshPendingMedia":
       return blocksToMarkdown(block.children ?? []);
-    case "koshLegacyMedia":
-      return withFlattenedChildren(
-        parseKoshMarkdownAst(stringProp(block.props?.markdown)).children as unknown as Array<
-          BlockContent | DefinitionContent
-        >,
-        block,
-      );
-    case "legacyMarkdown":
-      return withFlattenedChildren(
-        parseKoshMarkdownAst(stringProp(block.props?.markdown)).children as unknown as Array<
-          BlockContent | DefinitionContent
-        >,
-        block,
-      );
     default:
       if (isListBlock(block)) return [listForChildren([block])];
       throw new Error(`Cannot serialize Kosh block ${String(block.type)}`);
@@ -610,10 +515,6 @@ function mediaParagraph(value: string): BlockContent {
   return { type: "paragraph", children: [{ type: "text", value }] };
 }
 
-function looksLikeKoshMediaToken(value: string): boolean {
-  return value.startsWith("{{kosh:") && value.endsWith("}}");
-}
-
 function numberProp(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -627,12 +528,13 @@ function textFromMarkdownNode(node: Content): string {
   return "children" in node ? (node.children as Content[]).map(textFromMarkdownNode).join("") : "";
 }
 
-function containsUnsupportedInlineMathContext(node: Content, decorated = false): boolean {
+function containsUnsupportedInlineContext(node: Content, decorated = false): boolean {
+  if (["image", "imageReference", "linkReference"].includes(node.type)) return true;
   if (node.type === "inlineMath") return decorated;
   if (!("children" in node)) return false;
   const decoratesChildren =
     decorated || ["delete", "emphasis", "link", "linkReference", "strong"].includes(node.type);
   return (node.children as Content[]).some((child) =>
-    containsUnsupportedInlineMathContext(child, decoratesChildren),
+    containsUnsupportedInlineContext(child, decoratesChildren),
   );
 }

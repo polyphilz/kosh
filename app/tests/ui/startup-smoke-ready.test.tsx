@@ -67,8 +67,7 @@ describe("StartupSmokeReady", () => {
       requestId: "probe-2",
       startupSmokeCanary: "koshstartupcanaryv1",
     });
-    const tidbit = await backend.createTidbit({
-      title: "Kosh progressive startup canary",
+    const tidbit = await backend.seedNote({
       bodyMarkdown: "koshstartupcanaryv1",
       sources: [
         {

@@ -15,7 +15,7 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
       return {
-        notes: (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items
+        notes: (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items
           .length,
         workingCopies: (await backend.listWorkingCopies()).length,
       };
@@ -27,10 +27,10 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
   const persisted = await page.evaluate(async () => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
-    return (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items;
+    return (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items;
   });
   expect(persisted).toHaveLength(1);
-  expect(persisted[0]).toMatchObject({ title: null });
+  expect(persisted[0]?.displayTitle).toBe("A thought that should survive without a Save button.");
 
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
@@ -112,12 +112,11 @@ test("route navigation fences an edit before the working-copy debounce", async (
     await page.evaluate(async () => {
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
-      return (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items;
+      return (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items;
     }),
   ).toEqual([
     expect.objectContaining({
       bodyPreview: expect.stringContaining("Navigate immediately, but keep every byte."),
-      title: null,
     }),
   ]);
 });
@@ -218,8 +217,7 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
   const staleNoteId = await page.evaluate(async (recoverableNoteId) => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
-    const staleNote = await backend.createTidbit({
-      title: null,
+    const staleNote = await backend.seedNote({
       bodyMarkdown: "Original durable note.",
       sources: [],
     });
@@ -237,10 +235,9 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
       bodyMarkdown: "This copy will become stale.",
       sources: [],
     });
-    await backend.editTidbit({
+    await backend.replaceNoteForTest({
       id: staleNote.id,
       expectedRevisionId: staleNote.currentRevisionId,
-      title: null,
       bodyMarkdown: "A newer route already changed this note.",
       sources: [],
     });
@@ -253,7 +250,7 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
       page.evaluate(async (noteId) => {
         const backend = window.__KOSH_FAKE_BACKEND__;
         if (!backend) throw new Error("fake backend is unavailable");
-        const page = await backend.listTidbits({ cursor: null, limit: 20, scope: "ACTIVE" });
+        const page = await backend.listNotesForTest({ cursor: null, limit: 20, scope: "ACTIVE" });
         return page.items.some((item) => item.id === noteId);
       }, trailingNoteId),
     )
@@ -272,8 +269,7 @@ test("startup recovery discards an abandoned existing-note media reservation", a
   const noteId = await page.evaluate(async () => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
-    const note = await backend.createTidbit({
-      title: null,
+    const note = await backend.seedNote({
       bodyMarkdown: "Do not create a phantom revision for this note.",
       sources: [],
     });
@@ -375,50 +371,6 @@ test("delayed reconciliation never checkpoints the note opened during its scan",
     .toMatchObject({ bodyMarkdown: "This edit belongs to the still-open recovered note." });
 });
 
-test("a legacy title is projected without a revision until the first authored edit", async ({
-  page,
-}) => {
-  await page.goto("/#/settings");
-  const note = await page.evaluate(async () => {
-    const backend = window.__KOSH_FAKE_BACKEND__;
-    if (!backend) throw new Error("fake backend is unavailable");
-    return backend.createTidbit({
-      title: "Legacy *vector* title",
-      bodyMarkdown: "Original body.",
-      sources: [],
-    });
-  });
-
-  await page.goto(`/#/notes/${note.id}`);
-  const editor = page.getByRole("textbox", { name: "Note" });
-  await expect(editor).toContainText("Legacy *vector* title");
-  await page.waitForTimeout(2_200);
-  expect(
-    await page.evaluate(async (noteId) => {
-      const backend = window.__KOSH_FAKE_BACKEND__;
-      if (!backend) throw new Error("fake backend is unavailable");
-      return backend.listTidbitRevisions({
-        beforeRevisionNumber: null,
-        limit: 10,
-        tidbitId: noteId,
-      });
-    }, note.id),
-  ).toMatchObject({ items: [{ revisionNumber: 1 }] });
-
-  await editor.press("Control+End");
-  await editor.press("Enter");
-  await editor.pressSequentially("New connection.");
-  await expect
-    .poll(async () =>
-      page.evaluate(async (noteId) => {
-        const backend = window.__KOSH_FAKE_BACKEND__;
-        if (!backend) throw new Error("fake backend is unavailable");
-        return backend.loadTidbit(noteId);
-      }, note.id),
-    )
-    .toMatchObject({ revisionNumber: 2, title: null });
-});
-
 test("an image alone makes an ephemeral note contentful", async ({ page }) => {
   await page.route("kosh-media://**", async (route) => {
     await route.fulfill({
@@ -453,13 +405,12 @@ test("an image alone makes an ephemeral note contentful", async ({ page }) => {
   await page.getByRole("option", { name: "Image", exact: true }).click();
   await expect(page.locator("[data-kosh-image='true']")).toBeVisible();
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
-  expect(
-    await page.evaluate(async () => {
-      const backend = window.__KOSH_FAKE_BACKEND__;
-      if (!backend) throw new Error("fake backend is unavailable");
-      return (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items[0];
-    }),
-  ).toMatchObject({ title: null });
+  const imageNote = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items[0];
+  });
+  expect(imageNote).toBeDefined();
 });
 
 test("the page editor stays flat and usable in compact, dark, zoomed, and long layouts", async ({
