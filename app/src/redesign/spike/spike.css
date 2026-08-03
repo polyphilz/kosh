@@ -42,17 +42,22 @@ body {
   background: transparent;
 }
 
-.kosh-spike-math {
+.kosh-math-editor {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
   font-family: KaTeX_Math, "Times New Roman", serif;
 }
 
-.kosh-spike-math--inline {
+.kosh-math-editor--inline {
   padding: 1px 4px;
   border-radius: 4px;
   background: color-mix(in srgb, currentColor 9%, transparent);
 }
 
-.kosh-spike-math--display {
+.kosh-math-editor--display {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   padding: 18px 24px;
   overflow-x: auto;
@@ -60,4 +65,40 @@ body {
   text-align: center;
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
   border-radius: 8px;
+}
+
+.kosh-math-editor__source,
+.kosh-legacy-markdown textarea {
+  width: 100%;
+  color: inherit;
+  font:
+    13px/1.5 ui-monospace,
+    monospace;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 5px;
+}
+
+.kosh-math-editor--inline .kosh-math-editor__source {
+  width: 9rem;
+}
+
+.kosh-legacy-markdown {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+}
+
+.kosh-legacy-markdown__label {
+  font:
+    600 11px/1.2 ui-monospace,
+    monospace;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.kosh-legacy-markdown textarea {
+  min-height: 5rem;
+  padding: 10px;
+  resize: vertical;
 }

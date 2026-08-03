@@ -1,85 +1,14 @@
 import {
-  BlockNoteSchema,
-  defaultBlockSpecs,
-  defaultInlineContentSpecs,
-  defaultStyleSpecs,
-} from "@blocknote/core";
-import { createReactBlockSpec, createReactInlineContentSpec } from "@blocknote/react";
+  koshBlockNoteSchema,
+  supportedKoshInlineTypes,
+  supportedKoshStyleTypes,
+  type KoshBlockNoteEditor,
+  type KoshBlockNotePartialBlock,
+} from "../../editor/schema";
 
-const heading = createReactBlockSpec(
-  {
-    type: "heading",
-    propSchema: {
-      level: { default: 1, values: [1, 2, 3] as const },
-    },
-    content: "inline",
-  },
-  {
-    render: ({ block, contentRef }) => {
-      const Heading = `h${block.props.level}` as "h1" | "h2" | "h3";
-      return <Heading data-kosh-block-type={`heading-${block.props.level}`} ref={contentRef} />;
-    },
-  },
-);
-
-const displayMath = createReactBlockSpec(
-  {
-    type: "displayMath",
-    propSchema: {
-      latex: { default: "" },
-    },
-    content: "none",
-  },
-  {
-    render: ({ block }) => (
-      <div aria-label="Display math" className="kosh-spike-math kosh-spike-math--display">
-        {block.props.latex || "∑ math"}
-      </div>
-    ),
-  },
-);
-
-const inlineMath = createReactInlineContentSpec(
-  {
-    type: "inlineMath",
-    propSchema: {
-      latex: { default: "" },
-    },
-    content: "none",
-  },
-  {
-    render: ({ inlineContent }) => (
-      <span aria-label="Inline math" className="kosh-spike-math kosh-spike-math--inline">
-        {inlineContent.props.latex || "math"}
-      </span>
-    ),
-  },
-);
-
-export const koshSpikeSchema = BlockNoteSchema.create({
-  blockSpecs: {
-    paragraph: defaultBlockSpecs.paragraph,
-    heading: heading(),
-    bulletListItem: defaultBlockSpecs.bulletListItem,
-    numberedListItem: defaultBlockSpecs.numberedListItem,
-    codeBlock: defaultBlockSpecs.codeBlock,
-    displayMath: displayMath(),
-  },
-  inlineContentSpecs: {
-    text: defaultInlineContentSpecs.text,
-    link: defaultInlineContentSpecs.link,
-    inlineMath,
-  },
-  styleSpecs: {
-    bold: defaultStyleSpecs.bold,
-    italic: defaultStyleSpecs.italic,
-    strike: defaultStyleSpecs.strike,
-    code: defaultStyleSpecs.code,
-  },
-});
-
-export type KoshSpikeEditor = typeof koshSpikeSchema.BlockNoteEditor;
-export type KoshSpikePartialBlock = typeof koshSpikeSchema.PartialBlock;
+export const koshSpikeSchema = koshBlockNoteSchema;
+export type KoshSpikeEditor = KoshBlockNoteEditor;
+export type KoshSpikePartialBlock = KoshBlockNotePartialBlock;
 
 export const initialSpikeBlocks: KoshSpikePartialBlock[] = [
   {
@@ -134,8 +63,13 @@ export const initialSpikeBlocks: KoshSpikePartialBlock[] = [
   },
 ];
 
-export const supportedSpikeBlockTypes = Object.freeze(Object.keys(koshSpikeSchema.blockSchema));
-export const supportedSpikeInlineTypes = Object.freeze(
-  Object.keys(koshSpikeSchema.inlineContentSchema),
-);
-export const supportedSpikeStyleTypes = Object.freeze(Object.keys(koshSpikeSchema.styleSchema));
+export const supportedSpikeBlockTypes = Object.freeze([
+  "paragraph",
+  "heading",
+  "bulletListItem",
+  "numberedListItem",
+  "codeBlock",
+  "displayMath",
+]);
+export const supportedSpikeInlineTypes = supportedKoshInlineTypes;
+export const supportedSpikeStyleTypes = supportedKoshStyleTypes;

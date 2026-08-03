@@ -177,7 +177,7 @@ function restrictedSlashItems(editor: KoshSpikeEditor): DefaultReactSuggestionIt
     blockItem(editor, "Heading 3", { type: "heading", props: { level: 3 } }, ["h3"]),
     blockItem(editor, "Bullet list", { type: "bulletListItem" }, ["unordered", "ul"]),
     blockItem(editor, "Ordered list", { type: "numberedListItem" }, ["numbered", "ol"]),
-    blockItem(editor, "Code block", { type: "codeBlock", props: { language: "text" } }, ["fence"]),
+    blockItem(editor, "Code block", { type: "codeBlock", props: { language: "" } }, ["fence"]),
     blockItem(editor, "Display math", { type: "displayMath", props: { latex: "\\sum_i a_i" } }, [
       "equation",
       "math",
