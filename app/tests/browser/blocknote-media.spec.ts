@@ -129,6 +129,37 @@ test("paste, native-drop insertion, cancellation, and failure retain authored co
   expect(markdown).not.toContain("koshPendingMedia");
 });
 
+test("read-only editors reject direct, deferred, pasted, and dropped media", async ({ page }) => {
+  await openSpike(page);
+  const original = "Read-only authored text";
+  await page.evaluate(
+    (markdown) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(markdown),
+    original,
+  );
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setEditable(false));
+
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.insertMediaFixture());
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia());
+  await page.evaluate(() => {
+    const clipboard = new DataTransfer();
+    clipboard.items.add(new File([new Uint8Array([1])], "paste.png", { type: "image/png" }));
+    document.activeElement?.dispatchEvent(
+      new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }),
+    );
+    const transfer = new DataTransfer();
+    transfer.setData("application/x-kosh-media", "validated-native-drop");
+    document
+      .querySelector("main")!
+      .dispatchEvent(
+        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
+      );
+  });
+
+  await expect(page.getByRole("status", { name: "Adding deferred image" })).toHaveCount(0);
+  await expect(page.locator("[data-kosh-image='true']")).toHaveCount(0);
+  await expect.poll(() => editorMarkdown(page)).toBe(original);
+});
+
 test("slow media ingest preserves the active writing cursor", async ({ page }) => {
   await openSpike(page);
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("Original thought"));
@@ -204,6 +235,46 @@ test("cancelled or failed media restores the unsplit authored text", async ({ pa
     await expect.poll(() => editorMarkdown(page)).toBe(original);
     expect((await readSnapshot(page)).blocks.map((block) => block.type)).toEqual(["paragraph"]);
   }
+});
+
+test("overlapping deferred media restores one paragraph or preserves committed media", async ({
+  page,
+}) => {
+  await openSpike(page);
+  const original = "Before after";
+
+  await page.evaluate(
+    (markdown) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(markdown),
+    original,
+  );
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setCursorOffset(6));
+  const cancelled = await page.evaluate(() => [
+    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+  ]);
+  await page.evaluate(([first, second]) => {
+    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(first, "cancel");
+    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(second, "cancel");
+  }, cancelled);
+  await expect.poll(() => editorMarkdown(page)).toBe(original);
+  expect((await readSnapshot(page)).blocks.map((block) => block.type)).toEqual(["paragraph"]);
+
+  await page.evaluate(
+    (markdown) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(markdown),
+    original,
+  );
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setCursorOffset(6));
+  const mixed = await page.evaluate(() => [
+    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+  ]);
+  await page.evaluate(([first, second]) => {
+    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(second, "success");
+    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(first, "cancel");
+  }, mixed);
+  await expect(page.locator("[data-kosh-image='true']")).toHaveCount(1);
+  await expect.poll(() => editorMarkdown(page)).toContain("Before\n\n{{kosh:image:");
+  await expect.poll(() => editorMarkdown(page)).toContain("}}\n\n&#x20;after");
 });
 
 test("image and PDF retries restart status polling", async ({ page }) => {

@@ -20,11 +20,20 @@ export interface BlockNoteMediaController {
   pending(): boolean;
 }
 
+interface SplitTransaction {
+  committed: boolean;
+  headId: string;
+  pendingIds: Set<string>;
+  tailId: string;
+}
+
 export function createBlockNoteMediaController(
   editor: KoshBlockNoteEditor,
   options: BlockNoteMediaControllerOptions = {},
 ): BlockNoteMediaController {
   const pendingIds = new Set<string>();
+  const splitTransactions = new Set<SplitTransaction>();
+  const splitTransactionByPendingId = new Map<string, SplitTransaction>();
   let disposed = false;
 
   const notifyPending = () => options.onPendingChange?.(pendingIds.size > 0);
@@ -35,7 +44,7 @@ export function createBlockNoteMediaController(
   const editorWidth = () => options.editorWidth?.() ?? editor.domElement?.clientWidth ?? 0;
 
   const insert = (records: readonly SelectedAttachmentRecord[]) => {
-    if (disposed || records.length === 0) return;
+    if (disposed || !editor.isEditable || records.length === 0) return;
     const reference = currentReference(editor);
     const inserted = editor.insertBlocks(
       records.map((record) =>
@@ -48,7 +57,7 @@ export function createBlockNoteMediaController(
   };
 
   const begin = async (label: string, ingest: () => Promise<SelectedAttachmentRecord | null>) => {
-    if (disposed) return;
+    if (disposed || !editor.isEditable) return;
     const requestId = crypto.randomUUID();
     const insertion = insertPendingAtCursor(editor, {
       type: "koshPendingMedia",
@@ -56,6 +65,13 @@ export function createBlockNoteMediaController(
     });
     const pendingBlock = insertion?.block;
     if (!pendingBlock) throw new Error("BlockNote did not insert the pending media block");
+    registerSplitTransaction(
+      editor,
+      pendingBlock.id,
+      insertion.split,
+      splitTransactions,
+      splitTransactionByPendingId,
+    );
     pendingIds.add(pendingBlock.id);
     notifyPending();
     try {
@@ -64,17 +80,33 @@ export function createBlockNoteMediaController(
       const current = editor.getBlock(pendingBlock.id);
       if (!current) return;
       if (!record) {
-        removePendingAndRollback(editor, current, insertion.split);
+        removePendingAndRollback(
+          editor,
+          current,
+          settleSplitTransaction(
+            pendingBlock.id,
+            false,
+            splitTransactions,
+            splitTransactionByPendingId,
+          ),
+        );
         return;
       }
       editor.replaceBlocks(
         [current],
         [selectedAttachmentToMediaBlock(record, editorWidth()) as KoshBlockNotePartialBlock],
       );
+      settleSplitTransaction(pendingBlock.id, true, splitTransactions, splitTransactionByPendingId);
     } catch (error) {
       if (!disposed) {
         const current = editor.getBlock(pendingBlock.id);
-        if (current) removePendingAndRollback(editor, current, insertion.split);
+        const split = settleSplitTransaction(
+          pendingBlock.id,
+          false,
+          splitTransactions,
+          splitTransactionByPendingId,
+        );
+        if (current) removePendingAndRollback(editor, current, split);
         options.onError?.(error);
       }
     } finally {
@@ -90,13 +122,15 @@ export function createBlockNoteMediaController(
     dispose() {
       disposed = true;
       pendingIds.clear();
+      splitTransactions.clear();
+      splitTransactionByPendingId.clear();
       notifyPending();
     },
     handleImagePaste(event, ingest) {
       const hasImage = [...(event.clipboardData?.items ?? [])].some((item) =>
         item.type.startsWith("image/"),
       );
-      if (!hasImage || disposed) return false;
+      if (!hasImage || disposed || !editor.isEditable) return false;
       event.preventDefault();
       void begin("Processing pasted image", ingest);
       return true;
@@ -158,11 +192,11 @@ function insertPendingAtCursor(editor: KoshBlockNoteEditor, pending: KoshBlockNo
 function removePendingAndRollback(
   editor: KoshBlockNoteEditor,
   pending: { id: string },
-  split: { headId: string; tailId: string } | undefined,
+  split: SplitTransaction | undefined,
 ) {
   const activeBlockId = currentReference(editor).id;
   editor.removeBlocks([pending]);
-  if (!split) return;
+  if (!split || split.committed || split.pendingIds.size > 0) return;
   const head = editor.getBlock(split.headId);
   const tail = editor.getBlock(split.tailId);
   if (
@@ -182,6 +216,53 @@ function removePendingAndRollback(
     editor.setTextCursorPosition(head, "end");
     editor.focus();
   }
+}
+
+function registerSplitTransaction(
+  editor: KoshBlockNoteEditor,
+  pendingId: string,
+  split: { headId: string; tailId: string } | undefined,
+  transactions: Set<SplitTransaction>,
+  byPendingId: Map<string, SplitTransaction>,
+) {
+  const transaction = split
+    ? { ...split, committed: false, pendingIds: new Set<string>() }
+    : [...transactions].find((candidate) => blockIsBetween(editor, pendingId, candidate));
+  if (!transaction) return;
+  if (split) transactions.add(transaction);
+  transaction.pendingIds.add(pendingId);
+  byPendingId.set(pendingId, transaction);
+}
+
+function settleSplitTransaction(
+  pendingId: string,
+  committed: boolean,
+  transactions: Set<SplitTransaction>,
+  byPendingId: Map<string, SplitTransaction>,
+): SplitTransaction | undefined {
+  const transaction = byPendingId.get(pendingId);
+  if (!transaction) return undefined;
+  byPendingId.delete(pendingId);
+  transaction.pendingIds.delete(pendingId);
+  transaction.committed ||= committed;
+  if (transaction.pendingIds.size === 0) transactions.delete(transaction);
+  return transaction;
+}
+
+function blockIsBetween(
+  editor: KoshBlockNoteEditor,
+  blockId: string,
+  split: Pick<SplitTransaction, "headId" | "tailId">,
+): boolean {
+  let block = editor.getBlock(split.headId);
+  const visited = new Set<string>();
+  while (block && !visited.has(block.id)) {
+    visited.add(block.id);
+    block = editor.getNextBlock(block);
+    if (!block || block.id === split.tailId) return false;
+    if (block.id === blockId) return true;
+  }
+  return false;
 }
 
 function focusAfterMedia(editor: KoshBlockNoteEditor, media: { id: string } | undefined) {
