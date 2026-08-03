@@ -170,6 +170,7 @@ function AppShell() {
             setSearchOpen(false);
             if (searchRouteOpen) void navigate({ to: "/", replace: true });
           }}
+          onResultOpen={() => setSearchOpen(false)}
           open={searchOpen || searchRouteOpen}
         />
       </div>

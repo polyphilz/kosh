@@ -17,10 +17,11 @@ const SEARCH_RESULT_LIMIT = 24;
 
 interface SearchOverlayProps {
   onClose: () => void;
+  onResultOpen: () => void;
   open: boolean;
 }
 
-export function SearchOverlay({ onClose, open }: SearchOverlayProps) {
+export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProps) {
   const backend = useBackend();
   const navigate = useNavigate();
   const listboxId = useId();
@@ -90,9 +91,9 @@ export function SearchOverlay({ onClose, open }: SearchOverlayProps) {
         to: "/notes/$noteId",
         params: { noteId: result.note.id },
         search: { passage: result.passageId },
-      }).then(onClose);
+      }).then(onResultOpen);
     },
-    [navigate, onClose],
+    [navigate, onResultOpen],
   );
 
   const onInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {

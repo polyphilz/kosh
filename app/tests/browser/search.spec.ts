@@ -60,6 +60,23 @@ test("search checkpoints the active note before querying", async ({ page }) => {
   await expect(page.getByRole("option", { name: /quokka detail/u })).toBeVisible();
 });
 
+test("a route-backed search result remains on its cited note", async ({ page }) => {
+  await page.goto("/#/");
+  const note = await seedTidbit(page, {
+    title: null,
+    bodyMarkdown: "Route-backed evidence names the exact cedar passage.",
+    sources: [],
+  });
+  await page.goto("/#/search");
+  const dialog = page.getByRole("dialog", { name: "Search notes" });
+  await dialog.getByRole("combobox", { name: "Search notes" }).fill("cedar passage");
+  await dialog.getByRole("option", { name: /cedar passage/u }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+});
+
 test("dismissal clears transient search and stale responses cannot replace newer results", async ({
   page,
 }) => {
