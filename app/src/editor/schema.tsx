@@ -163,6 +163,7 @@ export const supportedKoshStyleTypes = Object.freeze(Object.keys(koshBlockNoteSc
 function MathPreview({ display = false, latex }: { display?: boolean; latex: string }) {
   const html = renderToString(latex || "\\square", {
     displayMode: display,
+    maxSize: 20,
     output: "html",
     strict: "ignore",
     throwOnError: false,

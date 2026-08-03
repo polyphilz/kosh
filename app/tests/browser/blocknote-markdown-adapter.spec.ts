@@ -42,6 +42,18 @@ test("the production adapter edits math source and preserves canonical Markdown"
   await expect.poll(() => editorMarkdown(page)).toContain("array = [1, 2, 3]  \n```");
 });
 
+test("math previews bound user-controlled dimensions", async ({ page }) => {
+  await openSpike(page);
+  await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown("$$\n\\rule{1000000em}{1em}\n$$"),
+  );
+
+  await expect(page.locator(".kosh-math-editor__preview .katex")).toHaveCount(1);
+  expect(
+    await page.locator(".kosh-math-editor__preview").evaluate((preview) => preview.scrollWidth),
+  ).toBeLessThan(1_000);
+});
+
 test("rich paste cannot bypass the restricted schema or persist active content", async ({
   page,
 }) => {

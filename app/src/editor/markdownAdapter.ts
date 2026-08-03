@@ -54,6 +54,9 @@ export function markdownToKoshBlocks(source: string): KoshBlockNotePartialBlock[
     }
   }
   const context: MarkdownContext = { consumedDefinitions: new Set(), definitions };
+  if (containsTitledLinkReference(tree, context)) {
+    return [{ type: "legacyMarkdown", props: { markdown: source } }];
+  }
   const content = tree.children.filter((node) => node.type !== "definition");
   const definitionNodes = tree.children.filter((node) => node.type === "definition");
   const blocks = [...content, ...definitionNodes].flatMap((node) =>
@@ -105,6 +108,7 @@ function blockFromMarkdown(
   source: string,
   context: MarkdownContext,
 ): KoshBlockNotePartialBlock[] {
+  if (containsTitledLink(node)) return [legacyBlock(node)];
   if (containsUnsupportedInlineMathContext(node)) return [legacyBlock(node)];
   switch (node.type) {
     case "paragraph":
@@ -153,6 +157,30 @@ function blockFromMarkdown(
     default:
       return [legacyBlock(node)];
   }
+}
+
+function containsTitledLink(node: RootContent): boolean {
+  const candidate = node as RootContent & {
+    children?: RootContent[];
+    identifier?: string;
+    title?: string | null;
+  };
+  if (candidate.type === "link" && candidate.title !== null && candidate.title !== undefined) {
+    return true;
+  }
+  return candidate.children?.some((child) => containsTitledLink(child)) ?? false;
+}
+
+function containsTitledLinkReference(node: Root | RootContent, context: MarkdownContext): boolean {
+  const candidate = node as (Root | RootContent) & {
+    children?: RootContent[];
+    identifier?: string;
+  };
+  if (candidate.type === "linkReference" && candidate.identifier) {
+    const definition = context.definitions.get(candidate.identifier.toLowerCase());
+    return definition?.title !== null && definition?.title !== undefined;
+  }
+  return candidate.children?.some((child) => containsTitledLinkReference(child, context)) ?? false;
 }
 
 function canConvertList(list: List): boolean {

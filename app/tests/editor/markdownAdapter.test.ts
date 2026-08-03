@@ -127,6 +127,17 @@ describe("restricted BlockNote Markdown adapter", () => {
     expect(koshBlocksToMarkdown(markdownToKoshBlocks(code))).toBe(code);
   });
 
+  it("preserves titled links as legacy Markdown instead of degrading them to text", () => {
+    for (const markdown of [
+      'Read [the docs](https://example.com/reference "Reference").',
+      'Read [the docs][docs].\n\n[docs]: https://example.com/reference "Reference"',
+    ]) {
+      const blocks = markdownToKoshBlocks(markdown);
+      expect(blocks[0]?.type).toBe("legacyMarkdown");
+      expect(koshBlocksToMarkdown(blocks)).toBe(markdown);
+    }
+  });
+
   it("flattens nested non-list blocks without dropping their authored content", () => {
     expect(
       koshBlocksToMarkdown([
