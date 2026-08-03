@@ -146,7 +146,8 @@ try {
         browserMode: "headless Chromium against the deterministic fake backend",
         coldShell: "new browser context to the focused titleless note editor",
         editorInitialization: "new browser context to the visible BlockNote editor",
-        inputPaint: "beforeinput event through the next animation frame",
+        inputPaint:
+          "beforeinput through a task scheduled from the next animation frame after its render opportunity",
         searchNavigation:
           "browser performance time from command dispatch to the focused Command-K overlay",
         firstSearchResult: "Playwright wall time from fill to first deterministic result option",
@@ -239,7 +240,9 @@ async function measureNextInputPaint(page) {
         editor.addEventListener(
           "input",
           () => {
-            requestAnimationFrame(() => resolvePaint(performance.now() - started));
+            requestAnimationFrame(() => {
+              setTimeout(() => resolvePaint(performance.now() - started), 0);
+            });
           },
           { once: true },
         );
