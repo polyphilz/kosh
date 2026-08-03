@@ -102,3 +102,121 @@ body {
   padding: 10px;
   resize: vertical;
 }
+
+.kosh-blocknote-image,
+.kosh-blocknote-file,
+.kosh-blocknote-pending-media,
+.kosh-blocknote-legacy-media {
+  position: relative;
+  max-width: 100%;
+  padding: 12px;
+  margin: 6px 0;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+
+.kosh-blocknote-image {
+  margin-inline: 0;
+}
+
+.kosh-blocknote-image img {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 5px;
+}
+
+.kosh-blocknote-image__resize {
+  position: absolute;
+  right: -5px;
+  bottom: 50%;
+  width: 10px;
+  height: 48px;
+  padding: 0;
+  cursor: ew-resize;
+  background: #d97745;
+  border: 0;
+  border-radius: 999px;
+}
+
+.kosh-blocknote-image__fields,
+.kosh-blocknote-media__footer,
+.kosh-blocknote-file__controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.kosh-blocknote-image__fields label,
+.kosh-blocknote-file__caption,
+.kosh-blocknote-legacy-media {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.kosh-blocknote-image input,
+.kosh-blocknote-file input,
+.kosh-blocknote-legacy-media textarea {
+  width: 100%;
+  padding: 6px 8px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 5px;
+}
+
+.kosh-blocknote-media__footer {
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.kosh-blocknote-media__footer button,
+.kosh-blocknote-file__controls button {
+  padding: 5px 8px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 5px;
+}
+
+.kosh-blocknote-file {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.kosh-blocknote-file__icon {
+  font:
+    700 11px/1 ui-monospace,
+    monospace;
+}
+
+.kosh-blocknote-file__details {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.kosh-blocknote-file__details strong,
+.kosh-blocknote-file__details span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kosh-blocknote-file__details span,
+.kosh-blocknote-pending-media {
+  font-size: 12px;
+  opacity: 0.68;
+}
+
+.kosh-blocknote-file__caption {
+  grid-column: 2 / -1;
+}

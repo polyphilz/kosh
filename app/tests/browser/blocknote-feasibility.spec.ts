@@ -30,6 +30,9 @@ const expectedSchema = {
     "numberedListItem",
     "codeBlock",
     "displayMath",
+    "koshImage",
+    "koshPdf",
+    "koshFileAttachment",
   ],
   inlineContent: ["text", "link", "inlineMath"],
   styles: ["bold", "italic", "strike", "code"],
@@ -88,6 +91,9 @@ test("the restricted BlockNote schema rejects the plain-editor approximation", a
     "Code block",
     "Display math",
     "Inline math",
+    "Image",
+    "PDF",
+    "File",
   ]);
   await slashMenu.getByRole("option", { name: "Display math" }).click();
   await expect.poll(async () => (await readSnapshot(page)).blocks.at(-1)?.type).toBe("displayMath");

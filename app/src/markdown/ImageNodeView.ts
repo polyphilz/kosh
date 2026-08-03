@@ -3,10 +3,15 @@ import { attachmentMediaUrl } from "../media/gateway";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { NodeSelection } from "prosemirror-state";
 import type { EditorView, NodeView } from "prosemirror-view";
+import { clampImageWidth } from "../editor/mediaSizing";
 import { KOSH_EDITOR_EDITABLE_EVENT } from "./editorEvents";
 
-export const MIN_IMAGE_WIDTH_PERCENT = 10;
-export const MAX_IMAGE_WIDTH_PERCENT = 100;
+export {
+  clampImageWidth,
+  initialImageWidth,
+  MAX_IMAGE_WIDTH_PERCENT,
+  MIN_IMAGE_WIDTH_PERCENT,
+} from "../editor/mediaSizing";
 const STATUS_POLL_MS = 1_500;
 const RETRY_STATUS_MAX_POLL_MS = 5 * 60_000;
 
@@ -342,15 +347,4 @@ export function resizeSelectedImage(delta: number) {
     );
     return true;
   };
-}
-
-export function initialImageWidth(naturalWidth: number, editorWidth: number): number {
-  if (editorWidth <= 0 || naturalWidth >= editorWidth) {
-    return MAX_IMAGE_WIDTH_PERCENT;
-  }
-  return clampImageWidth((naturalWidth / editorWidth) * 100);
-}
-
-export function clampImageWidth(value: number): number {
-  return Math.max(MIN_IMAGE_WIDTH_PERCENT, Math.min(MAX_IMAGE_WIDTH_PERCENT, Math.round(value)));
 }

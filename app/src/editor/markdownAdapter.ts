@@ -11,7 +11,12 @@ import type {
 } from "mdast";
 import { normalizeCodeLanguageLabel } from "../markdown/languages";
 import { parseKoshMarkdownAst, serializeKoshMarkdownAst } from "../markdown/markdownAst";
-import { parseKoshMediaToken } from "../markdown/mediaTokens";
+import {
+  parseKoshMediaToken,
+  serializeKoshAttachmentToken,
+  serializeKoshImageToken,
+  serializeKoshPdfToken,
+} from "../markdown/mediaTokens";
 import { externalHttpUrl } from "../markdown/urlPolicy";
 import type { KoshBlockNoteBlock, KoshBlockNotePartialBlock } from "./schema";
 
@@ -121,12 +126,17 @@ function blockFromMarkdown(
   if (containsUnsupportedInlineMathContext(node)) return [legacyBlock(node)];
   switch (node.type) {
     case "paragraph":
-      if (
-        node.children.length === 1 &&
-        node.children[0]?.type === "text" &&
-        parseKoshMediaToken(node.children[0].value)
-      ) {
-        return [legacyBlock(node)];
+      if (node.children.length === 1 && node.children[0]?.type === "text") {
+        const media = parseKoshMediaToken(node.children[0].value);
+        if (media) return [mediaBlock(media)];
+        if (looksLikeKoshMediaToken(node.children[0].value)) {
+          return [
+            {
+              type: "koshLegacyMedia",
+              props: { markdown: node.children[0].value },
+            },
+          ];
+        }
       }
       return [{ type: "paragraph", content: inlineFromMarkdown(node.children, source, context) }];
     case "heading":
@@ -363,6 +373,46 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
         [{ type: "math", value: stringProp(block.props?.latex) } as BlockContent],
         block,
       );
+    case "koshImage":
+      return withFlattenedChildren(
+        [
+          mediaParagraph(
+            serializeKoshImageToken({
+              attachmentId: stringProp(block.props?.attachmentId),
+              altText: stringProp(block.props?.altText) || undefined,
+              caption: stringProp(block.props?.caption) || undefined,
+              widthPercent: numberProp(block.props?.widthPercent, 100),
+            }),
+          ),
+        ],
+        block,
+      );
+    case "koshPdf":
+      return withFlattenedChildren(
+        [mediaParagraph(serializeKoshPdfToken(stringProp(block.props?.attachmentId)))],
+        block,
+      );
+    case "koshFileAttachment":
+      return withFlattenedChildren(
+        [
+          mediaParagraph(
+            serializeKoshAttachmentToken(
+              stringProp(block.props?.attachmentId),
+              stringProp(block.props?.caption) || undefined,
+            ),
+          ),
+        ],
+        block,
+      );
+    case "koshPendingMedia":
+      return blocksToMarkdown(block.children ?? []);
+    case "koshLegacyMedia":
+      return withFlattenedChildren(
+        parseKoshMarkdownAst(stringProp(block.props?.markdown)).children as unknown as Array<
+          BlockContent | DefinitionContent
+        >,
+        block,
+      );
     case "legacyMarkdown":
       return withFlattenedChildren(
         parseKoshMarkdownAst(stringProp(block.props?.markdown)).children as unknown as Array<
@@ -530,6 +580,42 @@ function headingDepth(value: unknown): 1 | 2 | 3 {
 function canonicalCodeLanguage(label: string | null | undefined): string {
   const sourceLabel = label?.trim().split(/\s+/, 1)[0]?.toLowerCase();
   return sourceLabel ? (normalizeCodeLanguageLabel(sourceLabel) ?? sourceLabel) : "";
+}
+
+function mediaBlock(
+  media: NonNullable<ReturnType<typeof parseKoshMediaToken>>,
+): KoshBlockNotePartialBlock {
+  switch (media.kind) {
+    case "image":
+      return {
+        type: "koshImage",
+        props: {
+          attachmentId: media.attachmentId,
+          altText: media.altText ?? "",
+          caption: media.caption ?? "",
+          widthPercent: media.widthPercent,
+        },
+      };
+    case "pdf":
+      return { type: "koshPdf", props: { attachmentId: media.attachmentId } };
+    case "attachment":
+      return {
+        type: "koshFileAttachment",
+        props: { attachmentId: media.attachmentId, caption: media.caption ?? "" },
+      };
+  }
+}
+
+function mediaParagraph(value: string): BlockContent {
+  return { type: "paragraph", children: [{ type: "text", value }] };
+}
+
+function looksLikeKoshMediaToken(value: string): boolean {
+  return value.startsWith("{{kosh:") && value.endsWith("}}");
+}
+
+function numberProp(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function stringProp(value: unknown): string {
