@@ -60,3 +60,31 @@ test("deleting the first edit stays empty across WebKit autosave boundaries", as
     }),
   ).toEqual({ notes: 0, workingCopies: 0 });
 });
+
+test("the trailing note canvas appends after an atomic block in WebKit", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/#/search");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown: "Before the equation.\n\n$$\n\\sum_i a_i\n$$",
+      sources: [],
+    });
+  });
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}`;
+  }, note.id);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await expect(editor).toBeVisible();
+  const trailingCanvas = editor.locator(".bn-trailing-block");
+  const canvasBox = await trailingCanvas.boundingBox();
+  if (!canvasBox) throw new Error("the trailing writing canvas is not rendered");
+  await page.mouse.click(canvasBox.x + 80, canvasBox.y + canvasBox.height - 40);
+  await page.keyboard.type("Continue below the equation.");
+
+  const blocks = editor.locator(":scope > .bn-block-group > .bn-block-outer");
+  await expect(blocks).toHaveCount(3);
+  await expect(blocks.last()).toContainText("Continue below the equation.");
+});
