@@ -8,6 +8,16 @@ export default defineConfig({
   clearScreen: false,
   plugins: [react()],
   envPrefix: ["VITE_", "TAURI_ENV_*"],
+  optimizeDeps: {
+    entries: ["index.html", "quick-add.html", "blocknote-spike.html"],
+    include: [
+      "@blocknote/core",
+      "@blocknote/mantine",
+      "@blocknote/react",
+      "@mantine/core",
+      "@mantine/hooks",
+    ],
+  },
   build: {
     target: "safari13",
     minify: process.env.TAURI_ENV_DEBUG ? false : "oxc",

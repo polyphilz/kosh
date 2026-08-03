@@ -1,0 +1,63 @@
+:root {
+  font-family: Inter, system-ui, sans-serif;
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.kosh-blocknote-spike {
+  --spike-bg: #f6f4ef;
+  --spike-ink: #24201c;
+  min-height: 100vh;
+  padding: 32px max(48px, calc((100vw - 900px) / 2));
+  color: var(--spike-ink);
+  background: var(--spike-bg);
+}
+
+.kosh-blocknote-spike[data-theme="dark"] {
+  --spike-bg: #1d1a18;
+  --spike-ink: #f0ece5;
+}
+
+.kosh-blocknote-spike__label {
+  margin: 0 0 24px;
+  font:
+    600 12px/1.2 ui-monospace,
+    monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.58;
+}
+
+.kosh-blocknote-spike .bn-container,
+.kosh-blocknote-spike .bn-editor {
+  min-height: 75vh;
+  color: var(--spike-ink);
+  background: transparent;
+}
+
+.kosh-spike-math {
+  font-family: KaTeX_Math, "Times New Roman", serif;
+}
+
+.kosh-spike-math--inline {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.kosh-spike-math--display {
+  width: 100%;
+  padding: 18px 24px;
+  overflow-x: auto;
+  font-size: 1.25rem;
+  text-align: center;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 8px;
+}

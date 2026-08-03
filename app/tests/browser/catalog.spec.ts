@@ -6,6 +6,7 @@ const themes = ["LIGHT", "DARK"] as const;
 for (const theme of themes) {
   test(`catalog is accessible and stable in ${theme.toLowerCase()} mode`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/#/catalog");
     await page.evaluate(async (appearance) => {
       document.documentElement.dataset.appearance = appearance;

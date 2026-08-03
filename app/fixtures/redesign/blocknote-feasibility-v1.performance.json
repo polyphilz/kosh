@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "spike": "restricted-blocknote-browser-feasibility",
+  "sourceRevision": "067431d4a0ee777b16c3c3645d9278dbe8f7639e",
+  "recordedAt": "2026-08-02T08:13:15.321Z",
+  "environment": {
+    "platform": "darwin",
+    "release": "24.5.0",
+    "cpu": "Apple M1 Max",
+    "logicalCpuCount": 10,
+    "totalMemoryBytes": 68719476736,
+    "browser": "149.0.7827.55",
+    "node": "v22.12.0"
+  },
+  "methodology": {
+    "samplesPerMetric": 10,
+    "browserMode": "headless Chromium against the isolated browser-only BlockNote harness",
+    "initialization": "new browser context navigation through installed BlockNote capability",
+    "inputPaint": "beforeinput through the next animation frame",
+    "longDocumentBlocks": 500,
+    "scroll": "programmatic top/bottom scroll through two animation frames",
+    "bundle": "minified standalone spike assets with gzip level 9"
+  },
+  "metrics": {
+    "initializationMs": {
+      "median": 175.74,
+      "p95": 232.74,
+      "min": 172.39,
+      "max": 232.74,
+      "samples": [232.74, 178.85, 175.74, 175.79, 174.73, 173.9, 175.21, 175.86, 176.87, 172.39]
+    },
+    "firstInputPaintMs": {
+      "median": 7.2,
+      "p95": 7.5,
+      "min": 3,
+      "max": 7.5,
+      "samples": [3.8, 3, 7.5, 7.2, 7.2, 7, 7.5, 7.3, 7.4, 6]
+    },
+    "longDocumentInputPaintMs": {
+      "median": 7,
+      "p95": 7.3,
+      "min": 2.8,
+      "max": 7.3,
+      "samples": [2.8, 5.6, 6.7, 6.8, 7.2, 7.1, 7, 7, 7.3, 7]
+    },
+    "longDocumentScrollMs": {
+      "median": 16,
+      "p95": 17.6,
+      "min": 14.5,
+      "max": 17.6,
+      "samples": [15.7, 16, 16.1, 16, 16, 16.2, 16, 14.5, 17.6, 16.2]
+    }
+  },
+  "budgets": {
+    "initialization": {
+      "actual": 232.74,
+      "limit": 284.22,
+      "passed": true,
+      "rationale": "within 20% of the frozen pre-redesign editor initialization p95"
+    },
+    "firstInputPaint": {
+      "actual": 7.5,
+      "limit": 16.67,
+      "passed": true,
+      "rationale": "within one 60 Hz animation frame"
+    },
+    "baselineInputComparison": {
+      "actual": 7.5,
+      "limit": 8.88,
+      "passed": true,
+      "rationale": "within 20% of the frozen pre-redesign input-paint p95"
+    },
+    "longDocumentInputPaint": {
+      "actual": 7.3,
+      "limit": 16.67,
+      "passed": true,
+      "rationale": "500-block input remains within one 60 Hz animation frame"
+    },
+    "longDocumentScroll": {
+      "actual": 17.6,
+      "limit": 34,
+      "passed": true,
+      "rationale": "two animation frames for a 500-block top/bottom scroll"
+    }
+  },
+  "bundle": {
+    "files": [
+      {
+        "path": "assets/blocknote-spike-CNrjpS8A.css",
+        "extension": ".css",
+        "rawBytes": 317511,
+        "gzipBytes": 45606
+      },
+      {
+        "path": "assets/blocknote-spike-DpBPKHj5.js",
+        "extension": ".js",
+        "rawBytes": 1122639,
+        "gzipBytes": 331215
+      },
+      {
+        "path": "assets/module-BseEnWx9.js",
+        "extension": ".js",
+        "rawBytes": 76930,
+        "gzipBytes": 27383
+      },
+      {
+        "path": "assets/native-Cqs-2kTC.js",
+        "extension": ".js",
+        "rawBytes": 429053,
+        "gzipBytes": 80967
+      },
+      {
+        "path": "blocknote-spike.html",
+        "extension": ".html",
+        "rawBytes": 447,
+        "gzipBytes": 286
+      },
+      {
+        "path": "icon.svg",
+        "extension": ".svg",
+        "rawBytes": 3358,
+        "gzipBytes": 1618
+      }
+    ],
+    "codeRawBytes": 1946133,
+    "codeGzipBytes": 485171,
+    "totalRawBytes": 1949938,
+    "totalGzipBytes": 487075,
+    "currentProductionEntryImpactBytes": 0,
+    "isolation": "blocknote-spike.html is excluded from the production Vite inputs; repository bundle isolation remains authoritative"
+  },
+  "packageEvidence": {
+    "included": [
+      {
+        "name": "@blocknote/core",
+        "version": "0.52.1",
+        "license": "MPL-2.0"
+      },
+      {
+        "name": "@blocknote/react",
+        "version": "0.52.1",
+        "license": "MPL-2.0"
+      },
+      {
+        "name": "@blocknote/mantine",
+        "version": "0.52.1",
+        "license": "MPL-2.0"
+      }
+    ],
+    "excludedPackagePrefixes": ["@blocknote/xl-"]
+  },
+  "boundedRemediation": [
+    "Keep BlockNote out of the cold shell chunk and lazy-load the note editor boundary.",
+    "Reuse Kosh system fonts instead of shipping BlockNote's optional Inter font assets.",
+    "Retain the restricted schema and custom UI surface so unsupported blocks and XL packages never enter the bundle."
+  ]
+}
