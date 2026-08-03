@@ -650,13 +650,12 @@ pub(crate) fn has_meaningful_authored_content(markdown: &str) -> bool {
         | Event::InlineMath(value)
         | Event::DisplayMath(value) => value.chars().any(|character| !character.is_whitespace()),
         Event::Html(value) | Event::InlineHtml(value) => html_has_visible_text(&value),
+        Event::Rule | Event::TaskListMarker(_) => true,
         Event::Start(_)
         | Event::End(_)
         | Event::FootnoteReference(_)
         | Event::SoftBreak
-        | Event::HardBreak
-        | Event::Rule
-        | Event::TaskListMarker(_) => false,
+        | Event::HardBreak => false,
     })
 }
 
@@ -771,20 +770,16 @@ mod tests {
 
     #[test]
     fn semantic_empty_detection_distinguishes_structure_math_and_media() {
-        for empty in [
-            "",
-            "  \n\t",
-            "# \n\n- ",
-            "** **",
-            "$$  $$",
-            "<br><span> </span>",
-        ] {
+        for empty in ["", "  \n\t", "# \n\n- ", "$$  $$", "<br><span> </span>"] {
             assert!(!has_meaningful_authored_content(empty), "{empty:?}");
         }
         for contentful in [
             "shower thought",
             "`identifier`",
             "$x$",
+            "---",
+            "** **",
+            "- [ ]",
             "{{kosh:image:019f547b-6200-7000-8000-000000007099}}",
             "<span>legacy text</span>",
         ] {
