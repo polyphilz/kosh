@@ -86,6 +86,15 @@ function needsDistinctEmphasisMarker(blocks: readonly AdapterBlock[]): boolean {
 
 function needsDistinctEmphasisInContent(content: unknown): boolean {
   if (!Array.isArray(content)) return false;
+  if (
+    content.some((item) =>
+      item && typeof item === "object"
+        ? needsDistinctEmphasisInContent((item as Record<string, unknown>).content)
+        : false,
+    )
+  ) {
+    return true;
+  }
   for (let index = 1; index < content.length; index += 1) {
     const left = textAttentionStyles(content[index - 1]);
     const right = textAttentionStyles(content[index]);

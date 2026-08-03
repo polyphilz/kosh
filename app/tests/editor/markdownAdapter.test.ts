@@ -192,4 +192,25 @@ describe("restricted BlockNote Markdown adapter", () => {
     expect(markdown).toBe("**Bold**_, italic_~~, strike~~`, and code`");
     expect(koshBlocksToMarkdown(markdownToKoshBlocks(markdown))).toBe(markdown);
   });
+
+  it("canonicalizes adjacent styled runs nested inside links", () => {
+    const markdown = koshBlocksToMarkdown([
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "link",
+            href: "https://example.com",
+            content: [
+              { type: "text", text: "Bold", styles: { bold: true } },
+              { type: "text", text: ", italic", styles: { italic: true } },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(markdown).toBe("[**Bold**_, italic_](https://example.com/)");
+    expect(koshBlocksToMarkdown(markdownToKoshBlocks(markdown))).toBe(markdown);
+  });
 });
