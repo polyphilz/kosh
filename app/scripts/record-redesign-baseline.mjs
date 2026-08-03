@@ -313,7 +313,14 @@ async function measureFirstSearchResult(page, index) {
 async function measureNativeStartup() {
   const nativeOutput = { value: "" };
   const nativeServer = startViteServer(1420, {}, nativeOutput);
-  const binary = join(appRoot, "src-tauri/target/debug/kosh");
+  const targetDirectory = await mkdtemp(join(tmpdir(), "kosh-redesign-native-target-"));
+  const rustcVersion = await commandOutput("rustc", ["-vV"], appRoot);
+  const hostTarget = rustcVersion
+    .split("\n")
+    .find((line) => line.startsWith("host: "))
+    ?.slice("host: ".length);
+  if (!hostTarget) throw new Error("rustc did not report its host target");
+  const binary = join(targetDirectory, hostTarget, "debug", "kosh");
   try {
     await waitForProcessServer("http://127.0.0.1:1420/", nativeServer, nativeOutput);
     await commandOutput(
@@ -323,6 +330,10 @@ async function measureNativeStartup() {
         "--locked",
         "--manifest-path",
         "src-tauri/Cargo.toml",
+        "--target-dir",
+        targetDirectory,
+        "--target",
+        hostTarget,
         "--no-default-features",
         "--bin",
         "kosh",
@@ -357,6 +368,7 @@ async function measureNativeStartup() {
   } finally {
     nativeServer.kill("SIGTERM");
     await waitForExit(nativeServer);
+    await rm(targetDirectory, { force: true, recursive: true });
   }
 }
 
