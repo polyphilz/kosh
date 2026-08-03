@@ -129,10 +129,24 @@ test("real keyboard input covers undo, redo, IME, and list nesting", async ({ pa
   await page.keyboard.press("Tab");
   await expect.poll(async () => (await readHarnessSnapshot(page)).blocks.length).toBe(1);
   expect((await readHarnessSnapshot(page)).blocks[0]?.children[0]?.id).toBe(listIds.secondId);
+  expect(await blockIndentMotion(page, listIds.secondId)).toEqual({
+    contentTransitionDuration: "0s",
+    guideTransitionDuration: "0s",
+    marginLeft: "0px",
+    markerTransitionDuration: "0s",
+    outerTransitionDuration: "0s",
+  });
   await page.keyboard.press("Shift+Tab");
   const unnested = await readHarnessSnapshot(page);
   expect(unnested.blocks.map((block) => block.id)).toEqual([listIds.firstId, listIds.secondId]);
   expect(unnested.focused).toBe(true);
+  expect(await blockIndentMotion(page, listIds.secondId)).toEqual({
+    contentTransitionDuration: "0s",
+    guideTransitionDuration: "0s",
+    marginLeft: "0px",
+    markerTransitionDuration: "0s",
+    outerTransitionDuration: "0s",
+  });
 });
 
 test("the gutter selects, deletes, reorders, and restores editor focus", async ({ page }) => {
@@ -194,6 +208,21 @@ test("long documents remain editable in both appearances", async ({ page }) => {
 async function openHarness(page: Page) {
   await page.goto("/editor-harness.html");
   await waitForHarness(page);
+}
+
+async function blockIndentMotion(page: Page, blockId: string) {
+  return page.locator(`.bn-block-outer[data-id="${blockId}"]`).evaluate((outer) => {
+    const content = outer.querySelector(":scope > .bn-block > .bn-block-content");
+    if (!(content instanceof HTMLElement)) throw new Error("Block content is missing");
+
+    return {
+      contentTransitionDuration: getComputedStyle(content).transitionDuration,
+      guideTransitionDuration: getComputedStyle(outer, "::before").transitionDuration,
+      marginLeft: getComputedStyle(outer).marginLeft,
+      markerTransitionDuration: getComputedStyle(content, "::before").transitionDuration,
+      outerTransitionDuration: getComputedStyle(outer).transitionDuration,
+    };
+  });
 }
 
 async function waitForHarness(page: Page) {

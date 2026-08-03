@@ -41,6 +41,18 @@
   color: var(--muted);
 }
 
+/* BlockNote animates transient depth and marker state for 200ms after Tab/Shift+Tab. */
+.kosh-blocknote-editor .bn-block-outer,
+.kosh-blocknote-editor .bn-block-content,
+.kosh-blocknote-editor .bn-block-content::before,
+.kosh-blocknote-editor .bn-block-group .bn-block-group > .bn-block-outer::before {
+  transition: none;
+}
+
+.kosh-blocknote-editor .bn-block-outer[data-prev-depth-change] {
+  margin-left: 0;
+}
+
 .kosh-blocknote-editor--page {
   min-height: 100%;
   overflow: visible;

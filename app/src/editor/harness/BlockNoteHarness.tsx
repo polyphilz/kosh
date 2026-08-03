@@ -77,7 +77,7 @@ export function BlockNoteHarness({ theme }: BlockNoteHarnessProps) {
     <MantineProvider forceColorScheme={theme}>
       <KoshMediaActionsProvider actions={mediaHarness.actions}>
         <main
-          className="kosh-editor-harness"
+          className="kosh-blocknote-editor kosh-editor-harness"
           data-theme={theme}
           onDropCapture={(event) => {
             if (![...(event.dataTransfer?.types ?? [])].includes("application/x-kosh-media")) {
