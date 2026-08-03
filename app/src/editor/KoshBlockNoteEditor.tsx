@@ -42,6 +42,7 @@ import type {
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
 import { KoshEditorInteractionProvider, useKoshEditorDisabled } from "./interactionState";
+import { KoshGutterSelectionExtension, setGutterBlockSelection } from "./gutterSelection";
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
@@ -130,7 +131,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       initialContent: markdownToKoshBlocks(initialValue),
       placeholders: { default: initialPlaceholder },
       tabBehavior: "prefer-indent",
-      extensions: [KoshSearchFocusExtension],
+      extensions: [KoshGutterSelectionExtension, KoshSearchFocusExtension],
       domAttributes: {
         editor: {
           ...KOSH_WRITING_ASSISTANCE_ATTRIBUTES,
@@ -288,6 +289,9 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                 }));
               }}
             >
+              {properties.variant === "page" && (
+                <KoshGutterSelectionRail disabled={Boolean(properties.disabled)} editor={editor} />
+              )}
               <BlockNoteView
                 comments={false}
                 editor={editor}
@@ -335,6 +339,112 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     );
   },
 );
+
+function KoshGutterSelectionRail({
+  disabled,
+  editor,
+}: {
+  disabled: boolean;
+  editor: KoshBlockNoteEditorInstance;
+}) {
+  const anchorBlockId = useRef<string | null>(null);
+
+  const installSelection = useCallback(
+    (headBlockId: string) => {
+      const anchorId = anchorBlockId.current;
+      if (!anchorId) return;
+      const root = editor.domElement;
+      if (!root) return;
+      const blockIds = topLevelBlockElements(root)
+        .map((element) => element.dataset.id)
+        .filter((id): id is string => Boolean(id));
+      const anchorIndex = blockIds.indexOf(anchorId);
+      const headIndex = blockIds.indexOf(headBlockId);
+      if (anchorIndex < 0 || headIndex < 0) return;
+      const firstIndex = Math.min(anchorIndex, headIndex);
+      const lastIndex = Math.max(anchorIndex, headIndex);
+      const selectedIds = blockIds.slice(firstIndex, lastIndex + 1);
+      setGutterBlockSelection(editor, selectedIds);
+    },
+    [editor],
+  );
+
+  const selectAtPointer = useCallback(
+    (clientY: number) => {
+      const root = editor.domElement;
+      if (!root) return;
+      const block = blockElementAtY(topLevelBlockElements(root), clientY);
+      const blockId = block?.dataset.id;
+      if (blockId) installSelection(blockId);
+    },
+    [editor, installSelection],
+  );
+
+  return (
+    <div
+      aria-hidden="true"
+      className="kosh-blocknote-gutter-selection-rail"
+      data-testid="note-gutter-selection-rail"
+      onPointerCancel={(event) => {
+        anchorBlockId.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      }}
+      onPointerDown={(event) => {
+        if (disabled || event.button !== 0) return;
+        const root = editor.domElement;
+        const block = root
+          ? blockElementAtY(topLevelBlockElements(root), event.clientY)
+          : undefined;
+        const blockId = block?.dataset.id;
+        if (!blockId) return;
+        event.preventDefault();
+        anchorBlockId.current = blockId;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        installSelection(blockId);
+      }}
+      onPointerMove={(event) => {
+        if (anchorBlockId.current === null || (event.buttons & 1) === 0) return;
+        event.preventDefault();
+        selectAtPointer(event.clientY);
+      }}
+      onPointerUp={(event) => {
+        if (anchorBlockId.current === null) return;
+        event.preventDefault();
+        selectAtPointer(event.clientY);
+        anchorBlockId.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      }}
+    />
+  );
+}
+
+function topLevelBlockElements(root: HTMLElement): HTMLElement[] {
+  return [
+    ...root.querySelectorAll<HTMLElement>(
+      ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+    ),
+  ];
+}
+
+function blockElementAtY(blocks: HTMLElement[], clientY: number): HTMLElement | undefined {
+  let closest: { distance: number; element: HTMLElement } | undefined;
+  for (const element of blocks) {
+    const bounds = element.getBoundingClientRect();
+    const distance =
+      clientY < bounds.top
+        ? bounds.top - clientY
+        : clientY > bounds.bottom
+          ? clientY - bounds.bottom
+          : 0;
+    if (!closest || distance < closest.distance) closest = { distance, element };
+    if (distance === 0) return element;
+  }
+  return closest?.element;
+}
 
 function focusCitation(
   editor: KoshBlockNoteEditorInstance,
@@ -703,8 +813,39 @@ function mediaItem(
 function KoshSideMenu(properties: SideMenuProps) {
   return (
     <SideMenu {...properties}>
+      <KoshAddBlockButton />
       <KoshDragHandleButton />
     </SideMenu>
+  );
+}
+
+function KoshAddBlockButton() {
+  const Components = useComponentsContext()!;
+  const editor = useBlockNoteEditor(koshBlockNoteSchema);
+  const disabled = useKoshEditorDisabled();
+  const hoveredBlock = useExtensionState(SideMenuExtension, {
+    editor,
+    selector: (state) => state?.block,
+  });
+  if (!hoveredBlock) return null;
+  return (
+    <Components.SideMenu.Button
+      className={`bn-button kosh-gutter-button kosh-gutter-button--add${
+        disabled ? " bn-button--disabled" : ""
+      }`}
+      icon={<span aria-hidden>+</span>}
+      label="Click to add below"
+      onClick={(event) => {
+        if (disabled) {
+          event.preventDefault();
+          return;
+        }
+        const inserted = editor.insertBlocks([{ type: "paragraph" }], hoveredBlock, "after")[0];
+        if (!inserted) return;
+        editor.setTextCursorPosition(inserted, "start");
+        editor.focus();
+      }}
+    />
   );
 }
 
@@ -728,10 +869,18 @@ function KoshDragHandleButton() {
     >
       <Components.Generic.Menu.Trigger>
         <Components.SideMenu.Button
-          className={`bn-button${disabled ? " bn-button--disabled" : ""}`}
+          className={`bn-button kosh-gutter-button kosh-gutter-button--drag${
+            disabled ? " bn-button--disabled" : ""
+          }`}
           draggable={!disabled}
-          icon={<span aria-hidden>⋮⋮</span>}
-          label="Open block menu"
+          icon={
+            <span aria-hidden className="kosh-gutter-dots">
+              {Array.from({ length: 6 }, (_, index) => (
+                <i key={index} />
+              ))}
+            </span>
+          }
+          label="Drag to move"
           onDragEnd={() => {
             if (disabled) return;
             sideMenu.blockDragEnd();

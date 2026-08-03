@@ -286,10 +286,15 @@ button {
 }
 
 .note-page__document {
-  width: min(760px, calc(100% - 56px));
+  --note-page-gutter: max(112px, calc(50% - 380px));
+  width: 100%;
   min-height: 100vh;
-  padding: clamp(48px, 8vh, 88px) 0 64px;
-  margin: 0 auto;
+  padding: clamp(48px, 8vh, 88px) 32px 64px var(--note-page-gutter);
+}
+
+.note-page__document > * {
+  width: 100%;
+  max-width: 760px;
 }
 
 .note-actions {
@@ -773,8 +778,9 @@ button {
 
 @media (max-width: 720px) {
   .note-page__document {
-    width: calc(100% - 32px);
+    --note-page-gutter: 104px;
     padding-top: 36px;
+    padding-right: 20px;
   }
 }
 
@@ -1440,7 +1446,7 @@ button {
   }
 
   .note-page__document {
-    width: min(760px, calc(100% - 32px));
+    --note-page-gutter: 104px;
   }
 
   .note-sources__row {

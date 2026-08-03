@@ -41,6 +41,57 @@
   color: var(--muted);
 }
 
+.kosh-blocknote-editor .kosh-gutter-button {
+  position: relative;
+  overflow: visible;
+  color: var(--muted);
+}
+
+.kosh-blocknote-editor .kosh-gutter-button::after {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  padding: 5px 7px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  box-shadow: var(--shadow);
+  content: attr(aria-label);
+  font: 9px/1.2 var(--font-family-app);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.kosh-blocknote-editor .kosh-gutter-button:hover::after,
+.kosh-blocknote-editor .kosh-gutter-button:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+.kosh-blocknote-editor .kosh-gutter-button--add > span {
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.kosh-gutter-dots {
+  display: grid;
+  grid-template-columns: repeat(2, 2px);
+  gap: 2px;
+}
+
+.kosh-gutter-dots i {
+  width: 2px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 50%;
+}
+
 .kosh-blocknote-editor .bn-suggestion-menu-item {
   flex: 0 0 52px;
   min-height: 52px;
@@ -59,12 +110,34 @@
 }
 
 .kosh-blocknote-editor--page {
+  position: relative;
   min-height: 100%;
   overflow: visible;
   border: 0;
   border-radius: 0;
   background: transparent;
   transition: none;
+}
+
+.kosh-blocknote-gutter-selection-rail {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--note-page-gutter));
+  width: calc(var(--note-page-gutter) - 56px);
+  min-width: 40px;
+  cursor: default;
+  touch-action: none;
+  user-select: none;
+}
+
+.kosh-blocknote-editor--page
+  .bn-block-outer[data-kosh-gutter-selected="true"]
+  > .bn-block
+  > .bn-block-content {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .kosh-blocknote-editor--page:focus-within {
