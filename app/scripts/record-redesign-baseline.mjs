@@ -413,6 +413,10 @@ function percentile(sorted, quantile) {
   return sorted[Math.max(0, Math.ceil(sorted.length * quantile) - 1)];
 }
 
+function round(value) {
+  return Math.round(value * 100) / 100;
+}
+
 async function waitForServer(url) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     if (server.exitCode !== null) {
