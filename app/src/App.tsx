@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TidbitRecord } from "./backend/contracts";
 import { useBackend } from "./backend/context";
 import { ErrorBoundary } from "./components/States";
+import { FIND_IN_NOTE_REQUEST_EVENT } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
@@ -29,6 +30,7 @@ function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRouteOpen = pathname === "/search";
+  const noteRouteOpen = /^\/(?:new|notes)\//u.test(pathname);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpen);
   const [deletedNote, setDeletedNote] = useState<TidbitRecord | null>(null);
   const [undoing, setUndoing] = useState(false);
@@ -118,6 +120,30 @@ function AppShell() {
       unlisten?.();
     };
   }, [openNewNote, openSearch, toggleSidebar]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        !noteRouteOpen ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        !event.metaKey ||
+        event.key.toLowerCase() !== "f"
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setSearchOpen(false);
+      window.requestAnimationFrame(() => {
+        window.dispatchEvent(new Event(FIND_IN_NOTE_REQUEST_EVENT));
+      });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [noteRouteOpen]);
 
   useEffect(() => {
     if ("__TAURI_INTERNALS__" in window) return;

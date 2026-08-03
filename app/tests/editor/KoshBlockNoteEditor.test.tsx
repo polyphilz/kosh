@@ -243,6 +243,53 @@ describe("production BlockNote editor", () => {
     expect(matches[2]).toHaveTextContent("Deep match.");
   });
 
+  it("finds case-insensitive text across rich marks without editing", async () => {
+    const onChange = vi.fn();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={onChange}
+          ref={ref}
+          value={"Needle once.\n\nSecond **nee**dle and NEEDLE.\n\n$$\nmatrix_token\n$$"}
+        />
+      </AppearanceProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Body" })).toHaveTextContent(
+        "Second needle and NEEDLE.",
+      ),
+    );
+
+    let result: { activeIndex: number; count: number } | undefined;
+    act(() => {
+      result = ref.current?.findInNote("needle");
+    });
+    expect(result).toEqual({ activeIndex: 0, count: 3 });
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+
+    act(() => {
+      result = ref.current?.moveFindInNote("next");
+    });
+    expect(result).toEqual({ activeIndex: 1, count: 3 });
+    expect(
+      [...document.querySelectorAll('[data-kosh-find-active="true"]')]
+        .map((element) => element.textContent)
+        .join(""),
+    ).toBe("needle");
+
+    act(() => {
+      result = ref.current?.findInNote("MATRIX_TOKEN");
+    });
+    expect(result).toEqual({ activeIndex: 0, count: 1 });
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+
+    act(() => ref.current?.clearFindInNote());
+    expect(document.querySelector('[data-kosh-find-match="true"]')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(

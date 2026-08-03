@@ -197,6 +197,17 @@
   animation: kosh-search-match-flash 1.15s cubic-bezier(0.2, 0.75, 0.25, 1) both;
 }
 
+.kosh-blocknote-editor [data-kosh-find-match="true"] {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.kosh-blocknote-editor [data-kosh-find-active="true"] {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 68%, transparent);
+}
+
 @keyframes kosh-search-match-flash {
   0% {
     background-color: color-mix(in srgb, var(--accent) 18%, transparent);

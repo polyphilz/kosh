@@ -36,6 +36,23 @@ test("the titleless note route focuses and checkpoints in WebKit", async ({ page
   await expect(editor).toContainText("WebKit preserves this titleless note automatically.");
 });
 
+test("Command-F finds and cycles through the current note in WebKit", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("WebKit local match. Another LOCAL match.");
+
+  await page.keyboard.press("Meta+f");
+  const findBar = page.getByRole("search", { name: "Find in note" });
+  const find = findBar.getByRole("searchbox", { name: "Find in note" });
+  await expect(find).toBeFocused();
+  await find.fill("local");
+  await expect(findBar.getByRole("status")).toContainText("1 of 2");
+  await find.press("Enter");
+  await expect(findBar.getByRole("status")).toContainText("2 of 2");
+  await find.press("Escape");
+  await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(0);
+});
+
 test("deleting the first edit stays empty across WebKit autosave boundaries", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

@@ -45,6 +45,25 @@ test("the minimal sidebar persists and its commands leave editor shortcuts alone
   await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
   await page.keyboard.press("Escape");
 
+  await editor.fill("Find this local phrase. Another LOCAL phrase.");
+  await page.keyboard.press("Meta+f");
+  const findBar = page.getByRole("search", { name: "Find in note" });
+  const find = findBar.getByRole("searchbox", { name: "Find in note" });
+  await expect(find).toBeFocused();
+  await find.fill("local");
+  await expect(findBar.getByRole("status")).toContainText("1 of 2");
+  await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(2);
+  await find.press("Enter");
+  await expect(findBar.getByRole("status")).toContainText("2 of 2");
+  await find.press("Shift+Enter");
+  await expect(findBar.getByRole("status")).toContainText("1 of 2");
+  await findBar.getByRole("button", { name: "Next match" }).click();
+  await expect(findBar.getByRole("status")).toContainText("2 of 2");
+  await page.keyboard.press("Escape");
+  await expect(find).toHaveCount(0);
+  await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(0);
+  await expect(editor).toBeFocused();
+
   const priorUrl = page.url();
   await page.keyboard.press("Meta+n");
   await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);

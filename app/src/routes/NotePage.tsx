@@ -15,6 +15,7 @@ import {
   KoshBlockNoteEditor,
   type KoshBlockNoteEditorHandle,
 } from "../editor/KoshBlockNoteEditor";
+import { FIND_IN_NOTE_REQUEST_EVENT, type FindInNoteResult } from "../editor/findInNote";
 import {
   createUuidV7,
   NoteAutosaveCoordinator,
@@ -56,6 +57,7 @@ const reconciliationStarted = new WeakSet<Backend>();
 const activeNoteIds = new WeakMap<Backend, string>();
 const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>>();
 const SEARCH_MATCH_FLASH_MS = 1_400;
+const EMPTY_FIND_RESULT: FindInNoteResult = { activeIndex: -1, count: 0 };
 
 export function NotePage({ mode, noteId, passageId }: NotePageProps) {
   const backend = useBackend();
@@ -135,6 +137,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const announceDeletedNote = useNoteDeletion();
   const navigate = useNavigate();
   const editorRef = useRef<KoshBlockNoteEditorHandle>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
   const editorMediaPendingRef = useRef(false);
   const dropCountRef = useRef(0);
   const pendingWaitersRef = useRef(new Set<() => void>());
@@ -147,10 +150,45 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findState, setFindState] = useState({ ...EMPTY_FIND_RESULT, query: "" });
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
   const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
   const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
+
+  const updateFindState = useCallback((query: string, activeIndex = 0) => {
+    const result = editorRef.current?.findInNote(query, activeIndex) ?? EMPTY_FIND_RESULT;
+    setFindState({ ...result, query });
+  }, []);
+
+  const moveFind = useCallback((direction: "next" | "previous") => {
+    const result = editorRef.current?.moveFindInNote(direction) ?? EMPTY_FIND_RESULT;
+    setFindState((current) => ({ ...current, ...result }));
+  }, []);
+
+  const closeFind = useCallback(() => {
+    editorRef.current?.clearFindInNote();
+    setFindOpen(false);
+    window.requestAnimationFrame(() => editorRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    const openFind = () => {
+      setFindOpen(true);
+      setFindState((current) => {
+        const result =
+          editorRef.current?.findInNote(current.query, current.activeIndex) ?? EMPTY_FIND_RESULT;
+        return { ...current, ...result };
+      });
+      window.requestAnimationFrame(() => {
+        findInputRef.current?.focus();
+        findInputRef.current?.select();
+      });
+    };
+    window.addEventListener(FIND_IN_NOTE_REQUEST_EVENT, openFind);
+    return () => window.removeEventListener(FIND_IN_NOTE_REQUEST_EVENT, openFind);
+  }, []);
 
   const updatePendingState = useCallback(() => {
     const pending = editorMediaPendingRef.current || dropCountRef.current > 0;
@@ -464,6 +502,15 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   return (
     <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
       <h1 className="visually-hidden">Note</h1>
+      {findOpen && (
+        <NoteFindBar
+          inputRef={findInputRef}
+          onClose={closeFind}
+          onMove={moveFind}
+          onQueryChange={updateFindState}
+          state={findState}
+        />
+      )}
       <NoteActions
         canEditSources={
           snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
@@ -502,6 +549,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(bodyMarkdown) => {
             coordinator.update(bodyMarkdown);
+            if (findOpen) updateFindState(findState.query, findState.activeIndex);
             if (
               searchFocus?.phase === "FOCUSED" &&
               !editorRef.current?.revalidateCitationFocus(searchFocus.citation)
@@ -573,6 +621,79 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         )}
       </div>
     </main>
+  );
+}
+
+interface NoteFindBarProps {
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  onClose: () => void;
+  onMove: (direction: "next" | "previous") => void;
+  onQueryChange: (query: string) => void;
+  state: FindInNoteResult & { query: string };
+}
+
+function NoteFindBar({ inputRef, onClose, onMove, onQueryChange, state }: NoteFindBarProps) {
+  const status = !state.query
+    ? "Type to find"
+    : state.count === 0
+      ? "No matches"
+      : `${state.activeIndex + 1} of ${state.count}`;
+  return (
+    <section
+      aria-label="Find in note"
+      className="note-find"
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }}
+      role="search"
+    >
+      <input
+        aria-label="Find in note"
+        autoComplete="off"
+        data-kosh-note-find-input
+        maxLength={256}
+        onChange={(event) => onQueryChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter") {
+            event.preventDefault();
+            onMove(event.shiftKey ? "previous" : "next");
+          }
+        }}
+        placeholder="Find in note"
+        ref={inputRef}
+        spellCheck={false}
+        type="search"
+        value={state.query}
+      />
+      <span aria-live="polite" className="note-find__status" role="status">
+        {status}
+      </span>
+      <button
+        aria-label="Previous match"
+        disabled={state.count === 0}
+        onClick={() => onMove("previous")}
+        title="Previous match (Shift-Enter)"
+        type="button"
+      >
+        ↑
+      </button>
+      <button
+        aria-label="Next match"
+        disabled={state.count === 0}
+        onClick={() => onMove("next")}
+        title="Next match (Enter)"
+        type="button"
+      >
+        ↓
+      </button>
+      <button aria-label="Close find" onClick={onClose} title="Close (Escape)" type="button">
+        ×
+      </button>
+    </section>
   );
 }
 

@@ -41,6 +41,13 @@ import type {
   SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
+import {
+  clearFindInNote as clearEditorFind,
+  findInNote as findEditorText,
+  type FindInNoteResult,
+  KoshFindInNoteExtension,
+  moveFindInNote as moveEditorFind,
+} from "./findInNote";
 import { KoshEditorInteractionProvider, useKoshEditorDisabled } from "./interactionState";
 import {
   clearGutterBlockSelection,
@@ -61,13 +68,16 @@ import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
 export const KOSH_NOTE_PLACEHOLDER = "Write something or press '/' for commands";
 
 export interface KoshBlockNoteEditorHandle {
+  clearFindInNote: () => void;
   clearSearchFocus: () => void;
+  findInNote: (query: string, activeIndex?: number) => FindInNoteResult;
   focus: () => void;
   focusCitation: (citation: CitationResolution) => boolean;
   isSuggestionMenuOpen: () => boolean;
   insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
   insertPdfs: (pdfs: PdfRecord[]) => void;
+  moveFindInNote: (direction: "next" | "previous") => FindInNoteResult;
   revalidateCitationFocus: (citation: CitationResolution) => boolean;
 }
 
@@ -136,7 +146,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       initialContent: markdownToKoshBlocks(initialValue),
       placeholders: { default: initialPlaceholder },
       tabBehavior: "prefer-indent",
-      extensions: [KoshGutterSelectionExtension, KoshSearchFocusExtension],
+      extensions: [KoshFindInNoteExtension, KoshGutterSelectionExtension, KoshSearchFocusExtension],
       domAttributes: {
         editor: {
           ...KOSH_WRITING_ASSISTANCE_ATTRIBUTES,
@@ -259,7 +269,9 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     useImperativeHandle(
       ref,
       () => ({
+        clearFindInNote: () => clearEditorFind(editor),
         clearSearchFocus: () => clearSearchFocus(editor, searchFocusBlockIds),
+        findInNote: (query, activeIndex) => findEditorText(editor, query, activeIndex),
         focus: () => editor.focus(),
         focusCitation: (citation) => focusCitation(editor, citation, searchFocusBlockIds),
         isSuggestionMenuOpen: () => suggestionMenuOpen.current,
@@ -268,6 +280,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
           mediaController.insert(images.map((record) => ({ recordKind: "IMAGE", record }))),
         insertPdfs: (pdfs) =>
           mediaController.insert(pdfs.map((record) => ({ recordKind: "PDF", record }))),
+        moveFindInNote: (direction) => moveEditorFind(editor, direction),
         revalidateCitationFocus: (citation) =>
           revalidateCitationFocus(editor, citation, searchFocusBlockIds),
       }),
