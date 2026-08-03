@@ -130,16 +130,16 @@ test("paste, native-drop insertion, cancellation, and failure retain authored co
 });
 
 test("read-only editors reject direct, deferred, pasted, and dropped media", async ({ page }) => {
-  await openSpike(page);
+  await openHarness(page);
   const original = "Read-only authored text";
   await page.evaluate(
-    (markdown) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(markdown),
+    (markdown) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(markdown),
     original,
   );
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setEditable(false));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setEditable(false));
 
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.insertMediaFixture());
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia());
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.insertMediaFixture());
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia());
   await page.evaluate(() => {
     const clipboard = new DataTransfer();
     clipboard.items.add(new File([new Uint8Array([1])], "paste.png", { type: "image/png" }));
@@ -242,37 +242,39 @@ test("cancelled or failed media restores the unsplit authored text", async ({ pa
 test("overlapping deferred media restores one paragraph or preserves committed media", async ({
   page,
 }) => {
-  await openSpike(page);
+  await openHarness(page);
   const original = "Before after";
 
   await page.evaluate(
-    (markdown) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(markdown),
+    (markdown) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(markdown),
     original,
   );
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setCursorOffset(6));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setCursorOffset(6));
   const cancelled = await page.evaluate(() => [
-    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
-    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
   ]);
   await page.evaluate(([first, second]) => {
-    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(first, "cancel");
-    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(second, "cancel");
+    window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(first, "cancel");
+    window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(second, "cancel");
   }, cancelled);
   await expect.poll(() => editorMarkdown(page)).toBe(original);
-  expect((await readSnapshot(page)).blocks.map((block) => block.type)).toEqual(["paragraph"]);
+  expect((await readHarnessSnapshot(page)).blocks.map((block) => block.type)).toEqual([
+    "paragraph",
+  ]);
 
   await page.evaluate(
-    (markdown) => window.__KOSH_BLOCKNOTE_SPIKE__!.loadMarkdown(markdown),
+    (markdown) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(markdown),
     original,
   );
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_SPIKE__!.setCursorOffset(6));
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setCursorOffset(6));
   const mixed = await page.evaluate(() => [
-    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
-    window.__KOSH_BLOCKNOTE_SPIKE__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
+    window.__KOSH_BLOCKNOTE_HARNESS__!.beginDeferredMedia(),
   ]);
   await page.evaluate(([first, second]) => {
-    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(second, "success");
-    window.__KOSH_BLOCKNOTE_SPIKE__!.resolveDeferredMedia(first, "cancel");
+    window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(second, "success");
+    window.__KOSH_BLOCKNOTE_HARNESS__!.resolveDeferredMedia(first, "cancel");
   }, mixed);
   await expect(page.locator("[data-kosh-image='true']")).toHaveCount(1);
   await expect.poll(() => editorMarkdown(page)).toContain("Before\n\n{{kosh:image:");

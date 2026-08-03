@@ -91,7 +91,7 @@ function textAttentionStyles(value: unknown): string | null {
 
 function blockFromMarkdown(node: RootContent, source: string): KoshBlockNotePartialBlock[] {
   if (containsTitledLink(node)) return unsupportedMarkdown(node);
-  if (containsUnsupportedInlineMathContext(node)) return unsupportedMarkdown(node);
+  if (containsUnsupportedInlineContext(node)) return unsupportedMarkdown(node);
   switch (node.type) {
     case "paragraph":
       if (node.children.length === 1 && node.children[0]?.type === "text") {
@@ -528,13 +528,13 @@ function textFromMarkdownNode(node: Content): string {
   return "children" in node ? (node.children as Content[]).map(textFromMarkdownNode).join("") : "";
 }
 
-function containsUnsupportedInlineMathContext(node: Content, decorated = false): boolean {
-  if (node.type === "linkReference") return true;
+function containsUnsupportedInlineContext(node: Content, decorated = false): boolean {
+  if (["image", "imageReference", "linkReference"].includes(node.type)) return true;
   if (node.type === "inlineMath") return decorated;
   if (!("children" in node)) return false;
   const decoratesChildren =
     decorated || ["delete", "emphasis", "link", "linkReference", "strong"].includes(node.type);
   return (node.children as Content[]).some((child) =>
-    containsUnsupportedInlineMathContext(child, decoratesChildren),
+    containsUnsupportedInlineContext(child, decoratesChildren),
   );
 }

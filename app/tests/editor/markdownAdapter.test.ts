@@ -158,11 +158,13 @@ describe("restricted BlockNote Markdown adapter", () => {
     }
   });
 
-  it("rejects reference links, titled links, and fenced-code metadata", () => {
+  it("rejects reference links, remote images, and fenced-code metadata", () => {
     for (const markdown of [
       "Read [the docs][docs].\n\n[docs]: https://example.com/reference",
       'Read [the docs](https://example.com/reference "Reference").',
       'Read [the docs][docs].\n\n[docs]: https://example.com/reference "Reference"',
+      "![diagram](https://example.com/diagram.png)",
+      "![diagram][image]\n\n[image]: https://example.com/diagram.png",
       '```js title="example"\nconst answer = 42;\n```',
     ]) {
       expect(() => markdownToKoshBlocks(markdown)).toThrow(/Unsupported Markdown block/u);

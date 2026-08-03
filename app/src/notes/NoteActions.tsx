@@ -38,7 +38,14 @@ export function NoteActions({
     setDrafts(sources.length > 0 ? cloneSources(sources) : [{ label: null, url: null }]);
     setSourceError(null);
     setSourcesOpen(true);
-    window.requestAnimationFrame(() => firstInput.current?.focus());
+    window.requestAnimationFrame(() => {
+      if (
+        document.activeElement === document.body ||
+        document.activeElement === sourcesTrigger.current
+      ) {
+        firstInput.current?.focus();
+      }
+    });
   };
   const closeSources = () => {
     setSourcesOpen(false);
