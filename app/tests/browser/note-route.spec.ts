@@ -40,6 +40,63 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
   );
 });
 
+test("new notes, settings, back, and forward use the transient route stack", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Note A anchors the navigation stack.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+  const noteAUrl = page.url();
+
+  await page.keyboard.press("Meta+n");
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  await expect(editor).toBeEmpty();
+  await editor.fill("Note B replaces only its ephemeral route.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+  const noteBUrl = page.url();
+  expect(noteBUrl).not.toBe(noteAUrl);
+
+  await page.goBack();
+  await expect(page).toHaveURL(noteAUrl);
+  await expect(editor).toContainText("Note A anchors the navigation stack.");
+  await page.goForward();
+  await expect(page).toHaveURL(noteBUrl);
+  await expect(editor).toContainText("Note B replaces only its ephemeral route.");
+
+  await page.getByRole("link", { name: "Search", exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/search$/u);
+  await page.goBack();
+  await expect(page).toHaveURL(noteBUrl);
+  await expect(editor).toContainText("Note B replaces only its ephemeral route.");
+
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page).toHaveURL(/\/#\/settings$/u);
+  await page.goBack();
+  await expect(page).toHaveURL(noteBUrl);
+  await expect(editor).toContainText("Note B replaces only its ephemeral route.");
+});
+
+test("a failed navigation checkpoint keeps the active note open and recoverable", async ({
+  page,
+}) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Do not leave until this reaches durable history.");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    backend.checkpointWorkingCopy = async () => {
+      throw new Error("simulated navigation checkpoint failure");
+    };
+  });
+  const noteUrl = page.url();
+
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+
+  await expect(page).toHaveURL(noteUrl);
+  await expect(page.getByRole("alert")).toContainText("simulated navigation checkpoint failure");
+  await expect(editor).toContainText("Do not leave until this reaches durable history.");
+});
+
 test("navigation fences an edit before the working-copy debounce", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

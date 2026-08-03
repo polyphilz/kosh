@@ -89,6 +89,7 @@ export const TauriCommand = {
 export const TauriEvent = {
   CheckForUpdates: "kosh://check-for-updates",
   FileDrop: "kosh://file-drop",
+  NavigationCommand: "kosh://navigation-command",
   OpenSettings: "kosh://open-settings",
   PrepareQuit: "kosh://prepare-quit",
   QuickAddShown: "kosh://quick-add-shown",

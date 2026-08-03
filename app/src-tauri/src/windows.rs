@@ -11,6 +11,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSRunningApplication, NSWindow,
     NSWindowCollectionBehavior, NSWorkspace,
 };
+use objc2_web_kit::WKWebView;
 use serde::Serialize;
 use tauri::{
     image::Image,
@@ -39,6 +40,7 @@ const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const QUICK_ADD_SHOWN_EVENT: &str = "kosh://quick-add-shown";
 const OPEN_SETTINGS_EVENT: &str = "kosh://open-settings";
+const NAVIGATION_COMMAND_EVENT: &str = "kosh://navigation-command";
 const CHECK_FOR_UPDATES_EVENT: &str = "kosh://check-for-updates";
 const SHORTCUT_SETTINGS_CHANGED_EVENT: &str = "kosh://shortcut-settings-changed";
 const PREPARE_QUIT_EVENT: &str = "kosh://prepare-quit";
@@ -47,6 +49,32 @@ const QUIT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const SETTINGS_MENU_ID: &str = "open-settings";
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
 const CHECK_FOR_UPDATES_TRAY_MENU_ID: &str = "check-for-updates-tray";
+const FILE_MENU_TEXT: &str = "File";
+const VIEW_MENU_TEXT: &str = "View";
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum NavigationCommand {
+    NewNote,
+    Back,
+    Forward,
+}
+
+impl NavigationCommand {
+    const fn menu_id(self) -> &'static str {
+        match self {
+            Self::NewNote => "new-note",
+            Self::Back => "navigate-back",
+            Self::Forward => "navigate-forward",
+        }
+    }
+
+    fn from_menu_id(id: &str) -> Option<Self> {
+        [Self::NewNote, Self::Back, Self::Forward]
+            .into_iter()
+            .find(|command| command.menu_id() == id)
+    }
+}
 
 #[derive(Clone, Copy)]
 enum TrayAction {
@@ -249,6 +277,7 @@ pub(crate) fn setup(
     // after a tray action can leave the previously active application named in the menu bar.
     // Remaining Regular costs a Dock icon and keeps activation and menu-bar ownership stable.
     app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    enable_main_navigation_gestures(app.handle())?;
     app.manage(WindowState::default());
     install_application_menu(app)?;
     create_quick_add_window(app.handle())?;
@@ -280,15 +309,72 @@ fn install_application_menu(app: &mut App) -> tauri::Result<()> {
         let separator = PredefinedMenuItem::separator(app)?;
         application_menu.append_items(&[&check_for_updates, &separator, &settings])?;
     }
+    if let Some(file_menu) = menu.items()?.into_iter().find_map(|item| match item {
+        MenuItemKind::Submenu(submenu)
+            if submenu.text().ok().as_deref() == Some(FILE_MENU_TEXT) =>
+        {
+            Some(submenu)
+        }
+        _ => None,
+    }) {
+        let new_note = MenuItemBuilder::with_id(NavigationCommand::NewNote.menu_id(), "New Note")
+            .accelerator("CmdOrCtrl+N")
+            .build(app)?;
+        let separator = PredefinedMenuItem::separator(app)?;
+        file_menu.prepend_items(&[&new_note, &separator])?;
+    }
+    if let Some(view_menu) = menu.items()?.into_iter().find_map(|item| match item {
+        MenuItemKind::Submenu(submenu)
+            if submenu.text().ok().as_deref() == Some(VIEW_MENU_TEXT) =>
+        {
+            Some(submenu)
+        }
+        _ => None,
+    }) {
+        let back = MenuItemBuilder::with_id(NavigationCommand::Back.menu_id(), "Back")
+            .accelerator("CmdOrCtrl+[")
+            .build(app)?;
+        let forward = MenuItemBuilder::with_id(NavigationCommand::Forward.menu_id(), "Forward")
+            .accelerator("CmdOrCtrl+]")
+            .build(app)?;
+        let separator = PredefinedMenuItem::separator(app)?;
+        view_menu.prepend_items(&[&back, &forward, &separator])?;
+    }
     app.on_menu_event(|app, event| match event.id().as_ref() {
         SETTINGS_MENU_ID => dispatch_logged(app, "show settings", show_settings_inner),
         CHECK_FOR_UPDATES_MENU_ID => {
             dispatch_logged(app, "check for updates", check_for_updates_inner)
         }
-        _ => {}
+        id => {
+            if let Some(command) = NavigationCommand::from_menu_id(id) {
+                dispatch_navigation_command(app, command);
+            }
+        }
     });
     app.set_menu(menu)?;
     Ok(())
+}
+
+fn enable_main_navigation_gestures(app: &AppHandle) -> tauri::Result<()> {
+    let window = app
+        .get_webview_window(MAIN_LABEL)
+        .ok_or(tauri::Error::WebviewNotFound)?;
+    window.with_webview(|webview| unsafe {
+        // SAFETY: Tauri supplies the main-thread WKWebView owned by this window for the
+        // duration of the closure.
+        let view: &WKWebView = &*webview.inner().cast();
+        view.setAllowsBackForwardNavigationGestures(true);
+    })
+}
+
+fn dispatch_navigation_command(app: &AppHandle, command: NavigationCommand) {
+    if let Err(error) = dispatch_to_main_thread(app, "navigate main window", move |app| {
+        show_main_inner(app)?;
+        app.emit_to(MAIN_LABEL, NAVIGATION_COMMAND_EVENT, command)
+            .map_err(|error| format!("could not dispatch navigation command: {error}"))
+    }) {
+        log::error!("navigation command dispatch failed: {error}");
+    }
 }
 
 fn create_quick_add_window(app: &AppHandle) -> tauri::Result<()> {
@@ -1206,6 +1292,21 @@ mod tests {
             .chunks_exact(4)
             .filter(|pixel| pixel[3] > 0)
             .all(|pixel| pixel[..3] == [255, 255, 255]));
+    }
+
+    #[test]
+    fn navigation_commands_share_stable_menu_and_webview_contracts() {
+        assert_eq!(NavigationCommand::NewNote.menu_id(), "new-note");
+        assert_eq!(NavigationCommand::Back.menu_id(), "navigate-back");
+        assert_eq!(NavigationCommand::Forward.menu_id(), "navigate-forward");
+        assert!(matches!(
+            NavigationCommand::from_menu_id("navigate-back"),
+            Some(NavigationCommand::Back)
+        ));
+        assert_eq!(
+            serde_json::to_value(NavigationCommand::NewNote).expect("serialize new note"),
+            serde_json::json!("NEW_NOTE")
+        );
     }
 
     fn bindings(quick_add: &str, main_window: &str) -> Vec<KeyboardBinding> {
