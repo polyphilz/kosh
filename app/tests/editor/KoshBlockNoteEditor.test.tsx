@@ -56,6 +56,34 @@ describe("production BlockNote editor", () => {
     expect(onChange).toHaveBeenLastCalledWith("Do not lose this shower thought.");
   });
 
+  it("emits a user edit that returns to the frozen initial value", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderEditor("", onChange);
+    const textbox = await screen.findByRole("textbox", { name: "Body" });
+    const paragraph = textbox.querySelector(".bn-inline-content") || textbox;
+
+    await user.click(paragraph);
+    await user.type(paragraph, "f");
+    await user.clear(textbox);
+
+    expect(textbox.textContent).toBe("");
+    expect(onChange).toHaveBeenLastCalledWith("");
+  });
+
+  it("emits restoration of an existing note's exact initial content", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderEditor("Original thought.", onChange);
+    const textbox = await screen.findByRole("textbox", { name: "Body" });
+
+    await user.clear(textbox);
+    await user.type(textbox, "Original thought.");
+
+    expect(textbox).toHaveTextContent("Original thought.");
+    expect(onChange).toHaveBeenLastCalledWith("Original thought.");
+  });
+
   it("exposes only the scoped insertion menu", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

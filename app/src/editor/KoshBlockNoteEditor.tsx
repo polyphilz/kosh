@@ -183,6 +183,11 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       () => restrictedSlashItems(editor, mediaController, propertiesRef, capabilities),
       [capabilities, editor, mediaController],
     );
+    const emitUserChange = useCallback((markdown: string) => {
+      if (markdown === lastEmittedValue.current) return;
+      lastEmittedValue.current = markdown;
+      propertiesRef.current.onChange(markdown);
+    }, []);
     const settleLiteralSlash = useCallback(() => {
       const commandWasSelected = slashCommandSelected.current;
       slashCommandSelected.current = false;
@@ -191,11 +196,8 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       if (commandWasSelected) return;
       const markdown = koshBlocksToMarkdown(editor.document);
       if (markdown.trim() !== "/") return;
-      lastEmittedValue.current = markdown;
-      if (markdown !== propertiesRef.current.value) {
-        propertiesRef.current.onChange(markdown);
-      }
-    }, [editor]);
+      emitUserChange(markdown);
+    }, [editor, emitUserChange]);
 
     useEffect(() => {
       mediaController.activate();
@@ -280,11 +282,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                     return;
                   }
                   literalSlashPending.current = false;
-                  if (markdown === lastEmittedValue.current) return;
-                  lastEmittedValue.current = markdown;
-                  if (markdown !== propertiesRef.current.value) {
-                    propertiesRef.current.onChange(markdown);
-                  }
+                  emitUserChange(markdown);
                 }}
                 slashMenu={false}
                 sideMenu={false}

@@ -40,6 +40,33 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
   );
 });
 
+test("deleting the first edit before checkpoint keeps the note ephemeral and empty", async ({
+  page,
+}) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+
+  await editor.pressSequentially("f");
+  await page.waitForTimeout(500);
+  await editor.press("Backspace");
+
+  await expect(editor).toBeEmpty();
+  await page.waitForTimeout(2_500);
+  await expect(editor).toBeEmpty();
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  expect(
+    await page.evaluate(async () => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      return {
+        notes: (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items
+          .length,
+        workingCopies: (await backend.listWorkingCopies()).length,
+      };
+    }),
+  ).toEqual({ notes: 0, workingCopies: 0 });
+});
+
 test("new notes, settings, back, and forward use the transient route stack", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
