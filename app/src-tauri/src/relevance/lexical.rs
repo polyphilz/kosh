@@ -19,7 +19,7 @@ use super::{
     RetrievalRequest, Retriever, RuntimeMetadata, ScaleCorpus, SearchMode,
 };
 
-pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 3;
+pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 4;
 pub const INTERACTIVE_LEXICAL_P95_BUDGET_MS: f64 = 100.0;
 const BENCHMARK_RESULT_LIMIT: u32 = 20;
 
@@ -32,6 +32,7 @@ type FixtureCandidates = BTreeMap<usize, FixtureRanks>;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LexicalPerformanceReport {
     pub schema_version: u32,
+    pub source_revision: String,
     pub workload: String,
     pub generator_version: String,
     pub seed: String,
@@ -570,6 +571,7 @@ pub fn benchmark_scale_lexical(
 
     Ok(LexicalPerformanceReport {
         schema_version: LEXICAL_PERFORMANCE_SCHEMA_VERSION,
+        source_revision: env!("KOSH_BUILD_GIT_SHA").into(),
         workload: "lexical-search-10k".into(),
         generator_version: corpus.generator_version.clone(),
         seed: corpus.seed.clone(),
@@ -705,6 +707,7 @@ mod tests {
         let report = benchmark_scale_lexical(&corpus, 20).expect("lexical benchmark");
 
         assert_eq!(report.tidbit_count, 256);
+        assert_eq!(report.source_revision, env!("KOSH_BUILD_GIT_SHA"));
         assert!(report.passage_count >= report.tidbit_count);
         assert_eq!(report.query_count, 20);
         assert!(report.indexing_duration_ms >= 0.0);

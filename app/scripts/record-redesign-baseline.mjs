@@ -32,6 +32,11 @@ if (worktreeStatus.trim().length > 0) {
   );
 }
 const scale = JSON.parse(await readFile(scaleReportPath, "utf8"));
+if (scale.sourceRevision !== sourceRevision) {
+  throw new Error(
+    `lexical scale evidence was built from ${String(scale.sourceRevision)}, expected ${sourceRevision}`,
+  );
+}
 const frozenBaseline = JSON.parse(await readFile(frozenBaselinePath, "utf8"));
 const server = spawn(
   process.execPath,
