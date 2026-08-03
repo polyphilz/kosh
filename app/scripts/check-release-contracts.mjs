@@ -13,6 +13,7 @@ const main = readFileSync("src-tauri/src/main.rs", "utf8");
 const distributionBuild = readFileSync("scripts/build-notarized-distribution.mjs", "utf8");
 const releaseArtifacts = readFileSync("scripts/create-release-artifacts.mjs", "utf8");
 const recoveredPackageSmoke = readFileSync("scripts/run-recovered-package-smoke.mjs", "utf8");
+const redesignAcceptance = readFileSync("scripts/run-redesign-acceptance.mjs", "utf8");
 
 assertEqual(local.productName, "Kosh", "product name");
 assertEqual(local.identifier, "com.rohan.kosh", "bundle identifier");
@@ -169,6 +170,23 @@ assertEqual(
   "node scripts/publish-draft-release.mjs",
   "draft release command",
 );
+assertEqual(
+  packageJson.scripts["acceptance:redesign"],
+  "node scripts/run-redesign-acceptance.mjs",
+  "redesign acceptance command",
+);
+for (const contract of [
+  '["check", "complete check suite"]',
+  '["relevance:gate", "search relevance gate"]',
+  '["baseline:redesign", "redesign performance baseline"]',
+  '["check:bundle", "production bundle isolation"]',
+  '["release:migration", "hard-cutover migration contract"]',
+  'assertExactSource("before redesign acceptance")',
+  "assertExactSource(`before ${label}`)",
+  "assertExactSource(`after ${label}`)",
+]) {
+  assert(redesignAcceptance.includes(contract), `redesign acceptance omits ${contract}`);
+}
 assert(
   !packageJson.scripts["release:build:app"].includes("VITE_KOSH_UPDATER_ENABLED"),
   "local app builds must not enable the updater",

@@ -15,6 +15,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 app_root="$repo_root/app"
 output="${KOSH_HARDENING_REPORT:-$app_root/.data/hardening/report-v1.json}"
 lexical_report="$app_root/.data/relevance/reports/lexical-scale-v1.performance.json"
+redesign_report="$app_root/.data/redesign/release-candidate-v1.performance.json"
 bundle_report="$app_root/test-results/bundle/report.json"
 [[ "$output" == /* ]] || fail "report path must be absolute"
 [[ ! -L "$output" ]] || fail "report path must not be a symlink"
@@ -48,6 +49,7 @@ cargo test \
 (
   cd "$app_root"
   pnpm relevance:lexical-scale
+  node scripts/record-redesign-baseline.mjs "$redesign_report"
   [[ ! -e "$bundle_report" ]] || rm -- "$bundle_report"
   KOSH_BUNDLE_ROOT="$app_root/dist" \
     KOSH_BUNDLE_REPORT="$bundle_report" \
@@ -56,6 +58,8 @@ cargo test \
 
 [[ -f "$lexical_report" && ! -L "$lexical_report" ]] ||
   fail "lexical performance report is missing"
+[[ -f "$redesign_report" && ! -L "$redesign_report" ]] ||
+  fail "redesign performance report is missing"
 [[ -f "$bundle_report" && ! -L "$bundle_report" ]] ||
   fail "bundle report is missing"
 [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$head_sha" ]] ||
@@ -77,6 +81,7 @@ jq -n \
   --arg rustVersion "$(rustc --version)" \
   --argjson durationSeconds "$((completed_epoch - started_epoch))" \
   --slurpfile lexical "$lexical_report" \
+  --slurpfile redesign "$redesign_report" \
   --slurpfile bundle "$bundle_report" \
   '{
     schemaVersion: 1,
@@ -99,9 +104,11 @@ jq -n \
       mixedWorkloadAndRestart: "pass",
       safetySnapshotRestore: "pass",
       lexicalScale: "pass",
+      redesignPerformance: "pass",
       bundleSafety: "pass"
     },
     lexicalScale: $lexical[0],
+    redesignPerformance: $redesign[0],
     bundle: $bundle[0]
   }' >"$temporary"
 [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$head_sha" ]] ||

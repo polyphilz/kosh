@@ -1,10 +1,12 @@
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
@@ -212,14 +214,49 @@ function checkCore(values) {
   verifyDatabasePair(profile);
   assert(
     numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL") >= 1,
-    "create at least one active tidbit before checking core acceptance",
+    "create at least one active note before checking core acceptance",
+  );
+  assertEqual(
+    numberSql(profile.main, "SELECT count(*) FROM draft"),
+    0,
+    "working copies after quit",
+  );
+  assertEqual(
+    numberSql(
+      profile.main,
+      `SELECT count(*)
+       FROM pragma_table_info('tidbit_revision')
+       WHERE name = 'title'`,
+    ),
+    0,
+    "authored title columns",
+  );
+  assertEqual(
+    numberSql(
+      profile.main,
+      `SELECT count(*)
+       FROM sqlite_schema
+       WHERE type = 'table'
+         AND lower(name) IN (
+           'draft_context',
+           'purge_authorization',
+           'recent_search',
+           'research_citation',
+           'research_run',
+           'research_run_attachment',
+           'search_history',
+           'search_query'
+         )`,
+    ),
+    0,
+    "retired or query-history tables",
   );
   assert(
     numberSql(profile.main, "SELECT count(*) FROM passage_search_document") >= 1,
     "lexical search projection is empty",
   );
   console.info(
-    `Core packaged acceptance passed: ${logicalEvidence(profile).activeTidbits} active notes, healthy WAL databases, current migrations, and lexical search available without a semantic model.`,
+    `Core packaged acceptance passed: ${logicalEvidence(profile).activeNotes} active notes, no pending working copies, authored titles, retired tables, or query history, healthy WAL databases, current migrations, and lexical search without a semantic model.`,
   );
 }
 
@@ -230,30 +267,121 @@ function checkJourneys(values) {
   verifyDatabasePair(profile);
 
   const requirements = [
-    ["a URL-bearing source", "SELECT count(*) FROM source WHERE normalized_url IS NOT NULL"],
+    [
+      "a URL-bearing source",
+      `SELECT count(*)
+       FROM tidbit
+       JOIN tidbit_revision_source AS membership
+         ON membership.tidbit_revision_id = tidbit.current_revision_id
+       JOIN source ON source.id = membership.source_id
+       WHERE tidbit.deleted_at IS NULL
+         AND source.normalized_url IS NOT NULL`,
+    ],
     [
       "a code-bearing tidbit",
-      "SELECT count(*) FROM tidbit_revision WHERE instr(body_markdown, '```') > 0",
+      `SELECT count(*)
+       FROM tidbit
+       JOIN tidbit_revision AS revision ON revision.id = tidbit.current_revision_id
+       WHERE tidbit.deleted_at IS NULL
+         AND instr(revision.body_markdown, char(96) || char(96) || char(96)) > 0`,
     ],
     [
       "a math-bearing tidbit",
-      "SELECT count(*) FROM tidbit_revision WHERE instr(body_markdown, '$') > 0",
+      `SELECT count(*)
+       FROM tidbit
+       JOIN tidbit_revision AS revision ON revision.id = tidbit.current_revision_id
+       WHERE tidbit.deleted_at IS NULL
+         AND instr(revision.body_markdown, '$') > 0`,
     ],
-    ["an image attachment", "SELECT count(*) FROM attachment_image"],
+    [
+      "an image attachment",
+      currentAttachmentCount(
+        "JOIN attachment_image AS image ON image.attachment_id = attachment.id",
+        "attachment.kind = 'IMAGE'",
+      ),
+    ],
     [
       "a completed image OCR extraction",
-      "SELECT count(*) FROM attachment_extraction WHERE extractor = 'ocr' AND status = 'READY'",
+      currentAttachmentCount(
+        `JOIN attachment_extraction AS extraction
+           ON extraction.attachment_id = attachment.id
+          AND extraction.content_hash = attachment.sha256
+         JOIN attachment_extractor_config AS config
+           ON config.extractor = extraction.extractor
+          AND config.version = extraction.extractor_version`,
+        "attachment.kind = 'IMAGE' AND extraction.extractor = 'ocr' AND extraction.status = 'READY'",
+      ),
     ],
-    ["a PDF attachment", "SELECT count(*) FROM attachment_pdf"],
+    [
+      "a PDF attachment",
+      currentAttachmentCount(
+        "JOIN attachment_pdf AS pdf ON pdf.attachment_id = attachment.id",
+        "attachment.kind = 'PDF'",
+      ),
+    ],
     [
       "a completed PDF extraction",
-      "SELECT count(*) FROM attachment_extraction WHERE extractor = 'pdf-text' AND status = 'READY'",
+      currentAttachmentCount(
+        `JOIN attachment_extraction AS extraction
+           ON extraction.attachment_id = attachment.id
+          AND extraction.content_hash = attachment.sha256
+         JOIN attachment_extractor_config AS config
+           ON config.extractor = extraction.extractor
+          AND config.version = extraction.extractor_version`,
+        "attachment.kind = 'PDF' AND extraction.extractor = 'pdf-text' AND extraction.status = 'READY'",
+      ),
     ],
     [
       "searchable extracted attachment text",
-      "SELECT count(*) FROM passage_search_document WHERE length(extracted_text) > 0",
+      `SELECT count(*)
+       FROM tidbit
+       JOIN tidbit_revision_attachment AS membership
+         ON membership.tidbit_revision_id = tidbit.current_revision_id
+       JOIN attachment ON attachment.id = membership.attachment_id
+       JOIN attachment_extraction AS extraction
+         ON extraction.attachment_id = attachment.id
+        AND extraction.content_hash = attachment.sha256
+       JOIN attachment_extractor_config AS config
+         ON config.extractor = extraction.extractor
+        AND config.version = extraction.extractor_version
+       JOIN attachment_segment AS segment ON segment.extraction_id = extraction.id
+       JOIN passage ON passage.attachment_segment_id = segment.id
+       JOIN passage_search_document AS document ON document.passage_id = passage.id
+       WHERE tidbit.deleted_at IS NULL
+         AND attachment.deleted_at IS NULL
+         AND length(document.extracted_text) > 0`,
     ],
-    ["a semantic passage embedding", "SELECT count(*) FROM passage_embedding"],
+    ["a text attachment", currentAttachmentCount("", "attachment.kind = 'TEXT'")],
+    ["an opaque attachment", currentAttachmentCount("", "attachment.kind = 'BINARY'")],
+    [
+      "a semantic passage embedding",
+      `SELECT count(*)
+       FROM passage_embedding AS embedding
+       JOIN passage ON passage.id = embedding.passage_id
+       WHERE embedding.passage_content_hash = passage.content_hash
+         AND (
+           EXISTS (
+             SELECT 1
+             FROM active_passage
+             WHERE active_passage.passage_id = passage.id
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM attachment_segment AS segment
+             JOIN attachment_extraction AS extraction ON extraction.id = segment.extraction_id
+             JOIN attachment
+               ON attachment.id = extraction.attachment_id
+              AND attachment.sha256 = extraction.content_hash
+             JOIN tidbit_revision_attachment AS membership
+               ON membership.attachment_id = attachment.id
+             JOIN tidbit
+               ON tidbit.current_revision_id = membership.tidbit_revision_id
+              AND tidbit.deleted_at IS NULL
+             WHERE segment.id = passage.attachment_segment_id
+               AND attachment.deleted_at IS NULL
+           )
+         )`,
+    ],
   ];
   for (const [label, statement] of requirements) {
     assert(
@@ -262,8 +390,20 @@ function checkJourneys(values) {
     );
   }
   console.info(
-    "Packaged journey acceptance passed: rich capture, source citations, image OCR, PDF extraction/search, and semantic indexing are durable.",
+    "Packaged journey acceptance passed: titleless rich notes, source citations, image OCR, PDF/text extraction, opaque files, search, and semantic indexing are durable.",
   );
+}
+
+function currentAttachmentCount(extraJoin, predicate) {
+  return `SELECT count(DISTINCT attachment.id)
+          FROM tidbit
+          JOIN tidbit_revision_attachment AS membership
+            ON membership.tidbit_revision_id = tidbit.current_revision_id
+          JOIN attachment ON attachment.id = membership.attachment_id
+          ${extraJoin}
+          WHERE tidbit.deleted_at IS NULL
+            AND attachment.deleted_at IS NULL
+            AND ${predicate}`;
 }
 
 function checkpointRestart(values) {
@@ -289,7 +429,7 @@ function checkRestart(values) {
   const checkpoint = readJson(join(profile.root, "restart-checkpoint.json"));
   assertEqual(logicalEvidence(profile), checkpoint.evidence, "logical restart evidence");
   console.info(
-    "Packaged restart passed: authored, attachment, search, and semantic counts survived unchanged.",
+    "Packaged restart passed: authored note, working-copy, attachment, provenance, search, and semantic counts survived unchanged.",
   );
 }
 
@@ -322,11 +462,22 @@ function verifyDatabasePair(profile) {
 
 function logicalEvidence(profile) {
   return {
-    activeTidbits: numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL"),
+    activeNotes: numberSql(profile.main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL"),
+    deletedNotes: numberSql(
+      profile.main,
+      "SELECT count(*) FROM tidbit WHERE deleted_at IS NOT NULL",
+    ),
+    workingCopies: numberSql(profile.main, "SELECT count(*) FROM draft"),
     revisions: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision"),
     sources: numberSql(profile.main, "SELECT count(*) FROM source"),
+    revisionSources: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_source"),
     attachments: numberSql(profile.main, "SELECT count(*) FROM attachment"),
+    revisionAttachments: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_attachment"),
     passages: numberSql(profile.main, "SELECT count(*) FROM passage"),
+    attachmentPassageRevisions: numberSql(
+      profile.main,
+      "SELECT count(*) FROM attachment_passage_revision",
+    ),
     searchDocuments: numberSql(profile.main, "SELECT count(*) FROM passage_search_document"),
     embeddings: numberSql(profile.main, "SELECT count(*) FROM passage_embedding"),
   };

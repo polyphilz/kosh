@@ -47,26 +47,30 @@ pnpm release:acceptance launch clean-YYYYMMDD
    survived without an explicit Save action.
 4. Use `Cmd+N` for a second titleless note. Add headings, nested lists, bold,
    italic, strike, inline/block code, and inline/block math.
-5. Use `Cmd+/` to hide and restore the sidebar. Confirm `Cmd+B` still toggles
+5. Paste a long mixed-format document, type continuously through several
+   autosave intervals, and exercise one IME/composition input. Rapidly switch
+   between the two notes and confirm neither caret nor newest content regresses.
+6. Use `Cmd+/` to hide and restore the sidebar. Confirm `Cmd+B` still toggles
    editor bold.
-6. Add an HTTPS source URL, press `Cmd+K`, search exact words and a quoted
+7. Add an HTTPS source URL, press `Cmd+K`, search exact words and a quoted
    phrase, then open the result. Confirm the matching block and source URL are
    cited honestly.
-7. Navigate backward and forward between the two notes and Settings; confirm
+8. Navigate backward and forward between the two notes and Settings; confirm
    each note is represented by its own route and restores the editing caret.
-8. Use Quick Add from another application, finish the note, and confirm focus
+9. Use Quick Add from another application, finish the note, and confirm focus
    returns to the original application.
-9. Confirm Settings reports semantic search honestly while local capture and
-   lexical search remain usable.
-10. Quit with `Cmd+Q`.
+10. Confirm Settings reports semantic search honestly while local capture and
+    lexical search remain usable.
+11. Quit with `Cmd+Q`.
 
 ```sh
 pnpm release:acceptance check-core clean-YYYYMMDD
 ```
 
 The command requires current migration heads, WAL, integrity/foreign-key
-health, an active note, and a lexical search projection. It does not claim the
-UI observations above.
+health, an active note, no pending working copies, authored titles, retired
+tables, or query-history schema, and a lexical search projection. It does not
+claim the UI observations above.
 
 ## B. Media and semantic journeys
 
@@ -80,8 +84,9 @@ pnpm release:acceptance launch clean-YYYYMMDD
    phrase, and open its region citation.
 2. Attach the PDF, wait for extraction, search a phrase from a known page, and
    open its page citation. Exercise native-text and OCR pages when available.
-3. Attach an arbitrary file and confirm its block survives edit, restart, and
-   reveal/open actions.
+3. Attach one UTF-8 text file and one separate opaque binary file (for example,
+   a ZIP), then confirm both blocks survive edit, restart, and reveal/open
+   actions.
 4. Start semantic setup. While downloading/verifying, repeat note capture and
    lexical search to prove they remain available.
 5. After Ready, run a paraphrase with no exact overlap and confirm the expected
@@ -95,7 +100,8 @@ pnpm release:acceptance check-journeys clean-YYYYMMDD
 ```
 
 The durable check requires URL, code, math, image/OCR, PDF extraction,
-searchable extracted text, and semantic embedding evidence.
+searchable extracted text, text and opaque-binary attachments, and semantic
+embedding evidence.
 
 ## C. Restart
 
@@ -111,17 +117,43 @@ settings. Quit normally, then run:
 pnpm release:acceptance check-restart clean-YYYYMMDD
 ```
 
-The check requires unchanged logical counts across authored, media, passage,
-FTS, and embedding state.
+The check requires unchanged logical counts across authored notes, working
+copies, revision provenance, media, passages, FTS, and embedding state.
 
-## D. Installed application
+Repeat once after typing a unique marker and force-terminating Kosh after the
+working-copy debounce but before an intentional quit. Relaunch should still
+open a fresh blank note; use `Command-K` to find the recovered marker, then quit
+normally and repeat the checkpoint/check pair. Perform three additional normal
+launch/quit cycles to expose cleanup or startup regressions.
+
+## D. Performance record
+
+From the clean exact candidate commit, run:
+
+```sh
+pnpm baseline:redesign
+```
+
+Retain `.data/redesign/release-candidate-v1.performance.json`. On the frozen
+reference hardware it must pass the hidden native-startup regression, editor
+initialization, input-paint, warm search-overlay, and first-result budgets. On
+unlike hardware those machine timings are recorded but not asserted. The
+10,000-note lexical budget is always enforced. The automated native samples
+deliberately keep Kosh hidden and therefore do not claim shown window or focus
+latency. During the visible walkthrough, measure 20 cold
+launches from process start to a shown window with a focused editable caret;
+the p95 target is 1,000 ms. Measure 20 already-running app reactivations
+separately; the p95 target is 150 ms and cannot be inferred from a process
+restart measurement.
+
+## E. Installed application
 
 After the isolated profile passes, install the exact candidate in
 `/Applications` using `docs/RELEASE.md`. Repeat a short titleless note, Quick
 Add, Command-K citation, normal quit, and reopen against the intended
 production profile. No development tools are required on the installed Mac.
 
-## E. Packaged off-site recovery
+## F. Packaged off-site recovery
 
 Follow `docs/OFFSITE_BACKUP.md` using a dedicated private test bucket. From a
 clean exact-HEAD checkout, build the candidate and run:
@@ -146,6 +178,8 @@ an isolated home.
 | macOS / hardware / tester / date           | pending |
 | Cold launch and ephemeral empty note       | pending |
 | Autosave, immediate quit, and restart      | pending |
+| Long paste, IME, rapid switching, recovery | pending |
+| Performance budgets and warm reactivation  | pending |
 | Menu icon, Quick Add, and global shortcuts | pending |
 | Rich blocks, math, lists, and sources      | pending |
 | Command-K hybrid search and URL citation   | pending |

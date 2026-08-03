@@ -1,7 +1,7 @@
 # Off-site restore, takeover, and drill contract
 
 Chunk 29f adds an offline disaster-recovery backend without changing local
-capture or Exact search startup behavior.
+note autosave or local-search startup behavior.
 
 The native test suite proves:
 
@@ -25,7 +25,7 @@ The native test suite proves:
   publishes both files through descriptor-bound operations, and writes a
   durable completion receipt for idempotent retry;
 - a complete clean-directory recovery reopens through normal `Database`
-  initialization and restores Exact search, a source-bearing tidbit citation,
+  initialization and restores local search, a source-bearing note citation,
   and attachment bytes;
 - a drill reconstructs and validates the same pair in an owned temporary
   directory, removes it afterward, and leaves the live database bytes

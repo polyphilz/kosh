@@ -68,6 +68,7 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml \
   --all-targets --all-features -- -D warnings
 pnpm relevance:gate
 pnpm relevance:lexical-scale
+pnpm baseline:redesign
 pnpm check:bundle
 pnpm release:migration
 pnpm release:verify-contracts
@@ -124,7 +125,7 @@ WAL/integrity, and operation without a semantic model.
 ## 3. Run release acceptance
 
 The checklist's `launch-hidden` preflight can verify the exact packaged commit,
-migrations, both rendered webviews, IPC, restart, Exact search, and citations
+schema, both rendered webviews, IPC, restart, lexical search, and citations
 without foregrounding Kosh. It is useful while the Mac is in active use, but it
 does not replace the checklist's visible menu, shortcut, file-dialog, focus,
 or `/Applications` observations.
@@ -135,9 +136,10 @@ against the exact candidate. The profiles live beneath ignored
 `app/.data/release-acceptance/`; commands reject existing or out-of-scope
 profiles and never point the candidate at production data.
 
-The required record covers clean capture and lexical search without a semantic
-model, Quick Add, code/math, image OCR, PDF search, hybrid search, grounded
-citations, restart, and restoration into a separate replacement profile.
+The required record covers titleless autosave and lexical search without a
+model, Quick Add, code/math, image OCR, PDF/text search, opaque attachments,
+hybrid search, exact source citations, forced-termination recovery, restart,
+and commit-bound performance budgets.
 Do not claim a UI journey from database checks alone.
 
 If off-site recovery is configured for the release, also complete the packaged
@@ -234,13 +236,17 @@ Use the copy under `/Applications`, not the build directory.
 
 - Confirm only the white Kosh mark appears in the menu bar; there is no text.
 - Exercise the configurable Quick Add and main-window shortcuts.
-- Create a URL-bearing tidbit containing code and math.
-- Run exact lexical search and open its resolved citation.
+- Create a titleless URL-bearing note containing code and math, then quit
+  immediately and confirm it survives restart without an explicit Save action.
+- Use `Cmd+K` to find an authored phrase and open its resolved citation.
+- Use `Cmd+N`, `Cmd+/`, and back/forward navigation between two notes and
+  Settings.
 - Add a real image and PDF; wait for extraction and search their text.
+- Add a text file and an opaque binary attachment; confirm both survive restart.
 - Prepare semantic search, run a paraphrase, and open the exact cited passage.
-- Quit with `Cmd+Q`, reopen, and confirm all durable content survives.
 - Confirm capture and lexical search still work while semantic setup is
-  unavailable.
+  unavailable or offline.
+- Quit with `Cmd+Q`, reopen, and confirm all durable content survives.
 - Quit and confirm no Kosh, `llama-server`, `litestream`, or PDF worker
   subprocess remains.
 - Use **Kosh → Check for Updates…** and confirm the current-version result.
