@@ -12,7 +12,11 @@ import {
 } from "react";
 import { useBackend } from "../backend/context";
 import type { Backend, SelectedAttachmentRecord } from "../backend/contracts";
-import { KoshBlockNoteEditor, type KoshBlockNoteEditorHandle } from "../editor/KoshBlockNoteEditor";
+import {
+  KOSH_NOTE_PLACEHOLDER,
+  KoshBlockNoteEditor,
+  type KoshBlockNoteEditorHandle,
+} from "../editor/KoshBlockNoteEditor";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import {
   createUuidV7,
@@ -383,7 +387,7 @@ const QuickAddSession = forwardRef<
           if (!selectionId) return null;
           return withMediaReservation((draftId) => backend.ingestSelectedPdf(selectionId, draftId));
         }}
-        placeholder="Write something…"
+        placeholder={KOSH_NOTE_PLACEHOLDER}
         ref={editorRef}
         revealAttachmentInFinder={(attachmentId) => backend.revealAttachmentInFinder(attachmentId)}
         retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}

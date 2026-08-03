@@ -10,7 +10,11 @@ import type {
   TidbitRecord,
   WorkingCopyRecord,
 } from "../backend/contracts";
-import { KoshBlockNoteEditor, type KoshBlockNoteEditorHandle } from "../editor/KoshBlockNoteEditor";
+import {
+  KOSH_NOTE_PLACEHOLDER,
+  KoshBlockNoteEditor,
+  type KoshBlockNoteEditorHandle,
+} from "../editor/KoshBlockNoteEditor";
 import {
   createUuidV7,
   NoteAutosaveCoordinator,
@@ -495,7 +499,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
               backend.ingestSelectedPdf(selectionId, draftId),
             );
           }}
-          placeholder="Write something…"
+          placeholder={KOSH_NOTE_PLACEHOLDER}
           ref={editorRef}
           revealAttachmentInFinder={(attachmentId) =>
             backend.revealAttachmentInFinder(attachmentId)

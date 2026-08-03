@@ -52,6 +52,8 @@ import {
 } from "./schema";
 import { KOSH_WRITING_ASSISTANCE_ATTRIBUTES } from "./writingAssistance";
 
+export const KOSH_NOTE_PLACEHOLDER = "Write something or press '/' for commands";
+
 export interface KoshBlockNoteEditorHandle {
   clearSearchFocus: () => void;
   focus: () => void;

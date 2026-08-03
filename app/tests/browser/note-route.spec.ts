@@ -7,6 +7,13 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
 
   const editor = page.getByRole("textbox", { name: "Note" });
   await expect(editor).toBeFocused();
+  await expect
+    .poll(() =>
+      editor
+        .locator(".bn-block-content")
+        .evaluate((block) => getComputedStyle(block, "::after").content),
+    )
+    .toBe("\"Write something or press '/' for commands\"");
   await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
   await expect(page.getByRole("button", { name: /save/iu })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: /title/iu })).toHaveCount(0);
