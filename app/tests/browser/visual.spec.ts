@@ -1,32 +1,4 @@
-import { expect, test, type Page } from "./fixtures";
-
-for (const theme of ["LIGHT", "DARK"] as const) {
-  test(`catalog and dialog stay stable in ${theme.toLowerCase()} mode`, async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto("/#/catalog");
-    await page.evaluate(async (appearance) => {
-      document.documentElement.dataset.appearance = appearance;
-      await document.fonts.ready;
-    }, theme);
-
-    await expect(page).toHaveScreenshot(`catalog-${theme.toLowerCase()}.png`, {
-      animations: "disabled",
-      caret: "hide",
-      fullPage: true,
-      maxDiffPixelRatio: 0.04,
-      threshold: 0.35,
-    });
-
-    await page.getByRole("button", { name: "Open dialog" }).click();
-    await expect(page.getByRole("dialog", { name: "Remove this source?" })).toBeVisible();
-    await expect(page).toHaveScreenshot(`dialog-${theme.toLowerCase()}.png`, {
-      animations: "disabled",
-      caret: "hide",
-      maxDiffPixelRatio: 0.04,
-      threshold: 0.35,
-    });
-  });
-}
+import { expect, test } from "./fixtures";
 
 for (const theme of ["LIGHT", "DARK"] as const) {
   test(`full-page note stays visually stable in ${theme.toLowerCase()} mode`, async ({ page }) => {
@@ -91,27 +63,6 @@ for (const theme of ["LIGHT", "DARK"] as const) {
   });
 }
 
-test("library surface stays visually stable", async ({ page }) => {
-  await createTidbit(page, "Alpha note", "A compact thought.");
-  await page.goto("/#/add");
-  await page.getByRole("textbox", { name: /^Title/u }).fill("Beta chapter notes");
-  await page
-    .getByRole("textbox", { name: "Tidbit" })
-    .fill("# Chapter 2\n\nA longer observation with `code` and $x^2$.");
-  await page.getByRole("button", { name: "Save tidbit" }).click();
-  await page.goto("/#/library");
-
-  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
-  await expect(page).toHaveScreenshot("library-recent.png", {
-    animations: "disabled",
-    fullPage: true,
-    mask: [page.locator(".library-list time")],
-    maskColor: "#d8d2ca",
-    maxDiffPixelRatio: 0.04,
-    threshold: 0.35,
-  });
-});
-
 test("note source and delete actions stay visually stable", async ({ page }) => {
   await page.goto("/#/");
   await page.getByRole("textbox", { name: "Note" }).fill("A note with compact actions.");
@@ -170,11 +121,3 @@ test("diagnostics and maintenance settings stay visually stable", async ({ page 
     threshold: 0.35,
   });
 });
-
-async function createTidbit(page: Page, title: string, body: string) {
-  await page.goto("/#/add");
-  await page.getByRole("textbox", { name: /^Title/u }).fill(title);
-  await page.getByRole("textbox", { name: "Tidbit" }).fill(body);
-  await page.getByRole("button", { name: "Save tidbit" }).click();
-  await expect(page.getByRole("heading", { name: title })).toBeVisible();
-}

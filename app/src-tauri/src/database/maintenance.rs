@@ -13,17 +13,6 @@ pub struct QueueCounts {
     pub failed: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResearchCounts {
-    pub queued: u64,
-    pub running: u64,
-    pub completed: u64,
-    pub canceled: u64,
-    pub failed: u64,
-    pub interrupted: u64,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexDiagnostic {
@@ -46,7 +35,6 @@ pub struct MaintenanceDatabaseSnapshot {
     pub attachment_bytes: u64,
     pub image_ocr: QueueCounts,
     pub pdf_extraction: QueueCounts,
-    pub research: ResearchCounts,
     pub indexes: Vec<IndexDiagnostic>,
 }
 
@@ -101,7 +89,6 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
         attachment_bytes,
         image_ocr: queue_counts(connection, "image_ocr_queue", "ocr")?,
         pdf_extraction: queue_counts(connection, "pdf_extraction_queue", "pdf-text")?,
-        research: research_counts(connection)?,
         indexes,
     })
 }
@@ -280,32 +267,6 @@ fn queue_counts(connection: &Connection, table: &str, extractor: &str) -> Result
                 failed: nonnegative(row.get(4)?)?,
             })
         })
-        .map_err(Into::into)
-}
-
-fn research_counts(connection: &Connection) -> Result<ResearchCounts> {
-    connection
-        .query_row(
-            "SELECT
-                count(*) FILTER (WHERE status = 'QUEUED'),
-                count(*) FILTER (WHERE status = 'RUNNING'),
-                count(*) FILTER (WHERE status = 'COMPLETED'),
-                count(*) FILTER (WHERE status = 'CANCELED'),
-                count(*) FILTER (WHERE status = 'FAILED'),
-                count(*) FILTER (WHERE status = 'INTERRUPTED')
-             FROM research_run",
-            [],
-            |row| {
-                Ok(ResearchCounts {
-                    queued: nonnegative(row.get(0)?)?,
-                    running: nonnegative(row.get(1)?)?,
-                    completed: nonnegative(row.get(2)?)?,
-                    canceled: nonnegative(row.get(3)?)?,
-                    failed: nonnegative(row.get(4)?)?,
-                    interrupted: nonnegative(row.get(5)?)?,
-                })
-            },
-        )
         .map_err(Into::into)
 }
 

@@ -38,11 +38,3 @@ export interface Passage {
     endBlock: number;
   };
 }
-
-export interface ResearchRun {
-  id: string;
-  query: string;
-  status: "queued" | "running" | "completed" | "canceled" | "failed";
-  startedAtMs: number;
-  completedAtMs: number | null;
-}

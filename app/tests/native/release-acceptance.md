@@ -13,16 +13,14 @@ profile and never delete one.
 - No development, packaged, or installed Kosh process running.
 - A real image with readable text and a representative text/scanned PDF.
 - Network only for the explicit semantic-model setup step.
-- An authenticated Claude CLI only for Research. Core acceptance must pass
-  without it.
 
 Use unique names in place of the examples.
 
-## A. Clean core without Claude or semantic setup
+## A. Clean note-first core
 
 Before the visible walkthrough, the same exact package can run its commit-bound
-startup, migration, React-root, IPC, Exact-search, and citation preflight with
-both windows hidden:
+startup, migration, React-root, IPC, lexical-search, and citation preflight
+with both windows hidden:
 
 ```sh
 pnpm release:acceptance prepare-clean preflight-YYYYMMDD
@@ -32,41 +30,45 @@ pnpm release:acceptance launch-hidden preflight-YYYYMMDD present
 ```
 
 `launch-hidden` requires a clean source tree, verifies that the package embeds
-that exact HEAD, disables Claude, binds the receipt to the isolated profile,
-and exits by itself. It does not claim menu-bar, global-shortcut, native file
-dialog, focus-restoration, or other visible observations below.
+that exact HEAD, binds the receipt to the isolated profile, and exits by
+itself. It does not claim menu-bar, global-shortcut, native file-dialog,
+focus-restoration, or other visible observations below.
 
 ```sh
 pnpm release:acceptance prepare-clean clean-YYYYMMDD
-pnpm release:acceptance launch clean-YYYYMMDD --without-claude
+pnpm release:acceptance launch clean-YYYYMMDD
 ```
 
-The launcher uses an isolated home and GUI-like `/usr/bin:/bin` path. The
-explicit flag also disables standard-location discovery, so an installed host
-Claude cannot leak into the core lane. Before preparing semantic search or
-invoking Research:
-
-1. Confirm launch opens the main window and shows Kosh in both the Dock and menu bar.
-2. Close the main window, reopen it from the menu-bar icon, and confirm Kosh owns the application menu without flicker; repeat from the Dock and configured global shortcut.
-3. Use Quick Add from another application, save, and confirm focus returns.
-4. Create a longer tidbit with a heading, fenced code block, inline/display
-   math, and an HTTPS source URL.
-5. Create an offhand one-line tidbit.
-6. Search exact words and a quoted phrase; open the citation and confirm it
-   targets the correct revision, passage, and source URL.
-7. Confirm Settings honestly reports semantic search and Research as
-   unavailable/not prepared while capture and lexical search remain usable.
-8. Quit with `Cmd+Q`.
+1. Confirm launch opens a focused, empty note without creating a database row.
+2. Close the main window, reopen it from the menu-bar icon, and confirm Kosh
+   owns the application menu without flicker; repeat from the Dock and the
+   configured global shortcut.
+3. Type a note, quit immediately with `Cmd+Q`, relaunch, and confirm every byte
+   survived without an explicit Save action.
+4. Use `Cmd+N` for a second titleless note. Add headings, nested lists, bold,
+   italic, strike, inline/block code, and inline/block math.
+5. Use `Cmd+/` to hide and restore the sidebar. Confirm `Cmd+B` still toggles
+   editor bold.
+6. Add an HTTPS source URL, press `Cmd+K`, search exact words and a quoted
+   phrase, then open the result. Confirm the matching block and source URL are
+   cited honestly.
+7. Navigate backward and forward between the two notes and Settings; confirm
+   each note is represented by its own route and restores the editing caret.
+8. Use Quick Add from another application, finish the note, and confirm focus
+   returns to the original application.
+9. Confirm Settings reports semantic search honestly while local capture and
+   lexical search remain usable.
+10. Quit with `Cmd+Q`.
 
 ```sh
 pnpm release:acceptance check-core clean-YYYYMMDD
 ```
 
 The command requires current migration heads, WAL, integrity/foreign-key
-health, an active tidbit, and a lexical search projection. It does not claim
-the UI observations above.
+health, an active note, and a lexical search projection. It does not claim the
+UI observations above.
 
-## B. Media, semantic, and Research journeys
+## B. Media and semantic journeys
 
 Relaunch the same profile:
 
@@ -74,19 +76,18 @@ Relaunch the same profile:
 pnpm release:acceptance launch clean-YYYYMMDD
 ```
 
-1. Attach the real image, wait for OCR, search a distinctive OCR phrase, and
-   open its region citation.
+1. Paste and attach a real image, wait for OCR, search a distinctive OCR
+   phrase, and open its region citation.
 2. Attach the PDF, wait for extraction, search a phrase from a known page, and
    open its page citation. Exercise native-text and OCR pages when available.
-3. Start semantic setup. While downloading/verifying, repeat capture and
+3. Attach an arbitrary file and confirm its block survives edit, restart, and
+   reveal/open actions.
+4. Start semantic setup. While downloading/verifying, repeat note capture and
    lexical search to prove they remain available.
-4. After Ready, run a paraphrase with no exact overlap and confirm the expected
+5. After Ready, run a paraphrase with no exact overlap and confirm the expected
    hybrid result and citation.
-5. Restart once with the model unavailable/offline and confirm capture and
+6. Restart once with the model unavailable/offline and confirm capture and
    lexical search still work with an honest degraded semantic state.
-6. If Claude is configured, run a multi-passage Research query. Open every
-   citation, confirm all claims bind to issued local evidence, and save the
-   answer as a tidbit.
 7. Quit with `Cmd+Q`.
 
 ```sh
@@ -94,10 +95,7 @@ pnpm release:acceptance check-journeys clean-YYYYMMDD
 ```
 
 The durable check requires URL, code, math, image/OCR, PDF extraction,
-searchable extracted text, semantic embedding, and completed grounded
-Research citation evidence. If Claude is intentionally absent, record the
-core/media/semantic observations separately and leave Research pending; do not
-weaken the command.
+searchable extracted text, and semantic embedding evidence.
 
 ## C. Restart
 
@@ -106,15 +104,15 @@ pnpm release:acceptance checkpoint-restart clean-YYYYMMDD
 pnpm release:acceptance launch clean-YYYYMMDD
 ```
 
-Inspect authored notes, attachment previews, exact/hybrid results, citations,
-settings, and Research history. Quit normally, then run:
+Inspect authored notes, attachment previews, hybrid results, citations, and
+settings. Quit normally, then run:
 
 ```sh
 pnpm release:acceptance check-restart clean-YYYYMMDD
 ```
 
 The check requires unchanged logical counts across authored, media, passage,
-FTS, embedding, and Research state.
+FTS, embedding, and retained legacy-research compatibility state.
 
 ## D. Previous-release upgrade and local recovery
 
@@ -125,8 +123,9 @@ pnpm release:acceptance prepare-upgrade upgrade-YYYYMMDD
 pnpm release:acceptance launch upgrade-YYYYMMDD
 ```
 
-Confirm the amber migration tidbit appears, exact search returns it, and its
-URL citation opens. Quit normally:
+Confirm the amber migration note appears, Command-K search returns it, and its
+URL citation opens. Historical Research rows need no product UI, but must not
+block launch, migration, backup, or restore. Quit normally:
 
 ```sh
 pnpm release:acceptance check-upgrade upgrade-YYYYMMDD
@@ -143,7 +142,7 @@ pnpm release:acceptance prove-upgrade-recovery \
 pnpm release:acceptance launch recovered-YYYYMMDD
 ```
 
-Inspect the restored tidbit/search/citation, quit, then run:
+Inspect the restored note/search/citation, quit, then run:
 
 ```sh
 pnpm release:acceptance check-upgrade recovered-YYYYMMDD
@@ -155,10 +154,9 @@ migrate, and reopen. It is not an off-site backup claim.
 ## E. Installed application
 
 After the isolated profile passes, install the exact candidate in
-`/Applications` using `docs/RELEASE.md`. Repeat a short Quick Add, lexical
-search/citation, normal quit, and reopen against the intended production
-profile. No development tools are required on the installed Mac; only the
-optional Claude CLI is external.
+`/Applications` using `docs/RELEASE.md`. Repeat a short titleless note, Quick
+Add, Command-K citation, normal quit, and reopen against the intended
+production profile. No development tools are required on the installed Mac.
 
 ## F. Packaged off-site recovery
 
@@ -173,29 +171,30 @@ This is intentionally not a pull-request lane. Retain its bounded redacted
 `canary-report-v1.json`, `checkpoint-manifest-v1.json`, and
 `packaged-recovery-smoke-v1.json`. The report must say `PACKAGED`, name the
 exact clean commit, prove interrupted replication recovery and manifest-last
-publication, restore tidbits/revisions/media/search/Research citations, and
+publication, restore notes/revisions/media/search/legacy citation data, and
 show zero remote residue. The normal startup proof uses hidden app windows and
 an isolated home.
 
 ## Release record
 
-| Field                                       | Result  |
-| ------------------------------------------- | ------- |
-| Version / commit / app SHA-256              | pending |
-| macOS / hardware / tester / date            | pending |
-| Menu icon and global shortcuts              | pending |
-| Clean Quick Add and rich capture            | pending |
-| Exact/phrase search and URL citation        | pending |
-| Claude/model-unavailable core behavior      | pending |
-| Image OCR search and region citation        | pending |
-| PDF search and page citation                | pending |
-| Semantic setup progress and hybrid citation | pending |
-| Grounded Research and saved answer          | pending |
-| Normal quit, restart, and process cleanup   | pending |
-| V16/V2 upgrade and snapshot verification    | pending |
-| Separate-profile recovery proof             | pending |
-| Packaged real-R2 clean-directory recovery   | pending |
-| `/Applications` installed smoke             | pending |
+| Field                                      | Result  |
+| ------------------------------------------ | ------- |
+| Version / commit / app SHA-256             | pending |
+| macOS / hardware / tester / date           | pending |
+| Cold launch and ephemeral empty note       | pending |
+| Autosave, immediate quit, and restart      | pending |
+| Menu icon, Quick Add, and global shortcuts | pending |
+| Rich blocks, math, lists, and sources      | pending |
+| Command-K hybrid search and URL citation   | pending |
+| Back/forward note navigation               | pending |
+| Image OCR search and region citation       | pending |
+| PDF search and page citation               | pending |
+| Arbitrary attachment lifecycle             | pending |
+| Semantic setup and degraded fallback       | pending |
+| V16/V2 upgrade and snapshot verification   | pending |
+| Separate-profile recovery proof            | pending |
+| Packaged real-R2 clean-directory recovery  | pending |
+| `/Applications` installed smoke            | pending |
 
 Preserve each profile and failure log until the record is reviewed. A green
 database check cannot substitute for an unobserved UI journey.

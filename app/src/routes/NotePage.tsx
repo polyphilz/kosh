@@ -140,7 +140,8 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
-  const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getSnapshot);
+  const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
+  const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
 
   const updatePendingState = useCallback(() => {
     const pending = editorMediaPendingRef.current || dropCountRef.current > 0;
@@ -502,7 +503,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           }
           retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}
           retryPdfExtraction={(attachmentId) => backend.retryPdfExtraction(attachmentId)}
-          value={snapshot.bodyMarkdown}
+          value={editorInitialValue}
           variant="page"
         />
         {error && (

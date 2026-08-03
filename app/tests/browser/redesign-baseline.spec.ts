@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
-test("legacy note capture preserves image, PDF, file, source, and citation surfaces", async ({
+test("note-first capture preserves image, PDF, file, source, and citation surfaces", async ({
   page,
 }) => {
   await page.route("kosh-media://**", async (route) => {
@@ -13,7 +13,7 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
       contentType: "image/png",
     });
   });
-  await page.goto("/#/add");
+  await page.goto("/#/");
   await page.evaluate(() => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
@@ -90,9 +90,8 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
     });
   });
 
-  await page.getByRole("textbox", { name: /^Title/u }).fill("Legacy vector note");
-  const editor = page.getByRole("textbox", { name: "Tidbit" });
-  await editor.fill("The exact baseline passage remembers contiguous arrays.");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Vector note");
   await chooseSlashItem(page, "Image");
   await expect(page.locator("[data-kosh-image='true']")).toBeVisible();
   await page.getByRole("textbox", { name: "Alt text" }).fill("Vector board");
@@ -100,23 +99,26 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
   await expect(page.locator("[data-kosh-pdf='true']")).toContainText("vector-chapter.pdf");
   await chooseSlashItem(page, "File");
   await expect(page.locator("[data-kosh-file='true']")).toContainText("vector-scraps.md");
+  await editor.focus();
+  await editor.press("Control+End");
+  await editor.press("Enter");
+  await editor.pressSequentially("The exact baseline passage remembers contiguous arrays.");
 
-  await page.getByRole("button", { name: "Add source" }).click();
-  await page.getByRole("textbox", { name: "Source 1 label" }).fill("NumPy notebook");
-  await page
-    .getByRole("textbox", { name: "Source 1 URL" })
-    .fill("https://example.com/numpy-vectors");
-  await page.getByRole("button", { name: "Save tidbit" }).click();
+  await page.getByRole("button", { name: "Sources" }).click();
+  const sources = page.getByRole("dialog", { name: "Note sources" });
+  await sources.getByLabel("Label").fill("NumPy notebook");
+  await sources.getByLabel("URL").fill("https://example.com/numpy-vectors");
+  await page.keyboard.press("Escape");
 
-  await expect(page.getByRole("heading", { name: "Legacy vector note" })).toBeVisible();
-  await expect(page.getByText("NumPy notebook", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  await expect(page.getByRole("button", { name: "Sources 1" })).toBeVisible();
   await expect(page.getByRole("img", { name: "Vector board" })).toBeVisible();
-  await expect(page.getByRole("figure", { name: "PDF attachment" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Attachment" })).toBeVisible();
+  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("vector-chapter.pdf");
+  await expect(page.locator("[data-kosh-file='true']")).toContainText("vector-scraps.md");
 
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByRole("combobox", { name: "Search notes" }).fill("contiguous arrays");
-  const citation = page.getByRole("option", { name: /Legacy vector note/u });
+  const citation = page.getByRole("option", { name: /Vector note/u });
   await expect(citation).toContainText("The exact baseline passage remembers contiguous arrays.");
   await expect(citation).toContainText("NumPy notebook · example.com");
   await citation.click();
@@ -126,7 +128,7 @@ test("legacy note capture preserves image, PDF, file, source, and citation surfa
 });
 
 async function chooseSlashItem(page: import("@playwright/test").Page, name: string) {
-  const editor = page.getByRole("textbox", { name: "Tidbit" });
+  const editor = page.getByRole("textbox", { name: "Note" });
   await editor.focus();
   await editor.press("Control+End");
   await editor.press("Enter");

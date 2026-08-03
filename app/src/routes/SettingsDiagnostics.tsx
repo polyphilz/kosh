@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type {
-  ClaudeCliDefaults,
-  ClaudeSetupStatus,
   IntegrityCheckOutcome,
   MaintenanceDiagnostics,
   MaintenanceOutcome,
@@ -23,8 +21,6 @@ interface DiagnosticsState {
   diagnostics: MaintenanceDiagnostics;
   semantic: SemanticRuntimeStatus;
   embeddings: PassageEmbeddingIndexStatus;
-  claude: ClaudeSetupStatus;
-  claudeDefaults: ClaudeCliDefaults;
 }
 
 const actionCopy: Record<
@@ -86,15 +82,13 @@ export function SettingsDiagnostics() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [diagnostics, semantic, embeddings, claude, claudeDefaults] = await Promise.all([
+      const [diagnostics, semantic, embeddings] = await Promise.all([
         backend.loadMaintenanceDiagnostics(),
         backend.semanticRuntimeStatus(),
         backend.passageEmbeddingIndexStatus(),
-        backend.claudeSetupStatus(),
-        backend.claudeCliDefaults(),
       ]);
       if (!mounted.current || sequence !== loadSequence.current) return;
-      setState({ diagnostics, semantic, embeddings, claude, claudeDefaults });
+      setState({ diagnostics, semantic, embeddings });
     } catch (reason) {
       if (!mounted.current || sequence !== loadSequence.current) return;
       setLoadError(errorMessage(reason));
@@ -195,7 +189,7 @@ export function SettingsDiagnostics() {
     );
   }
 
-  const { diagnostics, semantic, embeddings, claude, claudeDefaults } = state;
+  const { diagnostics, semantic, embeddings } = state;
   const disabled = active !== null;
   const modelActionVisible = [
     "NOT_DOWNLOADED",
@@ -217,11 +211,8 @@ export function SettingsDiagnostics() {
 
   return (
     <>
-      <section aria-labelledby="search-research-title" className="settings-panel">
-        <SettingsPanelHeader
-          description="Local services used by semantic search and longer research."
-          title="Search & research"
-        >
+      <section aria-labelledby="search-services-title" className="settings-panel">
+        <SettingsPanelHeader description="Local services used by hybrid search." title="Search">
           <Button
             disabled={disabled || loading}
             onClick={() => void reload()}
@@ -237,21 +228,6 @@ export function SettingsDiagnostics() {
             label="Semantic search"
             value={semanticSearch.label}
             warning={semanticSearch.warning}
-          />
-          <DiagnosticItem
-            detail={
-              claude.binaryPath
-                ? `${claude.binaryPath}${claude.version ? ` · ${claude.version}` : ""}`
-                : claude.message
-            }
-            label="Claude CLI"
-            value={claude.phase === "READY" ? "Ready" : "Needs attention"}
-            warning={claude.phase !== "READY"}
-          />
-          <DiagnosticItem
-            detail="Read-only local evidence; web access is disabled."
-            label="Research defaults"
-            value={`${claudeDefaults.model ?? "Claude default"} · ${claudeDefaults.effort ?? "default effort"}`}
           />
         </dl>
         {modelActionVisible && (
@@ -270,7 +246,7 @@ export function SettingsDiagnostics() {
 
       <section aria-labelledby="data-diagnostics-title" className="settings-panel">
         <SettingsPanelHeader
-          description="Exact local counts, versions, storage, queues, and bounded log paths."
+          description="Local counts, versions, storage, queues, and bounded log paths."
           title="Data & diagnostics"
         />
         <dl className="settings-diagnostics-grid">
@@ -306,11 +282,6 @@ export function SettingsDiagnostics() {
             label="Extraction queues"
             value={failedExtractionCount === 0 ? "Healthy" : `${failedExtractionCount} failed`}
             warning={failedExtractionCount > 0}
-          />
-          <DiagnosticItem
-            detail={`${diagnostics.library.research.completed.toLocaleString()} completed · ${diagnostics.library.research.failed.toLocaleString()} failed · ${diagnostics.library.research.interrupted.toLocaleString()} interrupted`}
-            label="Research queue"
-            value={`${(diagnostics.library.research.queued + diagnostics.library.research.running).toLocaleString()} active`}
           />
           <DiagnosticItem
             detail={`${diagnostics.nativeLogs.maxFiles} × ${formatBytes(diagnostics.nativeLogs.maxFileBytes)} maximum`}

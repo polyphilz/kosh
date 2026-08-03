@@ -411,26 +411,27 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
     drop(media);
 
     let database = Database::initialize(pair.paths.clone()).expect("durable research upgrade");
-    let completed = database
-        .client()
-        .load_research_run("019f547b-6200-7000-8000-000000000111".into())
-        .expect("migrated completed run");
-    assert_eq!(
-        completed.summary.status,
-        super::research_runs::ResearchRunStatus::Completed
-    );
+    let main = database
+        .open_main_read_only()
+        .expect("migrated main reader");
+    let (completed_status, completed_answer): (String, String) = main
+        .query_row(
+            "SELECT status, final_answer_json FROM research_run WHERE id = ?1",
+            ["019f547b-6200-7000-8000-000000000111"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("migrated completed row");
+    assert_eq!(completed_status, "COMPLETED");
+    let completed: serde_json::Value =
+        serde_json::from_str(&completed_answer).expect("migrated answer JSON");
     assert_eq!(
         completed
-            .final_answer
-            .as_ref()
-            .and_then(|answer| answer.get("markdown"))
+            .get("markdown")
             .and_then(serde_json::Value::as_str),
         Some("A preserved legacy answer.【1】")
     );
     let citation = completed
-        .final_answer
-        .as_ref()
-        .and_then(|answer| answer.get("citations"))
+        .get("citations")
         .and_then(serde_json::Value::as_array)
         .and_then(|citations| citations.first())
         .expect("migrated citation");
@@ -457,9 +458,7 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
         Some("https://example.com/legacy")
     );
     let mention = completed
-        .final_answer
-        .as_ref()
-        .and_then(|answer| answer.get("mentions"))
+        .get("mentions")
         .and_then(serde_json::Value::as_array)
         .and_then(|mentions| mentions.first())
         .expect("migrated citation mention");
@@ -479,41 +478,41 @@ fn durable_research_upgrade_preserves_legacy_answers_and_rebuilds_reserved_table
         mention.get("endByte").and_then(serde_json::Value::as_u64),
         Some(answer_markdown.len() as u64)
     );
-    let oversized = database
-        .client()
-        .load_research_run("019f547b-6200-7000-8000-000000000113".into())
-        .expect("migrated oversized query");
-    assert_eq!(oversized.summary.query.chars().count(), 65_536);
+    let (oversized_status, oversized_query): (String, String) = main
+        .query_row(
+            "SELECT status, query FROM research_run WHERE id = ?1",
+            ["019f547b-6200-7000-8000-000000000113"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("migrated oversized row");
+    assert_eq!(oversized_query.chars().count(), 65_536);
+    assert_eq!(oversized_status, "FAILED");
     assert_eq!(
-        oversized.summary.status,
-        super::research_runs::ResearchRunStatus::Failed
+        main.query_row(
+            "SELECT status FROM research_run WHERE id = ?1",
+            ["019f547b-6200-7000-8000-000000000112"],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("preserved active row"),
+        "RUNNING"
     );
-    assert_eq!(
-        database
-            .client()
-            .interrupt_active_research_runs(30)
-            .expect("recover migrated active run"),
-        1
-    );
-    assert_eq!(
-        database
-            .client()
-            .load_research_run("019f547b-6200-7000-8000-000000000112".into())
-            .expect("migrated active run")
-            .summary
-            .status,
-        super::research_runs::ResearchRunStatus::Interrupted
-    );
+    drop(main);
     database.shutdown().expect("close upgraded database");
     drop(database);
 
     let reopened = Database::initialize(pair.paths.clone()).expect("reopen durable upgrade");
-    let reopened_answer = reopened
-        .client()
-        .load_research_run("019f547b-6200-7000-8000-000000000111".into())
-        .expect("reopened migrated run")
-        .final_answer
+    let reopened_main = reopened
+        .open_main_read_only()
+        .expect("reopened main reader");
+    let reopened_answer: String = reopened_main
+        .query_row(
+            "SELECT final_answer_json FROM research_run WHERE id = ?1",
+            ["019f547b-6200-7000-8000-000000000111"],
+            |row| row.get(0),
+        )
         .expect("reopened migrated answer");
+    let reopened_answer: serde_json::Value =
+        serde_json::from_str(&reopened_answer).expect("reopened answer JSON");
     assert_eq!(
         reopened_answer
             .pointer("/citations/0/evidence/passageId")

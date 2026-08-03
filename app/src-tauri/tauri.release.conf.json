@@ -6,7 +6,7 @@
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
     "category": "Productivity",
     "shortDescription": "Capture loose knowledge and find the exact passage that matters.",
-    "longDescription": "Kosh is a local-first note taker for capturing tidbits, searching their exact and semantic content, and producing source-grounded research.",
+    "longDescription": "Kosh is a local-first note taker for frictionless capture and exact or semantic retrieval.",
     "copyright": "Copyright © 2026 Kosh contributors",
     "resources": {
       "resources/release/bin/llama-server": "bin/llama-server",

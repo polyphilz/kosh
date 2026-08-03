@@ -280,6 +280,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                     return;
                   }
                   literalSlashPending.current = false;
+                  if (markdown === lastEmittedValue.current) return;
                   lastEmittedValue.current = markdown;
                   if (markdown !== propertiesRef.current.value) {
                     propertiesRef.current.onChange(markdown);

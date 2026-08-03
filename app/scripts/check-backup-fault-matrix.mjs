@@ -24,7 +24,7 @@ const sourceByModule = new Map([
   ["database::backup_state_tests", "src-tauri/src/database/backup_state_tests.rs"],
   ["database::maintenance_tests", "src-tauri/src/database/maintenance_tests.rs"],
   ["database::offsite_checkpoint_tests", "src-tauri/src/database/offsite_checkpoint_tests.rs"],
-  ["database::research_runs_tests", "src-tauri/src/database/research_runs_tests.rs"],
+  ["database::tests", "src-tauri/src/database/tests.rs"],
   ["database::restore_install", "src-tauri/src/database/restore_install.rs"],
   ["database::safety_snapshot", "src-tauri/src/database/safety_snapshot.rs"],
 ]);

@@ -11,9 +11,8 @@ use rusqlite::{functions::FunctionFlags, limits::Limit, Connection, OpenFlags};
 
 use super::{
     error::{DatabaseError, Result},
-    media, search,
+    legacy_research, media, search,
 };
-use crate::research;
 
 pub const MAIN_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KOSH");
 pub const MEDIA_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KMED");
@@ -263,7 +262,7 @@ fn configure_writer(
                         "citation count is outside the supported range",
                     )))
                 })?;
-                let mentions = research::grounded_mentions_for_registry(&markdown, citation_count);
+                let mentions = legacy_research::citation_mentions(&markdown, citation_count);
                 serde_json::to_string(&mentions)
                     .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
             },

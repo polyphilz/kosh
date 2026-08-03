@@ -4,9 +4,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::{
     connection::DatabaseKind,
     error::{DatabaseError, Result},
+    legacy_research::{citation as legacy_research_citation, LegacyResearchCitation},
     passages,
 };
-use crate::research::{grounded_citation, GroundedResearchCitation};
 
 mod main_embedded {
     use refinery::embed_migrations;
@@ -158,7 +158,7 @@ fn snapshot_legacy_research_citations(connection: &mut Connection) -> Result<()>
         rows
     };
     let mut current_run_id: Option<String> = None;
-    let mut citations = Vec::<GroundedResearchCitation>::new();
+    let mut citations = Vec::<LegacyResearchCitation>::new();
     for (run_id, passage_id, cited_text) in citation_rows {
         if let Some(previous_run_id) = current_run_id
             .as_deref()
@@ -177,7 +177,7 @@ fn snapshot_legacy_research_citations(connection: &mut Connection) -> Result<()>
             kind: "main",
             reason: "legacy research answer has too many citations".into(),
         })?;
-        citations.push(grounded_citation(number, evidence));
+        citations.push(legacy_research_citation(number, evidence));
     }
     if let Some(run_id) = current_run_id {
         persist_legacy_research_snapshot(&transaction, &run_id, &citations)?;
@@ -189,7 +189,7 @@ fn snapshot_legacy_research_citations(connection: &mut Connection) -> Result<()>
 fn persist_legacy_research_snapshot(
     connection: &Connection,
     run_id: &str,
-    citations: &[GroundedResearchCitation],
+    citations: &[LegacyResearchCitation],
 ) -> Result<()> {
     let citations_json =
         serde_json::to_string(citations).map_err(|error| DatabaseError::Validation {

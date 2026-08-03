@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -22,12 +22,10 @@ use crate::database::{
     drafts::SaveDraftWrite,
     passages,
     tidbits::{CreateTidbitWrite, EditTidbitWrite},
-    AppendResearchEventWrite, AttachmentIngestInput, CitationResolution, CitationState,
-    CreateResearchRunWrite, Database, DatabasePaths, EditTidbitInput, LexicalSearchMode,
-    MediaLimits, PrepareOffsiteCheckpointInput, SaveDraftInput, SaveOffsiteBackupConfigInput,
-    SearchPassagesInput, SourceDraft, TidbitDraft,
+    AttachmentIngestInput, CitationResolution, CitationState, Database, DatabasePaths,
+    EditTidbitInput, LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput, SaveDraftInput,
+    SaveOffsiteBackupConfigInput, SearchPassagesInput, SourceDraft, TidbitDraft,
 };
-use crate::research::{GroundedEvidenceKind, GroundedResearchAnswer};
 
 use super::{
     credentials::R2Credentials,
@@ -108,6 +106,27 @@ struct RestoredEvidence {
     resolved_source_url: String,
     historical_research_citations: u64,
     interrupted_replication_drafts: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum LegacyEvidenceKind {
+    AuthoredTidbit,
+    PdfPage,
+    ImageOcr,
+    TextLines,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyGroundedCitation {
+    evidence_kind: LegacyEvidenceKind,
+    evidence: CitationResolution,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyGroundedAnswer {
+    citations: Vec<LegacyGroundedCitation>,
 }
 
 struct SourceFixture {
@@ -481,33 +500,14 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
         passages::resolve_citation(&connection, &passage_id).expect("canary citation resolution");
     drop(connection);
     let run_id = Uuid::now_v7().to_string();
-    database
-        .client()
-        .create_research_run(CreateResearchRunWrite {
-            id: run_id.clone(),
-            rerun_of_id: None,
-            query: "What is the durable historical fact?".into(),
-            requested_model: Some("sonnet".into()),
-            requested_effort: Some("high".into()),
-            now_ms: 40,
-        })
-        .expect("canary research run");
-    append_research_event(&database, &run_id, 1, "STARTED", json!({}), 41);
     let answer = grounded_answer(&citation);
-    append_research_event(
-        &database,
+    seed_legacy_research_run(
+        &paths,
         &run_id,
-        2,
-        "GROUNDED_FINAL_OUTPUT",
-        json!({"answer": answer}),
-        42,
-    );
-    append_research_event(
-        &database,
-        &run_id,
-        3,
-        "FINISHED",
-        json!({"outcome": "SUCCEEDED", "stderrTruncated": false}),
+        "What is the durable historical fact?",
+        &answer,
+        &[],
+        40,
         43,
     );
     database
@@ -574,28 +574,45 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
     }
 }
 
-fn append_research_event(
-    database: &Database,
+fn seed_legacy_research_run(
+    paths: &DatabasePaths,
     run_id: &str,
-    sequence: u32,
-    kind: &str,
-    fields: Value,
-    now_ms: i64,
+    query: &str,
+    answer: &Value,
+    attachment_ids: &[&str],
+    created_at_ms: i64,
+    completed_at_ms: i64,
 ) {
-    let mut payload = fields.as_object().cloned().expect("research event object");
-    payload.insert("runId".into(), json!(run_id));
-    payload.insert("sequence".into(), json!(sequence));
-    payload.insert("kind".into(), json!(kind));
-    database
-        .client()
-        .append_research_event(AppendResearchEventWrite {
-            run_id: run_id.into(),
-            sequence,
-            kind: kind.into(),
-            payload: Value::Object(payload),
-            now_ms,
-        })
-        .expect("append canary research event");
+    let mut connection = rusqlite::Connection::open(&paths.main).expect("legacy canary writer");
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("legacy canary foreign keys");
+    let transaction = connection.transaction().expect("legacy canary transaction");
+    transaction
+        .execute(
+            "INSERT INTO research_run(
+                id, query, status, created_at, started_at, completed_at,
+                updated_at, final_answer_json
+             ) VALUES(?1, ?2, 'COMPLETED', ?3, ?3, ?4, ?4, ?5)",
+            rusqlite::params![
+                run_id,
+                query,
+                created_at_ms,
+                completed_at_ms,
+                answer.to_string()
+            ],
+        )
+        .expect("legacy canary research row");
+    for attachment_id in attachment_ids {
+        transaction
+            .execute(
+                "INSERT INTO research_run_attachment(research_run_id, attachment_id)
+                 VALUES(?1, ?2)",
+                rusqlite::params![run_id, attachment_id],
+            )
+            .expect("legacy canary attachment membership");
+    }
+    transaction.commit().expect("legacy canary commit");
 }
 
 fn grounded_answer(citation: &crate::database::CitationResolution) -> Value {
@@ -1092,11 +1109,11 @@ fn verify_historical_research_citations(connection: &rusqlite::Connection) -> u6
             |row| row.get::<_, String>(0),
         )
         .expect("restored grounded research answer");
-    let answer = serde_json::from_str::<GroundedResearchAnswer>(&answer_json)
+    let answer = serde_json::from_str::<LegacyGroundedAnswer>(&answer_json)
         .expect("restored grounded research answer contract");
     assert_eq!(answer.citations.len(), 1);
     let citation = &answer.citations[0];
-    assert_eq!(citation.evidence_kind, GroundedEvidenceKind::AuthoredTidbit);
+    assert_eq!(citation.evidence_kind, LegacyEvidenceKind::AuthoredTidbit);
     assert_eq!(citation.evidence.state, CitationState::Current);
     let resolved = passages::resolve_citation(connection, &citation.evidence.passage_id)
         .expect("resolve restored historical research passage");
@@ -1168,7 +1185,7 @@ fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
             |row| row.get::<_, String>(0),
         )
         .expect("test grounded answer");
-    let answer = serde_json::from_str::<GroundedResearchAnswer>(&answer_json)
+    let answer = serde_json::from_str::<LegacyGroundedAnswer>(&answer_json)
         .expect("test grounded answer contract");
     let stored = &answer.citations[0].evidence;
     let resolved = passages::resolve_citation(&connection, &stored.passage_id)

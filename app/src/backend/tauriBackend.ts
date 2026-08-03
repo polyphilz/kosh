@@ -1,16 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { TauriCommand, TauriEvent } from "../tauriProtocol";
+import { TauriCommand } from "../tauriProtocol";
 import type {
   Backend,
   BackupConnectionTestResult,
   BackupRestoreDrill,
   BackupRestorePreview,
   BackupSettingsSnapshot,
-  BeginResearchProcessInput,
   CitationResolution,
-  ClaudeCliDefaults,
-  ClaudeSetupStatus,
   ClearDraftInput,
   CheckpointWorkingCopyInput,
   ConfigureBackupInput,
@@ -26,16 +22,12 @@ import type {
   IntegrityCheckOutcome,
   ListTidbitsInput,
   ListTidbitRevisionsInput,
-  ListResearchRunsInput,
   MaintenanceDiagnostics,
   MaintenanceOutcome,
   PassageEmbeddingIndexStatus,
   PdfRecord,
   PdfStatusRecord,
   RuntimeProbe,
-  ResearchProcessEvent,
-  ResearchRunPage,
-  ResearchRunRecord,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
   SetAutomaticUpdateChecksInput,
@@ -58,7 +50,6 @@ import type {
   WorkingCopyCheckpointResult,
   WorkingCopyRecord,
   WorkingCopySaveResult,
-  StartResearchProcessOutput,
   TakeOverBackupInput,
   TestBackupConnectionInput,
   RestoreCheckpointInput,
@@ -172,21 +163,4 @@ export const tauriBackend: Backend = {
     invoke<PdfStatusRecord>(TauriCommand.RetryPdfExtraction, { attachmentId }),
   openPdfExternal: (attachmentId: string) =>
     invoke<void>(TauriCommand.OpenPdfExternal, { attachmentId }),
-  claudeSetupStatus: () => invoke<ClaudeSetupStatus>(TauriCommand.ClaudeSetupStatus),
-  claudeCliDefaults: () => invoke<ClaudeCliDefaults>(TauriCommand.ClaudeCliDefaults),
-  startResearchProcess: (input: BeginResearchProcessInput) =>
-    invoke<StartResearchProcessOutput>(TauriCommand.StartResearchProcess, { input }),
-  rerunResearchProcess: (runId: string) =>
-    invoke<StartResearchProcessOutput>(TauriCommand.RerunResearchProcess, { runId }),
-  cancelResearchProcess: (runId: string) =>
-    invoke<boolean>(TauriCommand.CancelResearchProcess, { runId }),
-  listResearchRuns: (input: ListResearchRunsInput) =>
-    invoke<ResearchRunPage>(TauriCommand.ListResearchRuns, { input }),
-  loadResearchRun: (id: string) => invoke<ResearchRunRecord>(TauriCommand.LoadResearchRun, { id }),
-  saveResearchAnswerAsTidbit: (runId: string) =>
-    invoke<TidbitRecord>(TauriCommand.SaveResearchAnswerAsTidbit, { runId }),
-  onResearchProcessEvent: async (handler: (event: ResearchProcessEvent) => void) =>
-    listen<ResearchProcessEvent>(TauriEvent.ResearchProcess, ({ payload }) => {
-      handler(payload);
-    }),
 };
