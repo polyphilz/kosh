@@ -7,7 +7,7 @@ import {
 } from "@blocknote/core";
 import { createReactBlockSpec, createReactInlineContentSpec } from "@blocknote/react";
 import { renderToString } from "katex";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { codeLanguageDefinitions } from "../markdown/languages";
 import { useKoshEditorDisabled } from "./interactionState";
 import { koshMediaBlockSpecs } from "./mediaBlocks";
@@ -166,9 +166,30 @@ function InlineMathSource({
   onChange: (latex: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [popoverOffset, setPopoverOffset] = useState(0);
+  const popoverRef = useRef<HTMLSpanElement>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
   const sourceRef = useRef<HTMLInputElement>(null);
   const rendering = useMemo(() => renderMath(latex, false, true), [latex]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const positionPopover = () => {
+      const root = rootRef.current;
+      const popover = popoverRef.current;
+      if (!root || !popover) return;
+      const viewportMargin = 16;
+      const rootLeft = root.getBoundingClientRect().left;
+      const popoverWidth = popover.getBoundingClientRect().width;
+      const viewportWidth = document.documentElement.clientWidth;
+      const maximumLeft = Math.max(viewportMargin, viewportWidth - viewportMargin - popoverWidth);
+      const clampedLeft = Math.min(Math.max(rootLeft, viewportMargin), maximumLeft);
+      setPopoverOffset(clampedLeft - rootLeft);
+    };
+    positionPopover();
+    window.addEventListener("resize", positionPopover);
+    return () => window.removeEventListener("resize", positionPopover);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -217,7 +238,13 @@ function InlineMathSource({
         )}
       </span>
       {open && (
-        <span aria-label="Edit inline math" className="kosh-math-editor__popover" role="dialog">
+        <span
+          aria-label="Edit inline math"
+          className="kosh-math-editor__popover"
+          ref={popoverRef}
+          role="dialog"
+          style={{ transform: `translateX(${popoverOffset}px)` }}
+        >
           <span className="kosh-math-editor__controls">
             <input
               aria-label={label}

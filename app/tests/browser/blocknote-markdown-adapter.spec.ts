@@ -71,6 +71,29 @@ test("math previews bound user-controlled dimensions", async ({ page }) => {
   ).toBeLessThan(1_000);
 });
 
+test("inline math editing stays within the viewport at the right edge", async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 700 });
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Right edge $x$"));
+  await page.locator(".kosh-math-editor--inline").evaluate((inlineMath) => {
+    Object.assign((inlineMath as HTMLElement).style, {
+      left: "auto",
+      position: "fixed",
+      right: "8px",
+      top: "120px",
+    });
+  });
+
+  await page.getByRole("button", { name: "Edit inline math: x" }).click();
+  const popover = page.getByRole("dialog", { name: "Edit inline math" });
+  const bounds = await popover.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(15);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(505);
+  await expect(page.getByLabel("Inline math source")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Done/u })).toBeVisible();
+});
+
 test("rich paste cannot bypass the restricted schema or persist active content", async ({
   page,
 }) => {
