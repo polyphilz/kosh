@@ -171,6 +171,9 @@ test("real keyboard input covers undo, redo, IME, and list nesting", async ({ pa
 
 test("the gutter controls add below and expose stable hover guidance", async ({ page }) => {
   await openHarness(page);
+  await page.evaluate(() => {
+    document.documentElement.dataset.appearance = "DARK";
+  });
   const before = await readHarnessSnapshot(page);
   const targetIndex = 3;
   const targetId = before.blocks[targetIndex]!.id;
@@ -180,6 +183,35 @@ test("the gutter controls add below and expose stable hover guidance", async ({ 
   const drag = page.getByRole("button", { name: "Drag to move" });
   await expect(addBelow).toBeVisible();
   await expect(drag).toBeVisible();
+  for (const button of [addBelow, drag]) {
+    await button.hover();
+    const highlight = await button.evaluate((element) => {
+      const icon = element.firstElementChild;
+      if (!(icon instanceof HTMLElement)) throw new Error("gutter icon wrapper is missing");
+      const accentProbe = document.createElement("span");
+      accentProbe.style.color = "var(--accent)";
+      element.append(accentProbe);
+      const accent = getComputedStyle(accentProbe).color;
+      accentProbe.remove();
+      const buttonStyle = getComputedStyle(element);
+      const iconStyle = getComputedStyle(icon);
+      return {
+        accent,
+        buttonBackground: buttonStyle.backgroundColor,
+        buttonWidth: element.getBoundingClientRect().width,
+        iconBackground: iconStyle.backgroundColor,
+        iconColor: iconStyle.color,
+        iconWidth: icon.getBoundingClientRect().width,
+      };
+    });
+    expect(highlight).toMatchObject({
+      buttonBackground: "rgba(0, 0, 0, 0)",
+      buttonWidth: 24,
+      iconWidth: 20,
+    });
+    expect(highlight.iconBackground).not.toBe("rgba(0, 0, 0, 0)");
+    expect(highlight.iconColor).toBe(highlight.accent);
+  }
   await addBelow.hover();
   await expect
     .poll(() =>

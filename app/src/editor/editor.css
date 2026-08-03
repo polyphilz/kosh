@@ -45,6 +45,39 @@
   position: relative;
   overflow: visible;
   color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.kosh-blocknote-editor .kosh-gutter-button:hover,
+.kosh-blocknote-editor .kosh-gutter-button:active,
+.kosh-blocknote-editor .kosh-gutter-button:focus-visible {
+  color: var(--muted);
+  background: transparent;
+}
+
+.kosh-blocknote-editor .kosh-gutter-button:focus-visible {
+  outline: 0;
+}
+
+.kosh-blocknote-editor .kosh-gutter-button > span {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+}
+
+.kosh-blocknote-editor .kosh-gutter-button:hover > span,
+.kosh-blocknote-editor .kosh-gutter-button:active > span,
+.kosh-blocknote-editor .kosh-gutter-button:focus-visible > span {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.kosh-blocknote-editor .kosh-gutter-button:focus-visible > span {
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .kosh-blocknote-editor .kosh-gutter-button::after {
