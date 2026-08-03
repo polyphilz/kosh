@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
 import type { ImageRecord, SelectedAttachmentRecord } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
@@ -18,66 +18,287 @@ import {
   type QuitNative,
 } from "../../src/lifecycle/quit";
 import { QuickAddWindow } from "../../src/quickAdd/QuickAddWindow";
-import type { QuickAddNative } from "../../src/quickAdd/native";
+import {
+  QuickAddDismissAction,
+  type QuickAddDismissRequest,
+  type QuickAddNative,
+} from "../../src/quickAdd/native";
+import { TauriEvent } from "../../src/tauriProtocol";
+
+const tauriEvents = vi.hoisted(() => {
+  const listeners = new Map<string, (event: { payload: unknown }) => void>();
+  return {
+    clear: () => listeners.clear(),
+    emit: (event: string, payload: unknown) => listeners.get(event)?.({ payload }),
+    listen: vi.fn(async (event: string, listener: (event: { payload: unknown }) => void) => {
+      listeners.set(event, listener);
+      return () => listeners.delete(event);
+    }),
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: tauriEvents.listen }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ label: "quick-add" }),
+}));
+
+afterEach(() => {
+  tauriEvents.clear();
+  delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+});
 
 describe("global quick add", () => {
-  it("recovers its isolated draft, saves with Command-Enter, and resets before dismissal", async () => {
+  it("announces readiness only after installing the dismissal listener", async () => {
+    const native = createNative();
+    renderQuickAdd(new FakeBackend(), native.controller);
+
+    await waitFor(() => expect(native.controller.markReady).toHaveBeenCalledOnce());
+    expect(native.controller.onDismissRequested.mock.invocationCallOrder[0]!).toBeLessThan(
+      native.controller.markReady.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("checkpoints a titleless note before Command-Enter dismisses it", async () => {
     const backend = new FakeBackend();
-    await backend.saveDraft({
-      baseRevisionId: null,
-      bodyMarkdown: "Recovered from a hidden quick-add window.",
-      contextKey: "quick-add",
-      sources: [{ label: "Notebook", url: null }],
-      tidbitId: null,
-      title: "Recovered globally",
-    });
-    const createTidbit = vi.spyOn(backend, "createTidbit");
     const native = createNative();
     renderQuickAdd(backend, native.controller);
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+    await setEditorText(userEvent.setup(), "The shower thought must survive dismissal.");
 
-    expect(await screen.findByRole("textbox", { name: /^Title/u })).toHaveValue(
-      "Recovered globally",
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.Dismiss));
+    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    expect(notes.items).toHaveLength(1);
+    const note = await backend.loadTidbit(notes.items[0]!.id);
+    expect(note).toMatchObject({
+      bodyMarkdown: "The shower thought must survive dismissal.",
+      title: null,
+    });
+    const search = await backend.searchPassages({
+      limit: 10,
+      mode: "DEFAULT",
+      query: "shower thought",
+    });
+    expect(search.results[0]?.note.id).toBe(note.id);
+  });
+
+  it("keeps a failed checkpoint visible and retries the same native action", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    vi.spyOn(backend, "checkpointWorkingCopy").mockRejectedValueOnce(
+      new Error("checkpoint unavailable"),
     );
-    expect(screen.getByRole("textbox", { name: "Source 1 label" })).toHaveValue("Notebook");
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Tidbit" }), {
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "Keep this editor recoverable.");
+    await waitFor(() => expect(native.controller.onDismissRequested).toHaveBeenCalledOnce());
+
+    act(() => native.request(QuickAddDismissAction.ShowMain));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("checkpoint unavailable");
+    expect(native.dismiss).not.toHaveBeenCalled();
+    expect(native.cancelDismiss).toHaveBeenCalledOnce();
+    expect(screen.getByRole("textbox", { name: "Quick note" })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.ShowMain),
+    );
+    expect(
+      (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
+    ).toHaveLength(1);
+  });
+
+  it("keeps a failed pending attachment visible before allowing a deliberate retry", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    let failIngestion: ((reason: Error) => void) | undefined;
+    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
+      "01980c8e-6c00-7000-8000-000000000289",
+    );
+    vi.spyOn(backend, "ingestClipboardImage").mockImplementation(
+      () =>
+        new Promise<ImageRecord>((_resolve, reject) => {
+          failIngestion = reject;
+        }),
+    );
+    renderQuickAdd(backend, native.controller);
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+    fireEvent.paste(editor, { clipboardData: { items: [{ type: "image/png" }] } });
+    await screen.findByRole("status", { name: "Processing pasted image" }, { timeout: 3_000 });
+
+    act(() => native.request(QuickAddDismissAction.ShowMain));
+    await act(async () => failIngestion?.(new Error("image ingest unavailable")));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("image ingest unavailable");
+    expect(native.dismiss).not.toHaveBeenCalled();
+    expect(native.cancelDismiss).toHaveBeenCalledOnce();
+
+    act(() => native.request(QuickAddDismissAction.Settings));
+    await waitFor(() => expect(native.cancelDismiss).toHaveBeenCalledTimes(2));
+    expect(native.dismiss).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.Settings),
+    );
+  });
+
+  it("retries the latest dismissal action when an in-flight checkpoint fails", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    let rejectCheckpoint: ((reason: Error) => void) | undefined;
+    vi.spyOn(backend, "checkpointWorkingCopy").mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectCheckpoint = reject;
+        }),
+    );
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "Keep the newest dismissal intent.");
+
+    act(() => native.request(QuickAddDismissAction.Dismiss));
+    await waitFor(() => expect(backend.checkpointWorkingCopy).toHaveBeenCalledOnce());
+    act(() => native.request(QuickAddDismissAction.Settings));
+    await act(async () => rejectCheckpoint?.(new Error("checkpoint unavailable")));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("checkpoint unavailable");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.Settings),
+    );
+  });
+
+  it("discards file drops that arrive after lifecycle flushing starts", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    const originalCheckpoint = backend.checkpointWorkingCopy.bind(backend);
+    let releaseCheckpoint: (() => void) | undefined;
+    vi.spyOn(backend, "checkpointWorkingCopy").mockImplementation(async (input) => {
+      await new Promise<void>((resolve) => {
+        releaseCheckpoint = resolve;
+      });
+      return originalCheckpoint(input);
+    });
+    const discard = vi.spyOn(backend, "discardFileDropSelections");
+    const ingest = vi.spyOn(backend, "ingestSelectedAttachment");
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "Fence the final checkpoint.");
+    await waitFor(() =>
+      expect(tauriEvents.listen).toHaveBeenCalledWith(
+        TauriEvent.FileDrop,
+        expect.any(Function),
+        expect.any(Object),
+      ),
+    );
+
+    act(() => native.request(QuickAddDismissAction.Dismiss));
+    await waitFor(() => expect(backend.checkpointWorkingCopy).toHaveBeenCalledOnce());
+    act(() =>
+      tauriEvents.emit(TauriEvent.FileDrop, {
+        selections: [{ filename: "too-late.txt", selectionId: "selection-too-late" }],
+      }),
+    );
+
+    await waitFor(() => expect(discard).toHaveBeenCalledWith(["selection-too-late"]));
+    expect(ingest).not.toHaveBeenCalled();
+    await act(async () => releaseCheckpoint?.());
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
+  });
+
+  it("does not materialize an untouched ephemeral note", async () => {
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+
+    fireEvent.keyDown(editor, { key: "Escape" });
+
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
+    expect((await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items).toEqual(
+      [],
+    );
+    expect(await backend.listWorkingCopies()).toEqual([]);
+  });
+
+  it("keeps existing sources editable after the note body is cleared", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "Source-backed draft");
+
+    await user.click(screen.getByRole("button", { name: "Sources" }));
+    await user.type(screen.getByLabelText("URL"), "https://example.com/source");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Sources 1" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Close sources" }));
+    await user.clear(screen.getByRole("textbox", { name: "Quick note" }));
+
+    const sources = screen.getByRole("button", { name: "Sources 1" });
+    expect(sources).toBeEnabled();
+    await user.click(sources);
+    await user.click(screen.getByRole("button", { name: "Remove source 1" }));
+    await waitFor(() => expect(backend.listWorkingCopies()).resolves.toEqual([]));
+  });
+
+  it("coalesces repeated dismissal requests into one checkpoint", async () => {
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+    await setEditorText(userEvent.setup(), "Checkpoint this exactly once.");
+
+    fireEvent.keyDown(editor, { key: "Escape" });
+    fireEvent.keyDown(editor, { key: "Escape" });
+
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
+    expect(
+      (await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
+    ).toHaveLength(1);
+    expect(await backend.listWorkingCopies()).toEqual([]);
+  });
+
+  it("starts a fresh ephemeral identity after every successful dismissal", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+    await setEditorText(user, "First global note.");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Quick note" }), {
       key: "Enter",
       metaKey: true,
     });
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Quick note" })).toHaveTextContent(""),
+    );
 
-    await waitFor(() => expect(createTidbit).toHaveBeenCalledOnce());
-    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
-    await expect(backend.loadDraft("quick-add")).resolves.toBeNull();
-    expect(createTidbit.mock.calls[0]![0].bodyMarkdown).toContain("Recovered from");
+    await setEditorText(user, "Second global note.");
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Quick note" }), {
+      key: "Enter",
+      metaKey: true,
+    });
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledTimes(2));
+
+    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    expect(notes.items).toHaveLength(2);
+    expect(new Set(notes.items.map((note) => note.id)).size).toBe(2);
   });
 
-  it("uses Escape only when cancellation is safe and preserves dirty input until confirmed", async () => {
+  it("lets an open slash menu consume Escape before dismissing Quick Add", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();
     const native = createNative();
     renderQuickAdd(backend, native.controller);
-    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
-    await setEditorText(user, "Do not lose this shower thought.");
-
-    fireEvent.keyDown(editor, { key: "Escape" });
-    expect(screen.getByRole("dialog", { name: "Discard this draft?" })).toBeInTheDocument();
-    expect(native.dismiss).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).toBeNull();
-    expect(editor).toHaveTextContent("Do not lose this shower thought.");
-
-    fireEvent.keyDown(editor, { key: "Escape" });
-    await user.click(screen.getByRole("button", { name: "Discard draft" }));
-    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
-    await expect(backend.loadDraft("quick-add")).resolves.toBeNull();
-  });
-
-  it("lets an open slash menu consume Escape before canceling quick add", async () => {
-    const user = userEvent.setup();
-    const backend = new FakeBackend();
-    const native = createNative();
-    renderQuickAdd(backend, native.controller);
-    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
     await user.type(editor, "/");
     await screen.findByText("Paragraph");
 
@@ -86,28 +307,15 @@ describe("global quick add", () => {
     await waitFor(() => expect(screen.queryByText("Paragraph")).toBeNull());
     expect(editor).toHaveTextContent("/");
     expect(native.dismiss).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog", { name: "Discard this draft?" })).toBeNull();
 
     fireEvent.keyDown(editor, { key: "Escape" });
-    expect(screen.getByRole("dialog", { name: "Discard this draft?" })).toBeInTheDocument();
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
   });
 
-  it("pastes images and selects attachments through the quick-add draft lease", async () => {
+  it("uses the note working-copy lease for media and checkpoints the attachment", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();
     const native = createNative();
-    const image: ImageRecord = {
-      byteLength: 2_048,
-      displayFilename: "clipboard.png",
-      id: "01980c8e-6c00-7000-8000-000000000280",
-      ingestLeaseId: "01980c8e-6c00-7000-8000-000000000281",
-      kind: "IMAGE",
-      mediaType: "image/png",
-      naturalHeight: 600,
-      naturalWidth: 800,
-      ocrError: null,
-      ocrStatus: "PENDING",
-    };
     const attachment: SelectedAttachmentRecord = {
       recordKind: "GENERIC",
       record: {
@@ -122,71 +330,97 @@ describe("global quick add", () => {
         mediaType: "text/plain",
       },
     };
-    const captureClipboardImage = vi
-      .spyOn(backend, "captureClipboardImage")
-      .mockResolvedValue("01980c8e-6c00-7000-8000-000000000284");
-    vi.spyOn(backend, "ingestClipboardImage").mockResolvedValue(image);
     vi.spyOn(backend, "selectAttachment").mockResolvedValue("01980c8e-6c00-7000-8000-000000000285");
     const ingestAttachment = vi
       .spyOn(backend, "ingestSelectedAttachment")
       .mockResolvedValue(attachment);
+    vi.spyOn(backend, "attachmentStatus").mockResolvedValue({
+      attachmentId: attachment.record.id,
+      byteLength: attachment.record.byteLength,
+      displayFilename: attachment.record.displayFilename,
+      extractedLineCount: attachment.record.extractedLineCount,
+      extractionError: attachment.record.extractionError,
+      extractionStatus: attachment.record.extractionStatus,
+      kind: attachment.record.kind,
+      mediaType: attachment.record.mediaType,
+    });
     const saveDraft = vi.spyOn(backend, "saveDraft");
     renderQuickAdd(backend, native.controller);
-    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+    await screen.findByRole("textbox", { name: "Quick note" });
 
-    fireEvent.paste(editor, {
-      clipboardData: { items: [{ type: "image/png" }] },
-    });
-    await waitFor(() => expect(captureClipboardImage).toHaveBeenCalledOnce(), { timeout: 3_000 });
-    expect(await screen.findByLabelText("Alt text", {}, { timeout: 3_000 })).toBeInTheDocument();
     await chooseSlashItem(user, "File");
 
     await waitFor(() => expect(ingestAttachment).toHaveBeenCalledOnce());
     expect(native.setFileDialogOpen.mock.calls).toEqual([[true], [false]]);
-    expect(saveDraft.mock.calls.some(([input]) => input.contextKey === "quick-add")).toBe(true);
-    expect(ingestAttachment.mock.calls[0]![1]).toMatch(/^fake-draft-/u);
+    expect(ingestAttachment.mock.calls[0]![1]).toMatch(/^fake-working-copy-/u);
     expect(await screen.findByText("chapter.txt")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Quick note" }), {
+      key: "Enter",
+      metaKey: true,
+    });
+
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledOnce());
+    expect(saveDraft).not.toHaveBeenCalled();
+    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    expect((await backend.loadTidbit(notes.items[0]!.id)).bodyMarkdown).toContain(
+      attachment.record.id,
+    );
+    expect(await backend.listWorkingCopies()).toEqual([]);
   });
 
-  it("registers one persistent composer for native invocations", async () => {
+  it("registers one persistent session for shown and dismissal requests", async () => {
     const backend = new FakeBackend();
     const native = createNative();
     renderQuickAdd(backend, native.controller);
-    await screen.findByRole("textbox", { name: "Tidbit" });
-    await waitFor(() => expect(native.controller.onShown).toHaveBeenCalledOnce());
+    await screen.findByRole("textbox", { name: "Quick note" });
+    await waitFor(() => {
+      expect(native.controller.onShown).toHaveBeenCalledOnce();
+      expect(native.controller.onDismissRequested).toHaveBeenCalledOnce();
+    });
+
+    act(() => native.show());
+
     expect(screen.getAllByRole("main", { name: "Quick add" })).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Quick note" })).toHaveFocus());
   });
 
-  it("flushes the latest quick draft before acknowledging quit", async () => {
+  it("checkpoints the latest keystroke before acknowledging quit", async () => {
     const backend = new FakeBackend();
     const native = createNative();
     const quit = createQuitNative();
     renderQuickAdd(backend, native.controller, quit.controller);
-    await screen.findByRole("textbox", { name: "Tidbit" });
+    await screen.findByRole("textbox", { name: "Quick note" });
     await setEditorText(userEvent.setup(), "The keystroke immediately before Quit must survive.");
 
     act(() => quit.prepare(41));
 
     await waitFor(() => expect(quit.acknowledge).toHaveBeenCalledWith(41, null));
-    await expect(backend.loadDraft("quick-add")).resolves.toMatchObject({
-      bodyMarkdown: "The keystroke immediately before Quit must survive.",
-    });
-    expect(screen.getByRole("textbox", { name: /^Title/u })).toBeDisabled();
+    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    expect((await backend.loadTidbit(notes.items[0]!.id)).bodyMarkdown).toContain(
+      "immediately before Quit",
+    );
+    expect(screen.getByRole("textbox", { name: "Quick note" })).toHaveAttribute(
+      "contenteditable",
+      "false",
+    );
 
     act(() => quit.cancel(41));
     await waitFor(() =>
-      expect(screen.getByRole("textbox", { name: /^Title/u })).not.toBeDisabled(),
+      expect(screen.getByRole("textbox", { name: "Quick note" })).toHaveAttribute(
+        "contenteditable",
+        "true",
+      ),
     );
   });
 
-  it("cancels quit instead of interrupting pending media ingestion", async () => {
+  it("waits for pending media before acknowledging quit", async () => {
     const backend = new FakeBackend();
     const native = createNative();
     const quit = createQuitNative();
     let finishIngestion: ((image: ImageRecord) => void) | undefined;
-    const captureClipboardImage = vi
-      .spyOn(backend, "captureClipboardImage")
-      .mockResolvedValue("01980c8e-6c00-7000-8000-000000000286");
+    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
+      "01980c8e-6c00-7000-8000-000000000286",
+    );
     vi.spyOn(backend, "ingestClipboardImage").mockImplementation(
       () =>
         new Promise<ImageRecord>((resolve) => {
@@ -194,21 +428,13 @@ describe("global quick add", () => {
         }),
     );
     renderQuickAdd(backend, native.controller, quit.controller);
-    const editor = await screen.findByRole("textbox", { name: "Tidbit" });
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+    fireEvent.paste(editor, { clipboardData: { items: [{ type: "image/png" }] } });
+    await screen.findByRole("status", { name: "Processing pasted image" }, { timeout: 3_000 });
 
-    fireEvent.paste(editor, {
-      clipboardData: { items: [{ type: "image/png" }] },
-    });
-    await waitFor(() => expect(captureClipboardImage).toHaveBeenCalledOnce(), { timeout: 3_000 });
-    await screen.findByRole("button", { name: "Adding attachment…" }, { timeout: 3_000 });
     act(() => quit.prepare(42));
-
-    await waitFor(() =>
-      expect(quit.acknowledge).toHaveBeenCalledWith(
-        42,
-        "Wait for pending attachments before quitting",
-      ),
-    );
+    await act(async () => Promise.resolve());
+    expect(quit.acknowledge).not.toHaveBeenCalled();
 
     act(() =>
       finishIngestion?.({
@@ -224,7 +450,68 @@ describe("global quick add", () => {
         ocrStatus: "PENDING",
       }),
     );
-    expect(await screen.findByLabelText("Alt text")).toBeInTheDocument();
+
+    await waitFor(() => expect(quit.acknowledge).toHaveBeenCalledWith(42, null));
+    const notes = await backend.listTidbits({ cursor: null, limit: 10, scope: "ACTIVE" });
+    expect((await backend.loadTidbit(notes.items[0]!.id)).bodyMarkdown).toContain(
+      "01980c8e-6c00-7000-8000-000000000287",
+    );
+  });
+
+  it("cancels quit when pending media fails", async () => {
+    const backend = new FakeBackend();
+    const native = createNative();
+    const quit = createQuitNative();
+    let failIngestion: ((reason: Error) => void) | undefined;
+    vi.spyOn(backend, "captureClipboardImage").mockResolvedValue(
+      "01980c8e-6c00-7000-8000-000000000290",
+    );
+    vi.spyOn(backend, "ingestClipboardImage").mockImplementation(
+      () =>
+        new Promise<ImageRecord>((_resolve, reject) => {
+          failIngestion = reject;
+        }),
+    );
+    renderQuickAdd(backend, native.controller, quit.controller);
+    const editor = await screen.findByRole("textbox", { name: "Quick note" });
+    fireEvent.paste(editor, { clipboardData: { items: [{ type: "image/png" }] } });
+    await screen.findByRole("status", { name: "Processing pasted image" }, { timeout: 3_000 });
+
+    act(() => quit.prepare(44));
+    await act(async () => failIngestion?.(new Error("quit media ingest failed")));
+
+    await waitFor(() =>
+      expect(quit.acknowledge).toHaveBeenCalledWith(
+        44,
+        "Could not add attachment: quit media ingest failed",
+      ),
+    );
+    expect(native.dismiss).not.toHaveBeenCalled();
+  });
+
+  it("cancels quit when checkpointing fails and unlocks on native cancellation", async () => {
+    const backend = new FakeBackend();
+    vi.spyOn(backend, "checkpointWorkingCopy").mockRejectedValueOnce(new Error("disk offline"));
+    const native = createNative();
+    const quit = createQuitNative();
+    renderQuickAdd(backend, native.controller, quit.controller);
+    await screen.findByRole("textbox", { name: "Quick note" });
+    await setEditorText(userEvent.setup(), "Do not quit past a failed checkpoint.");
+
+    act(() => quit.prepare(43));
+
+    await waitFor(() => expect(quit.acknowledge).toHaveBeenCalledWith(43, "disk offline"));
+    expect(screen.getByRole("textbox", { name: "Quick note" })).toHaveAttribute(
+      "contenteditable",
+      "false",
+    );
+    act(() => quit.cancel(43));
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Quick note" })).toHaveAttribute(
+        "contenteditable",
+        "true",
+      ),
+    );
   });
 });
 
@@ -252,11 +539,22 @@ function renderQuickAdd(backend: FakeBackend, native: QuickAddNative, quitNative
 
 function createNative() {
   let shown: (() => void) | undefined;
-  const dismiss = vi.fn(async () => undefined);
+  let dismissRequested: ((request: QuickAddDismissRequest) => void) | undefined;
+  const dismiss = vi.fn(async (_action: QuickAddDismissAction) => undefined);
+  const cancelDismiss = vi.fn(async () => undefined);
+  const markReady = vi.fn(async () => undefined);
   const setFileDialogOpen = vi.fn(async (_open: boolean) => undefined);
   return {
     controller: {
+      cancelDismiss,
       dismiss,
+      markReady,
+      onDismissRequested: vi.fn(async (listener: (request: QuickAddDismissRequest) => void) => {
+        dismissRequested = listener;
+        return () => {
+          dismissRequested = undefined;
+        };
+      }),
       onShown: vi.fn(async (listener: () => void) => {
         shown = listener;
         return () => {
@@ -265,7 +563,9 @@ function createNative() {
       }),
       setFileDialogOpen,
     } satisfies QuickAddNative,
+    cancelDismiss,
     dismiss,
+    request: (action: QuickAddDismissAction) => dismissRequested?.({ action }),
     setFileDialogOpen,
     show: () => shown?.(),
   };
@@ -298,13 +598,13 @@ function createQuitNative() {
 }
 
 async function setEditorText(user: ReturnType<typeof userEvent.setup>, value: string) {
-  const textbox = screen.getByRole("textbox", { name: "Tidbit" });
+  const textbox = await screen.findByRole("textbox", { name: "Quick note" });
   await user.clear(textbox);
   await user.type(textbox, value);
 }
 
 async function chooseSlashItem(user: ReturnType<typeof userEvent.setup>, name: string) {
-  const textbox = screen.getByRole("textbox", { name: "Tidbit" });
+  const textbox = screen.getByRole("textbox", { name: "Quick note" });
   const insertionPoint = textbox
     .querySelectorAll(".bn-inline-content")
     .item(textbox.querySelectorAll(".bn-inline-content").length - 1);

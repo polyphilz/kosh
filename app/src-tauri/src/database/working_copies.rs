@@ -9,6 +9,7 @@ use super::{
 };
 
 const NOTE_CONTEXT_PREFIX: &str = "note:";
+const QUICK_ADD_CONTEXT: &str = "quick-add";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -289,6 +290,71 @@ pub(super) fn discard(
 pub(super) fn load(connection: &Connection, note_id: &str) -> Result<Option<WorkingCopy>> {
     tidbits::validate_uuid_v7(note_id, "noteId")?;
     load_from_connection(connection, note_id)
+}
+
+pub(super) fn adopt_legacy_quick_add(
+    connection: &mut Connection,
+    now_ms: i64,
+) -> Result<Option<WorkingCopy>> {
+    tidbits::validate_timestamp(now_ms, "nowMs")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let legacy = transaction
+        .query_row(
+            "SELECT draft.id, draft.updated_at, draft.title, draft.body_markdown
+             FROM draft
+             JOIN draft_context AS context ON context.draft_id = draft.id
+             WHERE context.context_key = ?1
+               AND context.note_id IS NULL",
+            params![QUICK_ADD_CONTEXT],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((draft_id, previous_updated_at_ms, title, body_markdown)) = legacy else {
+        transaction.rollback()?;
+        return Ok(None);
+    };
+    tidbits::validate_uuid_v7(&draft_id, "legacy quick-add draft ID")?;
+    let updated_at_ms = tidbits::next_timestamp(previous_updated_at_ms, now_ms)?;
+    let projected_body = project_legacy_title(title.as_deref(), &body_markdown);
+    let context_key = note_context(&draft_id);
+    transaction.execute(
+        "UPDATE draft
+         SET updated_at = ?1, title = NULL, body_markdown = ?2
+         WHERE id = ?3",
+        params![updated_at_ms, &projected_body, &draft_id],
+    )?;
+    let adopted = transaction.execute(
+        "UPDATE draft_context
+         SET context_key = ?1,
+             note_id = ?2,
+             edit_generation = 1,
+             media_reservation = 0
+         WHERE draft_id = ?2
+           AND context_key = ?3
+           AND note_id IS NULL",
+        params![&context_key, &draft_id, QUICK_ADD_CONTEXT],
+    )?;
+    if adopted != 1 {
+        return Err(DatabaseError::InvalidInput(
+            "legacy Quick Add draft changed while it was being recovered".into(),
+        ));
+    }
+    transaction.commit()?;
+    load_from_connection(connection, &draft_id)?.map_or_else(
+        || {
+            Err(DatabaseError::InvalidInput(
+                "legacy Quick Add draft disappeared after recovery".into(),
+            ))
+        },
+        |working_copy| Ok(Some(working_copy)),
+    )
 }
 
 pub(super) fn list(connection: &Connection) -> Result<Vec<WorkingCopy>> {
@@ -642,6 +708,47 @@ fn note_context(note_id: &str) -> String {
     format!("{NOTE_CONTEXT_PREFIX}{note_id}")
 }
 
+fn project_legacy_title(title: Option<&str>, body_markdown: &str) -> String {
+    let Some(title) = title
+        .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|title| !title.is_empty())
+    else {
+        return body_markdown.to_owned();
+    };
+    let mut escaped = String::with_capacity(title.len());
+    for character in title.chars() {
+        if matches!(
+            character,
+            '\\' | '`'
+                | '*'
+                | '_'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '('
+                | ')'
+                | '<'
+                | '>'
+                | '#'
+                | '+'
+                | '-'
+                | '.'
+                | '!'
+                | '|'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    let heading = format!("# {escaped}");
+    if body_markdown.trim().is_empty() {
+        heading
+    } else {
+        format!("{heading}\n\n{body_markdown}")
+    }
+}
+
 pub(crate) fn has_meaningful_authored_content(markdown: &str) -> bool {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_MATH;
     Parser::new_ext(markdown, options).any(|event| match event {
@@ -809,6 +916,72 @@ mod tests {
             library.database.client().load_tidbit(NOTE_ID.into()),
             Err(DatabaseError::NotFound { .. })
         ));
+    }
+
+    #[test]
+    fn source_only_ephemeral_working_copy_is_cleared() {
+        let library = TestLibrary::new();
+        let source = SourceDraft {
+            label: Some("Discarded source".into()),
+            url: Some("https://example.com/discarded".into()),
+        };
+        let result = library.save_with_sources(1, "", None, DRAFT_ID_1, vec![source]);
+
+        assert_eq!(result.status, WorkingCopySaveStatus::Cleared);
+        assert_eq!(result.working_copy, None);
+        assert_eq!(
+            library
+                .database
+                .client()
+                .load_working_copy(NOTE_ID.into())
+                .expect("load source-only working copy")
+                .map(|copy| copy.sources),
+            None
+        );
+        assert!(matches!(
+            library.database.client().load_tidbit(NOTE_ID.into()),
+            Err(DatabaseError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn clearing_the_body_removes_an_existing_source_only_ephemeral_copy() {
+        let library = TestLibrary::new();
+        let source = SourceDraft {
+            label: Some("Temporary source".into()),
+            url: Some("https://example.com/temporary".into()),
+        };
+        assert_eq!(
+            library
+                .save(1, "Temporary thought", None, DRAFT_ID_1)
+                .status,
+            WorkingCopySaveStatus::Saved
+        );
+        assert_eq!(
+            library
+                .save_with_sources(
+                    2,
+                    "Temporary thought",
+                    None,
+                    DRAFT_ID_2,
+                    vec![source.clone()],
+                )
+                .status,
+            WorkingCopySaveStatus::Saved
+        );
+
+        let cleared = library.save_with_sources(3, "", None, DRAFT_ID_2, vec![source]);
+
+        assert_eq!(cleared.status, WorkingCopySaveStatus::Cleared);
+        assert_eq!(cleared.working_copy, None);
+        assert_eq!(
+            library
+                .database
+                .client()
+                .load_working_copy(NOTE_ID.into())
+                .expect("load cleared working copy"),
+            None
+        );
     }
 
     #[test]

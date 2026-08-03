@@ -12,7 +12,7 @@ use objc2_app_kit::{
     NSWindowCollectionBehavior, NSWorkspace,
 };
 use objc2_web_kit::WKWebView;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     image::Image,
     menu::{Menu, MenuBuilder, MenuItemBuilder, MenuItemKind, PredefinedMenuItem},
@@ -39,6 +39,7 @@ const TRAY_ID: &str = "kosh-tray";
 const APP_ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const QUICK_ADD_SHOWN_EVENT: &str = "kosh://quick-add-shown";
+const QUICK_ADD_DISMISS_REQUESTED_EVENT: &str = "kosh://quick-add-dismiss-requested";
 const OPEN_SETTINGS_EVENT: &str = "kosh://open-settings";
 const NAVIGATION_COMMAND_EVENT: &str = "kosh://navigation-command";
 const CHECK_FOR_UPDATES_EVENT: &str = "kosh://check-for-updates";
@@ -48,11 +49,10 @@ const QUIT_CANCELED_EVENT: &str = "kosh://quit-canceled";
 const QUIT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 const SETTINGS_MENU_ID: &str = "open-settings";
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check-for-updates";
-const CHECK_FOR_UPDATES_TRAY_MENU_ID: &str = "check-for-updates-tray";
 const FILE_MENU_TEXT: &str = "File";
 const VIEW_MENU_TEXT: &str = "View";
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum NavigationCommand {
     NewNote,
@@ -86,11 +86,61 @@ impl NavigationCommand {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum QuickAddDismissAction {
+    Back,
+    CheckForUpdates,
+    Dismiss,
+    DismissPreserveFocus,
+    Forward,
+    NewNote,
+    Search,
+    Settings,
+    ShowMain,
+    ToggleSidebar,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickAddDismissRequest {
+    action: QuickAddDismissAction,
+}
+
+impl From<NavigationCommand> for QuickAddDismissAction {
+    fn from(command: NavigationCommand) -> Self {
+        match command {
+            NavigationCommand::NewNote => Self::NewNote,
+            NavigationCommand::Search => Self::Search,
+            NavigationCommand::ToggleSidebar => Self::ToggleSidebar,
+            NavigationCommand::Back => Self::Back,
+            NavigationCommand::Forward => Self::Forward,
+        }
+    }
+}
+
+impl QuickAddDismissAction {
+    const fn navigation_command(self) -> Option<NavigationCommand> {
+        match self {
+            Self::NewNote => Some(NavigationCommand::NewNote),
+            Self::Search => Some(NavigationCommand::Search),
+            Self::ToggleSidebar => Some(NavigationCommand::ToggleSidebar),
+            Self::Back => Some(NavigationCommand::Back),
+            Self::Forward => Some(NavigationCommand::Forward),
+            Self::CheckForUpdates
+            | Self::Dismiss
+            | Self::DismissPreserveFocus
+            | Self::Settings
+            | Self::ShowMain => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum TrayAction {
+    NewNote,
     ShowMain,
     ShowSettings,
-    CheckForUpdates,
     ShowQuickAdd,
     Quit,
 }
@@ -98,9 +148,9 @@ enum TrayAction {
 impl TrayAction {
     const fn id(self) -> &'static str {
         match self {
+            Self::NewNote => NavigationCommand::NewNote.menu_id(),
             Self::ShowMain => "show-main",
             Self::ShowSettings => "show-settings",
-            Self::CheckForUpdates => CHECK_FOR_UPDATES_TRAY_MENU_ID,
             Self::ShowQuickAdd => "show-quick-add",
             Self::Quit => "quit",
         }
@@ -108,9 +158,9 @@ impl TrayAction {
 
     fn from_id(id: &str) -> Option<Self> {
         [
+            Self::NewNote,
             Self::ShowMain,
             Self::ShowSettings,
-            Self::CheckForUpdates,
             Self::ShowQuickAdd,
             Self::Quit,
         ]
@@ -121,11 +171,22 @@ impl TrayAction {
 
 #[derive(Default)]
 struct FocusContext {
+    dismiss_action: Option<QuickAddDismissAction>,
+    dismiss_requested: bool,
     dismissing: bool,
     file_dialog_open: bool,
+    frontend_ready: bool,
     previous_external_pid: Option<i32>,
     quick_add_visible: bool,
     restore_main: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum DismissRequestState {
+    Deferred,
+    Emit,
+    NotVisible,
+    Pending,
 }
 
 impl FocusContext {
@@ -135,7 +196,43 @@ impl FocusContext {
         }
         self.previous_external_pid = frontmost_pid.filter(|pid| *pid != current_pid);
         self.restore_main = frontmost_pid == Some(current_pid) && main_focused;
+        self.dismiss_action = None;
+        self.dismiss_requested = false;
         self.quick_add_visible = true;
+    }
+
+    fn begin_dismiss_request(&mut self, action: QuickAddDismissAction) -> DismissRequestState {
+        if !self.quick_add_visible {
+            return DismissRequestState::NotVisible;
+        }
+        self.dismiss_action = Some(action);
+        if !self.frontend_ready {
+            return DismissRequestState::Deferred;
+        }
+        if self.dismiss_requested || self.dismissing {
+            return DismissRequestState::Pending;
+        }
+        self.dismiss_requested = true;
+        DismissRequestState::Emit
+    }
+
+    fn mark_frontend_ready(&mut self) -> Option<QuickAddDismissAction> {
+        self.frontend_ready = true;
+        if !self.quick_add_visible || self.dismiss_requested || self.dismissing {
+            return None;
+        }
+        let action = self.dismiss_action?;
+        self.dismiss_requested = true;
+        Some(action)
+    }
+
+    fn cancel_dismiss_request(&mut self) {
+        self.dismiss_action = None;
+        self.dismiss_requested = false;
+    }
+
+    fn resolve_dismiss_action(&mut self, fallback: QuickAddDismissAction) -> QuickAddDismissAction {
+        self.dismiss_action.take().unwrap_or(fallback)
     }
 
     fn begin_dismiss(&mut self) -> Option<RestoreTarget> {
@@ -143,6 +240,8 @@ impl FocusContext {
             return None;
         }
         self.dismissing = true;
+        self.dismiss_action = None;
+        self.dismiss_requested = false;
         self.file_dialog_open = false;
         self.quick_add_visible = false;
         Some(RestoreTarget {
@@ -156,7 +255,10 @@ impl FocusContext {
     }
 
     const fn should_dismiss_on_focus_loss(&self) -> bool {
-        self.quick_add_visible && !self.dismissing && !self.file_dialog_open
+        self.quick_add_visible
+            && !self.dismiss_requested
+            && !self.dismissing
+            && !self.file_dialog_open
     }
 }
 
@@ -393,9 +495,7 @@ fn enable_main_navigation_gestures(app: &AppHandle) -> tauri::Result<()> {
 
 fn dispatch_navigation_command(app: &AppHandle, command: NavigationCommand) {
     if let Err(error) = dispatch_to_main_thread(app, "navigate main window", move |app| {
-        show_main_inner(app)?;
-        app.emit_to(MAIN_LABEL, NAVIGATION_COMMAND_EVENT, command)
-            .map_err(|error| format!("could not dispatch navigation command: {error}"))
+        request_or_complete_quick_add_action(app, command.into())
     }) {
         log::error!("navigation command dispatch failed: {error}");
     }
@@ -452,12 +552,12 @@ fn tray_menu(app: &AppHandle, bindings: &[KeyboardBinding]) -> tauri::Result<Men
             TrayAction::ShowMain.id(),
             format!("Open Kosh  {main_window}"),
         )
-        .text(TrayAction::ShowSettings.id(), "Settings…")
-        .text(TrayAction::CheckForUpdates.id(), "Check for Updates…")
+        .text(TrayAction::NewNote.id(), "New Note")
         .text(
             TrayAction::ShowQuickAdd.id(),
             format!("Quick Add  {quick_add}"),
         )
+        .text(TrayAction::ShowSettings.id(), "Settings…")
         .separator()
         .text(TrayAction::Quit.id(), "Quit Kosh")
         .build()
@@ -473,14 +573,14 @@ fn install_tray(app: &App, bindings: &[KeyboardBinding]) -> tauri::Result<()> {
         .icon_as_template(true)
         .on_menu_event(
             |app, event| match TrayAction::from_id(event.id().as_ref()) {
+                Some(TrayAction::NewNote) => {
+                    dispatch_navigation_command(app, NavigationCommand::NewNote)
+                }
                 Some(TrayAction::ShowMain) => {
                     dispatch_logged(app, "show main window", show_main_inner)
                 }
                 Some(TrayAction::ShowSettings) => {
                     dispatch_logged(app, "show settings", show_settings_inner)
-                }
-                Some(TrayAction::CheckForUpdates) => {
-                    dispatch_logged(app, "check for updates", check_for_updates_inner)
                 }
                 Some(TrayAction::ShowQuickAdd) => {
                     dispatch_logged(app, "show quick add", show_quick_add_inner)
@@ -1076,9 +1176,43 @@ fn position_quick_add_on_cursor_monitor(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) fn dismiss_quick_add(app: AppHandle) -> Result<(), String> {
-    dispatch_to_main_thread(&app, "dismiss quick add", |app| {
-        dismiss_quick_add_inner(app, DismissFocus::RestorePrevious)
+pub(crate) fn cancel_quick_add_dismiss(state: State<'_, WindowState>) {
+    state
+        .focus
+        .lock()
+        .expect("focus context poisoned")
+        .cancel_dismiss_request();
+}
+
+#[tauri::command]
+pub(crate) fn mark_quick_add_frontend_ready(app: AppHandle) -> Result<(), String> {
+    let pending_action = app
+        .state::<WindowState>()
+        .focus
+        .lock()
+        .expect("focus context poisoned")
+        .mark_frontend_ready();
+    let Some(action) = pending_action else {
+        return Ok(());
+    };
+    if let Err(error) = emit_quick_add_dismiss_request(&app, action) {
+        app.state::<WindowState>()
+            .focus
+            .lock()
+            .expect("focus context poisoned")
+            .cancel_dismiss_request();
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn complete_quick_add_dismiss(
+    app: AppHandle,
+    action: QuickAddDismissAction,
+) -> Result<(), String> {
+    dispatch_to_main_thread(&app, "complete quick-add dismissal", move |app| {
+        complete_quick_add_action(app, action)
     })
 }
 
@@ -1115,6 +1249,97 @@ fn dismiss_quick_add_inner(app: &AppHandle, focus: DismissFocus) -> Result<(), S
     result
 }
 
+fn request_quick_add_dismiss(
+    app: &AppHandle,
+    action: QuickAddDismissAction,
+) -> Result<DismissRequestState, String> {
+    let request = app
+        .state::<WindowState>()
+        .focus
+        .lock()
+        .expect("focus context poisoned")
+        .begin_dismiss_request(action);
+    if matches!(
+        request,
+        DismissRequestState::Deferred | DismissRequestState::NotVisible
+    ) {
+        return Ok(request);
+    }
+    if let Err(error) = emit_quick_add_dismiss_request(app, action) {
+        if request == DismissRequestState::Emit {
+            app.state::<WindowState>()
+                .focus
+                .lock()
+                .expect("focus context poisoned")
+                .cancel_dismiss_request();
+        }
+        return Err(error);
+    }
+    Ok(request)
+}
+
+fn emit_quick_add_dismiss_request(
+    app: &AppHandle,
+    action: QuickAddDismissAction,
+) -> Result<(), String> {
+    app.emit_to(
+        QUICK_ADD_LABEL,
+        QUICK_ADD_DISMISS_REQUESTED_EVENT,
+        QuickAddDismissRequest { action },
+    )
+    .map_err(|error| format!("could not ask Quick Add to preserve its note: {error}"))
+}
+
+fn request_or_complete_quick_add_action(
+    app: &AppHandle,
+    action: QuickAddDismissAction,
+) -> Result<(), String> {
+    match request_quick_add_dismiss(app, action)? {
+        DismissRequestState::Deferred
+        | DismissRequestState::Emit
+        | DismissRequestState::Pending => Ok(()),
+        DismissRequestState::NotVisible => complete_quick_add_action(app, action),
+    }
+}
+
+fn complete_quick_add_action(app: &AppHandle, action: QuickAddDismissAction) -> Result<(), String> {
+    let action = app
+        .state::<WindowState>()
+        .focus
+        .lock()
+        .expect("focus context poisoned")
+        .resolve_dismiss_action(action);
+    let focus = if matches!(action, QuickAddDismissAction::Dismiss) {
+        DismissFocus::RestorePrevious
+    } else {
+        DismissFocus::PreserveCurrent
+    };
+    dismiss_quick_add_inner(app, focus)?;
+    if matches!(
+        action,
+        QuickAddDismissAction::Dismiss | QuickAddDismissAction::DismissPreserveFocus
+    ) {
+        return Ok(());
+    }
+    activate_main_window(app)?;
+    match action {
+        QuickAddDismissAction::Settings => app
+            .emit_to(MAIN_LABEL, OPEN_SETTINGS_EVENT, ())
+            .map_err(|error| format!("could not open Settings: {error}")),
+        QuickAddDismissAction::CheckForUpdates => app
+            .emit_to(MAIN_LABEL, CHECK_FOR_UPDATES_EVENT, ())
+            .map_err(|error| format!("could not request an update check: {error}")),
+        action => {
+            if let Some(command) = action.navigation_command() {
+                app.emit_to(MAIN_LABEL, NAVIGATION_COMMAND_EVENT, command)
+                    .map_err(|error| format!("could not dispatch navigation command: {error}"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
 fn restore_previous_focus(app: &AppHandle, target: RestoreTarget) -> Result<(), String> {
     if target.main {
         return activate_main_window(app);
@@ -1141,20 +1366,15 @@ pub(crate) fn show_main(app: AppHandle) -> Result<(), String> {
 }
 
 fn show_main_inner(app: &AppHandle) -> Result<(), String> {
-    dismiss_quick_add_inner(app, DismissFocus::PreserveCurrent)?;
-    activate_main_window(app)
+    request_or_complete_quick_add_action(app, QuickAddDismissAction::ShowMain)
 }
 
 fn show_settings_inner(app: &AppHandle) -> Result<(), String> {
-    show_main_inner(app)?;
-    app.emit_to(MAIN_LABEL, OPEN_SETTINGS_EVENT, ())
-        .map_err(|error| format!("could not open Settings: {error}"))
+    request_or_complete_quick_add_action(app, QuickAddDismissAction::Settings)
 }
 
 fn check_for_updates_inner(app: &AppHandle) -> Result<(), String> {
-    show_main_inner(app)?;
-    app.emit_to(MAIN_LABEL, CHECK_FOR_UPDATES_EVENT, ())
-        .map_err(|error| format!("could not request an update check: {error}"))
+    request_or_complete_quick_add_action(app, QuickAddDismissAction::CheckForUpdates)
 }
 
 fn activate_main_window(app: &AppHandle) -> Result<(), String> {
@@ -1232,9 +1452,9 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
             QUICK_ADD_LABEL => {
                 api.prevent_close();
                 if let Err(error) =
-                    dismiss_quick_add_inner(window.app_handle(), DismissFocus::RestorePrevious)
+                    request_quick_add_dismiss(window.app_handle(), QuickAddDismissAction::Dismiss)
                 {
-                    log::error!("failed to hide quick add: {error}");
+                    log::error!("failed to ask Quick Add to preserve its note: {error}");
                 }
             }
             _ => {}
@@ -1248,10 +1468,11 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
                 .expect("focus context poisoned")
                 .should_dismiss_on_focus_loss();
             if should_dismiss {
-                if let Err(error) =
-                    dismiss_quick_add_inner(window.app_handle(), DismissFocus::PreserveCurrent)
-                {
-                    log::error!("failed to dismiss Quick Add after focus loss: {error}");
+                if let Err(error) = request_quick_add_dismiss(
+                    window.app_handle(),
+                    QuickAddDismissAction::DismissPreserveFocus,
+                ) {
+                    log::error!("failed to preserve Quick Add after focus loss: {error}");
                 }
             }
         }
@@ -1350,6 +1571,40 @@ mod tests {
                 .expect("serialize sidebar command"),
             serde_json::json!("TOGGLE_SIDEBAR")
         );
+        assert_eq!(
+            serde_json::to_value(QuickAddDismissAction::DismissPreserveFocus)
+                .expect("serialize focus-loss dismissal"),
+            serde_json::json!("DISMISS_PRESERVE_FOCUS")
+        );
+        assert_eq!(
+            serde_json::to_value(QuickAddDismissRequest {
+                action: QuickAddDismissAction::ShowMain,
+            })
+            .expect("serialize dismissal request"),
+            serde_json::json!({ "action": "SHOW_MAIN" })
+        );
+        assert_eq!(
+            serde_json::from_value::<QuickAddDismissAction>(serde_json::json!("SETTINGS"))
+                .expect("deserialize settings action"),
+            QuickAddDismissAction::Settings
+        );
+        assert_eq!(
+            QuickAddDismissAction::from(NavigationCommand::Forward).navigation_command(),
+            Some(NavigationCommand::Forward)
+        );
+    }
+
+    #[test]
+    fn tray_actions_expose_the_minimal_daily_use_menu() {
+        assert!(matches!(
+            TrayAction::from_id("new-note"),
+            Some(TrayAction::NewNote)
+        ));
+        assert!(matches!(
+            TrayAction::from_id("show-main"),
+            Some(TrayAction::ShowMain)
+        ));
+        assert!(TrayAction::from_id("check-for-updates-tray").is_none());
     }
 
     fn bindings(quick_add: &str, main_window: &str) -> Vec<KeyboardBinding> {
@@ -1387,6 +1642,40 @@ mod tests {
         let target = context.begin_dismiss().expect("visible quick add");
         assert!(target.main);
         assert_eq!(target.external_pid, None);
+    }
+
+    #[test]
+    fn an_intentional_action_supersedes_focus_loss_during_checkpointing() {
+        let mut context = FocusContext::default();
+        context.begin_show(100, Some(200), false);
+        assert_eq!(
+            context.begin_dismiss_request(QuickAddDismissAction::DismissPreserveFocus),
+            DismissRequestState::Deferred
+        );
+        assert_eq!(
+            context.mark_frontend_ready(),
+            Some(QuickAddDismissAction::DismissPreserveFocus)
+        );
+        assert_eq!(
+            context.begin_dismiss_request(QuickAddDismissAction::NewNote),
+            DismissRequestState::Pending
+        );
+        assert_eq!(
+            context.resolve_dismiss_action(QuickAddDismissAction::DismissPreserveFocus),
+            QuickAddDismissAction::NewNote
+        );
+        context.cancel_dismiss_request();
+        assert!(context.should_dismiss_on_focus_loss());
+
+        assert_eq!(
+            context.begin_dismiss_request(QuickAddDismissAction::Settings),
+            DismissRequestState::Emit
+        );
+        context.cancel_dismiss_request();
+        assert_eq!(
+            context.resolve_dismiss_action(QuickAddDismissAction::Dismiss),
+            QuickAddDismissAction::Dismiss
+        );
     }
 
     #[test]

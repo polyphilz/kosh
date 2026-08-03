@@ -48,17 +48,61 @@ body,
   font-size: 9px;
 }
 
-.capture-card--quick {
+.quick-add-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100% - 58px);
+}
+
+.quick-add-editor > .note-actions {
+  align-self: flex-end;
+  margin: -6px 0 4px;
+}
+
+.quick-add-editor > .kosh-blocknote-editor {
+  flex: 1;
+}
+
+.quick-add-editor .bn-container,
+.quick-add-editor .bn-editor {
+  min-height: 420px;
+}
+
+.quick-add-editor .bn-editor {
+  padding: 12px 34px 72px;
+}
+
+.quick-add-editor__error {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  padding: 16px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--canvas) 94%, var(--danger));
+  color: var(--danger);
+  font-size: 11px;
 }
 
-.capture-card--quick .kosh-rich-text-editor [contenteditable="true"] {
-  min-height: 150px;
+.quick-add-editor__error button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.capture-card--quick .source-fields {
-  padding-top: 2px;
+.quick-add-editor__error button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 @media (prefers-color-scheme: dark) {
