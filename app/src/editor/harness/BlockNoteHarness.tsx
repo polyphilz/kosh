@@ -19,6 +19,7 @@ import {
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
 import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from "react";
+import { KoshGutterSelectionExtension, selectGutterBlockFromHandle } from "../gutterSelection";
 import { insertInlineMathForEditing, KoshInlineMathInputExtension } from "../inlineMathInput";
 import { createBlockNoteMediaController } from "../mediaController";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "../mediaBlocks";
@@ -47,7 +48,7 @@ export function BlockNoteHarness({ theme }: BlockNoteHarnessProps) {
     schema: koshHarnessSchema,
     initialContent: initialHarnessBlocks,
     tabBehavior: "prefer-indent",
-    extensions: [KoshInlineMathInputExtension],
+    extensions: [KoshGutterSelectionExtension, KoshInlineMathInputExtension],
   });
   const mediaController = useMemo(() => createBlockNoteMediaController(editor), [editor]);
   const slashItems = useMemo(
@@ -366,6 +367,7 @@ function KoshHarnessDragHandleButton() {
             </span>
           }
           label="Drag to move"
+          onClick={() => selectGutterBlockFromHandle(editor, hoveredBlock.id)}
           onDragEnd={() => {
             sideMenu.blockDragEnd();
             requestAnimationFrame(() => {

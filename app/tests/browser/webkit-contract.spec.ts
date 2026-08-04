@@ -166,14 +166,19 @@ test("the block gutter selects a range containing an atomic block in WebKit", as
 
   const railX = railBox.x + railBox.width / 2;
   const selectionX = thirdBox.x + Math.min(250, thirdBox.width - 2);
+  const selected = editor.locator('[data-kosh-gutter-selected="true"]');
+  await page.mouse.click(railX, firstBox.y + firstBox.height / 2);
+  await expect(selected).toHaveCount(0);
   await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
   await page.mouse.down();
+  await expect(selected).toHaveCount(0);
   await page.mouse.move(selectionX, thirdBox.y + thirdBox.height / 2, { steps: 12 });
   await expect(page.getByTestId("note-gutter-selection-marquee")).toBeVisible();
   await page.mouse.up();
 
   await expect(page.getByTestId("note-gutter-selection-marquee")).toBeHidden();
-  await expect(editor.locator('[data-kosh-gutter-selected="true"]')).toHaveCount(3);
+  await expect(selected).toHaveCount(3);
+  await expect(editor).toHaveClass(/ProseMirror-hideselection/u);
   await page.keyboard.press("Backspace");
   await expect(blocks).toHaveCount(1);
   await expect(blocks.first()).toContainText("Last block.");

@@ -52,6 +52,7 @@ import { KoshEditorInteractionProvider, useKoshEditorDisabled } from "./interact
 import {
   clearGutterBlockSelection,
   KoshGutterSelectionExtension,
+  selectGutterBlockFromHandle,
   setGutterBlockSelection,
 } from "./gutterSelection";
 import { insertInlineMathForEditing, KoshInlineMathInputExtension } from "./inlineMathInput";
@@ -470,7 +471,7 @@ function KoshGutterSelectionRail({
           ? blockElementAtY(topLevelBlockElements(root), event.clientY)
           : undefined;
         const blockId = block?.dataset.id;
-        if (!blockId) return;
+        if (!blockId || !block) return;
         event.preventDefault();
         drag.current = {
           anchorBlockId: blockId,
@@ -485,7 +486,6 @@ function KoshGutterSelectionRail({
         };
         setMarquee(null);
         event.currentTarget.setPointerCapture(event.pointerId);
-        setGutterBlockSelection(editor, [blockId]);
       }}
       onPointerMove={(event) => {
         const activeDrag = drag.current;
@@ -511,8 +511,6 @@ function KoshGutterSelectionRail({
         event.preventDefault();
         if (activeDrag.dragging) {
           updateMarquee(event.clientX, event.clientY);
-        } else {
-          setGutterBlockSelection(editor, [activeDrag.anchorBlockId]);
         }
         stopAutoScroll();
         drag.current = null;
@@ -546,11 +544,14 @@ interface GutterMarquee {
 }
 
 function marqueeBetween(startX: number, startY: number, endX: number, endY: number): GutterMarquee {
+  const rawHeight = Math.abs(endY - startY);
+  const rawWidth = Math.abs(endX - startX);
+  const minimumThickness = 2;
   return {
-    height: Math.abs(endY - startY),
-    left: Math.min(startX, endX),
-    top: Math.min(startY, endY),
-    width: Math.abs(endX - startX),
+    height: Math.max(rawHeight, minimumThickness),
+    left: Math.min(startX, endX) - Math.max(0, (minimumThickness - rawWidth) / 2),
+    top: Math.min(startY, endY) - Math.max(0, (minimumThickness - rawHeight) / 2),
+    width: Math.max(rawWidth, minimumThickness),
   };
 }
 
@@ -1034,9 +1035,12 @@ function KoshDragHandleButton() {
             if (!disabled) sideMenu.blockDragStart(event, hoveredBlock);
           }}
           onClick={(event) => {
-            if (!disabled) return;
-            event.preventDefault();
-            event.stopPropagation();
+            if (disabled) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            selectGutterBlockFromHandle(editor, hoveredBlock.id);
           }}
         />
       </Components.Generic.Menu.Trigger>

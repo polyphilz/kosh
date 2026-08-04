@@ -357,6 +357,7 @@ test("the gutter selects, deletes, reorders, and restores editor focus", async (
 
   await page.locator(`.bn-block-outer[data-id="${selected[0]}"]`).hover();
   await page.getByRole("button", { name: "Drag to move" }).click();
+  expect((await readHarnessSnapshot(page)).selectedBlockIds).toEqual(selected);
   await page.getByRole("menuitem", { name: "Delete selected blocks" }).click();
   await expect.poll(async () => (await readHarnessSnapshot(page)).focused).toBe(true);
   snapshot = await readHarnessSnapshot(page);
