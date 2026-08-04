@@ -97,8 +97,6 @@ export function QuickAddWindow({ native = quickAddNative }: QuickAddWindowProps)
 
   const handleKeyboard = (event: KeyboardEvent<HTMLElement>) => {
     if (event.nativeEvent.isComposing) return;
-    const target = event.target;
-    if (target instanceof Element && target.closest('[role="dialog"]')) return;
     if (
       event.key === "Enter" &&
       (event.metaKey || event.ctrlKey) &&
@@ -110,6 +108,8 @@ export function QuickAddWindow({ native = quickAddNative }: QuickAddWindowProps)
       requestDismiss(QuickAddDismissAction.Dismiss);
       return;
     }
+    const target = event.target;
+    if (target instanceof Element && target.closest('[role="dialog"]')) return;
     if (event.key !== "Escape" || sessionRef.current?.isEditorOverlayOpen()) return;
     event.preventDefault();
     event.stopPropagation();
