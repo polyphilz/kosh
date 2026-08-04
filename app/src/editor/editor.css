@@ -193,10 +193,25 @@
 }
 
 .kosh-blocknote-editor [data-kosh-search-hit="true"] {
-  border-radius: 5px;
-  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
-  outline-offset: 3px;
-  background: color-mix(in srgb, var(--accent-soft) 48%, transparent);
+  border-radius: 4px;
+  animation: kosh-search-match-flash 1.15s cubic-bezier(0.2, 0.75, 0.25, 1) both;
+}
+
+@keyframes kosh-search-match-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 68%, transparent);
+  }
+
+  42% {
+    background-color: color-mix(in srgb, var(--accent) 11%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 34%, transparent);
+  }
+
+  100% {
+    background-color: color-mix(in srgb, var(--accent) 7%, transparent);
+    box-shadow: none;
+  }
 }
 
 .kosh-blocknote-editor--page .bn-editor {
@@ -488,5 +503,11 @@
 @media (prefers-reduced-motion: reduce) {
   .kosh-rich-text-editor * {
     scroll-behavior: auto !important;
+  }
+
+  .kosh-blocknote-editor [data-kosh-search-hit="true"] {
+    background-color: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 58%, transparent) !important;
+    animation: none !important;
   }
 }

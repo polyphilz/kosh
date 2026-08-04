@@ -180,6 +180,69 @@ describe("production BlockNote editor", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("marks every block in a contiguous citation range", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"First matched block.\n\nSecond matched block."}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("Second matched block.");
+    const citation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "First matched block. Second matched block.",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startBlock: 0,
+        endBlock: 1,
+      },
+    };
+
+    expect(ref.current?.focusCitation(citation)).toBe(true);
+    const matches = document.querySelectorAll('[data-kosh-search-hit="true"]');
+    expect(matches).toHaveLength(2);
+    expect(matches[0]).toHaveTextContent("First matched block.");
+    expect(matches[1]).toHaveTextContent("Second matched block.");
+  });
+
+  it("marks nested descendants included in a citation range", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"- Parent match.\n  - Nested match.\n    - Deep match."}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("Deep match.");
+    const citation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "Parent match. Nested match. Deep match.",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startBlock: 0,
+        endBlock: 2,
+      },
+    };
+
+    expect(ref.current?.focusCitation(citation)).toBe(true);
+    const matches = document.querySelectorAll('[data-kosh-search-hit="true"]');
+    expect(matches).toHaveLength(3);
+    expect(matches[0]).toHaveTextContent("Parent match.");
+    expect(matches[1]).toHaveTextContent("Nested match.");
+    expect(matches[2]).toHaveTextContent("Deep match.");
+  });
+
   it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(
@@ -358,6 +421,7 @@ describe("production BlockNote editor", () => {
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
       "exact slice",
     );
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).not.toHaveTextContent("zero");
 
     view.rerender(
       <AppearanceProvider>
@@ -382,9 +446,11 @@ describe("production BlockNote editor", () => {
     };
 
     expect(ref.current?.focusCitation(lineCitation)).toBe(true);
-    expect(document.querySelector('[data-kosh-search-hit="true"]')?.textContent).toBe(
-      "second target\nthird",
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).not.toHaveTextContent("first");
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
+      /second target\s+third/u,
     );
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).not.toHaveTextContent("fourth");
 
     const mismatchedLocator: CitationResolution = {
       ...characterCitation,

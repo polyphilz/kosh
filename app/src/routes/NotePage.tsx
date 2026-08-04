@@ -24,8 +24,12 @@ import { NoteActions } from "../notes/NoteActions";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
 import { useNoteDeletion } from "../notes/deletion";
 import { registerQuitParticipant } from "../lifecycle/quit";
-import { citationLocation } from "../search/presentation";
 import { registerSearchCheckpoint } from "../search/checkpoint";
+import { citationLocation, citationOwner } from "../search/presentation";
+import {
+  SEARCH_RESULT_SELECTED_EVENT,
+  type SearchResultSelectedDetail,
+} from "../search/SearchOverlay";
 import { TauriEvent } from "../tauriProtocol";
 
 interface FileDropNotice {
@@ -51,6 +55,7 @@ const scrollPositions = new Map<string, number>();
 const reconciliationStarted = new WeakSet<Backend>();
 const activeNoteIds = new WeakMap<Backend, string>();
 const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>>();
+const SEARCH_MATCH_FLASH_MS = 1_400;
 
 export function NotePage({ mode, noteId, passageId }: NotePageProps) {
   const backend = useBackend();
@@ -143,6 +148,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
+  const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
   const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
 
@@ -207,6 +213,17 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   });
 
   useEffect(() => {
+    const repeatSelection = (event: Event) => {
+      const detail = (event as CustomEvent<SearchResultSelectedDetail>).detail;
+      if (detail.noteId === noteId && detail.passageId === passageId) {
+        setSearchSelectionRevision((current) => current + 1);
+      }
+    };
+    window.addEventListener(SEARCH_RESULT_SELECTED_EVENT, repeatSelection);
+    return () => window.removeEventListener(SEARCH_RESULT_SELECTED_EVENT, repeatSelection);
+  }, [noteId, passageId]);
+
+  useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       editorRef.current?.focus();
       restoreScroll(noteId);
@@ -222,6 +239,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       return;
     }
     let active = true;
+    let flashTimer: number | null = null;
     setSearchFocus({ phase: "LOADING" });
     void backend
       .resolveCitation(passageId)
@@ -260,6 +278,24 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
             window.requestAnimationFrame(() => {
               if (active) focusCitation();
             });
+            flashTimer = window.setTimeout(() => {
+              if (!active) return;
+              if (!citation.attachment) {
+                void navigate({
+                  to: "/notes/$noteId",
+                  params: { noteId },
+                  search: {},
+                  replace: true,
+                });
+                return;
+              }
+              editorRef.current?.clearSearchFocus();
+              setSearchFocus((current) =>
+                current?.phase === "FOCUSED" && current.citation.passageId === citation.passageId
+                  ? { phase: "EVIDENCE", citation: current.citation }
+                  : current,
+              );
+            }, SEARCH_MATCH_FLASH_MS);
           }
         });
       })
@@ -273,9 +309,10 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       });
     return () => {
       active = false;
+      if (flashTimer !== null) window.clearTimeout(flashTimer);
       editorRef.current?.clearSearchFocus();
     };
-  }, [backend, noteId, passageId]);
+  }, [backend, navigate, noteId, passageId, searchSelectionRevision]);
 
   useEffect(() => {
     if (disposeTimerRef.current !== null) {
@@ -410,6 +447,19 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     }
   }, [announceDeletedNote, backend, coordinator, deleting, flushForNavigation, navigate, noteId]);
 
+  const dismissSearchFocus = useCallback(() => {
+    if (!passageId) {
+      setSearchFocus(null);
+      return;
+    }
+    void navigate({
+      to: "/notes/$noteId",
+      params: { noteId },
+      search: {},
+      replace: true,
+    });
+  }, [navigate, noteId, passageId]);
+
   const error = snapshot.error ?? mediaError ?? actionError;
   return (
     <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
@@ -431,19 +481,20 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         sources={snapshot.sources}
       />
       <div className="note-page__document">
-        {searchFocus && searchFocus.phase !== "LOADING" && (
-          <SearchFocusNotice
-            focus={searchFocus}
-            onDismiss={() => {
-              void navigate({
-                to: "/notes/$noteId",
-                params: { noteId },
-                search: {},
-                replace: true,
-              });
-            }}
-          />
+        {searchFocus?.phase === "FOCUSED" && (
+          <span aria-live="polite" className="visually-hidden" role="status">
+            Search match
+          </span>
         )}
+        {searchFocus &&
+          (searchFocus.phase === "HISTORICAL" || searchFocus.phase === "UNAVAILABLE") && (
+            <SearchIntegrityNotice focus={searchFocus} onDismiss={dismissSearchFocus} />
+          )}
+        {searchFocus &&
+          (searchFocus.phase === "FOCUSED" || searchFocus.phase === "EVIDENCE") &&
+          searchFocus.citation.attachment && (
+            <SearchEvidenceNotice citation={searchFocus.citation} onDismiss={dismissSearchFocus} />
+          )}
         <KoshBlockNoteEditor
           ariaLabel="Note"
           attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
@@ -532,38 +583,48 @@ type SearchFocusState =
       message: string;
       phase: "HISTORICAL" | "UNAVAILABLE";
     }
-  | { citation: CitationResolution; phase: "FOCUSED" };
+  | { citation: CitationResolution; phase: "EVIDENCE" | "FOCUSED" };
 
-function SearchFocusNotice({
-  focus,
+function SearchEvidenceNotice({
+  citation,
   onDismiss,
 }: {
-  focus: Exclude<SearchFocusState, { phase: "LOADING" }>;
+  citation: CitationResolution;
   onDismiss: () => void;
 }) {
-  const citation = focus.citation;
   return (
-    <section
-      aria-label="Search result location"
-      className="note-search-focus"
-      data-tone={focus.phase === "FOCUSED" ? "current" : "warning"}
-    >
-      <div role="status">
-        <strong>{focus.phase === "FOCUSED" ? "Search match" : "Historical search match"}</strong>
-        <span>{searchFocusMessage(focus)}</span>
-        {citation && (focus.phase !== "FOCUSED" || citation.attachment) && (
-          <q>{citation.excerpt}</q>
-        )}
+    <aside aria-label="Search result location" className="note-search-evidence" role="status">
+      <div>
+        <strong>{citationOwner(citation)}</strong>
+        <span>{citationLocation(citation)}</span>
+        <q>{citation.excerpt}</q>
       </div>
-      <button aria-label="Clear search highlight" onClick={onDismiss} type="button">
+      <button aria-label="Dismiss search result location" onClick={onDismiss} type="button">
         ×
       </button>
-    </section>
+    </aside>
   );
 }
 
-function searchFocusMessage(focus: Exclude<SearchFocusState, { phase: "LOADING" }>): string {
-  return focus.phase === "FOCUSED" ? citationLocation(focus.citation) : focus.message;
+function SearchIntegrityNotice({
+  focus,
+  onDismiss,
+}: {
+  focus: Extract<SearchFocusState, { phase: "HISTORICAL" | "UNAVAILABLE" }>;
+  onDismiss: () => void;
+}) {
+  return (
+    <aside aria-label="Search citation warning" className="note-search-warning" role="alert">
+      <div>
+        <strong>{focus.phase === "HISTORICAL" ? "Older revision" : "Match unavailable"}</strong>
+        <span>{focus.message}</span>
+        {focus.citation && <q>{focus.citation.excerpt}</q>}
+      </div>
+      <button aria-label="Dismiss search citation warning" onClick={onDismiss} type="button">
+        ×
+      </button>
+    </aside>
+  );
 }
 
 function coordinatorForDurableNote(

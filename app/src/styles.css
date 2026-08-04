@@ -502,49 +502,52 @@ button {
   background: var(--accent-soft);
 }
 
-.note-search-focus {
-  position: sticky;
-  z-index: 4;
-  top: 14px;
+.note-search-warning,
+.note-search-evidence {
+  position: fixed;
+  z-index: 20;
+  right: 18px;
+  bottom: 18px;
   display: flex;
+  width: min(390px, calc(100vw - 36px));
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 9px 10px;
-  margin: -34px 0 22px;
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--line));
   border-radius: var(--radius-sm);
   color: var(--ink);
-  background: color-mix(in srgb, var(--surface-solid) 94%, transparent);
-  box-shadow: 0 8px 28px rgba(18, 15, 12, 0.09);
+  background: var(--surface-solid);
+  box-shadow: 0 8px 28px rgba(18, 15, 12, 0.12);
   font-size: 10px;
 }
 
-.note-search-focus[data-tone="warning"] {
-  border-color: color-mix(in srgb, var(--warning) 45%, var(--line));
-}
-
-.note-search-focus > div {
+.note-search-warning > div,
+.note-search-evidence > div {
   display: grid;
   min-width: 0;
   gap: 3px;
 }
 
-.note-search-focus span,
-.note-search-focus q {
-  overflow: hidden;
+.note-search-warning span,
+.note-search-warning q,
+.note-search-evidence span,
+.note-search-evidence q {
   color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.note-search-focus button {
+.note-search-warning button,
+.note-search-evidence button {
   padding: 0 3px;
   border: 0;
   color: var(--muted);
   background: transparent;
   cursor: pointer;
   font: inherit;
+}
+
+.note-search-evidence {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
 }
 
 .search-overlay {

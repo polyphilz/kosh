@@ -34,17 +34,79 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   await search.press("Enter");
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Search result location")).toHaveCount(0);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCSS(
+    "animation-name",
+    "kosh-search-match-flash",
+  );
   expect(page.url()).not.toContain("slow");
   expect(await searchStorageKeys(page)).toEqual([]);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0, { timeout: 3_000 });
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}$`, "u"));
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("slow simmering");
+  await page.getByRole("option", { name: /Tomato technique/u }).click();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
 
   await page.getByRole("textbox", { name: "Note" }).fill("A replacement passage.");
-  await expect(
-    page.getByText("The cited passage is no longer present in this note."),
-  ).toBeVisible();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
+});
+
+test("reduced motion leaves the cited passage visibly highlighted", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/#/");
+  await seedTidbit(page, {
+    bodyMarkdown: "Reduced-motion evidence stays visible without an animation.",
+    sources: [],
+  });
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("stays visible");
+  await page.getByRole("option", { name: /Reduced-motion evidence/u }).click();
+
+  const match = page.locator('[data-kosh-search-hit="true"]');
+  await expect(match).toBeVisible();
+  await expect(match).toHaveCSS("animation-name", "none");
+  await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+});
+
+test("a blocked route cleanup retains its search match", async ({ page }) => {
+  await page.goto("/#/");
+  const note = await seedTidbit(page, {
+    bodyMarkdown: "Blocked cleanup must keep this precise passage visible.",
+    sources: [],
+  });
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("precise passage");
+  const result = page.getByRole("option", { name: /Blocked cleanup/u });
+  await expect(result).toBeVisible();
+  await page.evaluate(async (seeded) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    await backend.saveWorkingCopy({
+      noteId: seeded.id,
+      baseRevisionId: seeded.currentRevisionId,
+      editGeneration: 1,
+      bodyMarkdown: seeded.bodyMarkdown,
+      sources: seeded.sources,
+    });
+    backend.checkpointWorkingCopy = async () => {
+      throw new Error("simulated search cleanup failure");
+    };
+  }, note);
+
+  await result.click();
+
+  const match = page.locator('[data-kosh-search-hit="true"]');
+  await expect(match).toContainText("precise passage");
+  await page.waitForTimeout(1_800);
+  await expect(match).toHaveCount(1);
+  await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=`, "u"));
 });
 
 test("search checkpoints the active note before querying", async ({ page }) => {
@@ -73,7 +135,8 @@ test("a route-backed search result remains on its cited note", async ({ page }) 
 
   await expect(dialog).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=fake-passage%3A`, "u"));
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("cedar passage");
+  await expect(page.getByLabel("Search result location")).toHaveCount(0);
 });
 
 test("dismissal clears transient search and stale responses cannot replace newer results", async ({
@@ -247,12 +310,30 @@ test("attachment results retain their exact page evidence after opening the owni
   await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
   await page.getByRole("option", { name: /Vector chapter/u }).click();
 
-  await expect(page.getByText("Search match", { exact: true })).toBeVisible();
-  await expect(page.locator(".note-search-focus span")).toHaveText("Vector chapter · page 7");
-  await expect(page.locator(".note-search-focus q")).toHaveText(
-    "Page-seven matrix evidence remains exact.",
-  );
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
+  const location = page.getByRole("status", { name: "Search result location" });
+  await expect(location).toContainText("vectors.pdf");
+  await expect(location).toContainText("Vector chapter · page 7");
+  await expect(location).toContainText("Page-seven matrix evidence remains exact.");
+  await expect(location).toBeVisible();
+  await page.waitForTimeout(1_500);
+  await expect(location).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
+  await page.getByRole("option", { name: /Vector chapter/u }).click();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
+
+  await page.getByRole("button", { name: "Dismiss search result location" }).click();
+  await expect(location).toBeHidden();
+  await expect.poll(() => new URL(page.url()).searchParams.has("passage")).toBe(false);
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
+  await page.getByRole("option", { name: /Vector chapter/u }).click();
+  await expect(location).toBeVisible();
+  await expect(location).toContainText("Page-seven matrix evidence remains exact.");
 });
 
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {

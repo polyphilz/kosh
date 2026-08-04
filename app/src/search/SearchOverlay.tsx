@@ -14,6 +14,12 @@ import { citationLocation, sourceDisplay } from "./presentation";
 
 const SEARCH_DEBOUNCE_MS = 160;
 const SEARCH_RESULT_LIMIT = 24;
+export const SEARCH_RESULT_SELECTED_EVENT = "kosh:search-result-selected";
+
+export interface SearchResultSelectedDetail {
+  noteId: string;
+  passageId: string;
+}
 
 interface SearchOverlayProps {
   onClose: () => void;
@@ -91,7 +97,14 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
         to: "/notes/$noteId",
         params: { noteId: result.note.id },
         search: { passage: result.passageId },
-      }).then(onResultOpen);
+      }).then(() => {
+        onResultOpen();
+        window.dispatchEvent(
+          new CustomEvent<SearchResultSelectedDetail>(SEARCH_RESULT_SELECTED_EVENT, {
+            detail: { noteId: result.note.id, passageId: result.passageId },
+          }),
+        );
+      });
     },
     [navigate, onResultOpen],
   );
