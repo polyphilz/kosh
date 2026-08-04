@@ -19,9 +19,9 @@ export const KoshInlineMathInputExtension = createExtension({
           const match = `${textBefore}${text}`.match(INLINE_MATH_INPUT);
           if (!match || match.index === undefined) return false;
 
-          const latex = match[1]?.trim();
+          const latex = match[1];
           const inlineMath = view.state.schema.nodes.inlineMath;
-          if (!latex || !inlineMath || isEscaped(textBefore, match.index)) return false;
+          if (!latex?.trim() || !inlineMath || isEscaped(textBefore, match.index)) return false;
 
           const matchStart = from - (match[0].length - text.length);
           const node = inlineMath.create({ latex });

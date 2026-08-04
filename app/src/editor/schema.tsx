@@ -248,7 +248,10 @@ function InlineMathSource({
     sourceRef.current?.focus();
     const sourceLength = sourceRef.current?.value.length ?? 0;
     sourceRef.current?.setSelectionRange(sourceLength, sourceLength);
+  }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
       const root = rootRef.current;
       if (root && !event.composedPath().includes(root)) dismiss(false);

@@ -162,6 +162,22 @@ test("keyboard focus closes an earlier inline math editor before opening another
   await expect(page.getByLabel("Inline math source")).toHaveValue("b");
 });
 
+test("editing inline math preserves a mid-source caret", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Before $abc$ after"));
+  await page.getByRole("button", { name: "Edit inline math: abc" }).click();
+  const source = page.getByLabel("Inline math source");
+  await source.evaluate((input: HTMLInputElement) => input.setSelectionRange(1, 1));
+
+  await source.press("X");
+  await source.press("Y");
+
+  await expect(source).toHaveValue("aXYbc");
+  await expect
+    .poll(() => source.evaluate((input: HTMLInputElement) => input.selectionStart))
+    .toBe(3);
+});
+
 test("rich paste cannot bypass the restricted schema or persist active content", async ({
   page,
 }) => {

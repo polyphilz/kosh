@@ -146,6 +146,14 @@ test("inline math supports paired-dollar input and opens directly from the slash
     .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown()))
     .toContain("Energy $E = mc^2$");
 
+  const spacedBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  await page.keyboard.type("$$x\\ $$");
+  await expect
+    .poll(async () => blockContentSnapshot(await readHarnessSnapshot(page), spacedBlockId))
+    .toEqual([{ type: "inlineMath", props: { latex: "x\\ " } }]);
+
   const literalBlockId = await page.evaluate(() =>
     window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
   );
@@ -175,9 +183,16 @@ test("inline math supports paired-dollar input and opens directly from the slash
   const emptyMathBlockId = await page.evaluate(() =>
     window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
   );
+  const markdownBeforeEmptyMath = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.markdown(),
+  );
   await page.keyboard.type("/inline");
   await page.getByRole("listbox").getByRole("option", { name: "Inline math" }).click();
   await expect(source).toBeFocused();
+  await page.waitForTimeout(500);
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown()))
+    .toBe(markdownBeforeEmptyMath);
   await source.press("Escape");
   await expect(source).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Edit inline math: empty equation" })).toHaveCount(
