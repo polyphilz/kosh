@@ -432,6 +432,17 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     }
   }, [announceDeletedNote, backend, coordinator, deleting, flushForNavigation, navigate, noteId]);
 
+  const dismissSearchFocus = useCallback(() => {
+    setSearchFocus(null);
+    if (!passageId) return;
+    void navigate({
+      to: "/notes/$noteId",
+      params: { noteId },
+      search: {},
+      replace: true,
+    });
+  }, [navigate, noteId, passageId]);
+
   const error = snapshot.error ?? mediaError ?? actionError;
   return (
     <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
@@ -460,15 +471,12 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         )}
         {searchFocus &&
           (searchFocus.phase === "HISTORICAL" || searchFocus.phase === "UNAVAILABLE") && (
-            <SearchIntegrityNotice focus={searchFocus} onDismiss={() => setSearchFocus(null)} />
+            <SearchIntegrityNotice focus={searchFocus} onDismiss={dismissSearchFocus} />
           )}
         {searchFocus &&
           (searchFocus.phase === "FOCUSED" || searchFocus.phase === "EVIDENCE") &&
           searchFocus.citation.attachment && (
-            <SearchEvidenceNotice
-              citation={searchFocus.citation}
-              onDismiss={() => setSearchFocus(null)}
-            />
+            <SearchEvidenceNotice citation={searchFocus.citation} onDismiss={dismissSearchFocus} />
           )}
         <KoshBlockNoteEditor
           ariaLabel="Note"

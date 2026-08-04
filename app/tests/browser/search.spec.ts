@@ -283,6 +283,16 @@ test("attachment results retain their exact page evidence after opening the owni
   await expect(location).toBeVisible();
   await page.waitForTimeout(1_500);
   await expect(location).toBeVisible();
+
+  await page.getByRole("button", { name: "Dismiss search result location" }).click();
+  await expect(location).toBeHidden();
+  await expect.poll(() => new URL(page.url()).searchParams.has("passage")).toBe(false);
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
+  await page.getByRole("option", { name: /Vector chapter/u }).click();
+  await expect(location).toBeVisible();
+  await expect(location).toContainText("Page-seven matrix evidence remains exact.");
 });
 
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {
