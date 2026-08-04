@@ -36,7 +36,7 @@ export function App() {
 
 function AppShell() {
   const backend = useBackend();
-  const { localBindings } = useShortcutSettings();
+  const { activeLocalBindings } = useShortcutSettings();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [searchOpen, setSearchOpen] = useState(false);
@@ -134,7 +134,10 @@ function AppShell() {
       void navigate({
         to: "/notes/$noteId",
         params: { noteId: target.noteId },
-        search: target.passage ? { passage: target.passage } : {},
+        search: {
+          ...(target.passage ? { passage: target.passage } : {}),
+          ...(target.query ? { query: target.query } : {}),
+        },
         replace,
       });
     };
@@ -180,9 +183,9 @@ function AppShell() {
   }, [openNewNote, openSearch, toggleSidebar]);
 
   useEffect(() => {
-    const copyNoteLink = localBindingFor(localBindings, LocalShortcutCommand.CopyNoteLink);
+    const copyNoteLink = localBindingFor(activeLocalBindings, LocalShortcutCommand.CopyNoteLink);
     const copyExactNoteLink = localBindingFor(
-      localBindings,
+      activeLocalBindings,
       LocalShortcutCommand.CopyExactNoteLink,
     );
     const onKeyDown = (event: KeyboardEvent) => {
@@ -231,7 +234,7 @@ function AppShell() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [backend, localBindings, noteRouteOpen]);
+  }, [activeLocalBindings, backend, noteRouteOpen]);
 
   useEffect(() => {
     let pendingFrame: number | null = null;

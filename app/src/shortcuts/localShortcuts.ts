@@ -114,6 +114,16 @@ export function localBindingFor(
   return bindings.find((binding) => binding.command === command);
 }
 
+export function activeLocalKeyboardBindings(
+  bindings: readonly LocalKeyboardBinding[],
+  globalAccelerators: readonly string[],
+): LocalKeyboardBinding[] {
+  const globals = new Set(globalAccelerators.map((accelerator) => accelerator.toLowerCase()));
+  return bindings
+    .filter((binding) => !globals.has(binding.accelerator.toLowerCase()))
+    .map((binding) => ({ ...binding }));
+}
+
 export function keyboardEventMatchesAccelerator(
   event: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "metaKey" | "shiftKey">,
   accelerator: string,
@@ -148,6 +158,7 @@ export function noteLinkForLocation(href: string, exact: boolean): string {
 export interface NoteDeepLinkTarget {
   noteId: string;
   passage?: string;
+  query?: string;
 }
 
 export function noteTargetForDeepLink(href: string): NoteDeepLinkTarget | null {
@@ -171,9 +182,24 @@ export function noteTargetForDeepLink(href: string): NoteDeepLinkTarget | null {
   if (segments.length !== 1) return null;
   const noteId = segments[0]?.toLowerCase();
   if (!noteId || !NOTE_ID_PATTERN.test(noteId)) return null;
+  if ([...url.searchParams.keys()].some((key) => key !== "passage" && key !== "query")) {
+    return null;
+  }
   const passages = url.searchParams.getAll("passage");
-  if (passages.length > 1 || (passages[0]?.length ?? 0) > 256) return null;
-  return passages[0] ? { noteId, passage: passages[0] } : { noteId };
+  const queries = url.searchParams.getAll("query");
+  if (
+    passages.length > 1 ||
+    queries.length > 1 ||
+    [...(passages[0] ?? "")].length > 256 ||
+    [...(queries[0] ?? "")].length > 512
+  ) {
+    return null;
+  }
+  return {
+    noteId,
+    ...(passages[0] ? { passage: passages[0] } : {}),
+    ...(queries[0] ? { query: queries[0] } : {}),
+  };
 }
 
 function cloneDefaultBindings(): LocalKeyboardBinding[] {

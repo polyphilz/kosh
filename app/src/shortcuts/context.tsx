@@ -17,6 +17,7 @@ import type {
 import { DEFAULT_KEYBOARD_BINDINGS } from "../backend/contracts";
 import {
   DEFAULT_LOCAL_KEYBOARD_BINDINGS,
+  activeLocalKeyboardBindings,
   type LocalKeyboardBinding,
   type LocalShortcutCommand,
   readLocalKeyboardBindings,
@@ -26,6 +27,7 @@ import {
 import { TauriEvent } from "../tauriProtocol";
 
 interface ShortcutSettingsContextValue {
+  activeLocalBindings: readonly LocalKeyboardBinding[];
   localBindings: readonly LocalKeyboardBinding[];
   error: string | null;
   loading: boolean;
@@ -44,6 +46,16 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
   const [localBindings, setLocalBindings] = useState(readLocalKeyboardBindings);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const activeLocalBindings = useMemo(
+    () =>
+      settings
+        ? activeLocalKeyboardBindings(
+            localBindings,
+            settings.keyboardBindings.map((binding) => binding.accelerator),
+          )
+        : [],
+    [localBindings, settings],
+  );
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -212,6 +224,7 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
 
   const value = useMemo(
     () => ({
+      activeLocalBindings,
       error,
       loading,
       localBindings,
@@ -222,6 +235,7 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
       updateLocalBinding,
     }),
     [
+      activeLocalBindings,
       error,
       loading,
       localBindings,

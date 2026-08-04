@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LOCAL_KEYBOARD_BINDINGS,
   LocalShortcutCommand,
+  activeLocalKeyboardBindings,
   keyboardEventMatchesAccelerator,
   noteLinkForLocation,
   noteTargetForDeepLink,
@@ -80,6 +81,12 @@ describe("local shortcut settings", () => {
       expect(validateLocalKeyboardBindings(withCopyNoteLink(accelerator))).toMatch(/reserved/iu);
     }
   });
+
+  it("disables only local bindings that conflict with loaded global shortcuts", () => {
+    expect(activeLocalKeyboardBindings(DEFAULT_LOCAL_KEYBOARD_BINDINGS, ["SUPER+KEYL"])).toEqual([
+      expect.objectContaining({ command: LocalShortcutCommand.CopyExactNoteLink }),
+    ]);
+  });
 });
 
 describe("note links", () => {
@@ -97,13 +104,18 @@ describe("note links", () => {
   });
 
   it("accepts only canonical Kosh note targets", () => {
-    expect(noteTargetForDeepLink(`kosh://note/${noteId}?passage=passage-1`)).toEqual({
+    expect(
+      noteTargetForDeepLink(`kosh://note/${noteId}?passage=passage-1&query=exact%20phrase`),
+    ).toEqual({
       noteId,
       passage: "passage-1",
+      query: "exact phrase",
     });
     expect(noteTargetForDeepLink(`http://tauri.localhost/#/notes/${noteId}`)).toBeNull();
     expect(noteTargetForDeepLink(`kosh://note/${noteId}/extra`)).toBeNull();
     expect(noteTargetForDeepLink(`kosh://note/${noteId}?passage=one&passage=two`)).toBeNull();
+    expect(noteTargetForDeepLink(`kosh://note/${noteId}?query=one&query=two`)).toBeNull();
+    expect(noteTargetForDeepLink(`kosh://note/${noteId}?unsupported=true`)).toBeNull();
     expect(noteTargetForDeepLink(`kosh://note/${noteId}#unexpected`)).toBeNull();
   });
 });
