@@ -84,7 +84,7 @@ try {
   );
 
   console.info(
-    `Packaged runtime smoke passed: the release React roots captured a cited canary through IPC, resolved it through exact search on both surfaces, and preserved its identity across restart in ${dataDirectory} without a semantic model.`,
+    `Packaged runtime smoke passed: the release React root captured a cited canary through IPC, resolved it through exact search in the main webview, and preserved its identity across restart in ${dataDirectory} without a semantic model.`,
   );
 } finally {
   if (active) {
@@ -167,10 +167,10 @@ function verifyReceipt(receipt, expectation, captureExpected) {
   assertEqual(receipt.headSha, headSha, "requested smoke head");
   assertEqual(receipt.buildHeadSha, headSha, "packaged executable build head");
   assertEqual(receipt.expectation, expectation, "smoke expectation");
-  assertEqual([...receipt.windows].sort(), ["main", "quick-add"], "packaged smoke windows");
+  assertEqual(receipt.windows, ["main"], "packaged smoke windows");
   assertEqual(
     receipt.webviews.map(({ surface }) => surface).sort(),
-    ["main", "quick-add"],
+    ["main"],
     "packaged smoke webviews",
   );
   for (const webview of receipt.webviews) {

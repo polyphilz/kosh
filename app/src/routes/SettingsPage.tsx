@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   DEFAULT_KEYBOARD_BINDINGS,
   DEFAULT_MAIN_WINDOW_ACCELERATOR,
-  DEFAULT_QUICK_ADD_ACCELERATOR,
   KoshCommand,
   type KeyboardBinding,
 } from "../backend/contracts";
@@ -55,7 +54,7 @@ export function SettingsPage() {
     }).catch(() => undefined);
   };
 
-  const resetAllBindings = async () => {
+  const resetShortcutBindings = async () => {
     try {
       await resetBindings();
       setShortcutResetToken((value) => value + 1);
@@ -159,22 +158,6 @@ export function SettingsPage() {
         </label>
         <label>
           <span>
-            <strong>Quick Add shortcut</strong>
-            <small>Open the compact capture window from any application.</small>
-          </span>
-          <ShortcutRecorder
-            accelerator={
-              bindingFor(bindings, KoshCommand.QuickAdd)?.accelerator ??
-              DEFAULT_QUICK_ADD_ACCELERATOR
-            }
-            disabled={loading || !settings}
-            label="Quick Add shortcut"
-            onCapture={(accelerator) => setBinding(KoshCommand.QuickAdd, accelerator)}
-            resetToken={shortcutResetToken}
-          />
-        </label>
-        <label>
-          <span>
             <strong>Main window shortcut</strong>
             <small>Bring Kosh forward without opening another window.</small>
           </span>
@@ -197,7 +180,7 @@ export function SettingsPage() {
         <Button
           className="settings-list__reset"
           disabled={loading || !settings}
-          onClick={() => void resetAllBindings()}
+          onClick={() => void resetShortcutBindings()}
           size="compact"
           variant="ghost"
         >

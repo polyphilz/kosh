@@ -9,12 +9,12 @@ import {
   type ReactNode,
 } from "react";
 import { useBackend } from "../backend/context";
-import type {
-  KeyboardBinding,
-  SetShortcutSettingsInput,
-  ShortcutSettingsSnapshot,
+import {
+  DEFAULT_KEYBOARD_BINDINGS,
+  type KeyboardBinding,
+  type SetShortcutSettingsInput,
+  type ShortcutSettingsSnapshot,
 } from "../backend/contracts";
-import { DEFAULT_KEYBOARD_BINDINGS } from "../backend/contracts";
 import {
   DEFAULT_LOCAL_KEYBOARD_BINDINGS,
   activeLocalKeyboardBindings,
@@ -178,28 +178,36 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
       throw new Error(conflict);
     }
 
+    const previousLocalBindings = localBindings.map((binding) => ({ ...binding }));
     setLoading(true);
     setError(null);
     try {
-      const nextSettings = await backend.setShortcutSettings({
+      // Persist the final local set before changing the global registration. If the native
+      // update fails, restore the previous local set so Reset remains all-or-nothing.
+      writeLocalKeyboardBindings(nextLocalBindings);
+      const persisted = await backend.setShortcutSettings({
         expectedRevision: settings.revision,
         keyboardBindings,
       });
-      writeLocalKeyboardBindings(nextLocalBindings);
-      setSettings(nextSettings);
       setLocalBindings(nextLocalBindings);
+      setSettings(persisted);
     } catch (reason) {
+      try {
+        writeLocalKeyboardBindings(previousLocalBindings);
+      } catch {
+        // Keep the mutation failure as the actionable error.
+      }
       setError(errorMessage(reason));
       try {
         setSettings(await backend.loadShortcutSettings());
       } catch {
-        // Preserve the original reset error.
+        // Preserve the original mutation error.
       }
       throw reason;
     } finally {
       setLoading(false);
     }
-  }, [backend, settings]);
+  }, [backend, localBindings, settings]);
 
   const updateAutomaticChecks = useCallback(
     async (enabled: boolean) => {

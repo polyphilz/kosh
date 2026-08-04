@@ -51,9 +51,9 @@ command from `app/` plus targeted Rust or UI tests for the active slice.
 Every slice must also leave the real Tauri application progressively operable:
 the exact committed head must launch from a fresh profile and restart against
 that profile without losing a searchable cited canary. Every native launch must
-also load both exact-head frontend entries, render their React roots, and
-complete an IPC probe against the same runtime data directory before it can
-produce a passing receipt.
+also load the exact-head main frontend entry, render its React root, and complete
+an IPC probe against the same runtime data directory before it can produce a
+passing receipt.
 
 The comprehensive test architecture lives in the ignored
 `.plans/002-testing.md`; the redesign matrix and rollout live in

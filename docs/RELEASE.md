@@ -114,7 +114,7 @@ app/src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app
 
 `release:smoke` starts that exact bundle twice with a temporary isolated home
 and Finder-like minimal `PATH`. The packaged React root creates a URL-bearing
-canary through normal capture IPC, both packaged surfaces resolve its exact
+canary through normal capture IPC, the packaged main webview resolves its exact
 search citation, and the second launch proves the same cited revision survives.
 The native executable embeds its source commit, and the lane rejects a bundle
 whose embedded commit differs from the checkout under test. Release build and
@@ -125,7 +125,7 @@ WAL/integrity, and operation without a semantic model.
 ## 3. Run release acceptance
 
 The checklist's `launch-hidden` preflight can verify the exact packaged commit,
-schema, both rendered webviews, IPC, restart, lexical search, and citations
+schema, the rendered main webview, IPC, restart, lexical search, and citations
 without foregrounding Kosh. It is useful while the Mac is in active use, but it
 does not replace the checklist's visible menu, shortcut, file-dialog, focus,
 or `/Applications` observations.
@@ -137,7 +137,7 @@ against the exact candidate. The profiles live beneath ignored
 profiles and never point the candidate at production data.
 
 The required record covers titleless autosave and lexical search without a
-model, Quick Add, code/math, image OCR, PDF/text search, opaque attachments,
+model, code/math, image OCR, PDF/text search, opaque attachments,
 hybrid search, exact source citations, forced-termination recovery, restart,
 and commit-bound performance budgets.
 Do not claim a UI journey from database checks alone.
@@ -235,7 +235,7 @@ do not bypass Gatekeeper.
 Use the copy under `/Applications`, not the build directory.
 
 - Confirm only the white Kosh mark appears in the menu bar; there is no text.
-- Exercise the configurable Quick Add and main-window shortcuts.
+- Exercise the configurable main-window shortcut.
 - Create a titleless URL-bearing note containing code and math, then quit
   immediately and confirm it survives restart without an explicit Save action.
 - Use `Cmd+K` to find an authored phrase and open its resolved citation.
@@ -275,5 +275,5 @@ cannot call updater or restart APIs. Automatic checks begin shortly after
 launch and repeat every six hours when enabled. Failures stay quiet for
 automatic checks and are visible for manual checks. An offered version can be
 dismissed for 24 hours. Before restarting after installation, Kosh waits for
-both the main and Quick Add webviews to preserve their current drafts; a save
-failure or timeout cancels the relaunch.
+the main webview to preserve its current draft; a save failure or timeout
+cancels the relaunch.

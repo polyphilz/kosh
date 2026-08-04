@@ -156,9 +156,9 @@ run_launch() {
       and .buildHeadSha == $head
       and .expectation == $expectation
       and .dataDir == $data
-      and (.windows | sort) == ["main", "quick-add"]
-      and ([.webviews[].surface] | sort) == ["main", "quick-add"]
-      and (.webviews | length) == 2
+      and (.windows | sort) == ["main"]
+      and ([.webviews[].surface] | sort) == ["main"]
+      and (.webviews | length) == 1
       and all(
         .webviews[];
         .rendered == true
@@ -180,7 +180,7 @@ run_launch() {
         and .canary.revisionId == $launch.canary.revisionId
         and .canary.sourceUrl == $launch.canary.sourceUrl
       )
-      and ([.webviews[].probeRequestId] | unique | length) == 2
+      and ([.webviews[].probeRequestId] | unique | length) == 1
       and .diagnostics.mainJournalMode == "wal"
       and .diagnostics.mediaJournalMode == "wal"
       and .diagnostics.mainForeignKeys == true

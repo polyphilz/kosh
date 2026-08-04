@@ -138,7 +138,7 @@ function buildSignedApplication(signingPolicy) {
       {
         app: {
           security: {
-            capabilities: ["default", "quick-add", "main-updater"],
+            capabilities: ["default", "main-updater"],
           },
         },
         bundle: {

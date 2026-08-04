@@ -3,7 +3,6 @@ export const TauriCommand = {
   AttachmentStatus: "attachment_status",
   BackupNow: "backup_now",
   CancelUpdateRelaunch: "cancel_update_relaunch",
-  CancelQuickAddDismiss: "cancel_quick_add_dismiss",
   ConfigureBackup: "configure_backup",
   CaptureClipboardImage: "capture_clipboard_image",
   CheckpointBackupStatus: "checkpoint_backup_status",
@@ -12,7 +11,6 @@ export const TauriCommand = {
   DiscardWorkingCopy: "discard_working_copy",
   DrillBackupRestore: "drill_backup_restore",
   DiscardFileDropSelections: "discard_file_drop_selections",
-  CompleteQuickAddDismiss: "complete_quick_add_dismiss",
   CopyText: "copy_text",
   ImageOcrDiagnostics: "image_ocr_diagnostics",
   ImageStatus: "image_status",
@@ -28,7 +26,6 @@ export const TauriCommand = {
   LoadShortcutSettings: "load_shortcut_settings",
   LoadTidbit: "load_tidbit",
   LoadWorkingCopy: "load_working_copy",
-  MarkQuickAddFrontendReady: "mark_quick_add_frontend_ready",
   MaintainMedia: "maintain_media",
   MediaIntegrityScan: "media_integrity_scan",
   MediaLimits: "media_limits",
@@ -64,10 +61,8 @@ export const TauriCommand = {
   SetFileDropConsumerActive: "set_file_drop_consumer_active",
   SetBackupEnabled: "set_backup_enabled",
   SetAutomaticUpdateChecks: "set_automatic_update_checks",
-  SetQuickAddFileDialogOpen: "set_quick_add_file_dialog_open",
   SetShortcutSettings: "set_shortcut_settings",
   ShowMain: "show_main",
-  ShowQuickAdd: "show_quick_add",
   TakeOverBackup: "take_over_backup",
   TestBackupConnection: "test_backup_connection",
 } as const;
@@ -78,8 +73,6 @@ export const TauriEvent = {
   NavigationCommand: "kosh://navigation-command",
   OpenSettings: "kosh://open-settings",
   PrepareQuit: "kosh://prepare-quit",
-  QuickAddDismissRequested: "kosh://quick-add-dismiss-requested",
-  QuickAddShown: "kosh://quick-add-shown",
   QuitCanceled: "kosh://quit-canceled",
   ShortcutSettingsChanged: "kosh://shortcut-settings-changed",
   StartupSmokeReady: "kosh://startup-smoke-ready",
@@ -87,7 +80,6 @@ export const TauriEvent = {
 
 export const TauriWindow = {
   Main: "main",
-  QuickAdd: "quick-add",
 } as const;
 
 export type TauriCommandName = (typeof TauriCommand)[keyof typeof TauriCommand];

@@ -43,13 +43,13 @@ jq -e \
     and .fresh.seed.canary.tidbitId == .fresh.restart.canary.tidbitId
     and .fresh.seed.canary.revisionId == .fresh.restart.canary.revisionId
     and .fresh.seed.canary.passageId == .fresh.restart.canary.passageId
-    and (.fresh.seed.windows | sort) == ["main", "quick-add"]
-    and (.fresh.restart.windows | sort) == ["main", "quick-add"]
+    and (.fresh.seed.windows | sort) == ["main"]
+    and (.fresh.restart.windows | sort) == ["main"]
     and all(
       [.fresh.seed, .fresh.restart][];
       . as $launch
-      | ([$launch.webviews[].surface] | sort) == ["main", "quick-add"]
-      and ($launch.webviews | length) == 2
+      | ([$launch.webviews[].surface] | sort) == ["main"]
+      and ($launch.webviews | length) == 1
       and all(
         $launch.webviews[];
         .rendered == true
@@ -71,7 +71,7 @@ jq -e \
         and .canary.revisionId == $launch.canary.revisionId
         and .canary.sourceUrl == $launch.canary.sourceUrl
       )
-      and ([$launch.webviews[].probeRequestId] | unique | length) == 2
+      and ([$launch.webviews[].probeRequestId] | unique | length) == 1
       and
       $launch.diagnostics.mainJournalMode == "wal"
       and $launch.diagnostics.mediaJournalMode == "wal"

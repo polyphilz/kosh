@@ -38,10 +38,10 @@ debug Tauri binary twice:
    the identical tidbit revision and passage.
 
 Each launch also starts the exact-head Vite frontend and proves that the main
-and quick-add windows are constructed, both React roots render, both surfaces
-load from the gate-owned pinned IPv4 origin, both complete a distinct Tauri IPC
-probe against the expected data directory, and both independently execute exact
-search and citation resolution over Tauri IPC for the source-bearing canary.
+window is constructed, its React root renders, the surface loads from the
+gate-owned pinned IPv4 origin, completes a Tauri IPC probe against the expected
+data directory, and executes exact search and citation resolution over Tauri IPC
+for the source-bearing canary.
 The receipt rejects a wrong execution mode, stale citation, changed passage or
 revision, missing source URL, or more than one match. Both database files must
 also use WAL and foreign keys with every embedded migration applied. A blank,

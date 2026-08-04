@@ -6,29 +6,25 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 
 use super::{DatabaseError, Result};
 
-pub const DEFAULT_QUICK_ADD_ACCELERATOR: &str = "control+alt+super+KeyK";
 pub const DEFAULT_MAIN_WINDOW_ACCELERATOR: &str = "control+alt+super+KeyO";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum KoshCommand {
-    QuickAdd,
     MainWindow,
 }
 
 impl KoshCommand {
-    pub const ALL: [Self; 2] = [Self::QuickAdd, Self::MainWindow];
+    pub const ALL: [Self; 1] = [Self::MainWindow];
 
     pub const fn as_db_str(self) -> &'static str {
         match self {
-            Self::QuickAdd => "QUICK_ADD",
             Self::MainWindow => "MAIN_WINDOW",
         }
     }
 
     fn from_db(value: &str) -> Result<Self> {
         match value {
-            "QUICK_ADD" => Ok(Self::QuickAdd),
             "MAIN_WINDOW" => Ok(Self::MainWindow),
             _ => Err(DatabaseError::Validation {
                 kind: "main",
@@ -77,10 +73,7 @@ pub(super) fn load_shortcut_settings(connection: &Connection) -> Result<Shortcut
     let mut statement = connection.prepare(
         "SELECT command, accelerator
          FROM keyboard_binding
-         ORDER BY CASE command
-             WHEN 'QUICK_ADD' THEN 0
-             WHEN 'MAIN_WINDOW' THEN 1
-         END",
+         ORDER BY command",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

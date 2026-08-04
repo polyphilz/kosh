@@ -62,7 +62,7 @@ note-route/editor suites.
   ordinary input retains the stricter frame budget. Already-running window
   reactivation is also measured visibly with a 150 ms p95 target because
   process restart is not an honest substitute.
-- Both real WKWebViews must render and return startup/search/citation IPC within
+- The real main WKWebView must render and return startup/search/citation IPC within
   the 30-second native readiness ceiling on fresh and restarted profiles. This
   is a failure ceiling, not a desired launch time; the receipt retains exact
   commit and runtime evidence.

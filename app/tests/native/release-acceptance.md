@@ -20,7 +20,7 @@ Use unique names in place of the examples.
 
 Before the visible walkthrough, the same exact package can run its commit-bound
 startup, schema, React-root, IPC, lexical-search, and citation preflight
-with both windows hidden:
+with the main window hidden:
 
 ```sh
 pnpm release:acceptance prepare-clean preflight-YYYYMMDD
@@ -57,8 +57,8 @@ pnpm release:acceptance launch clean-YYYYMMDD
    cited honestly.
 8. Navigate backward and forward between the two notes and Settings; confirm
    each note is represented by its own route and restores the editing caret.
-9. Use Quick Add from another application, finish the note, and confirm focus
-   returns to the original application.
+9. Use the configurable main-window shortcut from another application and
+   confirm Kosh becomes active.
 10. Confirm Settings reports semantic search honestly while local capture and
     lexical search remain usable.
 11. Quit with `Cmd+Q`.
@@ -149,9 +149,10 @@ restart measurement.
 ## E. Installed application
 
 After the isolated profile passes, install the exact candidate in
-`/Applications` using `docs/RELEASE.md`. Repeat a short titleless note, Quick
-Add, Command-K citation, normal quit, and reopen against the intended
-production profile. No development tools are required on the installed Mac.
+`/Applications` using `docs/RELEASE.md`. Repeat a short titleless note, activate
+the main window from another application with the configured shortcut, verify a
+Command-K citation, quit normally, and reopen against the intended production
+profile. No development tools are required on the installed Mac.
 
 ## F. Packaged off-site recovery
 
@@ -180,7 +181,7 @@ an isolated home.
 | Autosave, immediate quit, and restart      | pending |
 | Long paste, IME, rapid switching, recovery | pending |
 | Performance budgets and warm reactivation  | pending |
-| Menu icon, Quick Add, and global shortcuts | pending |
+| Menu icon and global shortcut              | pending |
 | Rich blocks, math, lists, and sources      | pending |
 | Command-K hybrid search and URL citation   | pending |
 | Back/forward note navigation               | pending |

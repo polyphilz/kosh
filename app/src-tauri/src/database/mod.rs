@@ -86,7 +86,6 @@ pub use search::{
 pub use settings::{
     validate_complete_bindings, KeyboardBinding, KoshCommand, SetAutomaticUpdateChecksInput,
     SetShortcutSettingsInput, ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR,
-    DEFAULT_QUICK_ADD_ACCELERATOR,
 };
 pub use tidbits::{
     DeleteTidbitInput, RestoreTidbitInput, SourceDraft, Tidbit, TidbitDraft, TidbitSource,

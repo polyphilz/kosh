@@ -165,10 +165,10 @@ function verifyHiddenReceipt(receipt, profile, headSha, expectation) {
   assertEqual(receipt.buildHeadSha, headSha, "hidden smoke packaged build head");
   assertEqual(receipt.expectation, expectation, "hidden smoke expectation");
   assertEqual(receipt.dataDir, profile.data, "hidden smoke data directory");
-  assertEqual([...receipt.windows].sort(), ["main", "quick-add"], "hidden smoke windows");
+  assertEqual(receipt.windows, ["main"], "hidden smoke windows");
   assertEqual(
     receipt.webviews.map(({ surface }) => surface).sort(),
-    ["main", "quick-add"],
+    ["main"],
     "hidden smoke webviews",
   );
   for (const webview of receipt.webviews) {

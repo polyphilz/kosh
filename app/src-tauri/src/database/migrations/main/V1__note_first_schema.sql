@@ -1480,7 +1480,7 @@ CREATE TABLE shortcut_settings (
 , automatic_update_checks_enabled INTEGER NOT NULL DEFAULT 1
     CHECK (automatic_update_checks_enabled IN (0, 1))) STRICT;
 CREATE TABLE keyboard_binding (
-    command TEXT PRIMARY KEY CHECK (command IN ('QUICK_ADD', 'MAIN_WINDOW')),
+    command TEXT PRIMARY KEY CHECK (command = 'MAIN_WINDOW'),
     accelerator TEXT NOT NULL CHECK (length(accelerator) BETWEEN 3 AND 96)
 ) STRICT, WITHOUT ROWID;
 CREATE TRIGGER shortcut_settings_prevent_delete
@@ -2094,5 +2094,5 @@ INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES
 INSERT INTO attachment_extractor_config(extractor, version, passage_construction_version, updated_at) VALUES('ocr', '1', 'ocr-region-v1', 0), ('pdf-text', '1', 'pdf-page-v1', 0), ('text', '1', 'text-lines-v1', 0);
 INSERT INTO passage_embedding_settings(singleton_id, active_embedding_index_id, updated_at) VALUES(1, NULL, 0);
 INSERT INTO shortcut_settings(singleton_id, revision, automatic_update_checks_enabled) VALUES(1, 1, 1);
-INSERT INTO keyboard_binding(command, accelerator) VALUES('MAIN_WINDOW', 'control+alt+super+KeyO'), ('QUICK_ADD', 'control+alt+super+KeyK');
+INSERT INTO keyboard_binding(command, accelerator) VALUES('MAIN_WINDOW', 'control+alt+super+KeyO');
 INSERT INTO offsite_backup_content_clock(singleton_id, revision) VALUES(1, 0);
