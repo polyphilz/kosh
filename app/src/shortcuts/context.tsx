@@ -14,6 +14,7 @@ import type {
   SetShortcutSettingsInput,
   ShortcutSettingsSnapshot,
 } from "../backend/contracts";
+import { DEFAULT_KEYBOARD_BINDINGS } from "../backend/contracts";
 import {
   DEFAULT_LOCAL_KEYBOARD_BINDINGS,
   type LocalKeyboardBinding,
@@ -32,7 +33,7 @@ interface ShortcutSettingsContextValue {
   updateAutomaticChecks: (enabled: boolean) => Promise<void>;
   update: (input: SetShortcutSettingsInput) => Promise<void>;
   updateLocalBinding: (command: LocalShortcutCommand, accelerator: string) => void;
-  resetLocalBindings: (globalAccelerators?: readonly string[]) => void;
+  resetBindings: () => Promise<void>;
 }
 
 const ShortcutSettingsContext = createContext<ShortcutSettingsContextValue | null>(null);
@@ -146,15 +147,41 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
     [localBindings, replaceLocalBindings],
   );
 
-  const resetLocalBindings = useCallback(
-    (globalAccelerators?: readonly string[]) => {
-      replaceLocalBindings(
-        DEFAULT_LOCAL_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
-        globalAccelerators,
-      );
-    },
-    [replaceLocalBindings],
-  );
+  const resetBindings = useCallback(async () => {
+    if (!settings) return;
+    const keyboardBindings = DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding }));
+    const nextLocalBindings = DEFAULT_LOCAL_KEYBOARD_BINDINGS.map((binding) => ({ ...binding }));
+    const conflict = validateLocalKeyboardBindings(
+      nextLocalBindings,
+      keyboardBindings.map((binding) => binding.accelerator),
+    );
+    if (conflict) {
+      setError(conflict);
+      throw new Error(conflict);
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const nextSettings = await backend.setShortcutSettings({
+        expectedRevision: settings.revision,
+        keyboardBindings,
+      });
+      writeLocalKeyboardBindings(nextLocalBindings);
+      setSettings(nextSettings);
+      setLocalBindings(nextLocalBindings);
+    } catch (reason) {
+      setError(errorMessage(reason));
+      try {
+        setSettings(await backend.loadShortcutSettings());
+      } catch {
+        // Preserve the original reset error.
+      }
+      throw reason;
+    } finally {
+      setLoading(false);
+    }
+  }, [backend, settings]);
 
   const updateAutomaticChecks = useCallback(
     async (enabled: boolean) => {
@@ -188,7 +215,7 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
       error,
       loading,
       localBindings,
-      resetLocalBindings,
+      resetBindings,
       settings,
       update,
       updateAutomaticChecks,
@@ -198,7 +225,7 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
       error,
       loading,
       localBindings,
-      resetLocalBindings,
+      resetBindings,
       settings,
       update,
       updateAutomaticChecks,

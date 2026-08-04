@@ -147,6 +147,25 @@ describe("shortcut settings", () => {
     );
     expect(screen.getByRole("button", { name: "Copy exact link shortcut: ⇧⌘L" })).toBeVisible();
 
+    await user.click(screen.getByRole("button", { name: "Quick Add shortcut: ⌃⌥⌘K" }));
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyT",
+      ctrlKey: true,
+      key: "t",
+      metaKey: true,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Copy note link shortcut: ⇧⌘C" }));
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyK",
+      ctrlKey: true,
+      key: "k",
+      metaKey: true,
+    });
+    expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌃⌥⌘K" })).toBeVisible();
+
     await user.click(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" }));
     fireEvent.keyDown(window, {
       code: "KeyL",
