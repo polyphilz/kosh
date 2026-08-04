@@ -102,6 +102,41 @@ test("Command-F waits for a loading note session", async ({ page }) => {
   await expect(page.getByRole("searchbox", { name: "Find in note" })).toBeFocused();
 });
 
+test("a queued Command-F request does not leak after leaving a loading note", async ({ page }) => {
+  await page.goto("/#/");
+  await page.getByRole("textbox", { name: "Note" }).fill("A delayed note to abandon.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const delayedNoteId = page.url().split("/").at(-1)!;
+  await page.keyboard.press("Meta+n");
+  const initialNewNoteUrl = page.url();
+
+  await page.evaluate((id) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const load = backend.loadTidbit.bind(backend);
+    let release!: () => void;
+    const loading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_ABANDONED_NOTE_LOAD__", release);
+    backend.loadTidbit = async (input) => {
+      await loading;
+      return load(input);
+    };
+    window.location.hash = `#/notes/${id}`;
+  }, delayedNoteId);
+
+  await expect(page.getByText("Opening note", { exact: true })).toBeAttached();
+  await page.keyboard.press("Meta+f");
+  await page.keyboard.press("Meta+n");
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  expect(page.url()).not.toBe(initialNewNoteUrl);
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_ABANDONED_NOTE_LOAD__")());
+
+  await expect(page.getByRole("textbox", { name: "Note" })).toBeVisible();
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
 test("valid sources autosave while invalid partial edits remain local", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

@@ -5,17 +5,21 @@ import { Decoration, DecorationSet } from "prosemirror-view";
 import type { KoshBlockNoteEditor } from "./schema";
 
 export const FIND_IN_NOTE_REQUEST_EVENT = "kosh:find-in-note";
-let findInNoteRequestPending = false;
+let pendingFindInNoteRoute: string | null = null;
 
-export function requestFindInNote(): void {
-  findInNoteRequestPending = true;
-  window.dispatchEvent(new Event(FIND_IN_NOTE_REQUEST_EVENT));
+export function requestFindInNote(route: string): void {
+  pendingFindInNoteRoute = route;
+  window.dispatchEvent(new CustomEvent(FIND_IN_NOTE_REQUEST_EVENT, { detail: route }));
 }
 
-export function consumeFindInNoteRequest(): boolean {
-  const pending = findInNoteRequestPending;
-  findInNoteRequestPending = false;
-  return pending;
+export function consumeFindInNoteRequest(route: string): boolean {
+  if (pendingFindInNoteRoute !== route) return false;
+  pendingFindInNoteRoute = null;
+  return true;
+}
+
+export function clearFindInNoteRequest(route?: string): void {
+  if (route === undefined || pendingFindInNoteRoute === route) pendingFindInNoteRoute = null;
 }
 
 export interface FindInNoteResult {

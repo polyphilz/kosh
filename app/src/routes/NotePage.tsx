@@ -167,6 +167,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
   const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
+  const findRequestRoute = `/${mode === "ephemeral" ? "new" : "notes"}/${noteId}`;
 
   const updateFindState = useCallback((query: string, activeIndex = 0) => {
     const result = editorRef.current?.findInNote(query, activeIndex) ?? EMPTY_FIND_RESULT;
@@ -192,7 +193,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   useEffect(() => {
     const openFind = () => {
-      consumeFindInNoteRequest();
       setFindOpen(true);
       setFindState((current) => {
         const result =
@@ -204,10 +204,20 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         findInputRef.current?.select();
       });
     };
-    window.addEventListener(FIND_IN_NOTE_REQUEST_EVENT, openFind);
-    if (consumeFindInNoteRequest()) openFind();
-    return () => window.removeEventListener(FIND_IN_NOTE_REQUEST_EVENT, openFind);
-  }, []);
+    const onFindRequest = (event: Event) => {
+      if (
+        !(event instanceof CustomEvent) ||
+        event.detail !== findRequestRoute ||
+        !consumeFindInNoteRequest(findRequestRoute)
+      ) {
+        return;
+      }
+      openFind();
+    };
+    window.addEventListener(FIND_IN_NOTE_REQUEST_EVENT, onFindRequest);
+    if (consumeFindInNoteRequest(findRequestRoute)) openFind();
+    return () => window.removeEventListener(FIND_IN_NOTE_REQUEST_EVENT, onFindRequest);
+  }, [findRequestRoute]);
 
   const updatePendingState = useCallback(() => {
     const pending = editorMediaPendingRef.current || dropCountRef.current > 0;

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TidbitRecord } from "./backend/contracts";
 import { useBackend } from "./backend/context";
 import { ErrorBoundary } from "./components/States";
-import { requestFindInNote } from "./editor/findInNote";
+import { clearFindInNoteRequest, requestFindInNote } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
@@ -72,6 +72,8 @@ function AppShell() {
   );
 
   useEffect(() => () => clearUndoTimer(), [clearUndoTimer]);
+
+  useEffect(() => () => clearFindInNoteRequest(pathname), [pathname]);
 
   useEffect(() => {
     try {
@@ -143,12 +145,12 @@ function AppShell() {
         ?.querySelector<HTMLButtonElement>('[aria-label="Close sources"]')
         ?.click();
       window.requestAnimationFrame(() => {
-        requestFindInNote();
+        requestFindInNote(pathname);
       });
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [noteRouteOpen]);
+  }, [noteRouteOpen, pathname]);
 
   useEffect(() => {
     if ("__TAURI_INTERNALS__" in window) return;
