@@ -216,6 +216,44 @@ test("the page gutter selects contiguous blocks beside the add and move controls
   await expect(selected).toHaveCount(0);
 });
 
+test("a gutter marquee keeps its anchor while auto-scrolling a long note", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await page.goto("/#/search");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown: Array.from({ length: 48 }, (_, index) => `Long block ${index + 1}`).join(
+        "\n\n",
+      ),
+      sources: [],
+    });
+  });
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}`;
+  }, note.id);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  const blocks = editor.locator(
+    ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+  );
+  await expect(blocks).toHaveCount(48);
+  const railBox = await page.getByTestId("note-gutter-selection-rail").boundingBox();
+  const firstBox = await blocks.first().boundingBox();
+  if (!railBox || !firstBox) throw new Error("the long-note gutter is not rendered");
+
+  const railX = railBox.x + railBox.width / 2;
+  await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(firstBox.x + 260, 492, { steps: 12 });
+  await page.waitForFunction(() => window.scrollY > 150);
+
+  const selected = editor.locator('[data-kosh-gutter-selected="true"]');
+  await expect.poll(() => selected.count()).toBeGreaterThan(8);
+  await expect(selected.first()).toContainText("Long block 1");
+  await page.mouse.up();
+});
+
 test("new notes, settings, back, and forward use the transient route stack", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

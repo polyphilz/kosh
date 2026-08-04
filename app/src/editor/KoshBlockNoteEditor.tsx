@@ -354,8 +354,12 @@ function KoshGutterSelectionRail({
 }) {
   const drag = useRef<{
     anchorBlockId: string;
+    anchorOffsetY: number;
+    currentX: number;
+    currentY: number;
     dragging: boolean;
     pointerId: number;
+    scrollFrame: number | null;
     startX: number;
     startY: number;
   } | null>(null);
@@ -382,12 +386,48 @@ function KoshGutterSelectionRail({
     (clientX: number, clientY: number) => {
       const activeDrag = drag.current;
       if (!activeDrag) return;
-      const bounds = marqueeBetween(activeDrag.startX, activeDrag.startY, clientX, clientY);
+      const root = editor.domElement;
+      const anchor = root
+        ? topLevelBlockElements(root).find(
+            (element) => element.dataset.id === activeDrag.anchorBlockId,
+          )
+        : undefined;
+      if (!anchor) return;
+      const anchorY = anchor.getBoundingClientRect().top + activeDrag.anchorOffsetY;
+      const bounds = marqueeBetween(activeDrag.startX, anchorY, clientX, clientY);
       setMarquee(bounds);
       installMarqueeSelection(bounds);
     },
-    [installMarqueeSelection],
+    [editor, installMarqueeSelection],
   );
+
+  const stopAutoScroll = useCallback(() => {
+    const activeDrag = drag.current;
+    if (activeDrag?.scrollFrame !== null && activeDrag?.scrollFrame !== undefined) {
+      window.cancelAnimationFrame(activeDrag.scrollFrame);
+      activeDrag.scrollFrame = null;
+    }
+  }, []);
+
+  const scheduleAutoScroll = useCallback(() => {
+    const activeDrag = drag.current;
+    if (!activeDrag?.dragging || activeDrag.scrollFrame !== null) return;
+    const step = () => {
+      const current = drag.current;
+      if (!current?.dragging) return;
+      current.scrollFrame = null;
+      const delta = marqueeScrollDelta(current.currentY, window.innerHeight);
+      if (delta === 0) return;
+      const before = window.scrollY;
+      window.scrollBy(0, delta);
+      if (window.scrollY === before) return;
+      updateMarquee(current.currentX, current.currentY);
+      current.scrollFrame = window.requestAnimationFrame(step);
+    };
+    activeDrag.scrollFrame = window.requestAnimationFrame(step);
+  }, [updateMarquee]);
+
+  useEffect(() => stopAutoScroll, [stopAutoScroll]);
 
   return (
     <div
@@ -395,6 +435,7 @@ function KoshGutterSelectionRail({
       className="kosh-blocknote-gutter-selection-rail"
       data-testid="note-gutter-selection-rail"
       onPointerCancel={(event) => {
+        stopAutoScroll();
         drag.current = null;
         setMarquee(null);
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -412,8 +453,12 @@ function KoshGutterSelectionRail({
         event.preventDefault();
         drag.current = {
           anchorBlockId: blockId,
+          anchorOffsetY: event.clientY - block.getBoundingClientRect().top,
+          currentX: event.clientX,
+          currentY: event.clientY,
           dragging: false,
           pointerId: event.pointerId,
+          scrollFrame: null,
           startX: event.clientX,
           startY: event.clientY,
         };
@@ -433,8 +478,11 @@ function KoshGutterSelectionRail({
           return;
         }
         event.preventDefault();
+        activeDrag.currentX = event.clientX;
+        activeDrag.currentY = event.clientY;
         activeDrag.dragging = true;
         updateMarquee(event.clientX, event.clientY);
+        scheduleAutoScroll();
       }}
       onPointerUp={(event) => {
         const activeDrag = drag.current;
@@ -445,6 +493,7 @@ function KoshGutterSelectionRail({
         } else {
           setGutterBlockSelection(editor, [activeDrag.anchorBlockId]);
         }
+        stopAutoScroll();
         drag.current = null;
         setMarquee(null);
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -482,6 +531,16 @@ function marqueeBetween(startX: number, startY: number, endX: number, endY: numb
     top: Math.min(startY, endY),
     width: Math.abs(endX - startX),
   };
+}
+
+function marqueeScrollDelta(clientY: number, viewportHeight: number): number {
+  const edge = 56;
+  const maximum = 18;
+  if (clientY < edge) return -Math.min(maximum, Math.ceil((edge - clientY) / 3));
+  if (clientY > viewportHeight - edge) {
+    return Math.min(maximum, Math.ceil((clientY - (viewportHeight - edge)) / 3));
+  }
+  return 0;
 }
 
 function intersectsMarquee(bounds: DOMRect, marquee: GutterMarquee): boolean {
