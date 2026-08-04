@@ -126,8 +126,8 @@
 }
 
 .kosh-blocknote-editor .bn-suggestion-menu-item {
-  flex: 0 0 52px;
-  min-height: 52px;
+  flex: 0 0 40px;
+  min-height: 40px;
 }
 
 /* BlockNote animates transient depth and marker state for 200ms after Tab/Shift+Tab. */
