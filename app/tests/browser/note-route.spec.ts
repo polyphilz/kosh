@@ -274,7 +274,7 @@ test("a thin gutter marquee highlights a parent block and its nested descendants
   await expect(topLevelBlocks).toHaveCount(2);
   const parent = topLevelBlocks.first();
   const parentContent = parent.locator(":scope > .bn-block > .bn-block-content");
-  const nestedContent = parent.locator(".bn-block-group .bn-block-content");
+  const nestedContent = parent.locator(":scope > .bn-block > .bn-block-group .bn-block-content");
   await expect(nestedContent).toHaveCount(2);
   const nestedBackgroundsBefore = await nestedContent.evaluateAll((elements) =>
     elements.map((element) => getComputedStyle(element).backgroundColor),
