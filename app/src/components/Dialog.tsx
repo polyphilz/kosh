@@ -6,6 +6,7 @@ interface DialogProps {
   className?: string;
   description?: string;
   footer?: ReactNode;
+  initialFocus?: "first" | "panel";
   onClose: () => void;
   open: boolean;
   title: string;
@@ -19,6 +20,7 @@ export function Dialog({
   className,
   description,
   footer,
+  initialFocus = "first",
   onClose,
   open,
   title,
@@ -32,16 +34,18 @@ export function Dialog({
     const previouslyFocused = document.activeElement;
     const frame = requestAnimationFrame(() => {
       const target =
-        panelRef.current?.querySelector<HTMLElement>("[data-autofocus]") ??
-        panelRef.current?.querySelector<HTMLElement>(focusableSelector) ??
-        panelRef.current;
+        initialFocus === "panel"
+          ? panelRef.current
+          : (panelRef.current?.querySelector<HTMLElement>("[data-autofocus]") ??
+            panelRef.current?.querySelector<HTMLElement>(focusableSelector) ??
+            panelRef.current);
       target?.focus();
     });
     return () => {
       cancelAnimationFrame(frame);
       if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
     };
-  }, [open]);
+  }, [initialFocus, open]);
 
   if (!open) return null;
 

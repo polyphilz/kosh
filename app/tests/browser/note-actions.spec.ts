@@ -379,9 +379,16 @@ test("delete flushes the latest note and Undo restores it immediately", async ({
   const noteUrl = page.url();
 
   await editor.fill("The latest line must survive an immediate delete and restore.");
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await expect(page.getByRole("button", { name: "Delete note" })).toHaveCount(0);
+  await page.keyboard.press("Meta+Shift+Backspace");
   const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
-  await confirmation.getByRole("button", { name: "Delete note" }).click();
+  await expect(confirmation).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  const confirmDelete = confirmation.getByRole("button", { name: "Delete note" });
+  await expect(confirmDelete).toBeFocused();
+  await page.keyboard.press("Enter");
 
   await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
   await expect(page.getByRole("status")).toContainText("Deleted");
@@ -406,21 +413,113 @@ test("delete flushes the latest note and Undo restores it immediately", async ({
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
 });
 
+test("the delete confirmation survives a new note's first checkpoint", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Pause before deleting this freshly captured note.");
+  await page.keyboard.press("Meta+Shift+Backspace");
+
+  const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
+  await expect(confirmation).toBeVisible();
+  await page.waitForTimeout(2_500);
+  await expect(confirmation).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("dialog", { name: "Delete this note?" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
+    "Pause before deleting this freshly captured note.",
+  );
+});
+
+test("a transferred delete confirmation keeps modal focus above find", async ({ page }) => {
+  await page.goto("/#/");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const checkpoint = backend.checkpointWorkingCopy.bind(backend);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_DELETE_FIND_CUTOVER__", release);
+    backend.checkpointWorkingCopy = async (input) => {
+      await blocked;
+      return checkpoint(input);
+    };
+  });
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Keep the confirmation in front after this first checkpoint.");
+  await page.keyboard.press("Meta+f");
+  await page.getByRole("searchbox", { name: "Find in note" }).fill("confirmation");
+  await page.keyboard.press("Meta+Shift+Backspace");
+
+  const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
+  await expect(confirmation).toBeFocused();
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_DELETE_FIND_CUTOVER__")());
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  await expect(confirmation).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toHaveCount(0);
+  await expect(page.getByRole("search", { name: "Find in note" })).toBeVisible();
+});
+
+test("an abandoned durable load clears its delete confirmation transfer", async ({ page }) => {
+  await page.goto("/#/");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const load = backend.loadTidbit.bind(backend);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = true;
+    Reflect.set(window, "__KOSH_RELEASE_DELETE_CUTOVER_LOAD__", release);
+    backend.loadTidbit = async (input) => {
+      if (held) {
+        held = false;
+        await blocked;
+      }
+      return load(input);
+    };
+  });
+
+  await page
+    .getByRole("textbox", { name: "Note" })
+    .fill("Do not reopen an abandoned delete confirmation.");
+  await page.keyboard.press("Meta+Shift+Backspace");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const durableUrl = page.url();
+
+  await page.evaluate(() => {
+    window.location.hash = `#/new/${crypto.randomUUID()}`;
+  });
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_DELETE_CUTOVER_LOAD__")());
+  await page.goto(durableUrl);
+
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
+    "Do not reopen an abandoned delete confirmation.",
+  );
+  await expect(page.getByRole("dialog", { name: "Delete this note?" })).toHaveCount(0);
+});
+
 test("Command-F stays contained by the delete confirmation", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
   await editor.fill("A note that may be deleted.");
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
 
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.keyboard.press("Meta+Shift+Backspace");
   const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
-  const cancel = confirmation.getByRole("button", { name: "Cancel" });
-  await expect(cancel).toBeFocused();
+  await expect(confirmation).toBeFocused();
 
   await page.keyboard.press("Meta+f");
 
   await expect(confirmation).toBeVisible();
-  await expect(cancel).toBeFocused();
+  await expect(confirmation).toBeFocused();
   await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
 });
 
@@ -467,7 +566,7 @@ test("find refreshes when visible attachment metadata hydrates", async ({ page }
   await findBar.getByRole("searchbox", { name: "Find in note" }).fill("hydrated-manual");
   await expect(findBar.getByRole("status")).toContainText("No matches");
 
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.keyboard.press("Meta+Shift+Backspace");
   await page
     .getByRole("dialog", { name: "Delete this note?" })
     .getByRole("button", { name: "Delete note" })
@@ -484,6 +583,26 @@ test("find refreshes when visible attachment metadata hydrates", async ({ page }
   await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}$`, "u"));
 });
 
+test("the delete shortcut can be changed in settings", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Delete this note with a custom local shortcut.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+
+  await page.getByRole("link", { name: "Settings" }).click();
+  const recorder = page.getByRole("button", { name: "Delete note shortcut: ⇧⌘⌫" });
+  await recorder.click();
+  await page.keyboard.press("Meta+Shift+d");
+  await expect(page.getByRole("button", { name: "Delete note shortcut: ⇧⌘D" })).toBeVisible();
+
+  await page.goBack();
+  await expect(editor).toBeVisible();
+  await page.keyboard.press("Meta+Shift+Backspace");
+  await expect(page.getByRole("dialog", { name: "Delete this note?" })).toHaveCount(0);
+  await page.keyboard.press("Meta+Shift+d");
+  await expect(page.getByRole("dialog", { name: "Delete this note?" })).toBeVisible();
+});
+
 test("history never reopens a deleted note as editable", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
@@ -496,7 +615,7 @@ test("history never reopens a deleted note as editable", async ({ page }) => {
     window.location.hash = new URL(url).hash;
   }, deletedUrl);
   await expect(page).toHaveURL(deletedUrl);
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.keyboard.press("Meta+Shift+Backspace");
   await page
     .getByRole("dialog", { name: "Delete this note?" })
     .getByRole("button", { name: "Delete note" })
@@ -532,7 +651,7 @@ test("a failed Undo stays visible and can be retried", async ({ page }) => {
     };
   });
 
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.keyboard.press("Meta+Shift+Backspace");
   await page
     .getByRole("dialog", { name: "Delete this note?" })
     .getByRole("button", { name: "Delete note" })
@@ -560,7 +679,7 @@ test("a failed delete keeps the note open with an actionable error", async ({ pa
     };
   });
 
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.keyboard.press("Meta+Shift+Backspace");
   const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
   await confirmation.getByRole("button", { name: "Delete note" }).click();
 

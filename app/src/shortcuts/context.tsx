@@ -33,7 +33,10 @@ interface ShortcutSettingsContextValue {
   loading: boolean;
   settings: ShortcutSettingsSnapshot | null;
   updateAutomaticChecks: (enabled: boolean) => Promise<void>;
-  update: (input: SetShortcutSettingsInput) => Promise<void>;
+  update: (
+    input: SetShortcutSettingsInput,
+    localBindingsForValidation?: readonly LocalKeyboardBinding[],
+  ) => Promise<void>;
   updateLocalBinding: (command: LocalShortcutCommand, accelerator: string) => void;
   resetBindings: () => Promise<void>;
 }
@@ -102,12 +105,15 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
   }, []);
 
   const update = useCallback(
-    async (input: SetShortcutSettingsInput) => {
+    async (
+      input: SetShortcutSettingsInput,
+      localBindingsForValidation: readonly LocalKeyboardBinding[] = localBindings,
+    ) => {
       setLoading(true);
       setError(null);
       try {
         const conflict = validateLocalKeyboardBindings(
-          localBindings,
+          localBindingsForValidation,
           input.keyboardBindings.map((binding) => binding.accelerator),
         );
         if (conflict) throw new Error(conflict);

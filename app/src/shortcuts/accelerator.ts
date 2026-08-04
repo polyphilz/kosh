@@ -51,7 +51,7 @@ export function acceleratorKeys(accelerator: string): string[] {
           return part;
       }
     }),
-    key.replace(/^Key|^Digit/u, ""),
+    displayKey(key),
   ];
 }
 
@@ -61,7 +61,7 @@ export function formatAccelerator(accelerator: string): string {
 
 export function describeAccelerator(accelerator: string): string {
   const parts = accelerator.split("+");
-  const key = (parts.at(-1) ?? "").replace(/^Key|^Digit/u, "");
+  const key = describeKey(parts.at(-1) ?? "");
   const modifiers = parts.slice(0, -1).map((part) => {
     switch (part.toLowerCase()) {
       case "control":
@@ -77,4 +77,26 @@ export function describeAccelerator(accelerator: string): string {
     }
   });
   return [...modifiers, key].filter(Boolean).join(" ");
+}
+
+function displayKey(key: string): string {
+  switch (key) {
+    case "Backspace":
+      return "⌫";
+    case "Delete":
+      return "⌦";
+    default:
+      return key.replace(/^Key|^Digit/u, "");
+  }
+}
+
+function describeKey(key: string): string {
+  switch (key) {
+    case "Backspace":
+      return "Delete";
+    case "Delete":
+      return "Forward Delete";
+    default:
+      return key.replace(/^Key|^Digit/u, "");
+  }
 }

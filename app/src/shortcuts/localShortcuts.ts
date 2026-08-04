@@ -1,6 +1,7 @@
 export const LocalShortcutCommand = {
   CopyNoteLink: "COPY_NOTE_LINK",
   CopyExactNoteLink: "COPY_EXACT_NOTE_LINK",
+  DeleteNote: "DELETE_NOTE",
 } as const;
 
 export type LocalShortcutCommand = (typeof LocalShortcutCommand)[keyof typeof LocalShortcutCommand];
@@ -12,6 +13,7 @@ export interface LocalKeyboardBinding {
 
 export const DEFAULT_COPY_NOTE_LINK_ACCELERATOR = "super+KeyL";
 export const DEFAULT_COPY_EXACT_NOTE_LINK_ACCELERATOR = "shift+super+KeyL";
+export const DEFAULT_DELETE_NOTE_ACCELERATOR = "shift+super+Backspace";
 
 export const DEFAULT_LOCAL_KEYBOARD_BINDINGS: readonly LocalKeyboardBinding[] = [
   {
@@ -21,6 +23,10 @@ export const DEFAULT_LOCAL_KEYBOARD_BINDINGS: readonly LocalKeyboardBinding[] = 
   {
     command: LocalShortcutCommand.CopyExactNoteLink,
     accelerator: DEFAULT_COPY_EXACT_NOTE_LINK_ACCELERATOR,
+  },
+  {
+    command: LocalShortcutCommand.DeleteNote,
+    accelerator: DEFAULT_DELETE_NOTE_ACCELERATOR,
   },
 ];
 

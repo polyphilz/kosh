@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { SourceDraft } from "../backend/contracts";
+import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
+import { keyboardEventMatchesAccelerator } from "../shortcuts/localShortcuts";
 
 interface NoteActionsProps {
   canEditSources: boolean;
   canDelete: boolean;
   deleteError: string | null;
+  deleteShortcut?: string;
+  deleteOpen?: boolean;
   deleting: boolean;
   disabled: boolean;
   onDelete: () => void;
+  onDeleteOpenChange?: (open: boolean) => void;
   onSourcesChange: (sources: SourceDraft[]) => void;
   sources: SourceDraft[];
 }
@@ -17,22 +22,54 @@ export function NoteActions({
   canEditSources,
   canDelete,
   deleteError,
+  deleteShortcut,
+  deleteOpen: controlledDeleteOpen,
   deleting,
   disabled,
   onDelete,
+  onDeleteOpenChange,
   onSourcesChange,
   sources,
 }: NoteActionsProps) {
   const firstInput = useRef<HTMLInputElement>(null);
   const sourcesTrigger = useRef<HTMLButtonElement>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [uncontrolledDeleteOpen, setUncontrolledDeleteOpen] = useState(false);
+  const deleteOpen = controlledDeleteOpen ?? uncontrolledDeleteOpen;
+  const setDeleteOpen = (open: boolean) => {
+    setUncontrolledDeleteOpen(open);
+    onDeleteOpenChange?.(open);
+  };
   const [drafts, setDrafts] = useState<SourceDraft[]>(sources);
   const [sourceError, setSourceError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sourcesOpen) setDrafts(cloneSources(sources));
   }, [sources, sourcesOpen]);
+
+  useEffect(() => {
+    if (!deleteShortcut) return;
+    const openDeleteDialog = (event: KeyboardEvent) => {
+      if (
+        !canDelete ||
+        disabled ||
+        deleting ||
+        deleteOpen ||
+        sourcesOpen ||
+        event.isComposing ||
+        event.repeat ||
+        !keyboardEventMatchesAccelerator(event, deleteShortcut) ||
+        document.querySelector('[aria-modal="true"]')
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setDeleteOpen(true);
+    };
+    window.addEventListener("keydown", openDeleteDialog, true);
+    return () => window.removeEventListener("keydown", openDeleteDialog, true);
+  }, [canDelete, deleteOpen, deleteShortcut, deleting, disabled, sourcesOpen]);
 
   const openSources = () => {
     setDrafts(sources.length > 0 ? cloneSources(sources) : [{ label: null, url: null }]);
@@ -73,19 +110,6 @@ export function NoteActions({
         <span aria-hidden="true">↗</span>
         <span>Sources{sources.length > 0 ? ` ${sources.length}` : ""}</span>
       </button>
-      {canDelete && (
-        <button
-          aria-label="Delete note"
-          className="note-actions__button note-actions__button--icon"
-          disabled={disabled || deleting}
-          onClick={() => setDeleteOpen(true)}
-          title="Delete note"
-          type="button"
-        >
-          <span aria-hidden="true">⌫</span>
-        </button>
-      )}
-
       {sourcesOpen && (
         <section
           aria-label="Note sources"
@@ -169,22 +193,23 @@ export function NoteActions({
         description="The note leaves search. You can undo immediately."
         footer={
           <>
-            <button disabled={deleting} onClick={() => setDeleteOpen(false)} type="button">
+            <Button disabled={deleting} onClick={() => setDeleteOpen(false)}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               className="note-delete-confirm"
               disabled={deleting}
               onClick={onDelete}
-              type="button"
+              variant="danger"
             >
               {deleting ? "Deleting…" : "Delete note"}
-            </button>
+            </Button>
           </>
         }
         onClose={() => {
           if (!deleting) setDeleteOpen(false);
         }}
+        initialFocus="panel"
         open={deleteOpen}
         title="Delete this note?"
       >
