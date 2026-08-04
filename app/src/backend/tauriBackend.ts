@@ -45,6 +45,7 @@ import type {
 } from "./contracts";
 
 export const tauriBackend: Backend = {
+  copyText: (text: string) => invoke<void>(TauriCommand.CopyText, { text }),
   runtimeProbe: () => invoke<RuntimeProbe>(TauriCommand.RuntimeProbe),
   loadBackupSettings: () => invoke<BackupSettingsSnapshot>(TauriCommand.LoadBackupSettings),
   testBackupConnection: (input: TestBackupConnectionInput) =>

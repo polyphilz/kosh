@@ -81,8 +81,15 @@ declare module "@tanstack/react-router" {
   }
 }
 
-function noteSearch(search: Record<string, unknown>): { passage?: string } {
+function noteSearch(search: Record<string, unknown>): { passage?: string; query?: string } {
   const passage =
-    typeof search.passage === "string" && search.passage.length <= 256 ? search.passage : undefined;
-  return passage ? { passage } : {};
+    typeof search.passage === "string" && [...search.passage].length <= 256
+      ? search.passage
+      : undefined;
+  const query =
+    typeof search.query === "string" && [...search.query].length <= 512 ? search.query : undefined;
+  return {
+    ...(passage ? { passage } : {}),
+    ...(query ? { query } : {}),
+  };
 }

@@ -5,12 +5,12 @@ import { expect, test, type Page } from "./fixtures";
 
 test("Command-K searches locally and opens the exact cited note block", async ({ page }) => {
   await page.goto("/#/");
-  await expect(page.getByRole("textbox", { name: "Note" })).toBeFocused();
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await expect(editor).toBeFocused();
   const originalUrl = page.url();
-  const first = await seedTidbit(page, {
-    bodyMarkdown: "Tomato technique: slow simmering preserves a bright tomato sauce.",
-    sources: [{ label: "Cookbook", url: "https://www.example.com/tomato" }],
-  });
+  const firstNoteId = originalUrl.match(/\/(?:new|notes)\/([0-9a-f-]{36})$/u)?.[1];
+  if (!firstNoteId) throw new Error("the initial note route did not contain an id");
+  await editor.fill("Tomato technique: slow simmering preserves a bright tomato sauce.");
   await seedTidbit(page, {
     bodyMarkdown: "Second tomato note: roast tomato halves before blending the sauce.",
     sources: [{ label: "Kitchen log", url: "https://notes.example.org/roasting" }],
@@ -26,14 +26,16 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   await search.fill("slow simmering");
   const result = page.getByRole("option", { name: /Tomato technique/u });
   await expect(result).toBeVisible();
-  await expect(result).toContainText("Cookbook · example.com");
   await expect(page.getByText("Lexical ready", { exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "Exact" })).toHaveCount(0);
   await expect(result.locator("mark")).toHaveText([/slow/iu, /simmering/iu]);
 
   await search.press("Enter");
   await expect(dialog).toHaveCount(0);
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page).toHaveURL(
+    new RegExp(`/#/notes/${firstNoteId}\\?passage=fake-passage%3A`, "u"),
+  );
+  const exactRoute = page.url();
   await expect(page.getByLabel("Search result location")).toHaveCount(0);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCSS(
@@ -44,13 +46,29 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   expect(await searchStorageKeys(page)).toEqual([]);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0, { timeout: 3_000 });
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}$`, "u"));
+  await expect(page).toHaveURL(exactRoute);
+
+  await page.getByRole("textbox", { name: "Note" }).focus();
+  await page.keyboard.press("Meta+l");
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest()))
+    .toBe(`kosh://note/${firstNoteId}`);
+  await expect(page).toHaveURL(exactRoute);
+
+  await page.keyboard.press("Meta+Shift+l");
+  await expect(page.getByRole("status")).toHaveText("Exact note link copied");
+  expect(await page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest())).toBe(
+    `kosh://note/${firstNoteId}?${new URL(exactRoute).hash.split("?")[1]}`,
+  );
+  await expect(page).toHaveURL(exactRoute);
 
   await page.keyboard.press("Meta+k");
   await page.getByRole("combobox", { name: "Search notes" }).fill("slow simmering");
   await page.getByRole("option", { name: /Tomato technique/u }).click();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page).toHaveURL(
+    new RegExp(`/#/notes/${firstNoteId}\\?passage=fake-passage%3A`, "u"),
+  );
 
   await page.getByRole("textbox", { name: "Note" }).fill("A replacement passage.");
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
@@ -72,41 +90,6 @@ test("reduced motion leaves the cited passage visibly highlighted", async ({ pag
   await expect(match).toBeVisible();
   await expect(match).toHaveCSS("animation-name", "none");
   await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-});
-
-test("a blocked route cleanup retains its search match", async ({ page }) => {
-  await page.goto("/#/");
-  const note = await seedTidbit(page, {
-    bodyMarkdown: "Blocked cleanup must keep this precise passage visible.",
-    sources: [],
-  });
-  await page.keyboard.press("Meta+k");
-  await page.getByRole("combobox", { name: "Search notes" }).fill("precise passage");
-  const result = page.getByRole("option", { name: /Blocked cleanup/u });
-  await expect(result).toBeVisible();
-  await page.evaluate(async (seeded) => {
-    const backend = window.__KOSH_FAKE_BACKEND__;
-    if (!backend) throw new Error("fake backend is unavailable");
-    await backend.saveWorkingCopy({
-      noteId: seeded.id,
-      baseRevisionId: seeded.currentRevisionId,
-      editGeneration: 1,
-      bodyMarkdown: seeded.bodyMarkdown,
-      sources: seeded.sources,
-    });
-    backend.checkpointWorkingCopy = async () => {
-      throw new Error("simulated search cleanup failure");
-    };
-  }, note);
-
-  await result.click();
-
-  const match = page.locator('[data-kosh-search-hit="true"]');
-  await expect(match).toContainText("precise passage");
-  await page.waitForTimeout(1_800);
-  await expect(match).toHaveCount(1);
-  await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=`, "u"));
 });
 
 test("search checkpoints the active note before querying", async ({ page }) => {

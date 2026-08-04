@@ -573,6 +573,25 @@ button {
   background: var(--accent-soft);
 }
 
+.link-copy-notice {
+  position: fixed;
+  z-index: 30;
+  right: 18px;
+  bottom: 18px;
+  padding: 8px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  font-size: 9px;
+}
+
+.link-copy-notice[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--danger) 52%, var(--line));
+  color: var(--danger);
+}
+
 .note-search-warning,
 .note-search-evidence {
   position: fixed;
