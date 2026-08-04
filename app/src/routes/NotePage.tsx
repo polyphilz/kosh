@@ -1,7 +1,14 @@
 import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useBackend } from "../backend/context";
 import type {
   Backend,
@@ -173,6 +180,12 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     window.requestAnimationFrame(() => editorRef.current?.focus());
   }, []);
 
+  useLayoutEffect(() => {
+    if (!findOpen) return;
+    findInputRef.current?.focus();
+    findInputRef.current?.select();
+  }, [findOpen]);
+
   useEffect(() => {
     const openFind = () => {
       setFindOpen(true);
@@ -263,7 +276,13 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      editorRef.current?.focus();
+      const findInput = findInputRef.current;
+      if (findInput) {
+        findInput.focus();
+        findInput.select();
+      } else {
+        editorRef.current?.focus();
+      }
       restoreScroll(noteId);
       scheduleWorkingCopyReconciliation(backend);
     });
