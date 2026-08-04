@@ -426,6 +426,7 @@ test("the delete confirmation survives a new note's first checkpoint", async ({ 
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
 
   await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("dialog", { name: "Delete this note?" })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
     "Pause before deleting this freshly captured note.",
   );

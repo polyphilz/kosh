@@ -427,6 +427,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     const durableRoute = `/notes/${noteId}`;
     if (findOpen) transferFindInNote(durableRoute, findState.query, findState.activeIndex);
     if (deleteOpen) pendingDeleteDialogTransfers.add(noteId);
+    else pendingDeleteDialogTransfers.delete(noteId);
     void navigate({
       to: "/notes/$noteId",
       params: { noteId },
