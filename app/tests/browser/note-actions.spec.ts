@@ -45,10 +45,210 @@ test("the minimal sidebar persists and its commands leave editor shortcuts alone
   await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
   await page.keyboard.press("Escape");
 
+  await editor.fill("Find this local phrase. Another LOCAL phrase.");
+  await page.keyboard.press("Meta+f");
+  const findBar = page.getByRole("search", { name: "Find in note" });
+  const find = findBar.getByRole("searchbox", { name: "Find in note" });
+  await expect(find).toBeFocused();
+  await find.fill("local");
+  await expect(findBar.getByRole("status")).toContainText("1 of 2");
+  await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(2);
+  await find.press("Enter");
+  await expect(findBar.getByRole("status")).toContainText("2 of 2");
+  await find.press("Shift+Enter");
+  await expect(findBar.getByRole("status")).toContainText("1 of 2");
+  await findBar.getByRole("button", { name: "Next match" }).click();
+  await expect(findBar.getByRole("status")).toContainText("2 of 2");
+  await page.keyboard.press("Escape");
+  await expect(find).toHaveCount(0);
+  await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(0);
+  await expect(editor).toBeFocused();
+
   const priorUrl = page.url();
   await page.keyboard.press("Meta+n");
   await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
   expect(page.url()).not.toBe(priorUrl);
+});
+
+test("Command-F waits for a loading note session", async ({ page }) => {
+  await page.goto("/#/");
+  await page.getByRole("textbox", { name: "Note" }).fill("A cold-loaded note to search.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const noteId = page.url().split("/").at(-1)!;
+  await page.keyboard.press("Meta+n");
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+
+  await page.evaluate((id) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const load = backend.loadTidbit.bind(backend);
+    let release!: () => void;
+    const loading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_NOTE_LOAD__", release);
+    backend.loadTidbit = async (input) => {
+      await loading;
+      return load(input);
+    };
+    window.location.hash = `#/notes/${id}`;
+  }, noteId);
+
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${noteId}$`, "u"));
+  await expect(page.getByText("Opening note", { exact: true })).toBeAttached();
+  await page.keyboard.press("Meta+f");
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_NOTE_LOAD__")());
+
+  await expect(page.getByRole("searchbox", { name: "Find in note" })).toBeFocused();
+});
+
+test("find survives the first-save route cutover", async ({ page }) => {
+  await page.goto("/#/");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const checkpoint = backend.checkpointWorkingCopy.bind(backend);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_FIND_CUTOVER__", release);
+    Reflect.set(window, "__KOSH_FIND_CUTOVER_STARTED__", false);
+    backend.checkpointWorkingCopy = async (input) => {
+      Reflect.set(window, "__KOSH_FIND_CUTOVER_STARTED__", true);
+      await blocked;
+      return checkpoint(input);
+    };
+  });
+
+  await page.getByRole("textbox", { name: "Note" }).fill("Keep this cutover needle visible.");
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("searchbox", { name: "Find in note" });
+  await find.fill("needle");
+  await expect(page.getByRole("search", { name: "Find in note" })).toContainText("1 of 1");
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_FIND_CUTOVER_STARTED__")))
+    .toBe(true);
+
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_FIND_CUTOVER__")());
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+  await expect(find).toHaveValue("needle");
+  await expect(page.getByRole("search", { name: "Find in note" })).toContainText("1 of 1");
+  await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(1);
+});
+
+test("closing find cancels a pending first-save transfer", async ({ page }) => {
+  await page.goto("/#/");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const checkpoint = backend.checkpointWorkingCopy.bind(backend);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_CLOSED_FIND_CUTOVER__", release);
+    Reflect.set(window, "__KOSH_CLOSED_FIND_CUTOVER_STARTED__", false);
+    backend.checkpointWorkingCopy = async (input) => {
+      Reflect.set(window, "__KOSH_CLOSED_FIND_CUTOVER_STARTED__", true);
+      await blocked;
+      return checkpoint(input);
+    };
+  });
+
+  await page.getByRole("textbox", { name: "Note" }).fill("Close this pending find.");
+  await page.keyboard.press("Meta+f");
+  await page.getByRole("searchbox", { name: "Find in note" }).fill("pending");
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_CLOSED_FIND_CUTOVER_STARTED__")))
+    .toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_CLOSED_FIND_CUTOVER__")());
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
+test("a deferred Command-F request is cancelled when its route closes", async ({ page }) => {
+  await page.goto("/#/");
+  await page.getByRole("textbox", { name: "Note" }).fill("Do not reopen stale find.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const noteUrl = page.url();
+
+  await page.evaluate(() => {
+    const request = window.requestAnimationFrame.bind(window);
+    const cancel = window.cancelAnimationFrame.bind(window);
+    const heldId = 2_147_483_000;
+    let held: FrameRequestCallback | null = null;
+    window.requestAnimationFrame = (callback) => {
+      if (held === null) {
+        held = callback;
+        return heldId;
+      }
+      return request(callback);
+    };
+    window.cancelAnimationFrame = (id) => {
+      if (id === heldId) {
+        held = null;
+        return;
+      }
+      cancel(id);
+    };
+    Reflect.set(window, "__KOSH_RELEASE_DEFERRED_FIND__", () => {
+      const callback = held;
+      held = null;
+      window.requestAnimationFrame = request;
+      window.cancelAnimationFrame = cancel;
+      if (callback) request(callback);
+    });
+  });
+
+  await page.keyboard.press("Meta+f");
+  await page.keyboard.press("Meta+n");
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_DEFERRED_FIND__")());
+  await page.goto(noteUrl);
+
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
+    "Do not reopen stale find.",
+  );
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
+test("a queued Command-F request does not leak after leaving a loading note", async ({ page }) => {
+  await page.goto("/#/");
+  await page.getByRole("textbox", { name: "Note" }).fill("A delayed note to abandon.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const delayedNoteId = page.url().split("/").at(-1)!;
+  await page.keyboard.press("Meta+n");
+  const initialNewNoteUrl = page.url();
+
+  await page.evaluate((id) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const load = backend.loadTidbit.bind(backend);
+    let release!: () => void;
+    const loading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_ABANDONED_NOTE_LOAD__", release);
+    backend.loadTidbit = async (input) => {
+      await loading;
+      return load(input);
+    };
+    window.location.hash = `#/notes/${id}`;
+  }, delayedNoteId);
+
+  await expect(page.getByText("Opening note", { exact: true })).toBeAttached();
+  await page.keyboard.press("Meta+f");
+  await page.keyboard.press("Meta+n");
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  expect(page.url()).not.toBe(initialNewNoteUrl);
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_ABANDONED_NOTE_LOAD__")());
+
+  await expect(page.getByRole("textbox", { name: "Note" })).toBeVisible();
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
 });
 
 test("valid sources autosave while invalid partial edits remain local", async ({ page }) => {
@@ -63,6 +263,12 @@ test("valid sources autosave while invalid partial edits remain local", async ({
   const sources = page.getByRole("button", { name: "Sources" });
   await sources.click();
   const sourceDialog = page.getByRole("dialog", { name: "Note sources" });
+  await page.keyboard.press("Meta+f");
+  await expect(sourceDialog).toHaveCount(0);
+  await expect(page.getByRole("searchbox", { name: "Find in note" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await sources.click();
+  await expect(sourceDialog).toBeVisible();
   await sourceDialog.getByLabel("Label").fill("NumPy guide");
   await sourceDialog
     .getByLabel("URL")
@@ -137,6 +343,84 @@ test("delete flushes the latest note and Undo restores it immediately", async ({
     "The latest line must survive an immediate delete and restore.",
   );
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+});
+
+test("Command-F stays contained by the delete confirmation", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("A note that may be deleted.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+
+  await page.getByRole("button", { name: "Delete note" }).click();
+  const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
+  const cancel = confirmation.getByRole("button", { name: "Cancel" });
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press("Meta+f");
+
+  await expect(confirmation).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
+test("find refreshes when visible attachment metadata hydrates", async ({ page }) => {
+  await page.goto("/#/settings");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const note = await backend.seedNote({
+      bodyMarkdown: "{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
+      sources: [],
+    });
+    backend.pdfStatus = async (attachmentId) =>
+      new Promise((resolve) => {
+        Reflect.set(window, "__KOSH_RELEASE_FIND_PDF_STATUS__", () =>
+          resolve({
+            attachmentId,
+            displayFilename: "hydrated-manual.pdf",
+            extractedPageCount: 2,
+            extractionError: null,
+            extractionStatus: "READY",
+            nextAttemptAtMs: null,
+            pageCount: 2,
+            unavailablePageCount: 0,
+          }),
+        );
+      });
+    backend.deleteTidbit = async () =>
+      new Promise((_, reject) => {
+        Reflect.set(window, "__KOSH_REJECT_FIND_DELETE__", () =>
+          reject(new Error("Synthetic delete failure")),
+        );
+      });
+    window.location.hash = `/notes/${note.id}`;
+    return note;
+  });
+  await expect(page.getByRole("textbox", { name: "Note" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => typeof Reflect.get(window, "__KOSH_RELEASE_FIND_PDF_STATUS__")))
+    .toBe("function");
+
+  await page.keyboard.press("Meta+f");
+  const findBar = page.getByRole("search", { name: "Find in note" });
+  await findBar.getByRole("searchbox", { name: "Find in note" }).fill("hydrated-manual");
+  await expect(findBar.getByRole("status")).toContainText("No matches");
+
+  await page.getByRole("button", { name: "Delete note" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete this note?" })
+    .getByRole("button", { name: "Delete note" })
+    .click();
+  await expect
+    .poll(() => page.evaluate(() => typeof Reflect.get(window, "__KOSH_REJECT_FIND_DELETE__")))
+    .toBe("function");
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_FIND_PDF_STATUS__")());
+
+  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("hydrated-manual.pdf");
+  await expect(findBar.getByRole("status")).toContainText("No matches");
+  await page.evaluate(() => Reflect.get(window, "__KOSH_REJECT_FIND_DELETE__")());
+  await expect(findBar.getByRole("status")).toContainText("1 of 1");
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}$`, "u"));
 });
 
 test("history never reopens a deleted note as editable", async ({ page }) => {

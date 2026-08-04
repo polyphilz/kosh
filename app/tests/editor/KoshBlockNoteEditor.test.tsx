@@ -243,6 +243,164 @@ describe("production BlockNote editor", () => {
     expect(matches[2]).toHaveTextContent("Deep match.");
   });
 
+  it("finds case-insensitive text across rich marks without editing", async () => {
+    const onChange = vi.fn();
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={onChange}
+          ref={ref}
+          value={"Needle once.\n\nSecond **nee**dle and NEEDLE.\n\n$$\nmatrix_token\n$$"}
+        />
+      </AppearanceProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Body" })).toHaveTextContent(
+        "Second needle and NEEDLE.",
+      ),
+    );
+
+    let result: { activeIndex: number; count: number } | undefined;
+    act(() => {
+      result = ref.current?.findInNote("needle");
+    });
+    expect(result).toEqual({ activeIndex: 0, count: 3 });
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+
+    act(() => {
+      result = ref.current?.moveFindInNote("next");
+    });
+    expect(result).toEqual({ activeIndex: 1, count: 3 });
+    expect(
+      [...document.querySelectorAll('[data-kosh-find-active="true"]')]
+        .map((element) => element.textContent)
+        .join(""),
+    ).toBe("needle");
+
+    act(() => {
+      result = ref.current?.findInNote("MATRIX_TOKEN");
+    });
+    expect(result).toEqual({ activeIndex: 0, count: 1 });
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+
+    act(() => ref.current?.clearFindInNote());
+    expect(document.querySelector('[data-kosh-find-match="true"]')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("counts each atomic math node once when its source repeats the query", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"Inline $token + token$.\n\n$$\ntoken + token\n$$"}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByRole("button", { name: "Edit inline math: token + token" });
+
+    let result: { activeIndex: number; count: number } | undefined;
+    act(() => {
+      result = ref.current?.findInNote("token");
+    });
+    expect(result).toEqual({ activeIndex: 0, count: 2 });
+    expect(document.querySelectorAll('[data-kosh-find-match="true"]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+
+    act(() => {
+      result = ref.current?.moveFindInNote("next");
+    });
+    expect(result).toEqual({ activeIndex: 1, count: 2 });
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+  });
+
+  it("does not match across an atomic math boundary", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="Inline $ababa$b"
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByRole("button", { name: "Edit inline math: ababa" });
+
+    expect(ref.current?.findInNote("ab")).toEqual({ activeIndex: 0, count: 1 });
+    expect(document.querySelectorAll('[data-kosh-find-match="true"]')).toHaveLength(1);
+  });
+
+  it("finds visible media filenames, alt text, and captions", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={
+            "{{kosh:image:019f547b-6200-7000-8000-000000000201;width=70%;alt=Architecture%20diagram;caption=Chapter%20overview}}"
+          }
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByLabelText("Alt text");
+
+    act(() =>
+      ref.current?.insertAttachments([
+        {
+          recordKind: "PDF",
+          record: {
+            byteLength: 128,
+            displayFilename: "matrix-notes.pdf",
+            extractionError: null,
+            extractionStatus: "READY",
+            id: "019f547b-6200-7000-8000-000000000302",
+            ingestLeaseId: "private-pdf-lease",
+            kind: "PDF",
+            mediaType: "application/pdf",
+            pageCount: 4,
+          },
+        },
+        {
+          recordKind: "GENERIC",
+          record: {
+            byteLength: 12,
+            displayFilename: "memory.txt",
+            extractedLineCount: 1,
+            extractionError: null,
+            extractionStatus: "READY",
+            id: "019f547b-6200-7000-8000-000000000303",
+            ingestLeaseId: "private-file-lease",
+            kind: "TEXT",
+            mediaType: "text/plain",
+          },
+        },
+      ]),
+    );
+    await screen.findByText("matrix-notes.pdf");
+    await screen.findByText("memory.txt");
+    fireEvent.change(screen.getByLabelText("Attachment caption"), {
+      target: { value: "Memory appendix" },
+    });
+
+    expect(ref.current?.findInNote("Architecture diagram")).toEqual({
+      activeIndex: 0,
+      count: 1,
+    });
+    expect(ref.current?.findInNote("Chapter overview")).toEqual({ activeIndex: 0, count: 1 });
+    expect(ref.current?.findInNote("matrix-notes.pdf")).toEqual({ activeIndex: 0, count: 1 });
+    expect(ref.current?.findInNote("memory.txt")).toEqual({ activeIndex: 0, count: 1 });
+    expect(ref.current?.findInNote("Memory appendix")).toEqual({ activeIndex: 0, count: 1 });
+  });
+
   it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(

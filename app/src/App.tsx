@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TidbitRecord } from "./backend/contracts";
 import { useBackend } from "./backend/context";
 import { ErrorBoundary } from "./components/States";
+import { clearFindInNoteRequest, requestFindInNote } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
@@ -29,6 +30,7 @@ function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRouteOpen = pathname === "/search";
+  const noteRouteOpen = /^\/(?:new|notes)\//u.test(pathname);
   const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpen);
   const [deletedNote, setDeletedNote] = useState<TidbitRecord | null>(null);
   const [undoing, setUndoing] = useState(false);
@@ -70,6 +72,8 @@ function AppShell() {
   );
 
   useEffect(() => () => clearUndoTimer(), [clearUndoTimer]);
+
+  useEffect(() => () => clearFindInNoteRequest(pathname), [pathname]);
 
   useEffect(() => {
     try {
@@ -118,6 +122,41 @@ function AppShell() {
       unlisten?.();
     };
   }, [openNewNote, openSearch, toggleSidebar]);
+
+  useEffect(() => {
+    let pendingFrame: number | null = null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        !noteRouteOpen ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        !event.metaKey ||
+        event.key.toLowerCase() !== "f" ||
+        document.querySelector('[aria-modal="true"]')
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setSearchOpen(false);
+      document
+        .querySelector<HTMLElement>('[role="dialog"][aria-label="Note sources"]')
+        ?.querySelector<HTMLButtonElement>('[aria-label="Close sources"]')
+        ?.click();
+      if (pendingFrame !== null) window.cancelAnimationFrame(pendingFrame);
+      pendingFrame = window.requestAnimationFrame(() => {
+        pendingFrame = null;
+        requestFindInNote(pathname);
+      });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      if (pendingFrame !== null) window.cancelAnimationFrame(pendingFrame);
+    };
+  }, [noteRouteOpen, pathname]);
 
   useEffect(() => {
     if ("__TAURI_INTERNALS__" in window) return;
