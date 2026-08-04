@@ -51,6 +51,7 @@ import {
 import { KoshEditorInteractionProvider, useKoshEditorDisabled } from "./interactionState";
 import {
   clearGutterBlockSelection,
+  getGutterBlockSelectionIds,
   KoshGutterSelectionExtension,
   selectGutterBlockFromHandle,
   setGutterBlockSelection,
@@ -1095,7 +1096,11 @@ function KoshRemoveBlockItem() {
       className="bn-menu-item"
       onClick={() => {
         if (disabled) return;
-        const selected = editor.getSelection()?.blocks;
+        const selected =
+          getGutterBlockSelectionIds(editor)?.flatMap((id) => {
+            const block = editor.getBlock(id);
+            return block ? [block] : [];
+          }) ?? editor.getSelection()?.blocks;
         const blocks = selected?.some((block) => block.id === hoveredBlock.id)
           ? selected
           : [hoveredBlock];

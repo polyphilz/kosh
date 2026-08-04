@@ -19,7 +19,11 @@ import {
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
 import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from "react";
-import { KoshGutterSelectionExtension, selectGutterBlockFromHandle } from "../gutterSelection";
+import {
+  getGutterBlockSelectionIds,
+  KoshGutterSelectionExtension,
+  selectGutterBlockFromHandle,
+} from "../gutterSelection";
 import { insertInlineMathForEditing, KoshInlineMathInputExtension } from "../inlineMathInput";
 import { createBlockNoteMediaController } from "../mediaController";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "../mediaBlocks";
@@ -282,7 +286,11 @@ function KoshRemoveBlockItem() {
     <Components.Generic.Menu.Item
       className="bn-menu-item"
       onClick={() => {
-        const selectedBlocks = editor.getSelection()?.blocks;
+        const selectedBlocks =
+          getGutterBlockSelectionIds(editor)?.flatMap((id) => {
+            const block = editor.getBlock(id);
+            return block ? [block] : [];
+          }) ?? editor.getSelection()?.blocks;
         const blocksToRemove =
           selectedBlocks?.some((block) => block.id === hoveredBlock.id) === true
             ? selectedBlocks

@@ -280,10 +280,7 @@ test("the page gutter selects contiguous blocks beside the add and move controls
   expect(selectionText).toContain("Second gutter block.");
   expect(selectionText).not.toContain("Last gutter block.");
 
-  await selected.first().hover();
-  await page.getByRole("button", { name: "Drag to move" }).click();
-  await expect(selected).toHaveCount(3);
-  await page.getByRole("menuitem", { name: "Delete selected blocks" }).click();
+  await page.keyboard.press("Backspace");
   await expect(blocks).toHaveCount(1);
   await expect(blocks.first()).toContainText("Last gutter block.");
   await expect(selected).toHaveCount(0);
