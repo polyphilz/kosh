@@ -124,6 +124,7 @@ function AppShell() {
   }, [openNewNote, openSearch, toggleSidebar]);
 
   useEffect(() => {
+    let pendingFrame: number | null = null;
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         !noteRouteOpen ||
@@ -144,12 +145,17 @@ function AppShell() {
         .querySelector<HTMLElement>('[role="dialog"][aria-label="Note sources"]')
         ?.querySelector<HTMLButtonElement>('[aria-label="Close sources"]')
         ?.click();
-      window.requestAnimationFrame(() => {
+      if (pendingFrame !== null) window.cancelAnimationFrame(pendingFrame);
+      pendingFrame = window.requestAnimationFrame(() => {
+        pendingFrame = null;
         requestFindInNote(pathname);
       });
     };
     window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      if (pendingFrame !== null) window.cancelAnimationFrame(pendingFrame);
+    };
   }, [noteRouteOpen, pathname]);
 
   useEffect(() => {

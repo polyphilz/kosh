@@ -6,6 +6,13 @@ import type { KoshBlockNoteEditor } from "./schema";
 
 export const FIND_IN_NOTE_REQUEST_EVENT = "kosh:find-in-note";
 let pendingFindInNoteRoute: string | null = null;
+let pendingFindInNoteTransfer: FindInNoteTransfer | null = null;
+
+export interface FindInNoteTransfer {
+  activeIndex: number;
+  query: string;
+  route: string;
+}
 
 export function requestFindInNote(route: string): void {
   pendingFindInNoteRoute = route;
@@ -20,6 +27,23 @@ export function consumeFindInNoteRequest(route: string): boolean {
 
 export function clearFindInNoteRequest(route?: string): void {
   if (route === undefined || pendingFindInNoteRoute === route) pendingFindInNoteRoute = null;
+}
+
+export function transferFindInNote(route: string, query: string, activeIndex: number): void {
+  pendingFindInNoteTransfer = { activeIndex, query, route };
+}
+
+export function consumeFindInNoteTransfer(route: string): FindInNoteTransfer | null {
+  if (pendingFindInNoteTransfer?.route !== route) return null;
+  const transfer = pendingFindInNoteTransfer;
+  pendingFindInNoteTransfer = null;
+  return transfer;
+}
+
+export function clearFindInNoteTransfer(route?: string): void {
+  if (route === undefined || pendingFindInNoteTransfer?.route === route) {
+    pendingFindInNoteTransfer = null;
+  }
 }
 
 export interface FindInNoteResult {

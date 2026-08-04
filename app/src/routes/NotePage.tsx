@@ -23,8 +23,11 @@ import {
   type KoshBlockNoteEditorHandle,
 } from "../editor/KoshBlockNoteEditor";
 import {
+  clearFindInNoteTransfer,
+  consumeFindInNoteTransfer,
   consumeFindInNoteRequest,
   FIND_IN_NOTE_REQUEST_EVENT,
+  transferFindInNote,
   type FindInNoteResult,
 } from "../editor/findInNote";
 import {
@@ -161,13 +164,18 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [findOpen, setFindOpen] = useState(false);
-  const [findState, setFindState] = useState({ ...EMPTY_FIND_RESULT, query: "" });
+  const findRequestRoute = `/${mode === "ephemeral" ? "new" : "notes"}/${noteId}`;
+  const [initialFindTransfer] = useState(() => consumeFindInNoteTransfer(findRequestRoute));
+  const [findOpen, setFindOpen] = useState(initialFindTransfer !== null);
+  const [findState, setFindState] = useState({
+    ...EMPTY_FIND_RESULT,
+    activeIndex: initialFindTransfer?.activeIndex ?? EMPTY_FIND_RESULT.activeIndex,
+    query: initialFindTransfer?.query ?? "",
+  });
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
   const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
   const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
-  const findRequestRoute = `/${mode === "ephemeral" ? "new" : "notes"}/${noteId}`;
 
   const updateFindState = useCallback((query: string, activeIndex = 0) => {
     const result = editorRef.current?.findInNote(query, activeIndex) ?? EMPTY_FIND_RESULT;
@@ -187,6 +195,10 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   useLayoutEffect(() => {
     if (!findOpen) return;
+    setFindState((current) => ({
+      ...current,
+      ...(editorRef.current?.findInNote(current.query, current.activeIndex) ?? EMPTY_FIND_RESULT),
+    }));
     findInputRef.current?.focus();
     findInputRef.current?.select();
   }, [findOpen]);
@@ -406,12 +418,22 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   useEffect(() => {
     if (mode !== "ephemeral" || snapshot.baseRevisionId === null || leavingNoteRef.current) return;
+    const durableRoute = `/notes/${noteId}`;
+    if (findOpen) transferFindInNote(durableRoute, findState.query, findState.activeIndex);
     void navigate({
       to: "/notes/$noteId",
       params: { noteId },
       replace: true,
-    });
-  }, [mode, navigate, noteId, snapshot.baseRevisionId]);
+    }).catch(() => clearFindInNoteTransfer(durableRoute));
+  }, [
+    findOpen,
+    findState.activeIndex,
+    findState.query,
+    mode,
+    navigate,
+    noteId,
+    snapshot.baseRevisionId,
+  ]);
 
   useEffect(
     () =>

@@ -102,6 +102,87 @@ test("Command-F waits for a loading note session", async ({ page }) => {
   await expect(page.getByRole("searchbox", { name: "Find in note" })).toBeFocused();
 });
 
+test("find survives the first-save route cutover", async ({ page }) => {
+  await page.goto("/#/");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const checkpoint = backend.checkpointWorkingCopy.bind(backend);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_FIND_CUTOVER__", release);
+    Reflect.set(window, "__KOSH_FIND_CUTOVER_STARTED__", false);
+    backend.checkpointWorkingCopy = async (input) => {
+      Reflect.set(window, "__KOSH_FIND_CUTOVER_STARTED__", true);
+      await blocked;
+      return checkpoint(input);
+    };
+  });
+
+  await page.getByRole("textbox", { name: "Note" }).fill("Keep this cutover needle visible.");
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("searchbox", { name: "Find in note" });
+  await find.fill("needle");
+  await expect(page.getByRole("search", { name: "Find in note" })).toContainText("1 of 1");
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_FIND_CUTOVER_STARTED__")))
+    .toBe(true);
+
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_FIND_CUTOVER__")());
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+  await expect(find).toHaveValue("needle");
+  await expect(page.getByRole("search", { name: "Find in note" })).toContainText("1 of 1");
+  await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(1);
+});
+
+test("a deferred Command-F request is cancelled when its route closes", async ({ page }) => {
+  await page.goto("/#/");
+  await page.getByRole("textbox", { name: "Note" }).fill("Do not reopen stale find.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const noteUrl = page.url();
+
+  await page.evaluate(() => {
+    const request = window.requestAnimationFrame.bind(window);
+    const cancel = window.cancelAnimationFrame.bind(window);
+    const heldId = 2_147_483_000;
+    let held: FrameRequestCallback | null = null;
+    window.requestAnimationFrame = (callback) => {
+      if (held === null) {
+        held = callback;
+        return heldId;
+      }
+      return request(callback);
+    };
+    window.cancelAnimationFrame = (id) => {
+      if (id === heldId) {
+        held = null;
+        return;
+      }
+      cancel(id);
+    };
+    Reflect.set(window, "__KOSH_RELEASE_DEFERRED_FIND__", () => {
+      const callback = held;
+      held = null;
+      window.requestAnimationFrame = request;
+      window.cancelAnimationFrame = cancel;
+      if (callback) request(callback);
+    });
+  });
+
+  await page.keyboard.press("Meta+f");
+  await page.keyboard.press("Meta+n");
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_DEFERRED_FIND__")());
+  await page.goto(noteUrl);
+
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
+    "Do not reopen stale find.",
+  );
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
 test("a queued Command-F request does not leak after leaving a loading note", async ({ page }) => {
   await page.goto("/#/");
   await page.getByRole("textbox", { name: "Note" }).fill("A delayed note to abandon.");
