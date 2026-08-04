@@ -56,6 +56,9 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
         .client()
         .create_tidbit(CreateTidbitWrite {
             input: TidbitDraft {
+                document_json: super::super::document::single_paragraph(
+                    "# Heat\n\nHeat is impatient motion.\n\nTemperature is a distribution.",
+                ),
                 body_markdown:
                     "# Heat\n\nHeat is impatient motion.\n\nTemperature is a distribution.".into(),
                 sources: vec![SourceDraft {
@@ -250,11 +253,14 @@ fn attachment_citations_resolve_typed_file_and_line_provenance() {
                 10, 10, '019f547b-6200-7000-8000-000000002106'
              );
              INSERT INTO tidbit_revision(
-                id, tidbit_id, revision_number, created_at, body_markdown, content_hash
+                id, tidbit_id, revision_number, created_at,
+                document_json, body_markdown, content_hash
              ) VALUES(
                 '019f547b-6200-7000-8000-000000002106',
                 '019f547b-6200-7000-8000-000000002105',
-                1, 10, 'Attachment citation owner.', zeroblob(32)
+                1, 10,
+                '{\"schemaVersion\":1,\"blocks\":[{\"id\":\"owner\",\"type\":\"paragraph\"}]}',
+                'Attachment citation owner.', zeroblob(32)
              );
              INSERT INTO attachment(
                 id, created_at, updated_at, sha256, display_filename,

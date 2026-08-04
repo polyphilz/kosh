@@ -1660,6 +1660,7 @@ impl DatabaseClient {
     ) -> Result<WorkingCopy> {
         self.save_working_copy(SaveWorkingCopyWrite {
             input: super::SaveWorkingCopyInput {
+                document_json: super::document::single_paragraph(&body_markdown),
                 note_id,
                 base_revision_id,
                 edit_generation,

@@ -497,6 +497,7 @@ export interface SaveWorkingCopyInput {
   noteId: string;
   baseRevisionId: string | null;
   editGeneration: number;
+  documentJson: string;
   bodyMarkdown: string;
   sources: SourceDraft[];
 }
@@ -646,6 +647,7 @@ export interface TidbitRecord {
   updatedAtMs: number;
   deletedAtMs: number | null;
   displayTitle: string;
+  documentJson: string;
   bodyMarkdown: string;
   sources: TidbitSource[];
 }

@@ -1303,6 +1303,9 @@ mod tests {
                 .client()
                 .create_tidbit(CreateTidbitWrite {
                     input: TidbitDraft {
+                        document_json: crate::database::document::single_paragraph(
+                            "Exact citrine recovery evidence.",
+                        ),
                         body_markdown: "Exact citrine recovery evidence.".into(),
                         sources: vec![SourceDraft {
                             label: Some("Recovery source".into()),

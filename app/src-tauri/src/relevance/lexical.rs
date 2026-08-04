@@ -466,6 +466,7 @@ pub fn benchmark_scale_lexical(
         let now_ms = i64::try_from(tidbit.created_at_ms)
             .map_err(|error| benchmark_error("convert tidbit timestamp", error))?;
         let input = TidbitDraft {
+            document_json: crate::database::document::single_paragraph(&tidbit.body_markdown),
             body_markdown: tidbit.body_markdown.clone(),
             sources: tidbit
                 .sources

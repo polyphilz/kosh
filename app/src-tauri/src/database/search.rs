@@ -2204,6 +2204,9 @@ mod tests {
         let created = client
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
+                    document_json: crate::database::document::single_paragraph(
+                        "# SQLite\n\nThe first lexical sentinel uses `resolveCitationTarget`.",
+                    ),
                     body_markdown:
                         "# SQLite\n\nThe first lexical sentinel uses `resolveCitationTarget`."
                             .into(),
@@ -2378,6 +2381,9 @@ mod tests {
             client
                 .create_tidbit(CreateTidbitWrite {
                     input: TidbitDraft {
+                        document_json: crate::database::document::single_paragraph(&format!(
+                            "# {atom}\n\n{atom} {atom} {atom} single-atom decoy."
+                        )),
                         body_markdown: format!(
                             "# {atom}\n\n{atom} {atom} {atom} single-atom decoy."
                         ),
@@ -2393,6 +2399,9 @@ mod tests {
         let target = client
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
+                    document_json: crate::database::document::single_paragraph(
+                        "The pineapple and bloodorange pairing is the answer.",
+                    ),
                     body_markdown: "The pineapple and bloodorange pairing is the answer.".into(),
                     sources: Vec::new(),
                 },
@@ -2461,6 +2470,9 @@ mod tests {
             .client()
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
+                    document_json: crate::database::document::single_paragraph(
+                        "Authored passage linked to a file.",
+                    ),
                     body_markdown: "Authored passage linked to a file.".into(),
                     sources: Vec::new(),
                 },
@@ -2965,6 +2977,9 @@ mod tests {
         client
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
+                    document_json: crate::database::document::single_paragraph(
+                        "Literal OR NEAR syntax stays authored text.",
+                    ),
                     body_markdown: "Literal OR NEAR syntax stays authored text.".into(),
                     sources: Vec::new(),
                 },
@@ -3008,6 +3023,9 @@ mod tests {
             .client()
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
+                    document_json: crate::database::document::single_paragraph(
+                        "Immutable authored evidence.",
+                    ),
                     body_markdown: "Immutable authored evidence.".into(),
                     sources: Vec::new(),
                 },

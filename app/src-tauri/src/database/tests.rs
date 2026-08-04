@@ -57,6 +57,7 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
             "media_reservation",
             "created_at",
             "updated_at",
+            "document_json",
             "body_markdown",
         ]
     );

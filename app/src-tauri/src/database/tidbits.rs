@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use super::{media, passages, DatabaseError, Result};
+use super::{document, media, passages, DatabaseError, Result};
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const DISPLAY_TITLE_LIMIT: usize = 96;
@@ -21,6 +21,7 @@ pub struct SourceDraft {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TidbitDraft {
+    pub document_json: String,
     pub body_markdown: String,
     #[serde(default)]
     pub sources: Vec<SourceDraft>,
@@ -58,6 +59,7 @@ pub struct Tidbit {
     pub updated_at_ms: i64,
     pub deleted_at_ms: Option<i64>,
     pub display_title: String,
+    pub document_json: String,
     pub body_markdown: String,
     pub sources: Vec<TidbitSource>,
 }
@@ -70,6 +72,7 @@ pub(super) struct PreparedSource {
 
 #[derive(Clone, Debug)]
 pub(super) struct PreparedRevision {
+    pub(super) document_json: String,
     pub(super) body_markdown: String,
     pub(super) sources: Vec<PreparedSource>,
     pub(super) content_hash: Vec<u8>,
@@ -90,7 +93,11 @@ pub(super) fn create_tidbit(
     validate_timestamp(write.now_ms, "nowMs")?;
     validate_uuid_v7(&write.tidbit_id, "tidbitId")?;
     validate_uuid_v7(&write.revision_id, "revisionId")?;
-    let prepared = prepare_revision(write.input.body_markdown, write.input.sources)?;
+    let prepared = prepare_revision(
+        write.input.document_json,
+        write.input.body_markdown,
+        write.input.sources,
+    )?;
     validate_source_ids(&write.source_ids, prepared.sources.len())?;
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -232,6 +239,7 @@ pub(crate) fn load_tidbit(connection: &Connection, id: &str) -> Result<Tidbit> {
                 tidbit.created_at,
                 tidbit.updated_at,
                 tidbit.deleted_at,
+                revision.document_json,
                 revision.body_markdown
              FROM tidbit
              JOIN tidbit_revision AS revision
@@ -265,15 +273,21 @@ pub(super) fn load_source_url(connection: &Connection, source_id: &str) -> Resul
         })
 }
 
-fn prepare_revision(body_markdown: String, sources: Vec<SourceDraft>) -> Result<PreparedRevision> {
-    prepare_revision_with_empty(body_markdown, sources, false)
+fn prepare_revision(
+    document_json: String,
+    body_markdown: String,
+    sources: Vec<SourceDraft>,
+) -> Result<PreparedRevision> {
+    prepare_revision_with_empty(document_json, body_markdown, sources, false)
 }
 
 pub(super) fn prepare_revision_with_empty(
+    document_json: String,
     body_markdown: String,
     sources: Vec<SourceDraft>,
     allow_empty_body: bool,
 ) -> Result<PreparedRevision> {
+    document::validate(&document_json)?;
     if !allow_empty_body && body_markdown.trim().is_empty() {
         return Err(DatabaseError::InvalidInput(
             "bodyMarkdown must contain non-whitespace text".into(),
@@ -291,8 +305,9 @@ pub(super) fn prepare_revision_with_empty(
             ));
         }
     }
-    let content_hash = revision_content_hash(&body_markdown, &sources);
+    let content_hash = revision_content_hash(&document_json, &body_markdown, &sources);
     Ok(PreparedRevision {
+        document_json,
         body_markdown,
         sources,
         content_hash,
@@ -362,13 +377,14 @@ pub(super) fn insert_revision(
 ) -> Result<()> {
     transaction.execute(
         "INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, body_markdown, content_hash
-         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            id, tidbit_id, revision_number, created_at, document_json, body_markdown, content_hash
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             revision_id,
             tidbit_id,
             revision_number,
             created_at_ms,
+            revision.document_json,
             revision.body_markdown,
             revision.content_hash
         ],
@@ -433,7 +449,8 @@ pub(super) fn load_sources(
 }
 
 fn tidbit_from_row(row: &Row<'_>) -> rusqlite::Result<Tidbit> {
-    let body_markdown = row.get::<_, String>(6)?;
+    let document_json = row.get::<_, String>(6)?;
+    let body_markdown = row.get::<_, String>(7)?;
     Ok(Tidbit {
         id: row.get(0)?,
         current_revision_id: row.get(1)?,
@@ -442,6 +459,7 @@ fn tidbit_from_row(row: &Row<'_>) -> rusqlite::Result<Tidbit> {
         updated_at_ms: row.get(4)?,
         deleted_at_ms: row.get(5)?,
         display_title: derive_display_title(&body_markdown),
+        document_json,
         body_markdown,
         sources: Vec::new(),
     })
@@ -519,9 +537,14 @@ pub(super) fn validate_uuid_v7(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
-fn revision_content_hash(body_markdown: &str, sources: &[PreparedSource]) -> Vec<u8> {
+fn revision_content_hash(
+    document_json: &str,
+    body_markdown: &str,
+    sources: &[PreparedSource],
+) -> Vec<u8> {
     let mut hasher = Sha256::new();
-    hasher.update(b"kosh:note-revision:v1\0");
+    hasher.update(b"kosh:note-revision:v2\0");
+    hash_text(&mut hasher, document_json);
     hash_text(&mut hasher, body_markdown);
     hasher.update((sources.len() as u64).to_be_bytes());
     for source in sources {

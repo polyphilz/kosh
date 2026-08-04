@@ -1,13 +1,43 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef, useState } from "react";
+import { createRef, forwardRef, useState, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { CitationResolution, SelectedAttachmentRecord } from "../../src/backend/contracts";
 import { AppearanceProvider } from "../../src/components/Appearance";
 import {
-  KoshBlockNoteEditor,
+  KoshBlockNoteEditor as ProductionKoshBlockNoteEditor,
   type KoshBlockNoteEditorHandle,
 } from "../../src/editor/KoshBlockNoteEditor";
+import { createKoshDocumentFromMarkdown } from "../../src/editor/document";
+
+const legacyDocumentCache = new Map<string, string>();
+type TestEditorProps = Omit<
+  ComponentProps<typeof ProductionKoshBlockNoteEditor>,
+  "onChange" | "value"
+> & {
+  onChange: (bodyMarkdown: string) => void;
+  value: string;
+};
+const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, TestEditorProps>(
+  function TestKoshBlockNoteEditor({ onChange, value, ...properties }, ref) {
+    let documentJson = legacyDocumentCache.get(value);
+    if (!documentJson) {
+      documentJson = createKoshDocumentFromMarkdown(value);
+      legacyDocumentCache.set(value, documentJson);
+    }
+    return (
+      <ProductionKoshBlockNoteEditor
+        {...properties}
+        onChange={(nextDocumentJson, bodyMarkdown) => {
+          legacyDocumentCache.set(bodyMarkdown, nextDocumentJson);
+          onChange(bodyMarkdown);
+        }}
+        ref={ref}
+        value={documentJson}
+      />
+    );
+  },
+);
 
 describe("production BlockNote editor", () => {
   it("loads and replaces controlled Markdown without reporting external changes", async () => {

@@ -2,6 +2,7 @@ mod backup_media;
 mod backup_state;
 pub(crate) mod commands;
 pub(crate) mod connection;
+pub(crate) mod document;
 pub(crate) mod embedding_index;
 mod error;
 mod maintenance;

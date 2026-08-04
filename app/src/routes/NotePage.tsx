@@ -175,7 +175,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
   const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
-  const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
+  const editorInitialValue = useRef(coordinator.getSnapshot().documentJson).current;
 
   const updateFindState = useCallback((query: string, activeIndex = 0) => {
     const result = editorRef.current?.findInNote(query, activeIndex) ?? EMPTY_FIND_RESULT;
@@ -581,7 +581,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         onSourcesChange={(sources) => {
           setActionError(null);
           const current = coordinator.getSnapshot();
-          coordinator.update(current.bodyMarkdown, sources);
+          coordinator.update(current.bodyMarkdown, sources, current.documentJson);
         }}
         sources={snapshot.sources}
       />
@@ -605,8 +605,8 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
           disabled={lifecyclePreparing || deleting}
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
-          onChange={(bodyMarkdown) => {
-            coordinator.update(bodyMarkdown);
+          onChange={(documentJson, bodyMarkdown) => {
+            coordinator.update(bodyMarkdown, undefined, documentJson);
             if (
               searchFocus?.phase === "FOCUSED" &&
               !editorRef.current?.revalidateCitationFocus(searchFocus.citation)
@@ -817,6 +817,7 @@ function coordinatorForDurableNote(
   return new NoteAutosaveCoordinator(backend, {
     noteId: note.id,
     baseRevisionId: note.currentRevisionId,
+    documentJson: note.documentJson,
     bodyMarkdown: note.bodyMarkdown,
     sources: note.sources.map(({ label, url }) => ({ label, url })),
   });
@@ -926,6 +927,7 @@ async function reconcileWorkingCopy(backend: Backend, workingCopy: WorkingCopyRe
     noteId: workingCopy.noteId,
     baseRevisionId: workingCopy.baseRevisionId,
     editGeneration: workingCopy.editGeneration + 1,
+    documentJson: workingCopy.documentJson,
     bodyMarkdown: workingCopy.bodyMarkdown,
     sources: workingCopy.sources,
   });

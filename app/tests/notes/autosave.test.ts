@@ -13,6 +13,7 @@ import {
   type NoteFlushReason,
   type NoteWorkingCopyGateway,
 } from "../../src/notes/autosave";
+import { createKoshDocumentFromMarkdown } from "../../src/editor/document";
 
 const NOTE_ID = "019f547b-6200-7000-8000-000000008001";
 const REVISION_1 = "019f547b-6200-7000-8000-000000008002";
@@ -27,6 +28,7 @@ function note(revisionId = REVISION_1, revisionNumber = 1, bodyMarkdown = "alpha
     updatedAtMs: revisionNumber,
     deletedAtMs: null,
     displayTitle: bodyMarkdown || "Untitled note",
+    documentJson: createKoshDocumentFromMarkdown(bodyMarkdown),
     bodyMarkdown,
     sources: [],
   };
@@ -56,6 +58,7 @@ function workingCopy(
     baseRevisionId,
     editGeneration: generation,
     mediaReservation,
+    documentJson: createKoshDocumentFromMarkdown(bodyMarkdown),
     bodyMarkdown,
     sources: [],
     createdAtMs: 1,
@@ -148,13 +151,15 @@ describe("note autosave coordinator", () => {
     await vi.advanceTimersByTimeAsync(WORKING_COPY_DEBOUNCE_MS);
 
     expect(backend.saveWorkingCopy).toHaveBeenCalledOnce();
-    expect(backend.saveWorkingCopy).toHaveBeenCalledWith({
-      noteId: NOTE_ID,
-      baseRevisionId: null,
-      editGeneration: 2,
-      bodyMarkdown: "alphabet",
-      sources: [],
-    });
+    expect(backend.saveWorkingCopy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        noteId: NOTE_ID,
+        baseRevisionId: null,
+        editGeneration: 2,
+        bodyMarkdown: "alphabet",
+        sources: [],
+      }),
+    );
     expect(coordinator.getSnapshot()).toMatchObject({ phase: "DURABLE", durableGeneration: 2 });
   });
 
@@ -251,13 +256,16 @@ describe("note autosave coordinator", () => {
     firstCheckpoint.resolve(checkpointed(1));
 
     await expect(flush).resolves.toMatchObject({ currentRevisionId: REVISION_2 });
-    expect(backend.saveWorkingCopy).toHaveBeenNthCalledWith(2, {
-      noteId: NOTE_ID,
-      baseRevisionId: REVISION_1,
-      editGeneration: 2,
-      bodyMarkdown: "alpha beta",
-      sources: [],
-    });
+    expect(backend.saveWorkingCopy).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        noteId: NOTE_ID,
+        baseRevisionId: REVISION_1,
+        editGeneration: 2,
+        bodyMarkdown: "alpha beta",
+        sources: [],
+      }),
+    );
     expect(backend.checkpointWorkingCopy).toHaveBeenNthCalledWith(2, {
       noteId: NOTE_ID,
       expectedEditGeneration: 2,

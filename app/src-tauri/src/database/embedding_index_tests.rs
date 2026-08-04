@@ -645,6 +645,7 @@ fn create_tidbit(client: &super::DatabaseClient, body: &str, now_ms: i64) -> Tid
     client
         .create_tidbit_with_ids(
             TidbitDraft {
+                document_json: super::document::single_paragraph(body),
                 body_markdown: body.into(),
                 sources: Vec::new(),
             },
