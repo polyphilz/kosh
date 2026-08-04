@@ -22,10 +22,50 @@ const rawTypographyNumericPattern =
 const typographyProperties = ["font-size", "font", "font-weight", "letter-spacing", "line-height"];
 
 function stripComments(contents, lineComments) {
-  const withoutBlocks = contents.replace(/\/\*[\s\S]*?\*\//g, (comment) =>
-    comment.replace(/[^\n]/g, " "),
-  );
-  return lineComments ? withoutBlocks.replace(/(^|[^:])\/\/.*$/gm, "$1") : withoutBlocks;
+  let analyzed = "";
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < contents.length; index += 1) {
+    const character = contents[index];
+    const next = contents[index + 1];
+    if (quote !== null) {
+      analyzed += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      analyzed += character;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      analyzed += "  ";
+      index += 2;
+      while (index < contents.length && !(contents[index] === "*" && contents[index + 1] === "/")) {
+        analyzed += contents[index] === "\n" ? "\n" : " ";
+        index += 1;
+      }
+      if (index < contents.length) {
+        analyzed += "  ";
+        index += 1;
+      }
+      continue;
+    }
+    if (lineComments && character === "/" && next === "/") {
+      analyzed += "  ";
+      index += 2;
+      while (index < contents.length && contents[index] !== "\n") {
+        analyzed += " ";
+        index += 1;
+      }
+      if (index < contents.length) analyzed += "\n";
+      continue;
+    }
+    analyzed += character;
+  }
+  return analyzed;
 }
 
 function lineAt(contents, offset) {
@@ -276,25 +316,23 @@ export function findTypographyViolationsInSources(sources, allowedTokenSource) {
         mergeDefinitions(all, cssDefinitions(source.path, source.contents, source.analyzed)),
       new Map(),
     );
-  const violations = analyzedSources
-    .filter(({ path }) => path !== allowedTokenSource)
-    .flatMap((source) =>
-      extname(source.path) === ".css"
-        ? cssViolations(
-            source.path,
-            source.contents,
-            source.analyzed,
-            definitions,
-            allowedTokenSource,
-          )
-        : inlineViolations(
-            source.path,
-            source.contents,
-            source.analyzed,
-            definitions,
-            allowedTokenSource,
-          ),
-    );
+  const violations = analyzedSources.flatMap((source) =>
+    extname(source.path) === ".css"
+      ? cssViolations(
+          source.path,
+          source.contents,
+          source.analyzed,
+          definitions,
+          allowedTokenSource,
+        )
+      : inlineViolations(
+          source.path,
+          source.contents,
+          source.analyzed,
+          definitions,
+          allowedTokenSource,
+        ),
+  );
   return [
     ...new Map(
       violations.map((violation) => [

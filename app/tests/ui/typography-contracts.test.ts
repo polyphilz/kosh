@@ -251,6 +251,39 @@ describe("typography contract", () => {
     });
   });
 
+  test("validates direct declarations in the typography token source", () => {
+    const found = findTypographyViolationsInSources(
+      [
+        {
+          path: "src/typography.css",
+          contents: `
+            :root { --type-size-body: 1rem; }
+            .copy { font-size: 12px; }
+          `,
+        },
+      ],
+      "src/typography.css",
+    );
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      check: TypographyCheckKind.FontSize,
+      path: "src/typography.css",
+    });
+  });
+
+  test("keeps comment-like TSX strings from hiding inline declarations", () => {
+    const found = findTypographyViolations(
+      "src/Feature.tsx",
+      `const node = <img src="//cdn.example/copy.png" style={{ fontSize: 12 }} />;
+       // const ignored = { fontWeight: 700 };
+       const block = "/* not a comment */";
+       const valid = { lineHeight: "var(--type-leading-body)" };`,
+    );
+
+    expect(found.map((entry) => entry.check)).toEqual([TypographyCheckKind.InlineFontSize]);
+  });
+
   test("accepts centralized token references and inheritance", () => {
     expect(
       cssViolations(`
