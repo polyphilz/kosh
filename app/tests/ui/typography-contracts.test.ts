@@ -97,6 +97,37 @@ describe("typography contract", () => {
     ]);
   });
 
+  test("rejects raw weight and leading inside font shorthand", () => {
+    const found = cssViolations(`
+      .copy {
+        font: calc(600 + 100) var(--type-size-body)/calc(1 + .4)
+          var(--font-family-app);
+      }
+      .valid {
+        font: var(--type-weight-body) var(--type-size-body)/var(--type-leading-body)
+          var(--font-family-app);
+      }
+    `);
+
+    expect(found.map((entry) => entry.check)).toEqual([TypographyCheckKind.FontShorthand]);
+  });
+
+  test("matches CSS typography properties case-insensitively", () => {
+    const found = cssViolations(`
+      .copy {
+        FONT-SIZE: 12px;
+        Font-Weight: 700;
+        LINE-HEIGHT: 1.4;
+      }
+    `);
+
+    expect(found.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.FontSize,
+      TypographyCheckKind.FontWeight,
+      TypographyCheckKind.LineHeight,
+    ]);
+  });
+
   test("rejects unitless zero font sizes", () => {
     const found = cssViolations(`
       .hidden { font-size: 0; }

@@ -42,10 +42,10 @@ function cssCheck(property, value) {
       : null;
   }
   if (property === "font") {
-    return sizedNumericPattern.test(value) || unitlessZeroPattern.test(value)
+    return rawTypographyNumericPattern.test(value)
       ? [
           TypographyCheckKind.FontShorthand,
-          "font shorthand embeds a raw size instead of separate type tokens",
+          "font shorthand embeds a raw typography value instead of separate type tokens",
         ]
       : null;
   }
@@ -96,13 +96,13 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
   const violations = [];
   const declarations = new RegExp(
     `(?:^|[;{])\\s*(${typographyProperties.join("|")})\\s*:\\s*([^;}]+)`,
-    "gm",
+    "gim",
   );
   const definitions = sharedDefinitions ?? cssDefinitions(path, raw, analyzed);
 
   const referencedVariables = [];
   for (const match of analyzed.matchAll(declarations)) {
-    const property = match[1];
+    const property = match[1].toLowerCase();
     const value = match[2];
     const line = lineAt(analyzed, match.index + match[0].indexOf(property));
     const failed = cssCheck(property, value);
