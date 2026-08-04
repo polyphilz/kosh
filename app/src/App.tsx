@@ -130,7 +130,8 @@ function AppShell() {
         event.ctrlKey ||
         event.shiftKey ||
         !event.metaKey ||
-        event.key.toLowerCase() !== "f"
+        event.key.toLowerCase() !== "f" ||
+        document.querySelector('[aria-modal="true"]')
       ) {
         return;
       }

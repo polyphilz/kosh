@@ -214,8 +214,26 @@ function matchPart(segment: TextSegment, start: number, end: number): FindPart[]
 
 function searchableText(node: ProseMirrorNode): string {
   if (node.isText) return node.text ?? "";
-  if (node.type.name !== "inlineMath" && node.type.name !== "displayMath") return "";
-  return typeof node.attrs.latex === "string" ? node.attrs.latex : "";
+  if (node.type.name === "inlineMath" || node.type.name === "displayMath") {
+    return stringAttributes(node, ["latex"]);
+  }
+  if (node.type.name === "koshImage") {
+    return stringAttributes(node, ["altText", "caption"]);
+  }
+  if (node.type.name === "koshPdf") {
+    return stringAttributes(node, ["displayFilename"]);
+  }
+  if (node.type.name === "koshFileAttachment") {
+    return stringAttributes(node, ["displayFilename", "caption"]);
+  }
+  return "";
+}
+
+function stringAttributes(node: ProseMirrorNode, names: readonly string[]): string {
+  return names
+    .map((name) => node.attrs[name])
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join("\n");
 }
 
 function escapeExpression(query: string): string {

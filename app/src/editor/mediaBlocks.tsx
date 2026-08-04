@@ -396,6 +396,16 @@ function KoshPdfBlock({ block, editor }: PdfRenderProps) {
     };
   }, [actions, attachmentId, pollRevision]);
 
+  useEffect(() => {
+    if (
+      editor.isEditable &&
+      status?.displayFilename &&
+      status.displayFilename !== block.props.displayFilename
+    ) {
+      editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
+    }
+  }, [block, editor, status?.displayFilename]);
+
   const extractionStatus = status?.extractionStatus ?? block.props.extractionStatus;
   const extractionError = status?.extractionError ?? block.props.extractionError;
   return (
@@ -447,13 +457,24 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
     void actions
       .attachmentStatus(attachmentId)
       .then((record) => {
-        if (active && record.attachmentId === attachmentId) setStatus(record);
+        if (!active || record.attachmentId !== attachmentId) return;
+        setStatus(record);
       })
       .catch((error: unknown) => actions.onError?.(error));
     return () => {
       active = false;
     };
   }, [actions, attachmentId]);
+
+  useEffect(() => {
+    if (
+      editor.isEditable &&
+      status?.displayFilename &&
+      status.displayFilename !== block.props.displayFilename
+    ) {
+      editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
+    }
+  }, [block, editor, status?.displayFilename]);
 
   const filename = status?.displayFilename ?? block.props.displayFilename;
   const replace = actions.pickReplacement

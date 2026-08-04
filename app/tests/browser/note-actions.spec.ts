@@ -158,6 +158,24 @@ test("delete flushes the latest note and Undo restores it immediately", async ({
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
 });
 
+test("Command-F stays contained by the delete confirmation", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("A note that may be deleted.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+
+  await page.getByRole("button", { name: "Delete note" }).click();
+  const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
+  const cancel = confirmation.getByRole("button", { name: "Cancel" });
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press("Meta+f");
+
+  await expect(confirmation).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
 test("history never reopens a deleted note as editable", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

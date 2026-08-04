@@ -319,6 +319,70 @@ describe("production BlockNote editor", () => {
     expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
   });
 
+  it("finds visible media filenames, alt text, and captions", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={
+            "{{kosh:image:019f547b-6200-7000-8000-000000000201;width=70%;alt=Architecture%20diagram;caption=Chapter%20overview}}"
+          }
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByLabelText("Alt text");
+
+    act(() =>
+      ref.current?.insertAttachments([
+        {
+          recordKind: "PDF",
+          record: {
+            byteLength: 128,
+            displayFilename: "matrix-notes.pdf",
+            extractionError: null,
+            extractionStatus: "READY",
+            id: "019f547b-6200-7000-8000-000000000302",
+            ingestLeaseId: "private-pdf-lease",
+            kind: "PDF",
+            mediaType: "application/pdf",
+            pageCount: 4,
+          },
+        },
+        {
+          recordKind: "GENERIC",
+          record: {
+            byteLength: 12,
+            displayFilename: "memory.txt",
+            extractedLineCount: 1,
+            extractionError: null,
+            extractionStatus: "READY",
+            id: "019f547b-6200-7000-8000-000000000303",
+            ingestLeaseId: "private-file-lease",
+            kind: "TEXT",
+            mediaType: "text/plain",
+          },
+        },
+      ]),
+    );
+    await screen.findByText("matrix-notes.pdf");
+    await screen.findByText("memory.txt");
+    fireEvent.change(screen.getByLabelText("Attachment caption"), {
+      target: { value: "Memory appendix" },
+    });
+
+    expect(ref.current?.findInNote("Architecture diagram")).toEqual({
+      activeIndex: 0,
+      count: 1,
+    });
+    expect(ref.current?.findInNote("Chapter overview")).toEqual({ activeIndex: 0, count: 1 });
+    expect(ref.current?.findInNote("matrix-notes.pdf")).toEqual({ activeIndex: 0, count: 1 });
+    expect(ref.current?.findInNote("memory.txt")).toEqual({ activeIndex: 0, count: 1 });
+    expect(ref.current?.findInNote("Memory appendix")).toEqual({ activeIndex: 0, count: 1 });
+  });
+
   it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(
