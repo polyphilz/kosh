@@ -126,6 +126,26 @@ describe("FakeBackend tidbits", () => {
     ).toBe(true);
   });
 
+  it("does not expose deeply indented nested-list structure markers", async () => {
+    const backend = new FakeBackend();
+    await backend.seedNote({
+      bodyMarkdown: [
+        "- Parent",
+        "  - Nested",
+        "",
+        "    <!-- kosh:children:start -->",
+        "",
+        "    <!-- kosh:block:empty -->",
+        "",
+        "    <!-- kosh:children:end -->",
+      ].join("\n"),
+    });
+
+    await expect(
+      backend.searchPassages({ query: "kosh children empty", mode: "DEFAULT", limit: 10 }),
+    ).resolves.toMatchObject({ results: [] });
+  });
+
   it("allocates generated IDs beyond IDs already present in seeded tidbits", async () => {
     const source = new FakeBackend();
     const seed = await source.seedNote({

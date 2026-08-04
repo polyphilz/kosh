@@ -243,6 +243,46 @@ describe("production BlockNote editor", () => {
     expect(matches[2]).toHaveTextContent("Deep match.");
   });
 
+  it("marks nested list and empty editor blocks covered by a citation", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={[
+            "- Parent",
+            "",
+            "  <!-- kosh:children:start -->",
+            "",
+            "  Nested evidence.",
+            "",
+            "  <!-- kosh:block:empty -->",
+            "",
+            "  <!-- kosh:children:end -->",
+          ].join("\n")}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByText("Nested evidence.");
+    const citation: CitationResolution = {
+      ...authoredCitation(),
+      excerpt: "Parent Nested evidence.",
+      locator: {
+        ...authoredCitation().locator,
+        kind: "MARKDOWN_BLOCKS",
+        startBlock: 0,
+        endBlock: 2,
+      },
+    };
+
+    expect(ref.current?.focusCitation(citation)).toBe(true);
+    const match = document.querySelector('[data-kosh-search-hit="true"]');
+    expect(match).toHaveTextContent("Parent");
+    expect(match).toHaveTextContent("Nested evidence.");
+  });
+
   it("finds case-insensitive text across rich marks without editing", async () => {
     const onChange = vi.fn();
     const ref = createRef<KoshBlockNoteEditorHandle>();

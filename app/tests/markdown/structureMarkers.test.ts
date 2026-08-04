@@ -19,11 +19,11 @@ describe("editor structure markers", () => {
     );
   });
 
-  it("preserves reserved-looking indented code as authored content", () => {
+  it("removes deeply indented structure markers emitted by nested lists", () => {
     const markdown = "    <!-- kosh:children:start -->";
 
-    expect(withoutKoshStructureMarkers(markdown)).toBe(markdown);
-    expect(hasMeaningfulAuthoredContent(markdown)).toBe(true);
+    expect(withoutKoshStructureMarkers(markdown)).toBe("");
+    expect(hasMeaningfulAuthoredContent(markdown)).toBe(false);
   });
 
   it("treats code containing only reserved-looking text as meaningful", () => {

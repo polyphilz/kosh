@@ -35,7 +35,6 @@ export function withoutKoshStructureMarkers(markdown: string): string {
         return true;
       }
 
-      if (/^(?: {4}|\t)/u.test(line)) return true;
       return koshStructureMarker(line) === null;
     })
     .join("\n");

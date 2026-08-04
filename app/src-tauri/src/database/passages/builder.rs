@@ -55,6 +55,7 @@ enum BlockKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SourceBlock {
     ordinal: u32,
+    end_ordinal: u32,
     kind: BlockKind,
     content: String,
     heading_context: Vec<String>,
@@ -285,6 +286,7 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
             let source_start_byte = markdown.find(source).unwrap_or(0);
             blocks.push(SourceBlock {
                 ordinal: 0,
+                end_ordinal: 0,
                 kind: BlockKind::Prose,
                 content: content.into(),
                 heading_context: Vec::new(),
@@ -293,7 +295,75 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
             });
         }
     }
+    assign_editor_ordinals(markdown, &mut blocks);
     blocks
+}
+
+fn assign_editor_ordinals(markdown: &str, blocks: &mut [SourceBlock]) {
+    let starts = editor_block_starts(markdown);
+    for block in blocks {
+        let ordinals = starts
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, start)| {
+                (*start >= block.source_start_byte && *start < block.source_end_byte)
+                    .then_some(u32::try_from(ordinal).expect("Markdown block count fits in u32"))
+            })
+            .collect::<Vec<_>>();
+        let fallback = starts
+            .partition_point(|start| *start <= block.source_start_byte)
+            .saturating_sub(1);
+        block.ordinal = ordinals
+            .first()
+            .copied()
+            .unwrap_or_else(|| u32::try_from(fallback).expect("Markdown block count fits in u32"));
+        block.end_ordinal = ordinals.last().copied().unwrap_or(block.ordinal);
+    }
+}
+
+fn editor_block_starts(markdown: &str) -> Vec<usize> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_MATH);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+
+    let mut starts = Vec::new();
+    let mut list_depth = 0usize;
+    let mut structured_child_depths = Vec::new();
+    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+        let is_direct_block = || {
+            list_depth == 0
+                || structured_child_depths
+                    .last()
+                    .is_some_and(|depth| *depth == list_depth)
+        };
+        match event {
+            Event::Start(Tag::Item) => {
+                starts.push(range.start);
+                list_depth += 1;
+            }
+            Event::Start(
+                Tag::Paragraph | Tag::Heading { .. } | Tag::CodeBlock(_) | Tag::Table(_),
+            ) if is_direct_block() => starts.push(range.start),
+            Event::End(TagEnd::Item) => list_depth = list_depth.saturating_sub(1),
+            Event::Html(value) => match value.trim() {
+                crate::database::markdown::EMPTY_BLOCK_MARKER => starts.push(range.start),
+                crate::database::markdown::CHILDREN_START_MARKER => {
+                    structured_child_depths.push(list_depth);
+                }
+                crate::database::markdown::CHILDREN_END_MARKER => {
+                    structured_child_depths.pop();
+                }
+                _ if is_direct_block() => starts.push(range.start),
+                _ => {}
+            },
+            Event::DisplayMath(_) | Event::Rule if is_direct_block() => starts.push(range.start),
+            _ => {}
+        }
+    }
+    starts
 }
 
 fn captured_block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
@@ -499,6 +569,7 @@ fn finish_capture(
     let ordinal = u32::try_from(blocks.len()).expect("Markdown block count fits in u32");
     blocks.push(SourceBlock {
         ordinal,
+        end_ordinal: ordinal,
         kind: capture.kind,
         content,
         heading_context,
@@ -525,6 +596,7 @@ fn push_standalone_block(
     let ordinal = u32::try_from(blocks.len()).expect("Markdown block count fits in u32");
     blocks.push(SourceBlock {
         ordinal,
+        end_ordinal: ordinal,
         kind,
         content,
         heading_context: current_heading_context(headings),
@@ -592,7 +664,7 @@ fn flush_group(pending: &mut Vec<SourceBlock>, passages: &mut Vec<BuiltPassage>)
         first.heading_context.clone(),
         MarkdownLocator {
             start: first.ordinal,
-            end: last.ordinal,
+            end: last.end_ordinal,
             source_start_byte: Some(
                 u64::try_from(first.source_start_byte).expect("source offset fits in u64"),
             ),
@@ -791,7 +863,7 @@ fn block_locator(
 ) -> MarkdownLocator {
     MarkdownLocator {
         start: block.ordinal,
-        end: block.ordinal,
+        end: block.end_ordinal,
         source_start_byte: Some(
             u64::try_from(block.source_start_byte).expect("source offset fits in u64"),
         ),
@@ -1178,6 +1250,38 @@ mod tests {
         assert!(content.contains("Parent"));
         assert!(content.contains("Nested evidence."));
         assert!(!content.contains("kosh:"));
+    }
+
+    #[test]
+    fn nested_list_blocks_count_toward_passage_locators() {
+        let markdown = ["- Parent", "  - Nested alpha", "    - Nested beta"].join("\n");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 2);
+    }
+
+    #[test]
+    fn nested_prose_and_empty_blocks_count_toward_passage_locators() {
+        let markdown = [
+            "- Parent",
+            "",
+            "  <!-- kosh:children:start -->",
+            "",
+            "  Nested evidence.",
+            "",
+            "  <!-- kosh:block:empty -->",
+            "",
+            "  <!-- kosh:children:end -->",
+        ]
+        .join("\n");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 2);
+        assert!(!passages[0].content.contains("kosh:"));
     }
 
     #[test]
