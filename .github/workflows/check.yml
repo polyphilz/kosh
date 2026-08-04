@@ -9,6 +9,14 @@ on:
 permissions:
   contents: read
 
+# Stacked pull requests force-push every branch above an edit, so a single
+# restack queues a fresh run for each branch while the previous runs keep
+# burning shared runner capacity. Supersede the stale run for a given pull
+# request, and leave main alone so every trunk commit keeps its own signal.
+concurrency:
+  group: check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   repository:
     name: repository policy
