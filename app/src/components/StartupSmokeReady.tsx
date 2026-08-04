@@ -6,7 +6,7 @@ import { createUuidV7, NoteAutosaveCoordinator } from "../notes/autosave";
 import { TauriEvent } from "../tauriProtocol";
 
 interface StartupSmokeReadyProps {
-  surface: "main" | "quick-add";
+  surface: "main";
 }
 
 const CANARY_SOURCE_LABEL = "Kosh startup smoke";

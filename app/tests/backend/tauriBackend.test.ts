@@ -50,10 +50,7 @@ describe("tauriBackend tidbit gateway", () => {
     };
     const shortcuts: SetShortcutSettingsInput = {
       expectedRevision: 1,
-      keyboardBindings: [
-        { command: "QUICK_ADD", accelerator: "control+alt+super+KeyK" },
-        { command: "MAIN_WINDOW", accelerator: "control+alt+super+KeyO" },
-      ],
+      keyboardBindings: [{ command: "MAIN_WINDOW", accelerator: "control+alt+super+KeyO" }],
     };
     const automaticUpdates: SetAutomaticUpdateChecksInput = {
       enabled: false,

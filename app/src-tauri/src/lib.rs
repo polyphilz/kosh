@@ -105,16 +105,11 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         database::commands::discard_working_copy,
         windows::acknowledge_quit,
         windows::cancel_update_relaunch,
-        windows::cancel_quick_add_dismiss,
         windows::prepare_update_relaunch,
-        windows::complete_quick_add_dismiss,
-        windows::mark_quick_add_frontend_ready,
         windows::load_shortcut_settings,
         windows::set_automatic_update_checks,
-        windows::set_quick_add_file_dialog_open,
         windows::set_shortcut_settings,
         windows::show_main,
-        windows::show_quick_add,
     ])
 }
 

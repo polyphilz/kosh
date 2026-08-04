@@ -137,7 +137,7 @@ against the exact candidate. The profiles live beneath ignored
 profiles and never point the candidate at production data.
 
 The required record covers titleless autosave and lexical search without a
-model, Quick Add, code/math, image OCR, PDF/text search, opaque attachments,
+model, code/math, image OCR, PDF/text search, opaque attachments,
 hybrid search, exact source citations, forced-termination recovery, restart,
 and commit-bound performance budgets.
 Do not claim a UI journey from database checks alone.
@@ -235,7 +235,7 @@ do not bypass Gatekeeper.
 Use the copy under `/Applications`, not the build directory.
 
 - Confirm only the white Kosh mark appears in the menu bar; there is no text.
-- Exercise the configurable Quick Add and main-window shortcuts.
+- Exercise the configurable main-window shortcut.
 - Create a titleless URL-bearing note containing code and math, then quit
   immediately and confirm it survives restart without an explicit Save action.
 - Use `Cmd+K` to find an authored phrase and open its resolved citation.
@@ -275,5 +275,5 @@ cannot call updater or restart APIs. Automatic checks begin shortly after
 launch and repeat every six hours when enabled. Failures stay quiet for
 automatic checks and are visible for manual checks. An offered version can be
 dismissed for 24 hours. Before restarting after installation, Kosh waits for
-both the main and Quick Add webviews to preserve their current drafts; a save
-failure or timeout cancels the relaunch.
+the main webview to preserve its current draft; a save failure or timeout
+cancels the relaunch.

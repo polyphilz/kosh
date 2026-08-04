@@ -33,7 +33,7 @@ launch_receipt() {
       dataDir: "/tmp/kosh-fresh",
       processId: 123,
       completedAtMs: 456,
-      windows: ["main", "quick-add"],
+      windows: ["main"],
       webviews: [
         {
           surface: "main",
@@ -44,25 +44,6 @@ launch_receipt() {
           frontendOrigin: "http://127.0.0.1:1420",
           probeDataDir: "/tmp/kosh-fresh",
           probeRequestId: "00000000-0000-7000-8000-000000000004",
-          canary: {
-            executionMode: "EXACT",
-            citationState: "CURRENT",
-            resultCount: 1,
-            passageId: $passage,
-            resolvedPassageId: $passage,
-            revisionId: $revision,
-            sourceUrl: "https://example.invalid/kosh-progressive-operability"
-          }
-        },
-        {
-          surface: "quick-add",
-          rendered: true,
-          captureCreated: false,
-          documentReadyState: "complete",
-          rootChildCount: 1,
-          frontendOrigin: "http://127.0.0.1:1420",
-          probeDataDir: "/tmp/kosh-fresh",
-          probeRequestId: "00000000-0000-7000-8000-000000000005",
           canary: {
             executionMode: "EXACT",
             citationState: "CURRENT",
@@ -146,7 +127,7 @@ restart="$(jq '.canary.revisionId = "00000000-0000-7000-8000-000000000099"' <<<"
 write_aggregate local "$head_sha"
 expect_blocked "restart silently retargets the citation"
 
-restart="$(jq '.webviews[1].rendered = false' <<<"$original_restart")"
+restart="$(jq '.webviews[0].rendered = false' <<<"$original_restart")"
 write_aggregate local "$head_sha"
 expect_blocked "a webview did not render its React root"
 

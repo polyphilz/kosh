@@ -875,20 +875,20 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary file drop directory");
         let picker_pdf = directory.path().join("picker.pdf");
         let dropped_pdf = directory.path().join("dropped.txt");
-        let quick_drop = directory.path().join("quick.txt");
+        let secondary_drop = directory.path().join("secondary.txt");
         std::fs::write(&picker_pdf, b"%PDF-picker").expect("picker file fixture");
         std::fs::write(&dropped_pdf, b"dropped text").expect("dropped file fixture");
-        std::fs::write(&quick_drop, b"quick text").expect("quick drop fixture");
+        std::fs::write(&secondary_drop, b"secondary text").expect("secondary drop fixture");
         let picker_id = "019f547b-6200-7000-8000-000000000993".to_owned();
         let dropped_id = "019f547b-6200-7000-8000-000000000994".to_owned();
-        let quick_drop_id = "019f547b-6200-7000-8000-000000000995".to_owned();
+        let secondary_drop_id = "019f547b-6200-7000-8000-000000000995".to_owned();
         let state = RuntimeState::deterministic(
             directory.path().join("data"),
             Arc::new(deterministic::FixedClock(100)),
             deterministic::SequenceIds::new([
                 picker_id.clone(),
                 dropped_id.clone(),
-                quick_drop_id.clone(),
+                secondary_drop_id.clone(),
             ]),
         );
 
@@ -909,12 +909,12 @@ mod tests {
                 .expect("dropped selection"),
             dropped_id
         );
-        state.set_file_drop_consumer_active("quick-add", true);
+        state.set_file_drop_consumer_active("secondary", true);
         assert_eq!(
             state
-                .register_dropped_file_selection("quick-add", quick_drop.clone())
-                .expect("quick-add dropped selection"),
-            quick_drop_id
+                .register_dropped_file_selection("secondary", secondary_drop.clone())
+                .expect("secondary dropped selection"),
+            secondary_drop_id
         );
 
         state.set_file_drop_consumer_active("main", false);
@@ -929,17 +929,17 @@ mod tests {
             Err(crate::database::DatabaseError::NotFound { .. })
         ));
         assert!(matches!(
-            state.take_file_selection("main", &quick_drop_id),
+            state.take_file_selection("main", &secondary_drop_id),
             Err(crate::database::DatabaseError::NotFound { .. })
         ));
         state
-            .discard_file_drop_selections("main", std::slice::from_ref(&quick_drop_id))
+            .discard_file_drop_selections("main", std::slice::from_ref(&secondary_drop_id))
             .expect("another window cannot revoke the selection");
         assert_eq!(
             state
-                .take_file_selection("quick-add", &quick_drop_id)
+                .take_file_selection("secondary", &secondary_drop_id)
                 .expect("other window drop survives"),
-            quick_drop
+            secondary_drop
         );
     }
 

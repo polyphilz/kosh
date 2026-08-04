@@ -167,10 +167,10 @@ function verifyReceipt(receipt, expectation, captureExpected) {
   assertEqual(receipt.headSha, headSha, "requested smoke head");
   assertEqual(receipt.buildHeadSha, headSha, "packaged executable build head");
   assertEqual(receipt.expectation, expectation, "smoke expectation");
-  assertEqual([...receipt.windows].sort(), ["main", "quick-add"], "packaged smoke windows");
+  assertEqual(receipt.windows, ["main"], "packaged smoke windows");
   assertEqual(
     receipt.webviews.map(({ surface }) => surface).sort(),
-    ["main", "quick-add"],
+    ["main"],
     "packaged smoke webviews",
   );
   for (const webview of receipt.webviews) {

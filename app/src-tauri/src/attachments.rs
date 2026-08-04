@@ -935,18 +935,18 @@ mod tests {
         let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .expect("main webview");
-        let quick_add = tauri::WebviewWindowBuilder::new(&app, "quick-add", Default::default())
+        let secondary = tauri::WebviewWindowBuilder::new(&app, "secondary", Default::default())
             .build()
-            .expect("quick-add webview");
+            .expect("secondary webview");
         let main_notices = Arc::new(AtomicUsize::new(0));
-        let quick_add_notices = Arc::new(AtomicUsize::new(0));
+        let secondary_notices = Arc::new(AtomicUsize::new(0));
         let main_count = Arc::clone(&main_notices);
-        let quick_add_count = Arc::clone(&quick_add_notices);
+        let secondary_count = Arc::clone(&secondary_notices);
         main.listen(FILE_DROP_EVENT, move |_| {
             main_count.fetch_add(1, Ordering::SeqCst);
         });
-        quick_add.listen(FILE_DROP_EVENT, move |_| {
-            quick_add_count.fetch_add(1, Ordering::SeqCst);
+        secondary.listen(FILE_DROP_EVENT, move |_| {
+            secondary_count.fetch_add(1, Ordering::SeqCst);
         });
 
         emit_file_drop_notice(
@@ -961,7 +961,7 @@ mod tests {
         .expect("targeted file-drop notice");
 
         assert_eq!(main_notices.load(Ordering::SeqCst), 1);
-        assert_eq!(quick_add_notices.load(Ordering::SeqCst), 0);
+        assert_eq!(secondary_notices.load(Ordering::SeqCst), 0);
     }
 
     #[test]

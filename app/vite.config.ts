@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [react()],
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   optimizeDeps: {
-    entries: ["index.html", "quick-add.html", "editor-harness.html"],
+    entries: ["index.html", "editor-harness.html"],
     include: [
       "@blocknote/core",
       "@blocknote/mantine",
@@ -25,7 +25,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(import.meta.dirname, "index.html"),
-        quickAdd: resolve(import.meta.dirname, "quick-add.html"),
       },
     },
   },

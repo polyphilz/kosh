@@ -47,7 +47,7 @@ describe("StartupSmokeReady", () => {
     render(
       <BackendProvider backend={backend}>
         <div>Rendered app</div>
-        <StartupSmokeReady surface="quick-add" />
+        <StartupSmokeReady surface="main" />
       </BackendProvider>,
       { container: root },
     );

@@ -21,15 +21,12 @@ const release = json<TauriConfig>("src-tauri/tauri.release.conf.json");
 const defaultCapability = json<{ windows: string[]; permissions: string[] }>(
   "src-tauri/capabilities/default.json",
 );
-const quickAddCapability = json<{ windows: string[]; permissions: string[] }>(
-  "src-tauri/capabilities/quick-add.json",
-);
 
 describe("desktop security boundary", () => {
   it("keeps production navigation, execution, framing, and IPC closed by default", () => {
     const security = production.app.security;
     expect(security.freezePrototype).toBe(true);
-    expect(security.capabilities.toSorted()).toEqual(["default", "quick-add"]);
+    expect(security.capabilities).toEqual(["default"]);
     expect(security.csp).toEqual({
       "default-src": "'self'",
       "connect-src": "ipc: http://ipc.localhost",
@@ -52,10 +49,6 @@ describe("desktop security boundary", () => {
     expect(defaultCapability).toMatchObject({
       windows: ["main"],
       permissions: ["core:default", "deep-link:default"],
-    });
-    expect(quickAddCapability).toMatchObject({
-      windows: ["quick-add"],
-      permissions: ["core:default"],
     });
   });
 

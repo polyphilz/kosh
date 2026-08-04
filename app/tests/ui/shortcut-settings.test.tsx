@@ -3,11 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BackendProvider } from "../../src/backend/context";
-import {
-  DEFAULT_MAIN_WINDOW_ACCELERATOR,
-  DEFAULT_QUICK_ADD_ACCELERATOR,
-  KoshCommand,
-} from "../../src/backend/contracts";
+import { DEFAULT_MAIN_WINDOW_ACCELERATOR, KoshCommand } from "../../src/backend/contracts";
 import { FakeBackend } from "../../src/backend/fakeBackend";
 import { AppearanceProvider } from "../../src/components/Appearance";
 import { createAppRouter } from "../../src/router";
@@ -42,7 +38,7 @@ describe("shortcut settings", () => {
     expect((await backend.loadShortcutSettings()).automaticUpdateChecksEnabled).toBe(false);
   });
 
-  it("records, persists, rejects conflicts, and resets global shortcuts", async () => {
+  it("records, persists, and resets the main-window shortcut", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();
     const setShortcutSettings = vi.spyOn(backend, "setShortcutSettings");
@@ -59,10 +55,10 @@ describe("shortcut settings", () => {
       </BackendProvider>,
     );
 
-    const quickAdd = await screen.findByRole("button", {
-      name: "Quick Add shortcut: ⌃⌥⌘K",
+    const mainWindow = await screen.findByRole("button", {
+      name: "Main window shortcut: ⌃⌥⌘O",
     });
-    await user.click(quickAdd);
+    await user.click(mainWindow);
     fireEvent.keyDown(window, {
       altKey: true,
       code: "KeyT",
@@ -73,38 +69,17 @@ describe("shortcut settings", () => {
     await waitFor(() => expect(setShortcutSettings).toHaveBeenCalledOnce());
     expect(
       (await backend.loadShortcutSettings()).keyboardBindings.find(
-        (binding) => binding.command === KoshCommand.QuickAdd,
-      )?.accelerator,
-    ).toBe("control+alt+super+KeyT");
-
-    await user.click(
-      screen.getByRole("button", {
-        name: "Main window shortcut: ⌃⌥⌘O",
-      }),
-    );
-    fireEvent.keyDown(window, {
-      altKey: true,
-      code: "KeyT",
-      ctrlKey: true,
-      key: "t",
-      metaKey: true,
-    });
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "two Kosh commands cannot use the same shortcut",
-    );
-    expect(
-      (await backend.loadShortcutSettings()).keyboardBindings.find(
         (binding) => binding.command === KoshCommand.MainWindow,
       )?.accelerator,
-    ).toBe(DEFAULT_MAIN_WINDOW_ACCELERATOR);
+    ).toBe("control+alt+super+KeyT");
 
     await user.click(screen.getByRole("button", { name: "Reset shortcuts" }));
     await waitFor(async () => {
       const settings = await backend.loadShortcutSettings();
       expect(
-        settings.keyboardBindings.find((binding) => binding.command === KoshCommand.QuickAdd)
+        settings.keyboardBindings.find((binding) => binding.command === KoshCommand.MainWindow)
           ?.accelerator,
-      ).toBe(DEFAULT_QUICK_ADD_ACCELERATOR);
+      ).toBe(DEFAULT_MAIN_WINDOW_ACCELERATOR);
     });
   });
 
@@ -195,5 +170,51 @@ describe("shortcut settings", () => {
       expect(screen.getByRole("button", { name: "Quick Add shortcut: ⌃⌥⌘K" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" })).toBeVisible();
     });
+  });
+
+  it("resets global and local shortcuts without validating an intermediate conflict", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const router = createAppRouter(
+      createMemoryHistory({
+        initialEntries: ["/settings"],
+      }),
+    );
+    render(
+      <BackendProvider backend={backend}>
+        <AppearanceProvider>
+          <RouterProvider router={router} />
+        </AppearanceProvider>
+      </BackendProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" }));
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyT",
+      ctrlKey: true,
+      key: "t",
+      metaKey: true,
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘T" })).toBeVisible(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Copy note link shortcut: ⌘L" }));
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyO",
+      ctrlKey: true,
+      key: "o",
+      metaKey: true,
+    });
+    expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌃⌥⌘O" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Reset shortcuts" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌘L" })).toBeVisible();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

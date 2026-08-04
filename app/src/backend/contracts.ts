@@ -453,7 +453,6 @@ export interface SearchPassagesResponse {
 
 export const KoshCommand = {
   MainWindow: "MAIN_WINDOW",
-  QuickAdd: "QUICK_ADD",
 } as const;
 
 export type KoshCommand = (typeof KoshCommand)[keyof typeof KoshCommand];
@@ -480,13 +479,8 @@ export interface SetShortcutSettingsInput {
   keyboardBindings: KeyboardBinding[];
 }
 
-export const DEFAULT_QUICK_ADD_ACCELERATOR = "control+alt+super+KeyK";
 export const DEFAULT_MAIN_WINDOW_ACCELERATOR = "control+alt+super+KeyO";
 export const DEFAULT_KEYBOARD_BINDINGS: readonly KeyboardBinding[] = [
-  {
-    accelerator: DEFAULT_QUICK_ADD_ACCELERATOR,
-    command: KoshCommand.QuickAdd,
-  },
   {
     accelerator: DEFAULT_MAIN_WINDOW_ACCELERATOR,
     command: KoshCommand.MainWindow,

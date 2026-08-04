@@ -26,7 +26,7 @@ assertEqual(
 assertEqual(local.bundle, { active: false }, "development bundle policy");
 assertEqual(local.app.macOSPrivateApi, true, "macOS private API policy");
 assertEqual(local.app.security.freezePrototype, true, "prototype freeze");
-assertEqual(local.app.security.capabilities, ["default", "quick-add"], "capability allowlist");
+assertEqual(local.app.security.capabilities, ["default"], "capability allowlist");
 assertEqual(local.plugins["deep-link"], { desktop: { schemes: ["kosh"] } }, "note-link URL scheme");
 assertEqual(
   local.plugins.updater.endpoints,
@@ -119,17 +119,6 @@ assertEqual(
   "main-window capability",
 );
 assertEqual(
-  readJson("src-tauri/capabilities/quick-add.json"),
-  {
-    $schema: "../gen/schemas/desktop-schema.json",
-    identifier: "quick-add",
-    description: "Capability for the persistent Kosh quick-add window",
-    windows: ["quick-add"],
-    permissions: ["core:default"],
-  },
-  "quick-add capability",
-);
-assertEqual(
   readJson("src-tauri/capabilities/main-updater.json"),
   {
     $schema: "../gen/schemas/desktop-schema.json",
@@ -194,7 +183,7 @@ assert(
 );
 for (const contract of [
   'VITE_KOSH_UPDATER_ENABLED: "true"',
-  'capabilities: ["default", "quick-add", "main-updater"]',
+  'capabilities: ["default", "main-updater"]',
   '"universal-apple-darwin"',
   "hardenedRuntime: true",
 ]) {

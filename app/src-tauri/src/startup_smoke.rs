@@ -31,7 +31,7 @@ const DEVELOPMENT_FRONTEND_ORIGIN: &str = "http://127.0.0.1:1420";
 const RELEASE_FRONTEND_ORIGIN: &str = "tauri://localhost";
 const CANARY: &str = "koshstartupcanaryv1";
 const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
-const REQUIRED_SURFACES: [&str; 2] = ["main", "quick-add"];
+const REQUIRED_SURFACES: [&str; 1] = ["main"];
 const BUILD_GIT_SHA: &str = env!("KOSH_BUILD_GIT_SHA");
 static CAPTURE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -225,7 +225,7 @@ fn complete_startup_smoke(
     windows.sort();
     if windows != REQUIRED_SURFACES {
         return Err(invalid(format!(
-            "the startup smoke expected main and quick-add windows, found {}",
+            "the startup smoke expected only the main window, found {}",
             windows.join(", ")
         )));
     }

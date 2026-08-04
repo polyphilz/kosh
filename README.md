@@ -37,21 +37,18 @@ pnpm tauri dev
 ```
 
 Always start the development app through `pnpm tauri dev`. That script sets
-`KOSH_DATA_DIR` to `app/.data/note-first-v1`, keeping test notes away from
+`KOSH_DATA_DIR` to `app/.data/note-first-v2`, keeping test notes away from
 Tauri's release app-data directory. The note-first hard cutover leaves the
-former `app/.data/local` profile untouched because it is incompatible with the
-consolidated schema. The Rust backend honors this override only in debug builds;
+former `app/.data/local` and `app/.data/note-first-v1` profiles untouched because
+they are incompatible with the consolidated schema. The Rust backend honors this
+override only in debug builds;
 release builds always use the platform app-data directory.
 
 ## Global capture
 
 Kosh launches as a regular macOS app and remains available from its Dock and
-menu-bar icon after the main window closes. Use `⌃⌥⌘K` to open the persistent
-Quick Add window from any application and `⌃⌥⌘O` to bring the main window
-forward. Both shortcuts are configurable in Settings. Saving with `⌘↵` or
-explicitly cancelling Quick Add restores the application that was active
-before capture; clicking away hides the window while preserving its local
-draft and attachment leases.
+menu-bar icon after the main window closes. Use `⌃⌥⌘O` to bring the main window
+forward from any application. The shortcut is configurable in Settings.
 
 ## Checks
 
