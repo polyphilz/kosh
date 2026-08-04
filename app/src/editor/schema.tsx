@@ -189,7 +189,7 @@ function InlineMathSource({
     positionPopover();
     window.addEventListener("resize", positionPopover);
     return () => window.removeEventListener("resize", positionPopover);
-  }, [open]);
+  }, [latex, open]);
 
   useEffect(() => {
     if (!open) return;

@@ -105,8 +105,15 @@ test("inline math editing stays within the viewport at the right edge", async ({
   expect(bounds).not.toBeNull();
   expect(bounds!.x).toBeGreaterThanOrEqual(15);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(505);
-  await expect(page.getByLabel("Inline math source")).toBeVisible();
+  const source = page.getByLabel("Inline math source");
+  await expect(source).toBeVisible();
   await expect(page.getByRole("button", { name: /Done/u })).toBeVisible();
+
+  await source.fill("\\sum_{i=0}^{100000} \\frac{x_i^2 + y_i^2}{z_i^2}");
+  const reflowedBounds = await popover.boundingBox();
+  expect(reflowedBounds).not.toBeNull();
+  expect(reflowedBounds!.x).toBeGreaterThanOrEqual(15);
+  expect(reflowedBounds!.x + reflowedBounds!.width).toBeLessThanOrEqual(505);
 });
 
 test("rich paste cannot bypass the restricted schema or persist active content", async ({
