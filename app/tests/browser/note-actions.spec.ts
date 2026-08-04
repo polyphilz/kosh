@@ -137,6 +137,39 @@ test("find survives the first-save route cutover", async ({ page }) => {
   await expect(page.locator('[data-kosh-find-match="true"]')).toHaveCount(1);
 });
 
+test("closing find cancels a pending first-save transfer", async ({ page }) => {
+  await page.goto("/#/");
+  await page.evaluate(() => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const checkpoint = backend.checkpointWorkingCopy.bind(backend);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_CLOSED_FIND_CUTOVER__", release);
+    Reflect.set(window, "__KOSH_CLOSED_FIND_CUTOVER_STARTED__", false);
+    backend.checkpointWorkingCopy = async (input) => {
+      Reflect.set(window, "__KOSH_CLOSED_FIND_CUTOVER_STARTED__", true);
+      await blocked;
+      return checkpoint(input);
+    };
+  });
+
+  await page.getByRole("textbox", { name: "Note" }).fill("Close this pending find.");
+  await page.keyboard.press("Meta+f");
+  await page.getByRole("searchbox", { name: "Find in note" }).fill("pending");
+  await expect
+    .poll(() => page.evaluate(() => Reflect.get(window, "__KOSH_CLOSED_FIND_CUTOVER_STARTED__")))
+    .toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_CLOSED_FIND_CUTOVER__")());
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+  await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
 test("a deferred Command-F request is cancelled when its route closes", async ({ page }) => {
   await page.goto("/#/");
   await page.getByRole("textbox", { name: "Note" }).fill("Do not reopen stale find.");

@@ -189,9 +189,10 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   const closeFind = useCallback(() => {
     editorRef.current?.clearFindInNote();
+    clearFindInNoteTransfer(`/notes/${noteId}`);
     setFindOpen(false);
     window.requestAnimationFrame(() => editorRef.current?.focus());
-  }, []);
+  }, [noteId]);
 
   useLayoutEffect(() => {
     if (!findOpen) return;
