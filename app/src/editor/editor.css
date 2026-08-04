@@ -183,10 +183,7 @@
   pointer-events: none;
 }
 
-.kosh-blocknote-editor--page
-  .bn-block-outer[data-kosh-gutter-selected="true"]
-  > .bn-block
-  > .bn-block-content {
+.kosh-blocknote-editor--page .bn-block-outer[data-kosh-gutter-selected="true"] .bn-block-content {
   border-radius: 4px;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
