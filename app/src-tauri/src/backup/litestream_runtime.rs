@@ -2938,12 +2938,13 @@ mod tests {
         let quit_started = Instant::now();
         let failure = wait_for_control_socket(&mut child, &runtime, &shutdown)
             .expect_err("shutdown must interrupt socket readiness");
+        let readiness_elapsed = quit_started.elapsed();
         terminate_process_group(&mut child, DAEMON_LAUNCH_CLEANUP_TIMEOUT);
         canceller.join().expect("shutdown signal");
 
         assert_eq!(failure, cancelled_start());
         assert!(
-            quit_started.elapsed() < Duration::from_millis(500),
+            readiness_elapsed < Duration::from_millis(500),
             "shutdown waited for the socket startup timeout"
         );
         assert!(child.try_wait().expect("child status").is_some());

@@ -4437,6 +4437,13 @@ mod tests {
         );
 
         let mut retry = EphemeralLitestreamRuntime::create().expect("retry ephemeral runtime");
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while interrupted_root.exists() && Instant::now() < cleanup_deadline {
+            // Parallel recovery tests may have acquired this abandoned marker
+            // first. That scanner owns cleanup; wait for its descriptor-bound
+            // removal instead of treating the transient lock as data loss.
+            thread::sleep(Duration::from_millis(10));
+        }
         assert!(
             !interrupted_root.exists(),
             "the authenticated unlocked runtime and its database copy must be reclaimed"

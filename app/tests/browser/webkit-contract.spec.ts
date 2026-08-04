@@ -35,3 +35,28 @@ test("the titleless note route focuses and checkpoints in WebKit", async ({ page
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
   await expect(editor).toContainText("WebKit preserves this titleless note automatically.");
 });
+
+test("deleting the first edit stays empty across WebKit autosave boundaries", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+
+  await editor.pressSequentially("f");
+  await page.waitForTimeout(500);
+  await editor.press("Backspace");
+
+  await expect(editor).toBeEmpty();
+  await page.waitForTimeout(2_500);
+  await expect(editor).toBeEmpty();
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  expect(
+    await page.evaluate(async () => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      return {
+        notes: (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items
+          .length,
+        workingCopies: (await backend.listWorkingCopies()).length,
+      };
+    }),
+  ).toEqual({ notes: 0, workingCopies: 0 });
+});
