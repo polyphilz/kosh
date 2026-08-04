@@ -251,6 +251,68 @@ test("a gutter marquee keeps its anchor while auto-scrolling a long note", async
   await page.mouse.up();
 });
 
+test("a thin gutter marquee highlights a parent block and its nested descendants", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/#/search");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown: "- Parent item.\n  - Nested child.\n    - Nested grandchild.\n\nOutside block.",
+    });
+  });
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}`;
+  }, note.id);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  const topLevelBlocks = editor.locator(
+    ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+  );
+  await expect(topLevelBlocks).toHaveCount(2);
+  const parent = topLevelBlocks.first();
+  const parentContent = parent.locator(":scope > .bn-block > .bn-block-content");
+  const nestedContent = parent.locator(".bn-block-group .bn-block-content");
+  await expect(nestedContent).toHaveCount(2);
+  const nestedBackgroundsBefore = await nestedContent.evaluateAll((elements) =>
+    elements.map((element) => getComputedStyle(element).backgroundColor),
+  );
+
+  const railBox = await page.getByTestId("note-gutter-selection-rail").boundingBox();
+  const parentContentBox = await parentContent.boundingBox();
+  if (!railBox || !parentContentBox) throw new Error("the nested gutter layout is not rendered");
+  const selectionY = parentContentBox.y + parentContentBox.height / 2;
+  await page.mouse.move(railBox.x + railBox.width / 2, selectionY);
+  await page.mouse.down();
+  await page.mouse.move(parentContentBox.x + 24, selectionY, { steps: 8 });
+
+  await expect(page.getByTestId("note-gutter-selection-marquee")).toBeVisible();
+  await expect(parent).toHaveAttribute("data-kosh-gutter-selected", "true");
+  await expect
+    .poll(async () => {
+      const parentBackground = await parentContent.evaluate(
+        (element) => getComputedStyle(element).backgroundColor,
+      );
+      const nestedBackgrounds = await nestedContent.evaluateAll((elements) =>
+        elements.map((element) => getComputedStyle(element).backgroundColor),
+      );
+      return nestedBackgrounds.every(
+        (background, index) =>
+          background === parentBackground && background !== nestedBackgroundsBefore[index],
+      );
+    })
+    .toBe(true);
+  await page.mouse.up();
+
+  const selectionText = await page.evaluate(() => window.getSelection()?.toString() ?? "");
+  expect(selectionText).toContain("Parent item.");
+  expect(selectionText).toContain("Nested child.");
+  expect(selectionText).toContain("Nested grandchild.");
+  expect(selectionText).not.toContain("Outside block.");
+});
+
 test("new notes, settings, back, and forward use the transient route stack", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
