@@ -76,6 +76,7 @@ const scrollPositions = new Map<string, number>();
 const reconciliationStarted = new WeakSet<Backend>();
 const activeNoteIds = new WeakMap<Backend, string>();
 const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>>();
+const pendingDeleteDialogTransfers = new Set<string>();
 const SEARCH_MATCH_FLASH_MS = 1_400;
 const EMPTY_FIND_RESULT: FindInNoteResult = { activeIndex: -1, count: 0 };
 
@@ -171,7 +172,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(() => pendingDeleteDialogTransfers.delete(noteId));
   const findRequestRoute = `/${mode === "ephemeral" ? "new" : "notes"}/${noteId}`;
   const [initialFindTransfer] = useState(() => consumeFindInNoteTransfer(findRequestRoute));
   const [findOpen, setFindOpen] = useState(initialFindTransfer !== null);
@@ -420,21 +421,20 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   }, [coordinator, flushForNavigation, noteId]);
 
   useEffect(() => {
-    if (
-      mode !== "ephemeral" ||
-      snapshot.baseRevisionId === null ||
-      leavingNoteRef.current ||
-      deleteOpen
-    ) {
+    if (mode !== "ephemeral" || snapshot.baseRevisionId === null || leavingNoteRef.current) {
       return;
     }
     const durableRoute = `/notes/${noteId}`;
     if (findOpen) transferFindInNote(durableRoute, findState.query, findState.activeIndex);
+    if (deleteOpen) pendingDeleteDialogTransfers.add(noteId);
     void navigate({
       to: "/notes/$noteId",
       params: { noteId },
       replace: true,
-    }).catch(() => clearFindInNoteTransfer(durableRoute));
+    }).catch(() => {
+      clearFindInNoteTransfer(durableRoute);
+      pendingDeleteDialogTransfers.delete(noteId);
+    });
   }, [
     deleteOpen,
     findOpen,

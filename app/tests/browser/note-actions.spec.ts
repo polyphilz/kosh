@@ -423,10 +423,12 @@ test("the delete confirmation survives a new note's first checkpoint", async ({ 
   await expect(confirmation).toBeVisible();
   await page.waitForTimeout(2_500);
   await expect(confirmation).toBeVisible();
-  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
 
   await confirmation.getByRole("button", { name: "Cancel" }).click();
-  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+  await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
+    "Pause before deleting this freshly captured note.",
+  );
 });
 
 test("Command-F stays contained by the delete confirmation", async ({ page }) => {
