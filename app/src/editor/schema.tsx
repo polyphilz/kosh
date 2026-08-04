@@ -201,8 +201,16 @@ function InlineMathSource({
       const root = rootRef.current;
       if (root && !event.composedPath().includes(root)) setOpen(false);
     };
+    const closeOnFocusOutside = (event: FocusEvent) => {
+      const root = rootRef.current;
+      if (root && !event.composedPath().includes(root)) setOpen(false);
+    };
     document.addEventListener("click", closeOnOutsideClick);
-    return () => document.removeEventListener("click", closeOnOutsideClick);
+    document.addEventListener("focusin", closeOnFocusOutside);
+    return () => {
+      document.removeEventListener("click", closeOnOutsideClick);
+      document.removeEventListener("focusin", closeOnFocusOutside);
+    };
   }, [open]);
 
   const close = () => {

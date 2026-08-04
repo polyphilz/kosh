@@ -116,6 +116,30 @@ test("inline math editing stays within the viewport at the right edge", async ({
   expect(reflowedBounds!.x + reflowedBounds!.width).toBeLessThanOrEqual(505);
 });
 
+test("keyboard focus closes an earlier inline math editor before opening another", async ({
+  page,
+}) => {
+  await openHarness(page);
+  await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("First $a$ then second $b$"),
+  );
+
+  const firstEquation = page.getByRole("button", { name: "Edit inline math: a" });
+  const secondEquation = page.getByRole("button", { name: "Edit inline math: b" });
+  await firstEquation.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Inline math source")).toBeFocused();
+
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(secondEquation).toBeFocused();
+  await expect(page.getByLabel("Inline math source")).toHaveCount(0);
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByRole("dialog", { name: "Edit inline math" })).toHaveCount(1);
+  await expect(page.getByLabel("Inline math source")).toHaveValue("b");
+});
+
 test("rich paste cannot bypass the restricted schema or persist active content", async ({
   page,
 }) => {
