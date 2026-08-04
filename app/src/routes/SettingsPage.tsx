@@ -16,6 +16,7 @@ import { bindingFor, useShortcutSettings } from "../shortcuts/context";
 import {
   DEFAULT_COPY_EXACT_NOTE_LINK_ACCELERATOR,
   DEFAULT_COPY_NOTE_LINK_ACCELERATOR,
+  DEFAULT_DELETE_NOTE_ACCELERATOR,
   LocalShortcutCommand,
   localBindingFor,
 } from "../shortcuts/localShortcuts";
@@ -86,6 +87,24 @@ export function SettingsPage() {
             onValueChange={setAppearance}
             options={appearanceOptions}
             value={appearance}
+          />
+        </label>
+        <label>
+          <span>
+            <strong>Delete note shortcut</strong>
+            <small>Open a confirmation before deleting the current note.</small>
+          </span>
+          <ShortcutRecorder
+            accelerator={
+              localBindingFor(localBindings, LocalShortcutCommand.DeleteNote)?.accelerator ??
+              DEFAULT_DELETE_NOTE_ACCELERATOR
+            }
+            disabled={loading || !settings}
+            label="Delete note shortcut"
+            onCapture={(accelerator) =>
+              updateLocalBinding(LocalShortcutCommand.DeleteNote, accelerator)
+            }
+            resetToken={shortcutResetToken}
           />
         </label>
         <label>

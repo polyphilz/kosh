@@ -78,7 +78,7 @@ test("note source and delete actions stay visually stable", async ({ page }) => 
   });
 
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.keyboard.press("Meta+Shift+Backspace");
   await expect(page.getByRole("dialog", { name: "Delete this note?" })).toHaveScreenshot(
     "note-delete-dialog.png",
     {

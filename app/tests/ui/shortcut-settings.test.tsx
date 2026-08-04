@@ -136,6 +136,15 @@ describe("shortcut settings", () => {
     });
     expect(screen.getByRole("button", { name: "Copy note link shortcut: ⇧⌘C" })).toBeVisible();
 
+    await user.click(screen.getByRole("button", { name: "Delete note shortcut: ⇧⌘⌫" }));
+    fireEvent.keyDown(window, {
+      code: "KeyD",
+      key: "d",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(screen.getByRole("button", { name: "Delete note shortcut: ⇧⌘D" })).toBeVisible();
+
     await user.click(screen.getByRole("button", { name: "Copy exact link shortcut: ⇧⌘L" }));
     fireEvent.keyDown(window, {
       code: "KeyF",
@@ -179,6 +188,7 @@ describe("shortcut settings", () => {
     await user.click(screen.getByRole("button", { name: "Reset shortcuts" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌘L" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Delete note shortcut: ⇧⌘⌫" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" })).toBeVisible();
     });
   });

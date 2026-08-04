@@ -47,6 +47,12 @@ describe("local shortcut settings", () => {
         "super+KeyL",
       ),
     ).toBe(false);
+    expect(
+      keyboardEventMatchesAccelerator(
+        { altKey: false, code: "Backspace", ctrlKey: false, metaKey: true, shiftKey: true },
+        "shift+super+Backspace",
+      ),
+    ).toBe(true);
 
     const duplicate = DEFAULT_LOCAL_KEYBOARD_BINDINGS.map((binding) => ({ ...binding }));
     duplicate[1]!.accelerator = duplicate[0]!.accelerator;

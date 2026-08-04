@@ -36,6 +36,12 @@ import {
   type NoteMediaReservation,
 } from "../notes/autosave";
 import { NoteActions } from "../notes/NoteActions";
+import { useShortcutSettings } from "../shortcuts/context";
+import {
+  DEFAULT_DELETE_NOTE_ACCELERATOR,
+  LocalShortcutCommand,
+  localBindingFor,
+} from "../shortcuts/localShortcuts";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
 import { useNoteDeletion } from "../notes/deletion";
 import { registerQuitParticipant } from "../lifecycle/quit";
@@ -150,6 +156,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const backend = useBackend();
   const announceDeletedNote = useNoteDeletion();
   const navigate = useNavigate();
+  const { localBindings } = useShortcutSettings();
   const editorRef = useRef<KoshBlockNoteEditorHandle>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const editorMediaPendingRef = useRef(false);
@@ -176,6 +183,9 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
   const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
+  const deleteShortcut =
+    localBindingFor(localBindings, LocalShortcutCommand.DeleteNote)?.accelerator ??
+    DEFAULT_DELETE_NOTE_ACCELERATOR;
 
   const updateFindState = useCallback((query: string, activeIndex = 0) => {
     const result = editorRef.current?.findInNote(query, activeIndex) ?? EMPTY_FIND_RESULT;
@@ -564,8 +574,11 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         canEditSources={
           snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
         }
-        canDelete={snapshot.baseRevisionId !== null}
+        canDelete={
+          snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
+        }
         deleteError={actionError}
+        deleteShortcut={deleteShortcut}
         deleting={deleting}
         disabled={mediaPending || lifecyclePreparing}
         onDelete={() => void deleteCurrentNote()}

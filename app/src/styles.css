@@ -143,8 +143,8 @@ button {
   top: 18px;
   left: 159px;
   display: grid;
-  width: 25px;
-  height: 25px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   place-items: center;
   border: 1px solid transparent;
@@ -152,6 +152,7 @@ button {
   color: var(--muted);
   background: transparent;
   cursor: pointer;
+  font-size: 18px;
   transition:
     left 150ms ease,
     color 130ms ease,
@@ -195,9 +196,9 @@ button {
 .app-brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   width: fit-content;
-  margin: 0 5px 24px;
+  margin: 0 5px 26px;
   color: var(--ink);
   font-size: 14px;
   text-decoration: none;
@@ -205,40 +206,40 @@ button {
 
 .app-brand > span {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   place-items: center;
 }
 
 .app-brand img {
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   object-fit: contain;
 }
 
 .app-brand strong {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 680;
   letter-spacing: -0.03em;
 }
 
 .app-sidebar nav {
   display: grid;
-  gap: 3px;
+  gap: 5px;
 }
 
 .app-nav-link {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   width: 100%;
-  min-height: 36px;
-  padding: 8px 10px;
+  min-height: 42px;
+  padding: 9px 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: var(--muted);
   background: transparent;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 620;
   text-align: left;
   text-decoration: none;
@@ -251,12 +252,12 @@ button {
 
 .app-nav-link > span {
   display: grid;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
   place-items: center;
   color: currentColor;
-  font-size: 14px;
+  font-size: 17px;
   font-weight: 450;
 }
 
@@ -310,16 +311,16 @@ button {
 
 .note-actions__button {
   display: inline-flex;
-  min-height: 29px;
+  min-height: 36px;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
+  gap: 7px;
+  padding: 7px 10px;
   border: 1px solid transparent;
   border-radius: 7px;
   color: var(--muted);
   background: transparent;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 620;
 }
 
@@ -333,12 +334,6 @@ button {
 .note-actions__button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-.note-actions__button--icon {
-  width: 29px;
-  justify-content: center;
-  padding: 4px;
 }
 
 .note-actions__button:disabled {
