@@ -489,7 +489,7 @@ test("find refreshes when visible attachment metadata hydrates", async ({ page }
   await findBar.getByRole("searchbox", { name: "Find in note" }).fill("hydrated-manual");
   await expect(findBar.getByRole("status")).toContainText("No matches");
 
-  await page.getByRole("button", { name: "Delete note" }).click();
+  await page.keyboard.press("Meta+Shift+Backspace");
   await page
     .getByRole("dialog", { name: "Delete this note?" })
     .getByRole("button", { name: "Delete note" })
