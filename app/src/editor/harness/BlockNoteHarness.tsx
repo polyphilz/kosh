@@ -19,6 +19,7 @@ import {
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
 import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from "react";
+import { insertInlineMathForEditing, KoshInlineMathInputExtension } from "../inlineMathInput";
 import { createBlockNoteMediaController } from "../mediaController";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "../mediaBlocks";
 import {
@@ -46,6 +47,7 @@ export function BlockNoteHarness({ theme }: BlockNoteHarnessProps) {
     schema: koshHarnessSchema,
     initialContent: initialHarnessBlocks,
     tabBehavior: "prefer-indent",
+    extensions: [KoshInlineMathInputExtension],
   });
   const mediaController = useMemo(() => createBlockNoteMediaController(editor), [editor]);
   const slashItems = useMemo(
@@ -401,9 +403,7 @@ function restrictedSlashItems(
       aliases: ["equation", "math"],
       onItemClick: () => {
         insertOrUpdateBlockForSlashMenu(editor, { type: "paragraph" });
-        editor.insertInlineContent([{ type: "inlineMath", props: { latex: "a_i" } }], {
-          updateSelection: true,
-        });
+        insertInlineMathForEditing(editor);
       },
     },
     mediaItem(editor, mediaController, "Image", "image", 0),
