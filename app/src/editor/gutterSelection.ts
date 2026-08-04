@@ -112,7 +112,7 @@ export function setGutterBlockSelection(
       KoshBlockRangeSelection.create(
         editor.prosemirrorView.state.doc,
         first.posBeforeNode,
-        last.posBeforeNode + last.node.nodeSize,
+        last.posBeforeNode + last.node.nodeSize - 1,
       ),
     )
     .setMeta(GUTTER_SELECTION_KEY, selectedBlockIds);
@@ -122,7 +122,9 @@ export function setGutterBlockSelection(
 }
 
 export function selectGutterBlockFromHandle(editor: KoshBlockNoteEditor, blockId: string): boolean {
-  const currentBlocks = editor.getSelection()?.blocks;
+  const selection = editor.prosemirrorView.state.selection;
+  const currentBlocks =
+    selection instanceof KoshBlockRangeSelection ? editor.getSelection()?.blocks : undefined;
   if (currentBlocks?.some((block) => block.id === blockId)) return true;
   return setGutterBlockSelection(editor, [blockId]);
 }

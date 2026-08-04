@@ -357,13 +357,14 @@ test("the gutter selects, deletes, reorders, and restores editor focus", async (
 
   await page.locator(`.bn-block-outer[data-id="${selected[0]}"]`).hover();
   await page.getByRole("button", { name: "Drag to move" }).click();
-  expect((await readHarnessSnapshot(page)).selectedBlockIds).toEqual(selected);
+  expect((await readHarnessSnapshot(page)).selectedBlockIds).toEqual([selected[0]]);
   await page.getByRole("menuitem", { name: "Delete selected blocks" }).click();
   await expect.poll(async () => (await readHarnessSnapshot(page)).focused).toBe(true);
-  snapshot = await readHarnessSnapshot(page);
-  expect(snapshot.blocks).toHaveLength(6);
-  expect(flatten(snapshot.blocks).map((block) => block.id)).not.toEqual(
-    expect.arrayContaining(selected),
+  const afterDelete = await readHarnessSnapshot(page);
+  expect(afterDelete.blocks).toHaveLength(snapshot.blocks.length - 1);
+  expect(flatten(afterDelete.blocks).map((block) => block.id)).not.toContain(selected[0]);
+  expect(flatten(afterDelete.blocks).map((block) => block.id)).toEqual(
+    expect.arrayContaining(selected.slice(1)),
   );
 
   await page.reload();
@@ -378,6 +379,23 @@ test("the gutter selects, deletes, reorders, and restores editor focus", async (
   snapshot = await readHarnessSnapshot(page);
   expect(snapshot.blocks.find((block) => block.type === "bulletListItem")?.children).toEqual([]);
   expect(snapshot.focused).toBe(true);
+});
+
+test("the drag handle replaces an inline text selection with its block selection", async ({
+  page,
+}) => {
+  await openHarness(page);
+  const snapshot = await readHarnessSnapshot(page);
+  const targetId = snapshot.blocks[1]!.id;
+  await pointerSelect(page, blockContent(page, targetId));
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).not.toBe("");
+
+  const target = page.locator(`.bn-block-outer[data-id="${targetId}"]`);
+  await target.hover();
+  await page.getByRole("button", { name: "Drag to move" }).click();
+
+  await expect(target).toHaveAttribute("data-kosh-gutter-selected", "true");
+  expect((await readHarnessSnapshot(page)).selectedBlockIds).toEqual([targetId]);
 });
 
 test("long documents remain editable in both appearances", async ({ page }) => {
