@@ -125,7 +125,10 @@ describe("restricted BlockNote Markdown adapter", () => {
       koshBlocksToMarkdown([
         {
           type: "paragraph",
-          content: [{ type: "inlineMath", props: { latex: "" } }],
+          content: [
+            { type: "inlineMath", props: { latex: "" } },
+            { type: "inlineMath", props: { latex: "   " } },
+          ],
         },
       ]),
     ).toBe("");

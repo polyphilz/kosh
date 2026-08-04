@@ -520,7 +520,7 @@ function inlineToMarkdown(content: unknown): PhrasingContent[] {
     if (value.type === "inlineMath") {
       const props = value.props as Record<string, unknown> | undefined;
       const latex = stringProp(props?.latex);
-      return latex ? [{ type: "inlineMath", value: latex }] : [];
+      return latex.trim() ? [{ type: "inlineMath", value: latex }] : [];
     }
     if (value.type === "link") {
       const href = externalHttpUrl(stringProp(value.href));
