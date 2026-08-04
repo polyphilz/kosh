@@ -272,6 +272,17 @@ function InlineMathSource({
         <span
           aria-label="Edit inline math"
           className="kosh-math-editor__popover"
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => {
+            event.stopPropagation();
+            const target = event.target as HTMLElement;
+            if (
+              target === event.currentTarget ||
+              target.classList.contains("kosh-math-editor__controls")
+            ) {
+              event.preventDefault();
+            }
+          }}
           ref={popoverRef}
           role="dialog"
           style={{ transform: `translateX(${popoverOffset}px)` }}

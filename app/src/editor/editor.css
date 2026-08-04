@@ -355,7 +355,6 @@
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
-  pointer-events: none;
 }
 
 .kosh-math-editor__controls {
@@ -363,13 +362,6 @@
   gap: 8px;
   align-items: center;
   padding: 10px;
-  pointer-events: none;
-}
-
-.kosh-math-editor__source,
-.kosh-math-editor__done,
-.kosh-math-editor__error {
-  pointer-events: auto;
 }
 
 .kosh-math-editor--inline .kosh-math-editor__source {
