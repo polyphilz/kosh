@@ -84,7 +84,7 @@ try {
   );
 
   console.info(
-    `Packaged runtime smoke passed: the release React roots captured a cited canary through IPC, resolved it through exact search on both surfaces, and preserved its identity across restart in ${dataDirectory} without a semantic model.`,
+    `Packaged runtime smoke passed: the release React root captured a cited canary through IPC, resolved it through exact search in the main webview, and preserved its identity across restart in ${dataDirectory} without a semantic model.`,
   );
 } finally {
   if (active) {

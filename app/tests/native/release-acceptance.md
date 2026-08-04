@@ -20,7 +20,7 @@ Use unique names in place of the examples.
 
 Before the visible walkthrough, the same exact package can run its commit-bound
 startup, schema, React-root, IPC, lexical-search, and citation preflight
-with both windows hidden:
+with the main window hidden:
 
 ```sh
 pnpm release:acceptance prepare-clean preflight-YYYYMMDD
