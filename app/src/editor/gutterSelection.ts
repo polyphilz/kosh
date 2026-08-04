@@ -54,6 +54,8 @@ class KoshBlockRangeSelection extends Selection {
   }
 }
 
+KoshBlockRangeSelection.prototype.visible = false;
+
 export const KoshGutterSelectionExtension = createExtension({
   key: "koshGutterSelection",
   prosemirrorPlugins: [
@@ -117,6 +119,20 @@ export function setGutterBlockSelection(
   editor.prosemirrorView.dispatch(transaction);
   editor.focus();
   return true;
+}
+
+export function selectGutterBlockFromHandle(editor: KoshBlockNoteEditor, blockId: string): boolean {
+  const currentBlockIds = getGutterBlockSelectionIds(editor);
+  if (currentBlockIds?.includes(blockId)) return true;
+  return setGutterBlockSelection(editor, [blockId]);
+}
+
+export function getGutterBlockSelectionIds(
+  editor: KoshBlockNoteEditor,
+): readonly string[] | undefined {
+  const state = editor.prosemirrorView.state;
+  if (!(state.selection instanceof KoshBlockRangeSelection)) return undefined;
+  return [...(GUTTER_SELECTION_KEY.getState(state) ?? EMPTY_GUTTER_SELECTION)];
 }
 
 export function clearGutterBlockSelection(editor: KoshBlockNoteEditor): void {

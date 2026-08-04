@@ -2,6 +2,7 @@ import type { KoshHarnessEditor, KoshHarnessPartialBlock } from "./schema";
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "../markdownAdapter";
 import type { BlockNoteMediaController } from "../mediaController";
 import type { SelectedAttachmentRecord } from "../../backend/contracts";
+import { getGutterBlockSelectionIds } from "../gutterSelection";
 
 export interface BlockNoteHarnessSnapshot {
   blocks: unknown[];
@@ -172,7 +173,11 @@ export function installHarnessBridge(
       return {
         blocks: structuredClone(editor.document),
         focused: editor.domElement?.contains(document.activeElement) ?? false,
-        selectedBlockIds: editor.getSelection()?.blocks.map((block) => block.id) ?? [],
+        selectedBlockIds: [
+          ...(getGutterBlockSelectionIds(editor) ??
+            editor.getSelection()?.blocks.map((block) => block.id) ??
+            []),
+        ],
       };
     },
   };

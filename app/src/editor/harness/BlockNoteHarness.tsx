@@ -19,6 +19,11 @@ import {
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
 import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  getGutterBlockSelectionIds,
+  KoshGutterSelectionExtension,
+  selectGutterBlockFromHandle,
+} from "../gutterSelection";
 import { insertInlineMathForEditing, KoshInlineMathInputExtension } from "../inlineMathInput";
 import { createBlockNoteMediaController } from "../mediaController";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "../mediaBlocks";
@@ -47,7 +52,7 @@ export function BlockNoteHarness({ theme }: BlockNoteHarnessProps) {
     schema: koshHarnessSchema,
     initialContent: initialHarnessBlocks,
     tabBehavior: "prefer-indent",
-    extensions: [KoshInlineMathInputExtension],
+    extensions: [KoshGutterSelectionExtension, KoshInlineMathInputExtension],
   });
   const mediaController = useMemo(() => createBlockNoteMediaController(editor), [editor]);
   const slashItems = useMemo(
@@ -281,7 +286,11 @@ function KoshRemoveBlockItem() {
     <Components.Generic.Menu.Item
       className="bn-menu-item"
       onClick={() => {
-        const selectedBlocks = editor.getSelection()?.blocks;
+        const selectedBlocks =
+          getGutterBlockSelectionIds(editor)?.flatMap((id) => {
+            const block = editor.getBlock(id);
+            return block ? [block] : [];
+          }) ?? editor.getSelection()?.blocks;
         const blocksToRemove =
           selectedBlocks?.some((block) => block.id === hoveredBlock.id) === true
             ? selectedBlocks
@@ -366,6 +375,7 @@ function KoshHarnessDragHandleButton() {
             </span>
           }
           label="Drag to move"
+          onClick={() => selectGutterBlockFromHandle(editor, hoveredBlock.id)}
           onDragEnd={() => {
             sideMenu.blockDragEnd();
             requestAnimationFrame(() => {

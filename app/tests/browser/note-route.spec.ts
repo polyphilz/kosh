@@ -203,14 +203,28 @@ test("the page gutter selects contiguous blocks beside the add and move controls
       { x: railX, y: firstBox.y + firstBox.height / 2 },
     ),
   ).toBe("note-gutter-selection-rail");
+  const selected = editor.locator('[data-kosh-gutter-selected="true"]');
 
   const belowBlocksY = lastBox.y + lastBox.height + 80;
   expect(belowBlocksY).toBeLessThan(railBox.y + railBox.height);
   await page.mouse.click(railX, belowBlocksY);
-  await expect(editor.locator('[data-kosh-gutter-selected="true"]')).toHaveCount(0);
+  await expect(selected).toHaveCount(0);
 
+  await drag.click();
+  await expect(selected).toHaveCount(1);
+  await expect(selected.first()).toContainText("First gutter block.");
+  await expect(page.getByRole("menuitem", { name: "Move block up" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await blocks.last().locator(".bn-inline-content").click();
+  await expect(selected).toHaveCount(0);
+
+  await page.mouse.click(railX, firstBox.y + firstBox.height / 2);
+  await expect(page.getByTestId("note-gutter-selection-marquee")).toBeHidden();
+  await expect(selected).toHaveCount(0);
   await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
   await page.mouse.down();
+  await expect(page.getByTestId("note-gutter-selection-marquee")).toBeHidden();
+  await expect(selected).toHaveCount(0);
   const selectionX = thirdBox.x + Math.min(250, thirdBox.width - 2);
   const thirdY = thirdBox.y + thirdBox.height / 2;
   await page.mouse.move(selectionX, thirdY, { steps: 12 });
@@ -221,8 +235,13 @@ test("the page gutter selects contiguous blocks beside the add and move controls
   if (!marqueeBox) throw new Error("the gutter marquee is not rendered");
   expect(marqueeBox.x).toBeLessThan(firstBox.x);
   expect(marqueeBox.x + marqueeBox.width).toBeGreaterThan(firstBox.x);
+  const marqueeStyle = await marquee.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { backgroundColor: style.backgroundColor, borderWidth: style.borderTopWidth };
+  });
+  expect(marqueeStyle.borderWidth).toBe("0px");
+  expect(marqueeStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
 
-  const selected = editor.locator('[data-kosh-gutter-selected="true"]');
   await expect(selected).toHaveCount(3);
   await page.mouse.move(selectionX, secondBox.y + secondBox.height / 2, { steps: 8 });
   await expect(selected).toHaveCount(2);
@@ -241,6 +260,21 @@ test("the page gutter selects contiguous blocks beside the add and move controls
   await expect(selected.nth(0)).toContainText("First gutter block.");
   await expect(selected.nth(1)).toContainText("Second gutter block.");
   await expect(selected.nth(2)).toContainText("∑");
+  await expect(editor).toHaveClass(/ProseMirror-hideselection/u);
+  const selectedStyle = await selected
+    .first()
+    .locator(":scope > .bn-block > .bn-block-content")
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        backgroundImage: style.backgroundImage,
+        gap: style.getPropertyValue("--kosh-block-selection-gap").trim(),
+        textSelectionBackground: getComputedStyle(element, "::selection").backgroundColor,
+      };
+    });
+  expect(selectedStyle.backgroundImage).not.toBe("none");
+  expect(selectedStyle.gap).toBe("2px");
+  expect(selectedStyle.textSelectionBackground).toBe("rgba(0, 0, 0, 0)");
   const selectionText = await page.evaluate(() => window.getSelection()?.toString() ?? "");
   expect(selectionText).toContain("First gutter block.");
   expect(selectionText).toContain("Second gutter block.");
@@ -315,7 +349,7 @@ test("a thin gutter marquee highlights a parent block and its nested descendants
   const nestedContent = parent.locator(":scope > .bn-block > .bn-block-group .bn-block-content");
   await expect(nestedContent).toHaveCount(2);
   const nestedBackgroundsBefore = await nestedContent.evaluateAll((elements) =>
-    elements.map((element) => getComputedStyle(element).backgroundColor),
+    elements.map((element) => getComputedStyle(element).backgroundImage),
   );
 
   const railBox = await page.getByTestId("note-gutter-selection-rail").boundingBox();
@@ -331,10 +365,10 @@ test("a thin gutter marquee highlights a parent block and its nested descendants
   await expect
     .poll(async () => {
       const parentBackground = await parentContent.evaluate(
-        (element) => getComputedStyle(element).backgroundColor,
+        (element) => getComputedStyle(element).backgroundImage,
       );
       const nestedBackgrounds = await nestedContent.evaluateAll((elements) =>
-        elements.map((element) => getComputedStyle(element).backgroundColor),
+        elements.map((element) => getComputedStyle(element).backgroundImage),
       );
       return nestedBackgrounds.every(
         (background, index) =>
@@ -343,6 +377,8 @@ test("a thin gutter marquee highlights a parent block and its nested descendants
     })
     .toBe(true);
   await page.mouse.up();
+
+  await expect(editor).toHaveClass(/ProseMirror-hideselection/u);
 
   const selectionText = await page.evaluate(() => window.getSelection()?.toString() ?? "");
   expect(selectionText).toContain("Parent item.");
