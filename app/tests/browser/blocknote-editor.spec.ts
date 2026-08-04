@@ -146,6 +146,18 @@ test("inline math supports paired-dollar input and opens directly from the slash
     .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown()))
     .toContain("Energy $E = mc^2$");
 
+  const undoBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  await page.keyboard.type("$$x$");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("$");
+  await expect(page.getByRole("button", { name: "Edit inline math: x" })).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect
+    .poll(async () => blockText(await readHarnessSnapshot(page), undoBlockId))
+    .toBe("$$x$$");
+
   const spacedBlockId = await page.evaluate(() =>
     window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
   );

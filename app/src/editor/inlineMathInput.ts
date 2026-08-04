@@ -1,4 +1,5 @@
 import { createExtension } from "@blocknote/core";
+import { closeHistory } from "prosemirror-history";
 import { Plugin, TextSelection } from "prosemirror-state";
 import type { KoshBlockNoteEditor } from "./schema";
 
@@ -25,7 +26,11 @@ export const KoshInlineMathInputExtension = createExtension({
 
           const matchStart = from - (match[0].length - text.length);
           const node = inlineMath.create({ latex });
-          const transaction = view.state.tr.replaceWith(matchStart, to, node);
+          view.dispatch(view.state.tr.insertText(text, from, to));
+
+          const transaction = closeHistory(
+            view.state.tr.replaceWith(matchStart, to + text.length, node),
+          );
           transaction.setSelection(
             TextSelection.near(transaction.doc.resolve(matchStart + node.nodeSize)),
           );
