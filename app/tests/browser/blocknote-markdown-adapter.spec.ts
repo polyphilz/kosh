@@ -22,10 +22,39 @@ test("the production adapter edits math source and preserves canonical Markdown"
     (markdown) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(markdown),
     authoredMarkdown,
   );
-  await expect(page.getByLabel("Inline math source")).toHaveValue("a_i");
+  await expect(page.getByLabel("Inline math source")).toHaveCount(0);
   await expect(page.getByLabel("Display math source")).toHaveValue("\\sum_i a_i");
 
-  await page.getByLabel("Inline math source").fill("b^2");
+  await page.getByRole("button", { name: "Edit inline math: a_i" }).click();
+  const inlineSource = page.getByLabel("Inline math source");
+  await expect(inlineSource).toBeFocused();
+  await inlineSource.fill("b^");
+  await expect(page.getByRole("alert")).toContainText("Invalid equation:");
+  await expect(page.getByRole("button", { name: /Done/u })).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Edit inline math: Invalid equation" }),
+  ).toBeVisible();
+
+  await inlineSource.fill("b^2");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: /Done/u }).click();
+  await expect(inlineSource).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit inline math: b^2" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
+  await page.getByRole("button", { name: "Edit inline math: b^2" }).click();
+  await inlineSource.press("Escape");
+  await expect(inlineSource).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
+  await page.getByRole("button", { name: "Edit inline math: b^2" }).click();
+  await inlineSource.press("Enter");
+  await expect(inlineSource).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
   await page.getByLabel("Display math source").fill("\\begin{aligned}\nx &= 1\n\\end{aligned}");
   await expect.poll(() => editorMarkdown(page)).toContain("Inline $b^2$ remains editable.");
   await expect
@@ -34,7 +63,10 @@ test("the production adapter edits math source and preserves canonical Markdown"
   await expect(page.locator(".kosh-math-editor__preview .katex")).toHaveCount(2);
 
   const code = page.locator('.bn-block-content[data-content-type="codeBlock"]');
+  await page.getByRole("button", { name: "Edit inline math: b^2" }).click();
+  await expect(inlineSource).toBeVisible();
   await code.click();
+  await expect(inlineSource).toHaveCount(0);
   await page.keyboard.press("Tab");
   await expect
     .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
@@ -52,6 +84,78 @@ test("math previews bound user-controlled dimensions", async ({ page }) => {
   expect(
     await page.locator(".kosh-math-editor__preview").evaluate((preview) => preview.scrollWidth),
   ).toBeLessThan(1_000);
+});
+
+test("inline math editing stays within the viewport at the right edge", async ({ page }) => {
+  await page.setViewportSize({ width: 520, height: 700 });
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Right edge $x$"));
+  await page.locator(".kosh-math-editor--inline").evaluate((inlineMath) => {
+    Object.assign((inlineMath as HTMLElement).style, {
+      left: "auto",
+      position: "fixed",
+      right: "8px",
+      top: "120px",
+    });
+  });
+
+  await page.getByRole("button", { name: "Edit inline math: x" }).click();
+  const popover = page.getByRole("dialog", { name: "Edit inline math" });
+  const bounds = await popover.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(15);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(505);
+  const source = page.getByLabel("Inline math source");
+  await expect(source).toBeVisible();
+  await expect(page.getByRole("button", { name: /Done/u })).toBeVisible();
+
+  await source.fill("\\sum_{i=0}^{100000} \\frac{x_i^2 + y_i^2}{z_i^2}");
+  const reflowedBounds = await popover.boundingBox();
+  expect(reflowedBounds).not.toBeNull();
+  expect(reflowedBounds!.x).toBeGreaterThanOrEqual(15);
+  expect(reflowedBounds!.x + reflowedBounds!.width).toBeLessThanOrEqual(505);
+});
+
+test("closing inline math restores the caret after the equation", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Before $a$ after"));
+  await page.locator(".bn-inline-content").click({ position: { x: 2, y: 10 } });
+
+  const equation = page.getByRole("button", { name: "Edit inline math: a" });
+  await equation.focus();
+  await page.keyboard.press("Enter");
+  await page.getByLabel("Inline math source").fill("b");
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
+  await page.keyboard.type("!");
+
+  await expect.poll(() => editorMarkdown(page)).toContain("Before $b$! after");
+});
+
+test("keyboard focus closes an earlier inline math editor before opening another", async ({
+  page,
+}) => {
+  await openHarness(page);
+  await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("First $a$ then second $b$"),
+  );
+
+  const firstEquation = page.getByRole("button", { name: "Edit inline math: a" });
+  const secondEquation = page.getByRole("button", { name: "Edit inline math: b" });
+  await firstEquation.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Inline math source")).toBeFocused();
+
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(secondEquation).toBeFocused();
+  await expect(page.getByLabel("Inline math source")).toHaveCount(0);
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByRole("dialog", { name: "Edit inline math" })).toHaveCount(1);
+  await expect(page.getByLabel("Inline math source")).toHaveValue("b");
 });
 
 test("rich paste cannot bypass the restricted schema or persist active content", async ({

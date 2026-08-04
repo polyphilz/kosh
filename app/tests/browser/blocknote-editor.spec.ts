@@ -77,6 +77,8 @@ test("the editor exposes only Kosh's restricted BlockNote schema", async ({ page
   await page.keyboard.type("/");
   const slashMenu = page.getByRole("listbox");
   const options = slashMenu.getByRole("option");
+  await expect(slashMenu.getByText("Kosh blocks", { exact: true })).toHaveCount(0);
+  await expect(slashMenu.getByText("Kosh media", { exact: true })).toHaveCount(0);
   await expect(options).toHaveText([
     "Paragraph",
     "Heading 1",
@@ -95,6 +97,24 @@ test("the editor exposes only Kosh's restricted BlockNote schema", async ({ page
   await expect
     .poll(async () => (await readHarnessSnapshot(page)).blocks.at(-1)?.type)
     .toBe("displayMath");
+});
+
+test("slash menu rows keep one height while filtering", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph());
+  await page.keyboard.type("/");
+
+  const options = page.getByRole("listbox").getByRole("option");
+  await expect(options).toHaveCount(12);
+  const fullMenuHeights = await options.evaluateAll((rows) =>
+    rows.map((row) => row.getBoundingClientRect().height),
+  );
+  expect(new Set(fullMenuHeights)).toEqual(new Set([52]));
+
+  await page.keyboard.type("pa");
+  await expect(options).toHaveCount(1);
+  await expect(options).toHaveText(["Paragraph"]);
+  expect(await options.first().evaluate((row) => row.getBoundingClientRect().height)).toBe(52);
 });
 
 test("real keyboard input covers undo, redo, IME, and list nesting", async ({ page }) => {

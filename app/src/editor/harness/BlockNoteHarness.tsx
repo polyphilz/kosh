@@ -18,7 +18,7 @@ import {
   useExtensionState,
 } from "@blocknote/react";
 import { MantineProvider } from "@mantine/core";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, type PointerEvent as ReactPointerEvent } from "react";
 import { createBlockNoteMediaController } from "../mediaController";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "../mediaBlocks";
 import {
@@ -53,6 +53,23 @@ export function BlockNoteHarness({ theme }: BlockNoteHarnessProps) {
     [editor, mediaController],
   );
   const mediaHarness = useMemo(() => createHarnessMediaHarness(), []);
+  const sideMenuFloatingUIOptions = useMemo(
+    () => ({
+      elementProps: {
+        onPointerEnter: () => editor.getExtension(SideMenuExtension)?.freezeMenu(),
+        onPointerLeave: (event: ReactPointerEvent<HTMLDivElement>) => {
+          if (
+            event.relatedTarget instanceof Element &&
+            event.relatedTarget.closest('[role="menu"]')
+          ) {
+            return;
+          }
+          editor.getExtension(SideMenuExtension)?.unfreezeMenu();
+        },
+      },
+    }),
+    [editor],
+  );
 
   useEffect(
     () =>
@@ -109,7 +126,10 @@ export function BlockNoteHarness({ theme }: BlockNoteHarnessProps) {
               getItems={async (query) => filterSuggestionItems(slashItems, query)}
               triggerCharacter="/"
             />
-            <SideMenuController sideMenu={KoshHarnessSideMenu} />
+            <SideMenuController
+              floatingUIOptions={sideMenuFloatingUIOptions}
+              sideMenu={KoshHarnessSideMenu}
+            />
           </BlockNoteView>
         </main>
       </KoshMediaActionsProvider>
@@ -348,7 +368,6 @@ function restrictedSlashItems(
     {
       title: "Inline math",
       aliases: ["equation", "math"],
-      group: "Kosh blocks",
       onItemClick: () => {
         insertOrUpdateBlockForSlashMenu(editor, { type: "paragraph" });
         editor.insertInlineContent([{ type: "inlineMath", props: { latex: "a_i" } }], {
@@ -372,7 +391,6 @@ function mediaItem(
   return {
     title,
     aliases: [alias, "upload"],
-    group: "Kosh media",
     onItemClick: () => {
       insertOrUpdateBlockForSlashMenu(editor, { type: "paragraph" });
       void controller.begin(`Adding ${title.toLowerCase()}`, async () => {
@@ -393,7 +411,6 @@ function blockItem(
   return {
     title,
     aliases,
-    group: "Kosh blocks",
     onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, block),
   };
 }

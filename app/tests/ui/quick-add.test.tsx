@@ -82,6 +82,25 @@ describe("global quick add", () => {
     expect(search.results[0]?.note.id).toBe(note.id);
   });
 
+  it("keeps Command-Enter available while inline math is being edited", async () => {
+    const user = userEvent.setup();
+    const backend = new FakeBackend();
+    const native = createNative();
+    renderQuickAdd(backend, native.controller);
+
+    await chooseSlashItem(user, "Inline math");
+    await user.click(await screen.findByRole("button", { name: "Edit inline math: a_i" }));
+    const source = await screen.findByLabelText("Inline math source");
+    await user.clear(source);
+    await user.type(source, "x^2");
+    fireEvent.keyDown(source, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(native.dismiss).toHaveBeenCalledWith(QuickAddDismissAction.Dismiss));
+    expect(
+      (await backend.listNotesForTest({ cursor: null, limit: 10, scope: "ACTIVE" })).items,
+    ).toHaveLength(1);
+  });
+
   it("keeps a failed checkpoint visible and retries the same native action", async () => {
     const user = userEvent.setup();
     const backend = new FakeBackend();
@@ -601,7 +620,7 @@ async function setEditorText(user: ReturnType<typeof userEvent.setup>, value: st
 }
 
 async function chooseSlashItem(user: ReturnType<typeof userEvent.setup>, name: string) {
-  const textbox = screen.getByRole("textbox", { name: "Quick note" });
+  const textbox = await screen.findByRole("textbox", { name: "Quick note" });
   const insertionPoint = textbox
     .querySelectorAll(".bn-inline-content")
     .item(textbox.querySelectorAll(".bn-inline-content").length - 1);

@@ -13,8 +13,16 @@ body {
 
 .kosh-editor-harness {
   --accent: #d97745;
+  --accent-soft: rgba(217, 119, 69, 0.13);
+  --danger: #a63232;
+  --font-family-app: Inter, system-ui, sans-serif;
   --harness-bg: #f6f4ef;
   --harness-ink: #24201c;
+  --ink: #24201c;
+  --line: rgba(36, 32, 28, 0.14);
+  --line-strong: rgba(36, 32, 28, 0.25);
+  --surface-raised: #fff;
+  --surface-solid: #fbfaf8;
   min-height: 100vh;
   padding: 32px max(48px, calc((100vw - 900px) / 2));
   color: var(--harness-ink);
@@ -22,8 +30,14 @@ body {
 }
 
 .kosh-editor-harness[data-theme="dark"] {
+  --danger: #e17878;
   --harness-bg: #1d1a18;
   --harness-ink: #f0ece5;
+  --ink: #f0ece5;
+  --line: rgba(255, 255, 255, 0.13);
+  --line-strong: rgba(255, 255, 255, 0.22);
+  --surface-raised: #2b2825;
+  --surface-solid: #242220;
 }
 
 .kosh-editor-harness__label {
