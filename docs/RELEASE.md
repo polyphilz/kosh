@@ -125,7 +125,7 @@ WAL/integrity, and operation without a semantic model.
 ## 3. Run release acceptance
 
 The checklist's `launch-hidden` preflight can verify the exact packaged commit,
-schema, both rendered webviews, IPC, restart, lexical search, and citations
+schema, the rendered main webview, IPC, restart, lexical search, and citations
 without foregrounding Kosh. It is useful while the Mac is in active use, but it
 does not replace the checklist's visible menu, shortcut, file-dialog, focus,
 or `/Applications` observations.
