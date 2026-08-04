@@ -4,7 +4,6 @@ import {
   citationCopyText,
   citationLocation,
   highlightedSegments,
-  sourceDomain,
 } from "../../src/search/presentation";
 
 describe("search presentation", () => {
@@ -62,13 +61,6 @@ describe("search presentation", () => {
         mediaType: "application/pdf",
         deleted: false,
       },
-      sources: [
-        {
-          id: "source-1",
-          label: "Publisher",
-          url: "https://www.example.com/paper#page=7",
-        },
-      ],
     };
 
     expect(citationLocation(citation)).toBe("Chapter › Evidence · page 7");
@@ -77,12 +69,10 @@ describe("search presentation", () => {
         "paper.pdf",
         "Chapter › Evidence · page 7",
         "Revision 3 · Historical",
-        "Publisher · example.com",
         "Kosh passage: passage-1",
         "Supported text.",
       ].join("\n"),
     );
-    expect(sourceDomain("not a URL")).toBeNull();
   });
 
   it("preserves whitespace-sensitive excerpts in copied citations", () => {
@@ -109,7 +99,6 @@ describe("search presentation", () => {
         deleted: false,
       },
       attachment: null,
-      sources: [],
     };
 
     expect(citationCopyText(citation)).toBe(

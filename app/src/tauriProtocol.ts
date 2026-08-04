@@ -31,7 +31,6 @@ export const TauriCommand = {
   MediaLimits: "media_limits",
   OpenAttachmentExternal: "open_attachment_external",
   OpenPdfExternal: "open_pdf_external",
-  OpenSourceUrl: "open_source_url",
   PrepareUpdateRelaunch: "prepare_update_relaunch",
   ReserveWorkingCopyForMedia: "reserve_working_copy_for_media",
   PassageEmbeddingIndexStatus: "passage_embedding_index_status",

@@ -9,8 +9,8 @@ use std::path::Path;
 
 pub use fixture::{
     EvaluationAttachment, EvaluationLocator, EvaluationOwnerKind, EvaluationPassage,
-    EvaluationQuery, EvaluationRegion, EvaluationSource, ExpectedCitation, QueryCategory,
-    RelevanceFixture, RelevanceJudgment, RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
+    EvaluationQuery, EvaluationRegion, ExpectedCitation, QueryCategory, RelevanceFixture,
+    RelevanceJudgment, RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
 };
 pub use hybrid::{
     generate_hybrid_vector_fixture, validate_hybrid_vector_fixture, HybridFixtureRetriever,
@@ -34,7 +34,7 @@ pub use report::{
 pub use scale::{
     generate_scale_corpus, measure_scale_generation, AttachmentExtractionPlaceholder,
     RuntimeMetadata, ScaleAttachment, ScaleCorpus, ScaleGenerationOptions, ScaleLengthClass,
-    ScalePerformanceReport, ScaleSource, ScaleStats, ScaleTidbit, SCALE_SCHEMA_VERSION,
+    ScalePerformanceReport, ScaleStats, ScaleTidbit, SCALE_SCHEMA_VERSION,
 };
 
 #[derive(Debug, thiserror::Error)]

@@ -8,7 +8,7 @@ use crate::database::search::{
 };
 use crate::database::{
     Database, DatabaseClient, DatabasePaths, LexicalBenchmarkAttachmentWrite, SearchPassagesInput,
-    SourceDraft, TidbitDraft,
+    TidbitDraft,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -105,18 +105,15 @@ pub(crate) fn fixture_candidate_ranks(
     connection
         .execute_batch(
             "CREATE VIRTUAL TABLE fixture_word USING fts5(
-                heading_context, body, source_labels, source_domains,
-                attachment_names, extracted_text,
+                heading_context, body, attachment_names, extracted_text,
                 tokenize = 'unicode61 remove_diacritics 2 tokenchars ''_'''
              );
              CREATE VIRTUAL TABLE fixture_trigram USING fts5(
-                heading_context, body, source_labels, source_domains,
-                attachment_names, extracted_text,
+                heading_context, body, attachment_names, extracted_text,
                 tokenize = 'trigram'
              );
              CREATE VIRTUAL TABLE fixture_short USING fts5(
-                heading_context, body, source_labels, source_domains,
-                attachment_names, extracted_text,
+                heading_context, body, attachment_names, extracted_text,
                 tokenize = 'unicode61'
              );",
         )
@@ -128,17 +125,14 @@ pub(crate) fn fixture_candidate_ranks(
             rowid,
             normalize_for_search(&fields[&SearchField::HeadingContext]),
             normalize_for_search(&fields[&SearchField::Body]),
-            normalize_for_search(&fields[&SearchField::SourceLabel]),
-            normalize_for_search(&fields[&SearchField::SourceDomain]),
             normalize_for_search(&fields[&SearchField::AttachmentName]),
             normalize_for_search(&fields[&SearchField::ExtractedText]),
         ];
         connection
             .execute(
                 "INSERT INTO fixture_word(
-                    rowid, heading_context, body, source_labels,
-                    source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rowid, heading_context, body, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5)",
                 values,
             )
             .map_err(|error| error.to_string())?;
@@ -146,26 +140,22 @@ pub(crate) fn fixture_candidate_ranks(
             rowid,
             short_grams_for_search(&fields[&SearchField::HeadingContext]),
             short_grams_for_search(&fields[&SearchField::Body]),
-            short_grams_for_search(&fields[&SearchField::SourceLabel]),
-            short_grams_for_search(&fields[&SearchField::SourceDomain]),
             short_grams_for_search(&fields[&SearchField::AttachmentName]),
             short_grams_for_search(&fields[&SearchField::ExtractedText]),
         ];
         connection
             .execute(
                 "INSERT INTO fixture_short(
-                    rowid, heading_context, body, source_labels,
-                    source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rowid, heading_context, body, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5)",
                 short_values,
             )
             .map_err(|error| error.to_string())?;
         connection
             .execute(
                 "INSERT INTO fixture_trigram(
-                    rowid, heading_context, body, source_labels,
-                    source_domains, attachment_names, extracted_text
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rowid, heading_context, body, attachment_names, extracted_text
+                 ) VALUES(?1, ?2, ?3, ?4, ?5)",
                 values,
             )
             .map_err(|error| error.to_string())?;
@@ -257,24 +247,6 @@ pub(crate) fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchFiel
             } else {
                 String::new()
             },
-        ),
-        (
-            SearchField::SourceLabel,
-            passage
-                .sources
-                .iter()
-                .map(|source| source.label.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        (
-            SearchField::SourceDomain,
-            passage
-                .sources
-                .iter()
-                .map(|source| source.domain.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
         ),
         (
             SearchField::AttachmentName,
@@ -467,28 +439,9 @@ pub fn benchmark_scale_lexical(
             .map_err(|error| benchmark_error("convert tidbit timestamp", error))?;
         let input = TidbitDraft {
             body_markdown: tidbit.body_markdown.clone(),
-            sources: tidbit
-                .sources
-                .iter()
-                .map(|source| SourceDraft {
-                    label: Some(source.label.clone()),
-                    url: Some(source.url.clone()),
-                })
-                .collect(),
         };
-        let source_ids = input
-            .sources
-            .iter()
-            .map(|_| Uuid::now_v7().to_string())
-            .collect();
         client
-            .create_tidbit_with_ids(
-                input,
-                now_ms,
-                tidbit.id.clone(),
-                tidbit.revision_id.clone(),
-                source_ids,
-            )
+            .create_tidbit_with_ids(input, now_ms, tidbit.id.clone(), tidbit.revision_id.clone())
             .map_err(|error| benchmark_error("index production tidbit", error))?;
     }
     let attachment_writes = corpus

@@ -20,8 +20,8 @@ math, images, PDFs, and files.
   and leaves a visible retry state.
 
 Search results are passage-level citations. Opening one navigates to its note,
-focuses the matching block or attachment, and preserves the source URL when the
-note has one. Kosh stores no query or search-history feature.
+focuses the matching block or attachment, and preserves exact revision or
+attachment provenance. Kosh stores no query or search-history feature.
 
 ## Development
 
@@ -37,9 +37,10 @@ pnpm tauri dev
 ```
 
 Always start the development app through `pnpm tauri dev`. That script sets
-`KOSH_DATA_DIR` to `app/.data/note-first-v2`, keeping test notes away from
+`KOSH_DATA_DIR` to `app/.data/note-first-v3`, keeping test notes away from
 Tauri's release app-data directory. The note-first hard cutover leaves the
-former `app/.data/local` and `app/.data/note-first-v1` profiles untouched because
+former `app/.data/local`, `app/.data/note-first-v1`, and
+`app/.data/note-first-v2` profiles untouched because
 they are incompatible with the consolidated schema. The Rust backend honors this
 override only in debug builds;
 release builds always use the platform app-data directory.
@@ -94,7 +95,7 @@ ignored report.
 Kosh's v1 target is a 10,000-note local library. The release-mode lexical
 gate must keep interactive query latency at or below 100 ms p95 on its
 deterministic 200-query workload. Each working copy supports up to 32 attachments;
-each direct attachment, source image, or PDF may be up to 32 MiB. PDFs may
+each direct attachment, image, or PDF may be up to 32 MiB. PDFs may
 contain up to 2,000 pages, with OCR bounded to 128 image-only pages. Searchable
 text extraction reads at most 4 MiB and 5,000 passages per attachment.
 
@@ -105,8 +106,8 @@ reproducible hardening report command.
 ## Search and citations
 
 The native backend projects current citation passages into separate word and
-trigram FTS5 indexes. Search covers heading context, passage body,
-source labels and URLs/domains, attachment filenames, and extracted text.
+trigram FTS5 indexes. Search covers heading context, passage body, attachment
+filenames, and extracted text. URLs pasted into notes are indexed as note text.
 Queries are parsed as literal data before FTS execution; quoted phrases and
 safe internal literal matching never forward raw user syntax into `MATCH`.
 
@@ -180,7 +181,7 @@ production objects to a fixed per-backup-set namespace. Its fake and live
 object-store probes are documented in
 [app/tests/native/offsite-backup-foundation.md](app/tests/native/offsite-backup-foundation.md).
 
-Enabled backups durably reconcile referenced source and preview blobs through
+Enabled backups durably reconcile referenced originals and preview blobs through
 a create-only background uploader that never performs network I/O on the
 authored database writer. Crash, offline retry, and metadata-verification
 contracts are documented in

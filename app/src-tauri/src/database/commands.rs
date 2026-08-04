@@ -226,24 +226,13 @@ pub(crate) async fn checkpoint_working_copy(
     input: CheckpointWorkingCopyInput,
 ) -> CommandResult<WorkingCopyCheckpointResult> {
     let client = state.database_client();
-    let note_id = input.note_id.clone();
-    let working_copy = run_writer({
-        let client = client.clone();
-        move || client.load_working_copy(note_id)
-    })
-    .await?
-    .ok_or_else(|| {
-        CommandError::from(DatabaseError::NotFound {
-            entity: "working copy",
-            id: input.note_id.clone(),
-        })
-    })?;
-    let mut ids = state.next_ids(working_copy.sources.len() + 1).into_iter();
     let write = CheckpointWorkingCopyWrite {
         input,
         now_ms: state.now_ms(),
-        revision_id: ids.next().expect("requested working-copy revision ID"),
-        source_ids: ids.collect(),
+        revision_id: state
+            .next_ids(1)
+            .pop()
+            .expect("requested working-copy revision ID"),
     };
     run_writer(move || client.checkpoint_working_copy(write)).await
 }

@@ -30,7 +30,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const DEVELOPMENT_FRONTEND_ORIGIN: &str = "http://127.0.0.1:1420";
 const RELEASE_FRONTEND_ORIGIN: &str = "tauri://localhost";
 const CANARY: &str = "koshstartupcanaryv1";
-const CANARY_SOURCE_URL: &str = "https://example.invalid/kosh-progressive-operability";
+const CANARY_URL: &str = "https://example.invalid/kosh-progressive-operability";
 const REQUIRED_SURFACES: [&str; 1] = ["main"];
 const BUILD_GIT_SHA: &str = env!("KOSH_BUILD_GIT_SHA");
 static CAPTURE_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -49,7 +49,7 @@ struct CanaryEvidence {
     tidbit_id: String,
     revision_id: String,
     passage_id: String,
-    source_url: String,
+    canary_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,7 +61,7 @@ struct WebviewCanaryEvidence {
     resolved_passage_id: String,
     revision_id: String,
     result_count: usize,
-    source_url: String,
+    canary_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -261,7 +261,7 @@ fn complete_startup_smoke(
             || canary.passage_id != live_evidence.passage_id
             || canary.resolved_passage_id != live_evidence.passage_id
             || canary.revision_id != live_evidence.revision_id
-            || canary.source_url != live_evidence.source_url
+            || canary.canary_url != live_evidence.canary_url
         {
             return Err(invalid(format!(
                 "the {} webview search or citation IPC evidence did not resolve the startup canary",
@@ -451,17 +451,12 @@ fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {
         .citation
         .tidbit
         .ok_or_else(|| invalid("the startup smoke citation has no authored tidbit"))?;
-    let source_url = result
-        .citation
-        .sources
-        .iter()
-        .find_map(|source| source.url.as_deref())
-        .filter(|url| *url == CANARY_SOURCE_URL)
-        .ok_or_else(|| invalid("the startup smoke citation lost its source URL"))?;
     let loaded = client
         .load_tidbit(tidbit.id.clone())
         .map_err(database_error)?;
-    if loaded.current_revision_id != tidbit.revision_id || loaded.body_markdown != CANARY {
+    if loaded.current_revision_id != tidbit.revision_id
+        || loaded.body_markdown != format!("{CANARY}\n\n{CANARY_URL}")
+    {
         return Err(invalid(
             "the startup smoke citation did not resolve to the stored authored revision",
         ));
@@ -471,7 +466,7 @@ fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {
         tidbit_id: tidbit.id,
         revision_id: tidbit.revision_id,
         passage_id: result.passage_id,
-        source_url: source_url.into(),
+        canary_url: CANARY_URL.into(),
     }))
 }
 

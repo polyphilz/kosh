@@ -6,7 +6,6 @@ describe("FakeBackend tidbits", () => {
     const backend = new FakeBackend();
     await backend.seedNote({
       bodyMarkdown: "A locally searchable fixture.",
-      sources: [],
     });
 
     const diagnostics = await backend.loadMaintenanceDiagnostics();
@@ -38,32 +37,21 @@ describe("FakeBackend tidbits", () => {
       requestId: "request-1",
     });
     const created = await backend.seedNote({
-      bodyMarkdown: "# Shower thought\n\nKeep the exact body.",
-      sources: [
-        {
-          label: " Reference ",
-          url: "HTTPS://Example.COM:443/page#fragment",
-        },
-      ],
+      bodyMarkdown: "# Shower thought\n\nKeep the exact body. https://example.com/page",
     });
 
     expect(created.displayTitle).toBe("Shower thought");
-    expect(created.sources[0]).toMatchObject({
-      label: "Reference",
-      url: "https://example.com/page",
-    });
+    expect(created.bodyMarkdown).toContain("https://example.com/page");
     const edited = await backend.replaceNoteForTest({
       id: created.id,
       expectedRevisionId: created.currentRevisionId,
       bodyMarkdown: "Updated body",
-      sources: [],
     });
     await expect(
       backend.replaceNoteForTest({
         id: created.id,
         expectedRevisionId: created.currentRevisionId,
         bodyMarkdown: "Lost update",
-        sources: [],
       }),
     ).rejects.toThrow("stale");
 
@@ -81,39 +69,10 @@ describe("FakeBackend tidbits", () => {
     expect((await backend.loadTidbit(deleted.id)).deletedAtMs).toBe(deleted.deletedAtMs);
   });
 
-  it("rejects sources that become duplicates after normalization", async () => {
-    const backend = new FakeBackend();
-    const duplicateSources = [
-      { label: "Reference", url: "HTTPS://Example.COM:443/page#first" },
-      { label: " Reference ", url: "https://example.com/page#second" },
-    ];
-
-    await expect(
-      backend.seedNote({
-        bodyMarkdown: "Duplicate provenance",
-        sources: duplicateSources,
-      }),
-    ).rejects.toThrow("sources must not contain duplicates");
-
-    const created = await backend.seedNote({
-      bodyMarkdown: "Valid provenance",
-      sources: [],
-    });
-    await expect(
-      backend.replaceNoteForTest({
-        id: created.id,
-        expectedRevisionId: created.currentRevisionId,
-        bodyMarkdown: created.bodyMarkdown,
-        sources: duplicateSources,
-      }),
-    ).rejects.toThrow("sources must not contain duplicates");
-  });
-
   it("allocates generated IDs beyond IDs already present in seeded tidbits", async () => {
     const source = new FakeBackend();
     const seed = await source.seedNote({
       bodyMarkdown: "Keep this seeded record.",
-      sources: [],
     });
     const seeded = {
       ...seed,
@@ -124,7 +83,6 @@ describe("FakeBackend tidbits", () => {
 
     const created = await backend.seedNote({
       bodyMarkdown: "Do not overwrite the seed.",
-      sources: [],
     });
 
     expect(created.id).toBe("fake-tidbit-8");
@@ -134,60 +92,32 @@ describe("FakeBackend tidbits", () => {
     ).toHaveLength(2);
   });
 
-  it("reuses immutable source IDs across tidbits and edits", async () => {
-    const backend = new FakeBackend();
-    const first = await backend.seedNote({
-      bodyMarkdown: "First use.",
-      sources: [{ label: "Docs", url: "https://example.com/reference#first" }],
-    });
-    const second = await backend.seedNote({
-      bodyMarkdown: "Second use.",
-      sources: [{ label: " Docs ", url: "HTTPS://EXAMPLE.COM:443/reference#second" }],
-    });
-
-    expect(second.sources[0]?.id).toBe(first.sources[0]?.id);
-
-    const edited = await backend.replaceNoteForTest({
-      id: second.id,
-      expectedRevisionId: second.currentRevisionId,
-      bodyMarkdown: "Retained during edit.",
-      sources: [{ label: "Docs", url: "https://example.com/reference" }],
-    });
-
-    expect(edited.sources[0]?.id).toBe(first.sources[0]?.id);
-  });
-
   it("keeps revision-bound citations historical through edits and deletion", async () => {
     const backend = new FakeBackend();
     const created = await backend.seedNote({
-      bodyMarkdown: "Original evidence.",
-      sources: [{ label: "Original source", url: "https://example.com/original" }],
+      bodyMarkdown: "Original evidence. https://example.com/original",
     });
     const originalPassageId = `fake-passage:${created.currentRevisionId}`;
     await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
       state: "CURRENT",
-      excerpt: "Original evidence.",
+      excerpt: "Original evidence. https://example.com/original",
       tidbit: { revisionId: created.currentRevisionId, deleted: false },
-      sources: [{ label: "Original source" }],
     });
 
     const edited = await backend.replaceNoteForTest({
       id: created.id,
       expectedRevisionId: created.currentRevisionId,
       bodyMarkdown: "Replacement evidence.",
-      sources: [{ label: "Replacement source", url: null }],
     });
     const replacementPassageId = `fake-passage:${edited.currentRevisionId}`;
     await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
       state: "HISTORICAL",
-      excerpt: "Original evidence.",
+      excerpt: "Original evidence. https://example.com/original",
       tidbit: { revisionId: created.currentRevisionId, deleted: false },
-      sources: [{ label: "Original source" }],
     });
     await expect(backend.resolveCitation(replacementPassageId)).resolves.toMatchObject({
       state: "CURRENT",
       excerpt: "Replacement evidence.",
-      sources: [{ label: "Replacement source" }],
     });
 
     const deleted = await backend.deleteTidbit({
@@ -215,8 +145,8 @@ describe("FakeBackend tidbits", () => {
   it("returns current citation-owned lexical results and safe highlights", async () => {
     const backend = new FakeBackend();
     const created = await backend.seedNote({
-      bodyMarkdown: "# Résumé review\n\nA naïve draft mentioned the café outcome.",
-      sources: [{ label: "Writing guide", url: "https://example.com/cafe" }],
+      bodyMarkdown:
+        "# Résumé review\n\nA naïve draft mentioned the café outcome. https://example.com/cafe",
     });
 
     const response = await backend.searchPassages({
@@ -249,7 +179,6 @@ describe("FakeBackend tidbits", () => {
 
     const ligature = await backend.seedNote({
       bodyMarkdown: "# ﬁle note\n\nCompatibility characters keep original offsets.",
-      sources: [],
     });
     const ligatureResponse = await backend.searchPassages({
       query: "file",
@@ -417,7 +346,6 @@ describe("FakeBackend semantic runtime", () => {
     });
     await backend.seedNote({
       bodyMarkdown: "# Prepared runtime\n\nThe fake search implementation remains lexical.",
-      sources: [],
     });
     await expect(
       backend.searchPassages({ query: "lexical", mode: "DEFAULT", limit: 10 }),

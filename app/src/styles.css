@@ -412,104 +412,6 @@ button {
   cursor: default;
 }
 
-.note-sources {
-  position: absolute;
-  z-index: 2;
-  top: calc(100% + 7px);
-  right: 0;
-  width: min(440px, calc(100vw - 32px));
-  padding: 13px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  color: var(--ink);
-  background: var(--surface-solid);
-  box-shadow: var(--shadow);
-}
-
-.note-sources header,
-.note-sources footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.note-sources header {
-  margin-bottom: 10px;
-}
-
-.note-sources header strong {
-  font-size: 11px;
-}
-
-.note-sources button {
-  border: 0;
-  color: var(--muted);
-  background: transparent;
-  cursor: pointer;
-  font-size: 9px;
-}
-
-.note-sources button:focus-visible,
-.note-sources input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.note-sources__rows {
-  display: grid;
-  gap: 7px;
-}
-
-.note-sources__row {
-  display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.25fr) 22px;
-  align-items: end;
-  gap: 6px;
-}
-
-.note-sources__row label {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 8px;
-}
-
-.note-sources__row input {
-  width: 100%;
-  min-width: 0;
-  padding: 7px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  color: var(--ink);
-  background: var(--canvas);
-  font-size: 9px;
-}
-
-.note-sources__row > button {
-  height: 28px;
-  border-radius: 5px;
-}
-
-.note-sources__row > button:hover,
-.note-sources footer button:hover {
-  color: var(--ink);
-  background: var(--surface);
-}
-
-.note-sources > p {
-  margin: 8px 0 0;
-  color: var(--danger);
-  font-size: 8px;
-}
-
-.note-sources footer {
-  margin-top: 10px;
-  color: var(--muted);
-  font-size: 8px;
-}
-
 .note-delete-copy {
   margin: 0;
   color: var(--muted);
@@ -1540,20 +1442,6 @@ button {
 
   .note-page__document {
     --note-page-gutter: 104px;
-  }
-
-  .note-sources__row {
-    grid-template-columns: minmax(0, 1fr) 22px;
-  }
-
-  .note-sources__row label {
-    grid-column: 1;
-  }
-
-  .note-sources__row > button {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    align-self: center;
   }
 
   .page {

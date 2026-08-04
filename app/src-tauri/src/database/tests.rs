@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{
     migrations, CitationState, Database, DatabaseError, DatabasePaths, DeleteTidbitInput,
-    LexicalSearchMode, RestoreTidbitInput, SearchPassagesInput, SourceDraft,
+    LexicalSearchMode, RestoreTidbitInput, SearchPassagesInput,
 };
 
 struct TestPair {
@@ -44,6 +44,9 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
         "research_citation",
         "research_run_attachment",
         "purge_authorization",
+        "source",
+        "tidbit_revision_source",
+        "draft_source",
     ] {
         assert!(!table_exists(&main, retired), "retired table {retired}");
     }
@@ -63,7 +66,6 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
     for guard in [
         "attachment_passage_revision_prevent_delete",
         "tidbit_revision_attachment_prevent_delete",
-        "tidbit_revision_source_prevent_delete",
     ] {
         assert!(trigger_exists(&main, guard), "missing delete guard {guard}");
     }
@@ -83,22 +85,12 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
             note_id.clone(),
             None,
             1,
-            "# Arrays\n\nExact citrine evidence lives here.".into(),
-            vec![SourceDraft {
-                label: Some("Reference".into()),
-                url: Some("https://example.com/reference".into()),
-            }],
+            "# Arrays\n\nExact citrine evidence lives here. https://example.com/reference".into(),
             10,
         )
         .expect("save new note");
     let created = client
-        .checkpoint_working_copy_for_test(
-            note_id.clone(),
-            1,
-            11,
-            first_revision_id.clone(),
-            vec![Uuid::now_v7().to_string()],
-        )
+        .checkpoint_working_copy_for_test(note_id.clone(), 1, 11, first_revision_id.clone())
         .expect("checkpoint new note")
         .note
         .expect("created note");
@@ -114,10 +106,10 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
         .pop()
         .expect("first search result");
     assert_eq!(first_result.citation.state, CitationState::Current);
-    assert_eq!(
-        first_result.citation.sources[0].url.as_deref(),
-        Some("https://example.com/reference")
-    );
+    assert!(first_result
+        .citation
+        .excerpt
+        .contains("https://example.com/reference"));
 
     client
         .save_working_copy_for_test(
@@ -125,18 +117,11 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
             Some(first_revision_id.clone()),
             2,
             "# Arrays\n\nExact amber evidence replaced the earlier wording.".into(),
-            Vec::new(),
             20,
         )
         .expect("save edited note");
     let edited = client
-        .checkpoint_working_copy_for_test(
-            note_id.clone(),
-            2,
-            21,
-            Uuid::now_v7().to_string(),
-            Vec::new(),
-        )
+        .checkpoint_working_copy_for_test(note_id.clone(), 2, 21, Uuid::now_v7().to_string())
         .expect("checkpoint edited note")
         .note
         .expect("edited note");

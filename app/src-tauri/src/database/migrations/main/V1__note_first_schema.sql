@@ -48,43 +48,6 @@ CREATE TABLE tidbit_revision (
 CREATE INDEX tidbit_active_updated_idx
     ON tidbit(updated_at DESC, id)
     WHERE deleted_at IS NULL;
-CREATE TABLE source (
-    id TEXT PRIMARY KEY
-        CHECK (
-            length(id) = 36
-            AND lower(id) = id
-            AND substr(id, 9, 1) = '-'
-            AND substr(id, 14, 1) = '-'
-            AND substr(id, 15, 1) = '7'
-            AND substr(id, 19, 1) = '-'
-            AND substr(id, 20, 1) GLOB '[89ab]'
-            AND substr(id, 24, 1) = '-'
-            AND length(replace(id, '-', '')) = 32
-            AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*'
-        ),
-    created_at INTEGER NOT NULL CHECK (created_at >= 0),
-    label TEXT,
-    normalized_url TEXT,
-    CHECK (label IS NULL OR length(label) > 0),
-    CHECK (normalized_url IS NULL OR length(normalized_url) > 0),
-    CONSTRAINT source_url_safe_scheme CHECK (
-        normalized_url IS NULL
-        OR substr(normalized_url, 1, 7) = 'http://'
-        OR substr(normalized_url, 1, 8) = 'https://'
-    ),
-    CHECK (label IS NOT NULL OR normalized_url IS NOT NULL)
-) STRICT;
-CREATE TABLE tidbit_revision_source (
-    tidbit_revision_id TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
-    PRIMARY KEY (tidbit_revision_id, source_id),
-    UNIQUE (tidbit_revision_id, sort_order),
-    FOREIGN KEY (tidbit_revision_id) REFERENCES tidbit_revision(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (source_id) REFERENCES source(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
-) STRICT, WITHOUT ROWID;
 CREATE TABLE tidbit_revision_attachment (
     tidbit_revision_id TEXT NOT NULL,
     attachment_id TEXT NOT NULL,
@@ -334,21 +297,6 @@ BEFORE UPDATE ON tidbit_revision
 BEGIN
     SELECT RAISE(ABORT, 'tidbit revisions are immutable');
 END;
-CREATE TRIGGER source_prevent_update
-BEFORE UPDATE ON source
-BEGIN
-    SELECT RAISE(ABORT, 'sources are immutable');
-END;
-CREATE TRIGGER tidbit_revision_source_prevent_update
-BEFORE UPDATE ON tidbit_revision_source
-BEGIN
-    SELECT RAISE(ABORT, 'revision source links are immutable');
-END;
-CREATE TRIGGER tidbit_revision_source_prevent_delete
-BEFORE DELETE ON tidbit_revision_source
-BEGIN
-    SELECT RAISE(ABORT, 'revision source links are retained');
-END;
 CREATE TRIGGER tidbit_revision_attachment_prevent_update
 BEFORE UPDATE ON tidbit_revision_attachment
 BEGIN
@@ -397,15 +345,6 @@ BEFORE UPDATE ON passage
 BEGIN
     SELECT RAISE(ABORT, 'passages are immutable');
 END;
-CREATE TABLE draft_source (
-    draft_id TEXT NOT NULL,
-    position INTEGER NOT NULL CHECK (position >= 0),
-    label TEXT,
-    url TEXT,
-    PRIMARY KEY (draft_id, position),
-    FOREIGN KEY (draft_id) REFERENCES draft(id)
-        ON UPDATE RESTRICT ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX passage_author_version_ordinal_uq
     ON passage(tidbit_revision_id, construction_version, ordinal)
     WHERE owner_kind = 'AUTHOR';
@@ -464,8 +403,6 @@ CREATE TABLE passage_search_document (
     tidbit_id TEXT,
     heading_context TEXT NOT NULL,
     body TEXT NOT NULL,
-    source_labels TEXT NOT NULL,
-    source_domains TEXT NOT NULL,
     attachment_names TEXT NOT NULL,
     extracted_text TEXT NOT NULL,
     owner_content_hash BLOB NOT NULL CHECK (length(owner_content_hash) = 32),
@@ -480,8 +417,6 @@ CREATE INDEX passage_search_document_tidbit_idx
 CREATE VIRTUAL TABLE passage_fts_word USING fts5(
     heading_context,
     body,
-    source_labels,
-    source_domains,
     attachment_names,
     extracted_text,
     content = 'passage_search_document',
@@ -491,8 +426,6 @@ CREATE VIRTUAL TABLE passage_fts_word USING fts5(
 CREATE VIRTUAL TABLE passage_fts_trigram USING fts5(
     heading_context,
     body,
-    source_labels,
-    source_domains,
     attachment_names,
     extracted_text,
     content = 'passage_search_document',
@@ -502,8 +435,6 @@ CREATE VIRTUAL TABLE passage_fts_trigram USING fts5(
 CREATE VIRTUAL TABLE passage_fts_short USING fts5(
     heading_context,
     body,
-    source_labels,
-    source_domains,
     attachment_names,
     extracted_text,
     content = 'passage_search_document',
@@ -514,38 +445,29 @@ CREATE TRIGGER passage_search_document_fts_after_insert
 AFTER INSERT ON passage_search_document
 BEGIN
     INSERT INTO passage_fts_word(
-        rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         new.rowid,
         kosh_search_normalize(new.heading_context),
         kosh_search_normalize(new.body),
-        kosh_search_normalize(new.source_labels),
-        kosh_search_normalize(new.source_domains),
         kosh_search_normalize(new.attachment_names),
         kosh_search_normalize(new.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
-        rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         new.rowid,
         kosh_search_normalize(new.heading_context),
         kosh_search_normalize(new.body),
-        kosh_search_normalize(new.source_labels),
-        kosh_search_normalize(new.source_domains),
         kosh_search_normalize(new.attachment_names),
         kosh_search_normalize(new.extracted_text)
     );
     INSERT INTO passage_fts_short(
-        rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         new.rowid,
         kosh_search_short_grams(new.heading_context),
         kosh_search_short_grams(new.body),
-        kosh_search_short_grams(new.source_labels),
-        kosh_search_short_grams(new.source_domains),
         kosh_search_short_grams(new.attachment_names),
         kosh_search_short_grams(new.extracted_text)
     );
@@ -554,38 +476,29 @@ CREATE TRIGGER passage_search_document_fts_after_delete
 AFTER DELETE ON passage_search_document
 BEGIN
     INSERT INTO passage_fts_word(
-        passage_fts_word, rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        passage_fts_word, rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         'delete', old.rowid,
         kosh_search_normalize(old.heading_context),
         kosh_search_normalize(old.body),
-        kosh_search_normalize(old.source_labels),
-        kosh_search_normalize(old.source_domains),
         kosh_search_normalize(old.attachment_names),
         kosh_search_normalize(old.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
-        passage_fts_trigram, rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        passage_fts_trigram, rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         'delete', old.rowid,
         kosh_search_normalize(old.heading_context),
         kosh_search_normalize(old.body),
-        kosh_search_normalize(old.source_labels),
-        kosh_search_normalize(old.source_domains),
         kosh_search_normalize(old.attachment_names),
         kosh_search_normalize(old.extracted_text)
     );
     INSERT INTO passage_fts_short(
-        passage_fts_short, rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        passage_fts_short, rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         'delete', old.rowid,
         kosh_search_short_grams(old.heading_context),
         kosh_search_short_grams(old.body),
-        kosh_search_short_grams(old.source_labels),
-        kosh_search_short_grams(old.source_domains),
         kosh_search_short_grams(old.attachment_names),
         kosh_search_short_grams(old.extracted_text)
     );
@@ -595,81 +508,61 @@ AFTER UPDATE OF
     rowid,
     heading_context,
     body,
-    source_labels,
-    source_domains,
     attachment_names,
     extracted_text
 ON passage_search_document
 BEGIN
     INSERT INTO passage_fts_word(
-        passage_fts_word, rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        passage_fts_word, rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         'delete', old.rowid,
         kosh_search_normalize(old.heading_context),
         kosh_search_normalize(old.body),
-        kosh_search_normalize(old.source_labels),
-        kosh_search_normalize(old.source_domains),
         kosh_search_normalize(old.attachment_names),
         kosh_search_normalize(old.extracted_text)
     );
     INSERT INTO passage_fts_word(
-        rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         new.rowid,
         kosh_search_normalize(new.heading_context),
         kosh_search_normalize(new.body),
-        kosh_search_normalize(new.source_labels),
-        kosh_search_normalize(new.source_domains),
         kosh_search_normalize(new.attachment_names),
         kosh_search_normalize(new.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
-        passage_fts_trigram, rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        passage_fts_trigram, rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         'delete', old.rowid,
         kosh_search_normalize(old.heading_context),
         kosh_search_normalize(old.body),
-        kosh_search_normalize(old.source_labels),
-        kosh_search_normalize(old.source_domains),
         kosh_search_normalize(old.attachment_names),
         kosh_search_normalize(old.extracted_text)
     );
     INSERT INTO passage_fts_trigram(
-        rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         new.rowid,
         kosh_search_normalize(new.heading_context),
         kosh_search_normalize(new.body),
-        kosh_search_normalize(new.source_labels),
-        kosh_search_normalize(new.source_domains),
         kosh_search_normalize(new.attachment_names),
         kosh_search_normalize(new.extracted_text)
     );
     INSERT INTO passage_fts_short(
-        passage_fts_short, rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        passage_fts_short, rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         'delete', old.rowid,
         kosh_search_short_grams(old.heading_context),
         kosh_search_short_grams(old.body),
-        kosh_search_short_grams(old.source_labels),
-        kosh_search_short_grams(old.source_domains),
         kosh_search_short_grams(old.attachment_names),
         kosh_search_short_grams(old.extracted_text)
     );
     INSERT INTO passage_fts_short(
-        rowid, heading_context, body, source_labels,
-        source_domains, attachment_names, extracted_text
+        rowid, heading_context, body, attachment_names, extracted_text
     ) VALUES(
         new.rowid,
         kosh_search_short_grams(new.heading_context),
         kosh_search_short_grams(new.body),
-        kosh_search_short_grams(new.source_labels),
-        kosh_search_short_grams(new.source_domains),
         kosh_search_short_grams(new.attachment_names),
         kosh_search_short_grams(new.extracted_text)
     );
@@ -1304,8 +1197,6 @@ BEGIN
         tidbit_id,
         heading_context,
         body,
-        source_labels,
-        source_domains,
         attachment_names,
         extracted_text,
         owner_content_hash,
@@ -1322,8 +1213,6 @@ BEGIN
             ),
             ''
         ),
-        '',
-        '',
         '',
         attachment.display_filename || char(10) || attachment.media_type,
         passage.content,
@@ -1356,8 +1245,6 @@ BEGIN
         tidbit_id,
         heading_context,
         body,
-        source_labels,
-        source_domains,
         attachment_names,
         extracted_text,
         owner_content_hash,
@@ -1374,8 +1261,6 @@ BEGIN
             ),
             ''
         ),
-        '',
-        '',
         '',
         attachment.display_filename || char(10) || attachment.media_type,
         passage.content,
@@ -1444,8 +1329,6 @@ BEGIN
         tidbit_id,
         heading_context,
         body,
-        source_labels,
-        source_domains,
         attachment_names,
         extracted_text,
         owner_content_hash,
@@ -1462,8 +1345,6 @@ BEGIN
             ),
             ''
         ),
-        '',
-        '',
         '',
         new.display_filename || char(10) || new.media_type,
         passage.content,
@@ -1939,9 +1820,6 @@ CREATE TRIGGER offsite_clock_draft_delete AFTER DELETE ON draft BEGIN UPDATE off
 CREATE TRIGGER offsite_clock_draft_media_lease_insert AFTER INSERT ON draft_media_lease BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_draft_media_lease_update AFTER UPDATE ON draft_media_lease BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_draft_media_lease_delete AFTER DELETE ON draft_media_lease BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_draft_source_insert AFTER INSERT ON draft_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_draft_source_update AFTER UPDATE ON draft_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_draft_source_delete AFTER DELETE ON draft_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_image_ocr_queue_insert AFTER INSERT ON image_ocr_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_image_ocr_queue_update AFTER UPDATE ON image_ocr_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_image_ocr_queue_delete AFTER DELETE ON image_ocr_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
@@ -1984,9 +1862,6 @@ CREATE TRIGGER offsite_clock_pdf_page_extraction_delete AFTER DELETE ON pdf_page
 CREATE TRIGGER offsite_clock_shortcut_settings_insert AFTER INSERT ON shortcut_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_shortcut_settings_update AFTER UPDATE ON shortcut_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_shortcut_settings_delete AFTER DELETE ON shortcut_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_source_insert AFTER INSERT ON source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_source_update AFTER UPDATE ON source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_source_delete AFTER DELETE ON source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_tidbit_insert AFTER INSERT ON tidbit BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_tidbit_update AFTER UPDATE ON tidbit BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_tidbit_delete AFTER DELETE ON tidbit BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
@@ -1996,9 +1871,6 @@ CREATE TRIGGER offsite_clock_tidbit_revision_delete AFTER DELETE ON tidbit_revis
 CREATE TRIGGER offsite_clock_tidbit_revision_attachment_insert AFTER INSERT ON tidbit_revision_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_tidbit_revision_attachment_update AFTER UPDATE ON tidbit_revision_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_tidbit_revision_attachment_delete AFTER DELETE ON tidbit_revision_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_source_insert AFTER INSERT ON tidbit_revision_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_source_update AFTER UPDATE ON tidbit_revision_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_source_delete AFTER DELETE ON tidbit_revision_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TABLE offsite_backup_checkpoint_media (
     checkpoint_id TEXT NOT NULL
         REFERENCES offsite_backup_checkpoint(checkpoint_id)
@@ -2087,9 +1959,8 @@ CREATE TABLE offsite_backup_takeover_intent (
     CHECK (previous_replica_epoch_id <> next_replica_epoch_id)
 ) STRICT;
 CREATE TRIGGER tidbit_revision_prevent_delete BEFORE DELETE ON tidbit_revision BEGIN SELECT RAISE(ABORT, 'tidbit revisions are retained'); END;
-CREATE TRIGGER source_prevent_delete BEFORE DELETE ON source BEGIN SELECT RAISE(ABORT, 'sources are retained'); END;
 CREATE TRIGGER passage_prevent_delete BEFORE DELETE ON passage BEGIN SELECT RAISE(ABORT, 'passages are retained'); END;
-INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('PASSAGE_FTS', 'lexical-v4', 'IDLE', NULL, 0, NULL);
+INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('PASSAGE_FTS', 'lexical-v5', 'IDLE', NULL, 0, NULL);
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('PASSAGE_EMBEDDING', 'jina_v1', 'DIRTY', NULL, 0, NULL);
 INSERT INTO attachment_extractor_config(extractor, version, passage_construction_version, updated_at) VALUES('ocr', '1', 'ocr-region-v1', 0), ('pdf-text', '1', 'pdf-page-v1', 0), ('text', '1', 'text-lines-v1', 0);
 INSERT INTO passage_embedding_settings(singleton_id, active_embedding_index_id, updated_at) VALUES(1, NULL, 0);

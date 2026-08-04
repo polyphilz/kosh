@@ -28,7 +28,6 @@ function note(revisionId = REVISION_1, revisionNumber = 1, bodyMarkdown = "alpha
     deletedAtMs: null,
     displayTitle: bodyMarkdown || "Untitled note",
     bodyMarkdown,
-    sources: [],
   };
 }
 
@@ -57,7 +56,6 @@ function workingCopy(
     editGeneration: generation,
     mediaReservation,
     bodyMarkdown,
-    sources: [],
     createdAtMs: 1,
     updatedAtMs: generation,
   };
@@ -153,7 +151,6 @@ describe("note autosave coordinator", () => {
       baseRevisionId: null,
       editGeneration: 2,
       bodyMarkdown: "alphabet",
-      sources: [],
     });
     expect(coordinator.getSnapshot()).toMatchObject({ phase: "DURABLE", durableGeneration: 2 });
   });
@@ -256,7 +253,6 @@ describe("note autosave coordinator", () => {
       baseRevisionId: REVISION_1,
       editGeneration: 2,
       bodyMarkdown: "alpha beta",
-      sources: [],
     });
     expect(backend.checkpointWorkingCopy).toHaveBeenNthCalledWith(2, {
       noteId: NOTE_ID,

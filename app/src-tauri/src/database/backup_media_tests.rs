@@ -34,7 +34,7 @@ impl TestLibrary {
         let database = Database::initialize(paths.clone()).expect("database");
         database
             .client()
-            .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 10)
+            .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), 10)
             .expect("capture working copy");
         Self {
             _root: root,
@@ -137,7 +137,7 @@ fn id(suffix: u64) -> String {
 }
 
 #[test]
-fn enabling_and_reference_transactions_seed_source_and_preview_hashes() {
+fn enabling_and_reference_transactions_seed_original_and_preview_hashes() {
     let library = TestLibrary::new();
     library.ingest_image(100, b"original-one", b"preview-one", 20);
     assert_eq!(

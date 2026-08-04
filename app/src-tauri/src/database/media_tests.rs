@@ -25,7 +25,7 @@ use super::{
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput,
     CitationLocator, Database, DatabaseClient, DatabaseError, DatabasePaths,
     DiscardWorkingCopyInput, LexicalSearchMode, MediaLimits, MediaMaintenanceReport,
-    SaveWorkingCopyInput, SearchPassagesInput, SourceDraft, Tidbit,
+    SaveWorkingCopyInput, SearchPassagesInput, Tidbit,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -93,15 +93,6 @@ impl TestLibrary {
     }
 
     fn save_capture(&self, body_markdown: &str, now_ms: i64) -> super::WorkingCopy {
-        self.save_capture_with_sources(body_markdown, Vec::new(), now_ms)
-    }
-
-    fn save_capture_with_sources(
-        &self,
-        body_markdown: &str,
-        sources: Vec<SourceDraft>,
-        now_ms: i64,
-    ) -> super::WorkingCopy {
         self.database
             .client()
             .save_working_copy_for_test(
@@ -109,7 +100,6 @@ impl TestLibrary {
                 None,
                 now_ms,
                 body_markdown.into(),
-                sources,
                 now_ms,
             )
             .expect("save capture working copy")
@@ -120,7 +110,6 @@ impl TestLibrary {
         expected_edit_generation: i64,
         now_ms: i64,
         revision_id: String,
-        source_ids: Vec<String>,
     ) -> Tidbit {
         self.database
             .client()
@@ -129,7 +118,6 @@ impl TestLibrary {
                 expected_edit_generation,
                 now_ms,
                 revision_id,
-                source_ids,
             )
             .expect("checkpoint capture working copy")
             .note
@@ -354,7 +342,7 @@ fn media_tokens_require_canonical_syntax_and_preserve_authored_order() {
 }
 
 #[test]
-fn text_attachments_create_exact_line_evidence_with_revision_bound_sources() {
+fn text_attachments_create_exact_line_evidence_with_revision_bound_provenance() {
     let library = TestLibrary::new();
     let attachment = library.ingest_generic(
         (0x720, 0x721, 0x722, 0x723),
@@ -381,18 +369,11 @@ fn text_attachments_create_exact_line_evidence_with_revision_bound_sources() {
     );
     assert_eq!(attachment.extracted_line_count, 4);
     let body = format!(
-        "Course notes.\n\n{{{{kosh:attachment:{};caption=Useful%20appendix}}}}",
+        "Course notes. https://example.com/text\n\n{{{{kosh:attachment:{};caption=Useful%20appendix}}}}",
         attachment.attachment.id
     );
-    library.save_capture_with_sources(
-        &body,
-        vec![SourceDraft {
-            label: Some("Course source".into()),
-            url: Some("https://example.com/text".into()),
-        }],
-        12,
-    );
-    library.checkpoint_capture(12, 13, id(0x725), vec![id(0x726)]);
+    library.save_capture(&body, 12);
+    library.checkpoint_capture(12, 13, id(0x725));
 
     let client = library.database.client();
     let results = client
@@ -418,10 +399,6 @@ fn text_attachments_create_exact_line_evidence_with_revision_bound_sources() {
             .expect("attachment citation")
             .display_filename,
         "chapter-notes.md"
-    );
-    assert_eq!(
-        results[0].citation.sources[0].url.as_deref(),
-        Some("https://example.com/text")
     );
     let mime_results = client
         .search_passages(SearchPassagesInput {
@@ -477,7 +454,7 @@ fn opaque_and_failed_text_attachments_remain_available_without_false_evidence() 
         opaque.attachment.id, failed.attachment.id
     );
     library.save_capture(&body, 13);
-    library.checkpoint_capture(13, 14, id(0x730), Vec::new());
+    library.checkpoint_capture(13, 14, id(0x730));
     let client = library.database.client();
     assert!(client
         .search_passages(SearchPassagesInput {
@@ -579,16 +556,12 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
         11,
     );
     assert_eq!(pdf.extraction_status, PdfExtractionStatus::Pending);
-    let body = format!("Chapter notes.\n\n{{{{kosh:pdf:{}}}}}", pdf.attachment.id);
-    library.save_capture_with_sources(
-        &body,
-        vec![SourceDraft {
-            label: Some("Course reader".into()),
-            url: Some("https://example.com/reader".into()),
-        }],
-        12,
+    let body = format!(
+        "Chapter notes. https://example.com/reader\n\n{{{{kosh:pdf:{}}}}}",
+        pdf.attachment.id
     );
-    let created = library.checkpoint_capture(12, 13, id(0x905), vec![id(0x906)]);
+    library.save_capture(&body, 12);
+    let created = library.checkpoint_capture(12, 13, id(0x905));
 
     let client = library.database.client();
     let job = client
@@ -660,11 +633,6 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
                 .id,
             pdf.attachment.id
         );
-        assert_eq!(results[0].citation.sources.len(), 1);
-        assert_eq!(
-            results[0].citation.sources[0].url.as_deref(),
-            Some("https://example.com/reader")
-        );
     }
     assert!(client
         .search_passages(SearchPassagesInput {
@@ -681,18 +649,14 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
             Some(created.current_revision_id),
             1,
             format!(
-                "Revised chapter notes.\n\n{{{{kosh:pdf:{}}}}}",
+                "Revised chapter notes. https://example.com/later\n\n{{{{kosh:pdf:{}}}}}",
                 pdf.attachment.id
             ),
-            vec![SourceDraft {
-                label: Some("Unrelated later source".into()),
-                url: Some("https://example.com/later".into()),
-            }],
             16,
         )
         .expect("save PDF-backed edit");
     client
-        .checkpoint_working_copy_for_test(created.id, 1, 17, id(0x907), vec![id(0x908)])
+        .checkpoint_working_copy_for_test(created.id, 1, 17, id(0x907))
         .expect("checkpoint PDF-backed edit");
     let result = client
         .search_passages(SearchPassagesInput {
@@ -701,11 +665,7 @@ fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
             limit: 10,
         })
         .expect("search PDF evidence after source edit");
-    assert_eq!(
-        result[0].citation.sources[0].url.as_deref(),
-        Some("https://example.com/reader"),
-        "attachment citations stay bound to the revision that established their provenance"
-    );
+    assert_eq!(result[0].citation.state, super::CitationState::Current);
 }
 
 #[test]
@@ -994,7 +954,7 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
         image.attachment.id
     );
     library.save_capture(&body, 12);
-    let tidbit = library.checkpoint_capture(12, 13, id(0x785), Vec::new());
+    let tidbit = library.checkpoint_capture(12, 13, id(0x785));
     let original_revision_id = tidbit.current_revision_id.clone();
 
     let client = library.database.client();
@@ -1270,7 +1230,7 @@ fn completed_draft_image_ocr_is_indexed_when_a_revision_takes_ownership() {
         .expect("search pre-save OCR")
         .is_empty());
 
-    library.checkpoint_capture(12, 15, id(0x79b), Vec::new());
+    library.checkpoint_capture(12, 15, id(0x79b));
     assert_eq!(
         client
             .search_passages(SearchPassagesInput {
@@ -1851,14 +1811,7 @@ fn concurrent_ingestion_serializes_before_reading_attachment_bytes() {
     );
     database
         .client()
-        .save_working_copy_for_test(
-            CAPTURE_DRAFT_ID.into(),
-            None,
-            1,
-            String::new(),
-            Vec::new(),
-            10,
-        )
+        .save_working_copy_for_test(CAPTURE_DRAFT_ID.into(), None, 1, String::new(), 10)
         .expect("concurrent staging working copy");
 
     let (first_started_tx, first_started_rx) = mpsc::channel();
@@ -2033,7 +1986,6 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
                     base_revision_id: None,
                     edit_generation: now_ms,
                     body_markdown: body.clone(),
-                    sources: Vec::new(),
                 },
                 now_ms,
                 media_limits: limits,
@@ -2082,7 +2034,7 @@ fn working_copy_media_and_note_survive_restart() {
     let initial = library
         .database
         .client()
-        .save_working_copy_for_test(note_id.clone(), None, 1, String::new(), Vec::new(), 11)
+        .save_working_copy_for_test(note_id.clone(), None, 1, String::new(), 11)
         .expect("create working copy");
     assert_eq!(initial.id, note_id);
     let attachment = library
@@ -2106,11 +2058,7 @@ fn working_copy_media_and_note_survive_restart() {
             note_id.clone(),
             None,
             2,
-            body.clone(),
-            vec![SourceDraft {
-                label: Some("Recovered source".into()),
-                url: Some("https://example.com/working-copy".into()),
-            }],
+            format!("https://example.com/working-copy\n\n{body}"),
             13,
         )
         .expect("save media working copy");
@@ -2155,14 +2103,14 @@ fn working_copy_media_and_note_survive_restart() {
             },
             now_ms: 15,
             revision_id: id(0x733),
-            source_ids: vec![id(0x734)],
         })
         .expect("checkpoint recovered working copy");
     let note = checkpoint.note.expect("recovered note");
     assert_eq!(note.id, note_id);
-    assert_eq!(note.body_markdown, body);
-    assert_eq!(note.sources.len(), 1);
-    assert_eq!(note.sources[0].label.as_deref(), Some("Recovered source"));
+    assert_eq!(
+        note.body_markdown,
+        format!("https://example.com/working-copy\n\n{body}")
+    );
     assert_eq!(
         reopened
             .client()
@@ -2198,7 +2146,6 @@ fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
                 base_revision_id: None,
                 edit_generation: 12,
                 body_markdown: canonical,
-                sources: Vec::new(),
             },
             now_ms: 12,
             media_limits: limits,
@@ -2215,7 +2162,6 @@ fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
                 base_revision_id: None,
                 edit_generation: 13,
                 body_markdown: malformed,
-                sources: Vec::new(),
             },
             now_ms: 13,
             media_limits: limits,
@@ -2264,7 +2210,6 @@ fn startup_recovery_renews_expired_media_still_referenced_by_a_saved_draft() {
                 base_revision_id: None,
                 edit_generation: 12,
                 body_markdown: body,
-                sources: Vec::new(),
             },
             now_ms: 12,
             media_limits: limits,
@@ -2736,7 +2681,6 @@ fn revision_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
             },
             now_ms: 14,
             revision_id: id(0x747),
-            source_ids: Vec::new(),
         })
         .expect("checkpoint revision with attachment");
     assert_eq!(
@@ -2793,7 +2737,6 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
             },
             now_ms: 13,
             revision_id: id(0x74c),
-            source_ids: Vec::new(),
         })
         .expect("checkpoint revision with media")
         .note
@@ -2812,7 +2755,6 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
                 base_revision_id: Some(tidbit.current_revision_id.clone()),
                 edit_generation: 14,
                 body_markdown: body.clone(),
-                sources: Vec::new(),
             },
             now_ms: 14,
             media_limits: edit_limits,
@@ -2859,7 +2801,6 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
                 base_revision_id: Some(tidbit.current_revision_id.clone()),
                 edit_generation: 15,
                 body_markdown: format!("{body}\n{{{{kosh:attachment:{}}}}}", added.id),
-                sources: Vec::new(),
             },
             now_ms: 15,
             media_limits: edit_limits,
@@ -2887,14 +2828,7 @@ fn integrity_scan_reports_missing_corrupt_and_extra_blobs() {
     let database = Database::initialize(paths.clone()).expect("integrity database");
     let draft = database
         .client()
-        .save_working_copy_for_test(
-            CAPTURE_DRAFT_ID.into(),
-            None,
-            1,
-            String::new(),
-            Vec::new(),
-            10,
-        )
+        .save_working_copy_for_test(CAPTURE_DRAFT_ID.into(), None, 1, String::new(), 10)
         .expect("capture working copy");
     assert_eq!(draft.id, CAPTURE_DRAFT_ID);
     let first_bytes = b"corrupt me";

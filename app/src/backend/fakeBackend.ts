@@ -34,9 +34,7 @@ import type {
   SetAutomaticUpdateChecksInput,
   SetShortcutSettingsInput,
   ShortcutSettingsSnapshot,
-  SourceDraft,
   TidbitRecord,
-  TidbitSource,
   WorkingCopyCheckpointResult,
   WorkingCopyRecord,
   WorkingCopySaveResult,
@@ -53,7 +51,6 @@ interface FakeCitationSnapshot {
 
 export interface FakeNoteInput {
   bodyMarkdown: string;
-  sources: SourceDraft[];
 }
 
 interface ReplaceNoteForTestInput extends FakeNoteInput {
@@ -92,7 +89,6 @@ export class FakeBackend implements Backend {
   };
   private readonly workingCopies = new Map<string, WorkingCopyRecord>();
   private readonly citations = new Map<string, FakeCitationSnapshot>();
-  private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
   private shortcutSettings: ShortcutSettingsSnapshot = {
     revision: 1,
@@ -148,14 +144,7 @@ export class FakeBackend implements Backend {
         this.sequence,
         generatedIdSequence(tidbit.id),
         generatedIdSequence(tidbit.currentRevisionId),
-        ...tidbit.sources.map((source) => generatedIdSequence(source.id)),
       );
-      for (const source of tidbit.sources) {
-        const identity = sourceIdentity(source);
-        if (!this.sourceIds.has(identity)) {
-          this.sourceIds.set(identity, source.id);
-        }
-      }
     }
   }
 
@@ -645,7 +634,6 @@ export class FakeBackend implements Backend {
   async seedNote(input: FakeNoteInput): Promise<TidbitRecord> {
     const sequence = this.nextSequence();
     const bodyMarkdown = validateBody(input.bodyMarkdown);
-    const sources = this.prepareSources(input.sources);
     const tidbit: TidbitRecord = {
       id: `fake-tidbit-${sequence}`,
       currentRevisionId: `fake-revision-${sequence}`,
@@ -655,7 +643,6 @@ export class FakeBackend implements Backend {
       deletedAtMs: null,
       displayTitle: deriveDisplayTitle(bodyMarkdown),
       bodyMarkdown,
-      sources,
     };
     this.tidbits.set(tidbit.id, tidbit);
     this.registerCitation(tidbit);
@@ -724,7 +711,6 @@ export class FakeBackend implements Backend {
       updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
       displayTitle: deriveDisplayTitle(bodyMarkdown),
       bodyMarkdown,
-      sources: this.prepareSources(input.sources),
     };
     this.tidbits.set(updated.id, updated);
     this.registerCitation(updated);
@@ -766,15 +752,6 @@ export class FakeBackend implements Backend {
     return cloneTidbit(restored);
   }
 
-  async openSourceUrl(sourceId: string): Promise<void> {
-    const source = [...this.citations.values()]
-      .flatMap(({ revision }) => revision.sources)
-      .find((candidate) => candidate.id === sourceId && candidate.url !== null);
-    if (!source) {
-      throw new Error(`source URL ${sourceId} was not found`);
-    }
-  }
-
   async resolveCitation(passageId: string): Promise<CitationResolution> {
     const snapshot = this.citations.get(passageId);
     if (!snapshot) {
@@ -809,7 +786,6 @@ export class FakeBackend implements Backend {
         deleted: current.deletedAtMs !== null,
       },
       attachment: null,
-      sources: snapshot.revision.sources.map((source) => ({ ...source })),
     };
   }
 
@@ -831,11 +807,7 @@ export class FakeBackend implements Backend {
     const matches = [...this.tidbits.values()]
       .filter((tidbit) => tidbit.deletedAtMs === null)
       .flatMap((tidbit) => {
-        const fields: Array<[SearchField, string]> = [
-          ["BODY", tidbit.bodyMarkdown],
-          ["SOURCE_LABEL", tidbit.sources.flatMap((source) => source.label ?? []).join("\n")],
-          ["SOURCE_DOMAIN", tidbit.sources.flatMap((source) => source.url ?? []).join("\n")],
-        ];
+        const fields: Array<[SearchField, string]> = [["BODY", tidbit.bodyMarkdown]];
         const matchedAtoms = atoms.map((atom) =>
           fields.some(([, value]) =>
             normalizeSearchText(value).includes(normalizeSearchText(atom)),
@@ -954,7 +926,6 @@ export class FakeBackend implements Backend {
     const saved: WorkingCopyRecord = {
       ...input,
       mediaReservation: allowEmptyEphemeral,
-      sources: input.sources.map((source) => ({ ...source })),
       id: existing?.id ?? `fake-working-copy-${sequence}`,
       createdAtMs: existing?.createdAtMs ?? this.probe.nowMs + sequence,
       updatedAtMs: existing
@@ -1023,7 +994,6 @@ export class FakeBackend implements Backend {
     ) {
       throw new Error("an ephemeral note must contain authored text or media");
     }
-    const sources = this.prepareSources(workingCopy.sources);
     const note: TidbitRecord = current
       ? {
           ...current,
@@ -1032,7 +1002,6 @@ export class FakeBackend implements Backend {
           updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
           displayTitle: deriveDisplayTitle(workingCopy.bodyMarkdown),
           bodyMarkdown: workingCopy.bodyMarkdown,
-          sources,
         }
       : {
           id: input.noteId,
@@ -1043,7 +1012,6 @@ export class FakeBackend implements Backend {
           deletedAtMs: null,
           displayTitle: deriveDisplayTitle(workingCopy.bodyMarkdown),
           bodyMarkdown: workingCopy.bodyMarkdown,
-          sources,
         };
     this.tidbits.set(note.id, note);
     this.registerCitation(note);
@@ -1123,34 +1091,10 @@ export class FakeBackend implements Backend {
     }
     return tidbit;
   }
-
-  private prepareSources(inputs: SourceDraft[]): TidbitSource[] {
-    const sources = inputs.map(normalizeSource);
-    const identities = new Set<string>();
-    for (const source of sources) {
-      const identity = sourceIdentity(source);
-      if (identities.has(identity)) {
-        throw new Error("sources must not contain duplicates");
-      }
-      identities.add(identity);
-    }
-    return sources.map((source) => {
-      const identity = sourceIdentity(source);
-      let id = this.sourceIds.get(identity);
-      if (!id) {
-        id = `fake-source-${this.nextSequence()}`;
-        this.sourceIds.set(identity, id);
-      }
-      return { ...source, id };
-    });
-  }
 }
 
 function cloneTidbit(tidbit: TidbitRecord): TidbitRecord {
-  return {
-    ...tidbit,
-    sources: tidbit.sources.map((source) => ({ ...source })),
-  };
+  return { ...tidbit };
 }
 
 function cloneBackupSettings(settings: BackupSettingsSnapshot): BackupSettingsSnapshot {
@@ -1204,17 +1148,13 @@ function validateFakeCredentials(
 }
 
 function cloneWorkingCopy(workingCopy: WorkingCopyRecord): WorkingCopyRecord {
-  return {
-    ...workingCopy,
-    sources: workingCopy.sources.map((source) => ({ ...source })),
-  };
+  return { ...workingCopy };
 }
 
 function sameWorkingCopy(workingCopy: WorkingCopyRecord, input: SaveWorkingCopyInput): boolean {
   return (
     workingCopy.baseRevisionId === input.baseRevisionId &&
-    workingCopy.bodyMarkdown === input.bodyMarkdown &&
-    JSON.stringify(workingCopy.sources) === JSON.stringify(input.sources)
+    workingCopy.bodyMarkdown === input.bodyMarkdown
   );
 }
 
@@ -1230,33 +1170,6 @@ function cloneShortcutSettings(settings: ShortcutSettingsSnapshot): ShortcutSett
     keyboardBindings: settings.keyboardBindings.map((binding) => ({ ...binding })),
     shortcutErrors: [...settings.shortcutErrors],
   };
-}
-
-function normalizeText(value: string | null): string | null {
-  const normalized = value?.trim() ?? "";
-  return normalized ? normalized : null;
-}
-
-function normalizeSource(input: SourceDraft): Omit<TidbitSource, "id"> {
-  const label = normalizeText(input.label);
-  const rawUrl = normalizeText(input.url);
-  let url: string | null = null;
-  if (rawUrl) {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("source URL must use HTTP or HTTPS");
-    }
-    parsed.hash = "";
-    url = parsed.toString();
-  }
-  if (!label && !url) {
-    throw new Error("each source needs a label or HTTP(S) URL");
-  }
-  return { label, url };
-}
-
-function sourceIdentity(source: Pick<TidbitSource, "label" | "url">): string {
-  return JSON.stringify([source.label, source.url]);
 }
 
 function validateBody(value: string): string {
@@ -1285,7 +1198,7 @@ function truncate(value: string, limit: number): string {
 }
 
 function generatedIdSequence(value: string): number {
-  const match = /^fake-(?:tidbit|revision|source)-(\d+)$/u.exec(value);
+  const match = /^fake-(?:tidbit|revision)-(\d+)$/u.exec(value);
   if (!match) {
     return 0;
   }

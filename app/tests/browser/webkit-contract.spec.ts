@@ -121,7 +121,6 @@ test("the trailing note canvas appends after an atomic block in WebKit", async (
     if (!backend) throw new Error("fake backend is unavailable");
     return backend.seedNote({
       bodyMarkdown: "Before the equation.\n\n$$\n\\sum_i a_i\n$$",
-      sources: [],
     });
   });
   await page.evaluate((noteId) => {
@@ -149,7 +148,6 @@ test("the block gutter selects a range containing an atomic block in WebKit", as
     if (!backend) throw new Error("fake backend is unavailable");
     return backend.seedNote({
       bodyMarkdown: "First block.\n\nSecond block.\n\n$$\n\\sum_i a_i\n$$\n\nLast block.",
-      sources: [],
     });
   });
   await page.evaluate((noteId) => {

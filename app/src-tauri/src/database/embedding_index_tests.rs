@@ -135,12 +135,11 @@ fn semantic_retrieval_falls_back_when_fresh_content_invalidates_the_active_index
             Some(semantic_tidbit.current_revision_id),
             1,
             "Updated automobile service intervals".into(),
-            Vec::new(),
             40,
         )
         .expect("save edit that invalidates active vectors");
     client
-        .checkpoint_working_copy_for_test(semantic_tidbit.id, 1, 41, uuid_v7(), Vec::new())
+        .checkpoint_working_copy_for_test(semantic_tidbit.id, 1, 41, uuid_v7())
         .expect("checkpoint edit that invalidates active vectors");
     assert_eq!(
         client
@@ -328,12 +327,11 @@ fn edits_and_deletes_invalidate_vectors_and_reject_stale_worker_results() {
             Some(original.current_revision_id),
             1,
             "second version".into(),
-            Vec::new(),
             20,
         )
         .expect("save edit");
     let edited = client
-        .checkpoint_working_copy_for_test(original.id, 1, 21, uuid_v7(), Vec::new())
+        .checkpoint_working_copy_for_test(original.id, 1, 21, uuid_v7())
         .expect("checkpoint edit")
         .note
         .expect("edited note");
@@ -646,12 +644,10 @@ fn create_tidbit(client: &super::DatabaseClient, body: &str, now_ms: i64) -> Tid
         .create_tidbit_with_ids(
             TidbitDraft {
                 body_markdown: body.into(),
-                sources: Vec::new(),
             },
             now_ms,
             uuid_v7(),
             uuid_v7(),
-            Vec::new(),
         )
         .expect("create tidbit")
 }

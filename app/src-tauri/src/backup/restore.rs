@@ -1149,13 +1149,12 @@ mod tests {
         },
         database::{
             tidbits::CreateTidbitWrite, AttachmentIngestInput, Database, MediaLimits,
-            PrepareOffsiteCheckpointInput, SaveOffsiteBackupConfigInput, SourceDraft, TidbitDraft,
+            PrepareOffsiteCheckpointInput, SaveOffsiteBackupConfigInput, TidbitDraft,
         },
     };
 
     const TIDBIT_ID: &str = "019f547b-6200-7000-8000-00000000f001";
     const REVISION_ID: &str = "019f547b-6200-7000-8000-00000000f002";
-    const SOURCE_ID: &str = "019f547b-6200-7000-8000-00000000f003";
     const DRAFT_ID: &str = "019f547b-6200-7000-8000-00000000f004";
 
     struct Fixture {
@@ -1303,21 +1302,17 @@ mod tests {
                 .client()
                 .create_tidbit(CreateTidbitWrite {
                     input: TidbitDraft {
-                        body_markdown: "Exact citrine recovery evidence.".into(),
-                        sources: vec![SourceDraft {
-                            label: Some("Recovery source".into()),
-                            url: Some("https://example.com/recovery".into()),
-                        }],
+                        body_markdown:
+                            "Exact citrine recovery evidence. https://example.com/recovery".into(),
                     },
                     now_ms: 10,
                     tidbit_id: TIDBIT_ID.into(),
                     revision_id: REVISION_ID.into(),
-                    source_ids: vec![SOURCE_ID.into()],
                 })
                 .expect("source tidbit");
             database
                 .client()
-                .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 11)
+                .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), 11)
                 .expect("source working copy");
             let media_bytes = b"remote attachment evidence".to_vec();
             let attachment = database

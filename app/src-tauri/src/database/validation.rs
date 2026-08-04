@@ -20,7 +20,6 @@ const MAIN_TABLES: &[&str] = &[
     "attachment_segment",
     "draft",
     "draft_media_lease",
-    "draft_source",
     "index_state",
     "keyboard_binding",
     "media_ingest_lease",
@@ -46,11 +45,9 @@ const MAIN_TABLES: &[&str] = &[
     "pdf_page_extraction",
     "image_ocr_queue",
     "shortcut_settings",
-    "source",
     "tidbit",
     "tidbit_revision",
     "tidbit_revision_attachment",
-    "tidbit_revision_source",
 ];
 
 const MEDIA_TABLES: &[&str] = &[
@@ -486,15 +483,12 @@ fn rebuild_normalized_fts(
     transaction.execute(
         &format!(
             "INSERT INTO {index}(
-                rowid, heading_context, body, source_labels,
-                source_domains, attachment_names, extracted_text
+                rowid, heading_context, body, attachment_names, extracted_text
              )
              SELECT
                 rowid,
                 {projection}(heading_context),
                 {projection}(body),
-                {projection}(source_labels),
-                {projection}(source_domains),
                 {projection}(attachment_names),
                 {projection}(extracted_text)
              FROM passage_search_document

@@ -10,7 +10,6 @@ for (const theme of ["LIGHT", "DARK"] as const) {
       return backend.seedNote({
         bodyMarkdown:
           "# NumPy scrap notes\n\nArrays keep shape and dtype together.\n\n- contiguous memory\n  - predictable strides\n- vectorized operations\n\n```python\na = np.array([[1, 2], [3, 4]])\n```\n\n$$a_{ij} = i + j$$",
-        sources: [],
       });
     });
     await page.evaluate(
@@ -42,8 +41,8 @@ for (const theme of ["LIGHT", "DARK"] as const) {
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
       await backend.seedNote({
-        bodyMarkdown: "# NumPy memory layout\n\nContiguous arrays make predictable strides.",
-        sources: [{ label: "Array notes", url: "https://example.com/numpy" }],
+        bodyMarkdown:
+          "# NumPy memory layout\n\nContiguous arrays make predictable strides. https://example.com/numpy",
       });
       await document.fonts.ready;
     }, theme);
@@ -61,23 +60,11 @@ for (const theme of ["LIGHT", "DARK"] as const) {
   });
 }
 
-test("note source and delete actions stay visually stable", async ({ page }) => {
+test("note delete action stays visually stable", async ({ page }) => {
   await page.goto("/#/");
   await page.getByRole("textbox", { name: "Note" }).fill("A note with compact actions.");
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
 
-  await page.getByRole("button", { name: "Sources" }).click();
-  const sources = page.getByRole("dialog", { name: "Note sources" });
-  await sources.getByLabel("Label").fill("Reference");
-  await sources.getByLabel("URL").fill("https://example.com/reference");
-  await expect(sources).toHaveScreenshot("note-sources.png", {
-    animations: "disabled",
-    caret: "hide",
-    maxDiffPixelRatio: 0.04,
-    threshold: 0.35,
-  });
-
-  await page.keyboard.press("Escape");
   await page.keyboard.press("Meta+Shift+Backspace");
   await expect(page.getByRole("dialog", { name: "Delete this note?" })).toHaveScreenshot(
     "note-delete-dialog.png",

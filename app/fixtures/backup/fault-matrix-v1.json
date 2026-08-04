@@ -375,7 +375,7 @@
       "id": "reopen-historical-note-citation",
       "phase": "reopen",
       "failureClass": "stale-state",
-      "test": "backup::canary::historical_canary_evidence_requires_exact_locator_and_source_provenance",
+      "test": "backup::canary::historical_canary_evidence_requires_exact_locator_and_revision_provenance",
       "invariants": ["authored-bytes", "citation-provenance"]
     },
     {

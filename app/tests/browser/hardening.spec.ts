@@ -127,7 +127,6 @@ test("high-density rendering keeps focus targets and accessible names", async ({
   const editor = page.getByRole("textbox", { name: "Note" });
   await editor.focus();
   await expect(editor).toBeFocused();
-  await expect(page.getByRole("button", { name: "Sources" })).toBeVisible();
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
 });

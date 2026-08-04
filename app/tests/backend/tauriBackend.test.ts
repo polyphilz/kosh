@@ -31,7 +31,6 @@ describe("tauriBackend tidbit gateway", () => {
       baseRevisionId: null,
       editGeneration: 1,
       bodyMarkdown: "A shower thought",
-      sources: [{ label: "Notebook", url: null }],
     };
     const checkpoint: CheckpointWorkingCopyInput = {
       noteId: "tidbit-1",
@@ -61,7 +60,6 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.loadTidbit("tidbit-1");
     await tauriBackend.deleteTidbit(deletion);
     await tauriBackend.restoreTidbit(restoration);
-    await tauriBackend.openSourceUrl("source-1");
     await tauriBackend.resolveCitation("passage-1");
     await tauriBackend.searchPassages(search);
     await tauriBackend.saveWorkingCopy(workingCopy);
@@ -99,7 +97,6 @@ describe("tauriBackend tidbit gateway", () => {
       ["load_tidbit", { id: "tidbit-1" }],
       ["delete_tidbit", { input: deletion }],
       ["restore_tidbit", { input: restoration }],
-      ["open_source_url", { sourceId: "source-1" }],
       ["resolve_citation", { passageId: "passage-1" }],
       ["search_passages", { input: search }],
       ["save_working_copy", { input: workingCopy }],

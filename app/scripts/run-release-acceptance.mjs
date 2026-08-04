@@ -268,14 +268,13 @@ function checkJourneys(values) {
 
   const requirements = [
     [
-      "a URL-bearing source",
+      "a note containing an inline URL",
       `SELECT count(*)
        FROM tidbit
-       JOIN tidbit_revision_source AS membership
-         ON membership.tidbit_revision_id = tidbit.current_revision_id
-       JOIN source ON source.id = membership.source_id
+       JOIN tidbit_revision AS revision
+         ON revision.id = tidbit.current_revision_id
        WHERE tidbit.deleted_at IS NULL
-         AND source.normalized_url IS NOT NULL`,
+         AND instr(revision.body_markdown, 'https://') > 0`,
     ],
     [
       "a code-bearing tidbit",
@@ -390,7 +389,7 @@ function checkJourneys(values) {
     );
   }
   console.info(
-    "Packaged journey acceptance passed: titleless rich notes, source citations, image OCR, PDF/text extraction, opaque files, search, and semantic indexing are durable.",
+    "Packaged journey acceptance passed: titleless rich notes, exact citations, image OCR, PDF/text extraction, opaque files, search, and semantic indexing are durable.",
   );
 }
 
@@ -469,8 +468,6 @@ function logicalEvidence(profile) {
     ),
     workingCopies: numberSql(profile.main, "SELECT count(*) FROM draft"),
     revisions: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision"),
-    sources: numberSql(profile.main, "SELECT count(*) FROM source"),
-    revisionSources: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_source"),
     attachments: numberSql(profile.main, "SELECT count(*) FROM attachment"),
     revisionAttachments: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_attachment"),
     passages: numberSql(profile.main, "SELECT count(*) FROM passage"),

@@ -9,8 +9,7 @@ interface StartupSmokeReadyProps {
   surface: "main";
 }
 
-const CANARY_SOURCE_LABEL = "Kosh startup smoke";
-const CANARY_SOURCE_URL = "https://example.invalid/kosh-progressive-operability";
+const CANARY_URL = "https://example.invalid/kosh-progressive-operability";
 let startupCapture: Promise<boolean> | undefined;
 
 interface StartupCanaryEvidence {
@@ -20,7 +19,7 @@ interface StartupCanaryEvidence {
   resolvedPassageId: string;
   revisionId: string;
   resultCount: number;
-  sourceUrl: string;
+  canaryUrl: string;
 }
 
 export function StartupSmokeReady({ surface }: StartupSmokeReadyProps) {
@@ -71,7 +70,7 @@ async function captureCanary(backend: Backend, query: string): Promise<boolean> 
   });
   if (existing.results.some(({ citation }) => citation.excerpt.includes(query))) return false;
   const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: createUuidV7() });
-  coordinator.update(query, [{ label: CANARY_SOURCE_LABEL, url: CANARY_SOURCE_URL }]);
+  coordinator.update(`${query}\n\n${CANARY_URL}`);
   await coordinator.flush("IDLE");
   coordinator.dispose();
   return true;
@@ -97,9 +96,8 @@ async function proveSearchAndCitation(
     }
     const result = matches[0]!;
     const citation = await backend.resolveCitation(result.passageId);
-    const sourceUrl = citation.sources.find((source) => source.url !== null)?.url;
-    if (!citation.tidbit || !sourceUrl) {
-      throw new Error("startup canary citation lost its authored revision or source URL");
+    if (!citation.tidbit || !citation.excerpt.includes(CANARY_URL)) {
+      throw new Error("startup canary citation lost its authored revision or URL");
     }
     return {
       citationState: citation.state,
@@ -108,7 +106,7 @@ async function proveSearchAndCitation(
       resolvedPassageId: citation.passageId,
       revisionId: citation.tidbit.revisionId,
       resultCount: response.results.length,
-      sourceUrl,
+      canaryUrl: CANARY_URL,
     };
   }
   throw new Error("startup canary search did not become available");

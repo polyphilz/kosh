@@ -294,7 +294,6 @@ async function measureFirstSearchResult(page, index) {
         baseRevisionId: null,
         editGeneration: 1,
         bodyMarkdown: `Deterministic ${marker} passage ${sequence}.`,
-        sources: [],
       });
       if (saved.status !== "SAVED") {
         throw new Error(`baseline working copy was not saved: ${saved.status}`);

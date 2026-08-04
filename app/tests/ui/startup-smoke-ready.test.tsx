@@ -68,13 +68,7 @@ describe("StartupSmokeReady", () => {
       startupSmokeCanary: "koshstartupcanaryv1",
     });
     const tidbit = await backend.seedNote({
-      bodyMarkdown: "koshstartupcanaryv1",
-      sources: [
-        {
-          label: "Kosh startup smoke",
-          url: "https://example.invalid/kosh-progressive-operability",
-        },
-      ],
+      bodyMarkdown: "koshstartupcanaryv1\n\nhttps://example.invalid/kosh-progressive-operability",
     });
     const root = document.createElement("div");
     root.id = "root";
@@ -101,7 +95,7 @@ describe("StartupSmokeReady", () => {
             resolvedPassageId: `fake-passage:${tidbit.currentRevisionId}`,
             revisionId: tidbit.currentRevisionId,
             resultCount: 1,
-            sourceUrl: "https://example.invalid/kosh-progressive-operability",
+            canaryUrl: "https://example.invalid/kosh-progressive-operability",
           },
         }),
       );
@@ -142,7 +136,7 @@ describe("StartupSmokeReady", () => {
             citationState: "CURRENT",
             executionMode: "EXACT",
             resultCount: 1,
-            sourceUrl: "https://example.invalid/kosh-progressive-operability",
+            canaryUrl: "https://example.invalid/kosh-progressive-operability",
           }),
         }),
       );

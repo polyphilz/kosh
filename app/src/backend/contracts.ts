@@ -333,11 +333,6 @@ export interface MaintenanceOutcome {
   completedAtMs: number;
 }
 
-export interface SourceDraft {
-  label: string | null;
-  url: string | null;
-}
-
 export interface DeleteTidbitInput {
   id: string;
   expectedRevisionId: string;
@@ -402,18 +397,11 @@ export interface CitationResolution {
   locator: CitationLocator;
   tidbit: CitationTidbit | null;
   attachment: CitationAttachment | null;
-  sources: TidbitSource[];
 }
 
 export type LexicalSearchMode = "DEFAULT" | "EXACT";
 
-export type SearchField =
-  | "HEADING_CONTEXT"
-  | "BODY"
-  | "SOURCE_LABEL"
-  | "SOURCE_DOMAIN"
-  | "ATTACHMENT_NAME"
-  | "EXTRACTED_TEXT";
+export type SearchField = "HEADING_CONTEXT" | "BODY" | "ATTACHMENT_NAME" | "EXTRACTED_TEXT";
 
 export interface SearchPassagesInput {
   query: string;
@@ -492,7 +480,6 @@ export interface SaveWorkingCopyInput {
   baseRevisionId: string | null;
   editGeneration: number;
   bodyMarkdown: string;
-  sources: SourceDraft[];
 }
 
 export interface WorkingCopyRecord extends SaveWorkingCopyInput {
@@ -626,12 +613,6 @@ export type SelectedAttachmentRecord =
   | { recordKind: "PDF"; record: PdfRecord }
   | { recordKind: "GENERIC"; record: GenericAttachmentRecord };
 
-export interface TidbitSource {
-  id: string;
-  label: string | null;
-  url: string | null;
-}
-
 export interface TidbitRecord {
   id: string;
   currentRevisionId: string;
@@ -641,7 +622,6 @@ export interface TidbitRecord {
   deletedAtMs: number | null;
   displayTitle: string;
   bodyMarkdown: string;
-  sources: TidbitSource[];
 }
 
 export interface Backend {
@@ -671,7 +651,6 @@ export interface Backend {
   loadTidbit(id: string): Promise<TidbitRecord>;
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
   restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord>;
-  openSourceUrl(sourceId: string): Promise<void>;
   resolveCitation(passageId: string): Promise<CitationResolution>;
   searchPassages(input: SearchPassagesInput): Promise<SearchPassagesResponse>;
   saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;

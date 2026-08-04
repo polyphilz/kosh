@@ -12,8 +12,8 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   if (!firstNoteId) throw new Error("the initial note route did not contain an id");
   await editor.fill("Tomato technique: slow simmering preserves a bright tomato sauce.");
   await seedTidbit(page, {
-    bodyMarkdown: "Second tomato note: roast tomato halves before blending the sauce.",
-    sources: [{ label: "Kitchen log", url: "https://notes.example.org/roasting" }],
+    bodyMarkdown:
+      "Second tomato note: roast tomato halves before blending the sauce. https://notes.example.org/roasting",
   });
 
   await page.keyboard.press("Meta+k");
@@ -79,7 +79,6 @@ test("reduced motion leaves the cited passage visibly highlighted", async ({ pag
   await page.goto("/#/");
   await seedTidbit(page, {
     bodyMarkdown: "Reduced-motion evidence stays visible without an animation.",
-    sources: [],
   });
 
   await page.keyboard.press("Meta+k");
@@ -109,7 +108,6 @@ test("a route-backed search result remains on its cited note", async ({ page }) 
   const note = await seedTidbit(page, {
     title: null,
     bodyMarkdown: "Route-backed evidence names the exact cedar passage.",
-    sources: [],
   });
   await page.goto("/#/search");
   const dialog = page.getByRole("dialog", { name: "Search notes" });
@@ -128,11 +126,9 @@ test("dismissal clears transient search and stale responses cannot replace newer
   await page.goto("/#/");
   await seedTidbit(page, {
     bodyMarkdown: "Slow response: only the slow query should find this passage.",
-    sources: [],
   });
   await seedTidbit(page, {
     bodyMarkdown: "Fast response: only the fast query should find this passage.",
-    sources: [],
   });
   await page.evaluate(() => {
     const backend = window.__KOSH_FAKE_BACKEND__;
@@ -192,8 +188,8 @@ test("dismissal clears transient search and stale responses cannot replace newer
 test("a result edited after retrieval opens honest historical evidence", async ({ page }) => {
   await page.goto("/#/");
   const created = await seedTidbit(page, {
-    bodyMarkdown: "Revision evidence: the original immutable passage mentions cobalt.",
-    sources: [{ label: "Lab notebook", url: "https://example.com/lab" }],
+    bodyMarkdown:
+      "Revision evidence: the original immutable passage mentions cobalt. https://example.com/lab",
   });
   await page.keyboard.press("Meta+k");
   const search = page.getByRole("combobox", { name: "Search notes" });
@@ -209,7 +205,6 @@ test("a result edited after retrieval opens honest historical evidence", async (
       id: current.id,
       expectedRevisionId: current.currentRevisionId,
       bodyMarkdown: "Revision evidence: the current passage now mentions indigo.",
-      sources: current.sources,
     });
   }, created.id);
 
@@ -230,7 +225,6 @@ test("attachment results retain their exact page evidence after opening the owni
   await page.goto("/#/");
   const note = await seedTidbit(page, {
     bodyMarkdown: "# Vector chapter\n\n{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
-    sources: [],
   });
   await page.evaluate((seeded) => {
     const backend = window.__KOSH_FAKE_BACKEND__;
@@ -251,7 +245,6 @@ test("attachment results retain their exact page evidence after opening the owni
         mediaType: "application/pdf",
         deleted: false,
       },
-      sources: [],
     };
     backend.pdfStatus = async (attachmentId) => ({
       attachmentId,

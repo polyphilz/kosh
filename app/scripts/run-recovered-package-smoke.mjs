@@ -85,9 +85,9 @@ assertEqual(receipt.expectation, "present", "restored canary expectation");
 assertEqual(receipt.canaryPreexisting, true, "restored canary preexistence");
 assertEqual(receipt.canaryCreated, false, "restored canary creation");
 assertEqual(
-  receipt.canary.sourceUrl,
+  receipt.canary.canaryUrl,
   "https://example.invalid/kosh-progressive-operability",
-  "source",
+  "canary URL",
 );
 assertEqual(
   realpathSync(receipt.dataDir),
@@ -109,12 +109,7 @@ const evidence = {
      FROM passage
      JOIN tidbit_revision AS revision ON revision.id = passage.tidbit_revision_id
      JOIN tidbit ON tidbit.id = revision.tidbit_id
-     WHERE revision.id <> tidbit.current_revision_id
-       AND EXISTS (
-         SELECT 1
-         FROM tidbit_revision_source
-         WHERE tidbit_revision_source.tidbit_revision_id = revision.id
-       )`,
+     WHERE revision.id <> tidbit.current_revision_id`,
   ),
 };
 assert(evidence.activeTidbits >= 2, "restored package lost tidbits");

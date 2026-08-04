@@ -510,7 +510,7 @@ mod tests {
             let database = Database::initialize(paths.clone()).expect("database");
             let client = database.client();
             client
-                .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 10)
+                .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), 10)
                 .expect("working copy");
             let backup_set_id = BackupSetId::new();
             let target = target();

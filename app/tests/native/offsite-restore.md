@@ -25,7 +25,7 @@ The native test suite proves:
   publishes both files through descriptor-bound operations, and writes a
   durable completion receipt for idempotent retry;
 - a complete clean-directory recovery reopens through normal `Database`
-  initialization and restores local search, a source-bearing note citation,
+  initialization and restores local search, an exact note citation,
   and attachment bytes;
 - a drill reconstructs and validates the same pair in an owned temporary
   directory, removes it afterward, and leaves the live database bytes

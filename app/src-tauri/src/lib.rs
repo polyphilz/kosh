@@ -84,7 +84,6 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         attachments::attachment_status,
         attachments::open_attachment_external,
         attachments::reveal_attachment_in_finder,
-        attachments::open_source_url,
         attachments::set_file_drop_consumer_active,
         attachments::discard_file_drop_selections,
         pdf::select_pdf,
@@ -159,7 +158,6 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         attachments::attachment_status,
         attachments::open_attachment_external,
         attachments::reveal_attachment_in_finder,
-        attachments::open_source_url,
         attachments::set_file_drop_consumer_active,
         attachments::discard_file_drop_selections,
         pdf::select_pdf,
@@ -266,7 +264,7 @@ pub use database::{
     PdfExtractionStatus, PdfRecord, PdfStatusRecord, RestoreTidbitInput, SearchExecutionMode,
     SearchField, SearchHighlight, SearchPassagesInput, SearchPassagesResponse,
     SemanticSearchReadiness, SetAutomaticUpdateChecksInput, SetShortcutSettingsInput,
-    ShortcutSettings, SourceDraft, Tidbit, TidbitDraft, TidbitSource,
+    ShortcutSettings, Tidbit, TidbitDraft,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
 pub use embedding_runtime::{

@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
-test("note-first capture preserves image, PDF, file, source, and citation surfaces", async ({
+test("note-first capture preserves image, PDF, file, pasted-link, and citation surfaces", async ({
   page,
 }) => {
   await page.route("kosh-media://**", async (route) => {
@@ -102,16 +102,11 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
   await editor.focus();
   await editor.press("Control+End");
   await editor.press("Enter");
-  await editor.pressSequentially("The exact note passage remembers contiguous arrays.");
-
-  await page.getByRole("button", { name: "Sources" }).click();
-  const sources = page.getByRole("dialog", { name: "Note sources" });
-  await sources.getByLabel("Label").fill("NumPy notebook");
-  await sources.getByLabel("URL").fill("https://example.com/numpy-vectors");
-  await page.keyboard.press("Escape");
+  await editor.pressSequentially(
+    "The exact note passage remembers contiguous arrays. https://example.com/numpy-vectors",
+  );
 
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
-  await expect(page.getByRole("button", { name: "Sources 1" })).toBeVisible();
   await expect(page.getByRole("img", { name: "Vector board" })).toBeVisible();
   await expect(page.locator("[data-kosh-pdf='true']")).toContainText("vector-chapter.pdf");
   await expect(page.locator("[data-kosh-file='true']")).toContainText("vector-scraps.md");
@@ -120,7 +115,7 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
   await page.getByRole("combobox", { name: "Search notes" }).fill("contiguous arrays");
   const citation = page.getByRole("option", { name: /Vector note/u });
   await expect(citation).toContainText("The exact note passage remembers contiguous arrays.");
-  await expect(citation).toContainText("NumPy notebook · example.com");
+  await expect(citation).toContainText("numpy-vectors");
   await citation.click();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("contiguous arrays");
   await expect(page.getByLabel("Search result location")).toHaveCount(0);

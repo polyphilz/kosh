@@ -178,7 +178,7 @@ run_launch() {
         and .canary.passageId == $launch.canary.passageId
         and .canary.resolvedPassageId == $launch.canary.passageId
         and .canary.revisionId == $launch.canary.revisionId
-        and .canary.sourceUrl == $launch.canary.sourceUrl
+        and .canary.canaryUrl == $launch.canary.canaryUrl
       )
       and ([.webviews[].probeRequestId] | unique | length) == 1
       and .diagnostics.mainJournalMode == "wal"
@@ -187,7 +187,7 @@ run_launch() {
       and .diagnostics.mediaForeignKeys == true
       and (.diagnostics.migrationHeads.main | type) == "number"
       and (.diagnostics.migrationHeads.media | type) == "number"
-      and .canary.sourceUrl == "https://example.invalid/kosh-progressive-operability"
+      and .canary.canaryUrl == "https://example.invalid/kosh-progressive-operability"
       and (
         ($expectation == "absent" and .canaryPreexisting == false and .canaryCreated == true)
         or
@@ -218,7 +218,7 @@ jq -e -n \
     and $seed[0].canary.tidbitId == $restart[0].canary.tidbitId
     and $seed[0].canary.revisionId == $restart[0].canary.revisionId
     and $seed[0].canary.passageId == $restart[0].canary.passageId
-    and $seed[0].canary.sourceUrl == $restart[0].canary.sourceUrl
+    and $seed[0].canary.canaryUrl == $restart[0].canary.canaryUrl
   ' >/dev/null ||
   fail "the fresh restart silently retargeted the startup canary citation"
 

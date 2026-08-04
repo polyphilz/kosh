@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use super::{RelevanceError, Result};
 
-pub const FIXTURE_SCHEMA_VERSION: u32 = 2;
+pub const FIXTURE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -28,8 +28,6 @@ pub struct EvaluationPassage {
     pub heading_context: Vec<String>,
     pub content: String,
     #[serde(default)]
-    pub sources: Vec<EvaluationSource>,
-    #[serde(default)]
     pub attachments: Vec<EvaluationAttachment>,
     pub locator: EvaluationLocator,
 }
@@ -39,13 +37,6 @@ pub struct EvaluationPassage {
 pub enum EvaluationOwnerKind {
     Author,
     Attachment,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EvaluationSource {
-    pub label: String,
-    pub domain: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -108,7 +99,6 @@ pub enum QueryCategory {
     MediaVolume,
     Phrase,
     Prose,
-    SourceDomain,
     Synonym,
     TextAttachment,
     Unicode,
@@ -224,10 +214,6 @@ impl RelevanceFixture {
                         ));
                     }
                 }
-            }
-            for source in &passage.sources {
-                require_nonempty("source.label", &source.label)?;
-                require_nonempty("source.domain", &source.domain)?;
             }
             for attachment in &passage.attachments {
                 require_nonempty("attachment.filename", &attachment.filename)?;
@@ -452,7 +438,6 @@ mod tests {
             QueryCategory::Ocr,
             QueryCategory::Pdf,
             QueryCategory::MediaVolume,
-            QueryCategory::SourceDomain,
             QueryCategory::Synonym,
             QueryCategory::TextAttachment,
         ] {
