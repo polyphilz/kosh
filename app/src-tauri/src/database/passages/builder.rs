@@ -861,6 +861,7 @@ fn block_locator(
     start_line: Option<u32>,
     end_line: Option<u32>,
 ) -> MarkdownLocator {
+    let is_single_block = block.ordinal == block.end_ordinal;
     MarkdownLocator {
         start: block.ordinal,
         end: block.end_ordinal,
@@ -870,10 +871,10 @@ fn block_locator(
         source_end_byte: Some(
             u64::try_from(block.source_end_byte).expect("source offset fits in u64"),
         ),
-        start_char,
-        end_char,
-        start_line,
-        end_line,
+        start_char: is_single_block.then_some(start_char).flatten(),
+        end_char: is_single_block.then_some(end_char).flatten(),
+        start_line: is_single_block.then_some(start_line).flatten(),
+        end_line: is_single_block.then_some(end_line).flatten(),
     }
 }
 
@@ -1260,6 +1261,27 @@ mod tests {
         assert_eq!(passages.len(), 1);
         assert_eq!(passages[0].locator.start, 0);
         assert_eq!(passages[0].locator.end, 2);
+    }
+
+    #[test]
+    fn split_nested_prose_uses_only_its_exact_editor_block_span() {
+        let sentence = "A nested sentence carries exact evidence. ";
+        let markdown = format!("- {}\n  - Nested child.", sentence.repeat(40));
+        let passages = build_markdown_passages(&markdown);
+        let split_parent = passages
+            .iter()
+            .filter(|passage| passage.content.contains("nested sentence"))
+            .collect::<Vec<_>>();
+
+        assert!(split_parent.len() > 1);
+        for passage in split_parent {
+            assert_eq!(passage.locator.start, 0);
+            assert_eq!(passage.locator.end, 1);
+            assert_eq!(passage.locator.start_char, None);
+            assert_eq!(passage.locator.end_char, None);
+            assert_eq!(passage.locator.start_line, None);
+            assert_eq!(passage.locator.end_line, None);
+        }
     }
 
     #[test]
