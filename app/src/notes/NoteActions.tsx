@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
+import { KoshText } from "../components/KoshText";
+import { KoshTextTone, KoshTextVariant } from "../components/kosh-text-types";
 import { keyboardEventMatchesAccelerator } from "../shortcuts/localShortcuts";
 
 interface NoteActionsProps {
@@ -80,8 +82,25 @@ export function NoteActions({
         open={deleteOpen}
         title="Delete this note?"
       >
-        <p className="note-delete-copy">Its revisions and attachments remain recoverable.</p>
-        {deleteError && <p className="note-delete-error">{deleteError}</p>}
+        <KoshText
+          as="p"
+          className="note-delete-copy"
+          tone={KoshTextTone.Muted}
+          variant={KoshTextVariant.Body}
+        >
+          Its revisions and attachments remain recoverable.
+        </KoshText>
+        {deleteError && (
+          <KoshText
+            as="p"
+            className="note-delete-error"
+            role="alert"
+            tone={KoshTextTone.Danger}
+            variant={KoshTextVariant.Supporting}
+          >
+            {deleteError}
+          </KoshText>
+        )}
       </Dialog>
     </div>
   );

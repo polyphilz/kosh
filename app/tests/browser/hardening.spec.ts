@@ -85,6 +85,33 @@ test("minimum supported window reflows at 200 percent text without hidden contro
   expect(overflow.content).toBeLessThanOrEqual(overflow.viewport + 1);
 });
 
+test("primary controls survive user text-spacing overrides", async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 760 });
+  await page.goto("/#/settings");
+  await page.addStyleTag({
+    content: `
+      * {
+        letter-spacing: 0.12em !important;
+        line-height: 1.5 !important;
+        word-spacing: 0.16em !important;
+      }
+
+      p {
+        margin-bottom: 2em !important;
+      }
+    `,
+  });
+
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Appearance" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reset shortcuts" })).toBeVisible();
+  const overflow = await page.evaluate(() => ({
+    viewport: document.documentElement.clientWidth,
+    content: document.documentElement.scrollWidth,
+  }));
+  expect(overflow.content).toBeLessThanOrEqual(overflow.viewport + 1);
+});
+
 test("reduced-motion preference removes sustained animation and transition", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/#/");

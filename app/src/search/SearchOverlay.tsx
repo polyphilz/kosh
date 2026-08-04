@@ -8,6 +8,8 @@ import type {
 } from "../backend/contracts";
 import { useBackend } from "../backend/context";
 import { Dialog } from "../components/Dialog";
+import { KoshText } from "../components/KoshText";
+import { KoshTextTone, KoshTextVariant } from "../components/kosh-text-types";
 import { checkpointBeforeSearch } from "./checkpoint";
 import { HighlightedText } from "./HighlightedText";
 import { citationLocation } from "./presentation";
@@ -157,28 +159,44 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
       </div>
 
       <div aria-live="polite" className="search-overlay__status" role="status">
-        <span>{searchStatus(queryPresent, searching, response, error)}</span>
-        <span>{semanticLabel(response, semantic.runtime, semantic.index, semantic.error)}</span>
+        <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Caption}>
+          {searchStatus(queryPresent, searching, response, error)}
+        </KoshText>
+        <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Caption}>
+          {semanticLabel(response, semantic.runtime, semantic.index, semantic.error)}
+        </KoshText>
       </div>
 
       <div aria-busy={searching || undefined} className="search-overlay__results">
         {error ? (
           <div className="search-overlay__state" role="alert">
-            <strong>Search failed</strong>
-            <span>{error}</span>
+            <KoshText as="strong" variant={KoshTextVariant.Subheading}>
+              Search failed
+            </KoshText>
+            <KoshText as="span" tone={KoshTextTone.Danger} variant={KoshTextVariant.Supporting}>
+              {error}
+            </KoshText>
             <button onClick={() => setRetry((value) => value + 1)} type="button">
               Try again
             </button>
           </div>
         ) : !queryPresent ? (
           <div className="search-overlay__state">
-            <strong>Search your notes</strong>
-            <span>Results stay on this device and disappear when you close this window.</span>
+            <KoshText as="strong" variant={KoshTextVariant.Subheading}>
+              Search your notes
+            </KoshText>
+            <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+              Results stay on this device and disappear when you close this window.
+            </KoshText>
           </div>
         ) : !searching && response && results.length === 0 ? (
           <div className="search-overlay__state">
-            <strong>No passages found</strong>
-            <span>Try fewer words, a pasted link, filename, or remembered phrase.</span>
+            <KoshText as="strong" variant={KoshTextVariant.Subheading}>
+              No passages found
+            </KoshText>
+            <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+              Try fewer words, a pasted link, filename, or remembered phrase.
+            </KoshText>
           </div>
         ) : (
           <div aria-label="Matching passages" id={listboxId} role="listbox">
@@ -226,23 +244,34 @@ function SearchOverlayResult({
       type="button"
     >
       <span className="search-overlay-result__header">
-        <strong>{result.note.displayTitle}</strong>
-        <span>{attachment?.displayFilename ?? citationLocation(result.citation)}</span>
+        <KoshText as="strong" variant={KoshTextVariant.Label}>
+          {result.note.displayTitle}
+        </KoshText>
+        <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Caption}>
+          {attachment?.displayFilename ?? citationLocation(result.citation)}
+        </KoshText>
       </span>
       {result.citation.headingContext.length > 0 && (
-        <span className="search-overlay-result__heading">
+        <KoshText
+          as="span"
+          className="search-overlay-result__heading"
+          tone={KoshTextTone.Accent}
+          variant={KoshTextVariant.Caption}
+        >
           {result.citation.headingContext.join(" › ")}
-        </span>
+        </KoshText>
       )}
-      <span className="search-overlay-result__excerpt">
+      <KoshText as="span" className="search-overlay-result__excerpt" variant={KoshTextVariant.Body}>
         <HighlightedText
           fields={["BODY", "EXTRACTED_TEXT"]}
           highlights={result.highlights}
           text={result.citation.excerpt}
         />
-      </span>
+      </KoshText>
       <span className="search-overlay-result__meta">
-        <span>{citationLocation(result.citation)}</span>
+        <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Caption}>
+          {citationLocation(result.citation)}
+        </KoshText>
       </span>
     </button>
   );

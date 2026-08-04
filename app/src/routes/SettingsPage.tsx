@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   DEFAULT_KEYBOARD_BINDINGS,
   DEFAULT_MAIN_WINDOW_ACCELERATOR,
@@ -7,10 +7,12 @@ import {
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
 import { Button } from "../components/Button";
+import { KoshText } from "../components/KoshText";
 import { Select } from "../components/Select";
 import { ShortcutRecorder } from "../components/ShortcutRecorder";
 import { Status } from "../components/Status";
 import { Toggle } from "../components/Toggle";
+import { KoshTextTone, KoshTextVariant } from "../components/kosh-text-types";
 import { bindingFor, useShortcutSettings } from "../shortcuts/context";
 import {
   DEFAULT_COPY_EXACT_NOTE_LINK_ACCELERATOR,
@@ -67,9 +69,20 @@ export function SettingsPage() {
     <main className="page page--narrow">
       <header className="page-header">
         <div>
-          <p className="page-kicker">Local preferences</p>
-          <h1>Settings</h1>
-          <p>Keep the interface quiet and the evidence visible.</p>
+          <KoshText
+            as="p"
+            className="page-kicker"
+            tone={KoshTextTone.Accent}
+            variant={KoshTextVariant.Eyebrow}
+          >
+            Local preferences
+          </KoshText>
+          <KoshText as="h1" variant={KoshTextVariant.Title}>
+            Settings
+          </KoshText>
+          <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Body}>
+            Keep the interface quiet and the evidence visible.
+          </KoshText>
         </div>
         <Status tone={error ? "danger" : "success"}>
           {error ? "Settings need attention" : loading ? "Loading…" : "Saved locally"}
@@ -77,10 +90,10 @@ export function SettingsPage() {
       </header>
       <section className="settings-list">
         <label>
-          <span>
-            <strong>Appearance</strong>
-            <small>Follow macOS or choose a fixed palette.</small>
-          </span>
+          <SettingsRowCopy
+            description="Follow macOS or choose a fixed palette."
+            label="Appearance"
+          />
           <Select
             aria-label="Appearance"
             onValueChange={setAppearance}
@@ -89,10 +102,10 @@ export function SettingsPage() {
           />
         </label>
         <label>
-          <span>
-            <strong>Delete note shortcut</strong>
-            <small>Open a confirmation before deleting the current note.</small>
-          </span>
+          <SettingsRowCopy
+            description="Open a confirmation before deleting the current note."
+            label="Delete note shortcut"
+          />
           <ShortcutRecorder
             accelerator={
               localBindingFor(localBindings, LocalShortcutCommand.DeleteNote)?.accelerator ??
@@ -107,10 +120,10 @@ export function SettingsPage() {
           />
         </label>
         <label>
-          <span>
-            <strong>Copy note link shortcut</strong>
-            <small>Copy the current note URL without search-result parameters.</small>
-          </span>
+          <SettingsRowCopy
+            description="Copy the current note URL without search-result parameters."
+            label="Copy note link shortcut"
+          />
           <ShortcutRecorder
             accelerator={
               localBindingFor(localBindings, LocalShortcutCommand.CopyNoteLink)?.accelerator ??
@@ -125,10 +138,10 @@ export function SettingsPage() {
           />
         </label>
         <label>
-          <span>
-            <strong>Copy exact link shortcut</strong>
-            <small>Copy the complete note URL, including search-result parameters.</small>
-          </span>
+          <SettingsRowCopy
+            description="Copy the complete note URL, including search-result parameters."
+            label="Copy exact link shortcut"
+          />
           <ShortcutRecorder
             accelerator={
               localBindingFor(localBindings, LocalShortcutCommand.CopyExactNoteLink)?.accelerator ??
@@ -143,12 +156,14 @@ export function SettingsPage() {
           />
         </label>
         <label>
-          <span>
-            <strong>Automatically check for updates</strong>
-            <small>
-              Ask GitHub shortly after launch and every 6 hours. Manual checks remain available.
-            </small>
-          </span>
+          <SettingsRowCopy
+            description={
+              <>
+                Ask GitHub shortly after launch and every 6 hours. Manual checks remain available.
+              </>
+            }
+            label="Automatically check for updates"
+          />
           <Toggle
             checked={settings?.automaticUpdateChecksEnabled ?? true}
             disabled={loading || !settings}
@@ -157,10 +172,10 @@ export function SettingsPage() {
           />
         </label>
         <label>
-          <span>
-            <strong>Main window shortcut</strong>
-            <small>Bring Kosh forward without opening another window.</small>
-          </span>
+          <SettingsRowCopy
+            description="Bring Kosh forward without opening another window."
+            label="Main window shortcut"
+          />
           <ShortcutRecorder
             accelerator={
               bindingFor(bindings, KoshCommand.MainWindow)?.accelerator ??
@@ -173,9 +188,15 @@ export function SettingsPage() {
           />
         </label>
         {Boolean(error || settings?.shortcutErrors.length) && (
-          <div className="settings-list__error" role="alert">
+          <KoshText
+            as="div"
+            className="settings-list__error"
+            role="alert"
+            tone={KoshTextTone.Danger}
+            variant={KoshTextVariant.Supporting}
+          >
             {error ?? settings?.shortcutErrors.join(" ")}
-          </div>
+          </KoshText>
         )}
         <Button
           className="settings-list__reset"
@@ -190,5 +211,18 @@ export function SettingsPage() {
       <BackupSettings />
       <SettingsDiagnostics />
     </main>
+  );
+}
+
+function SettingsRowCopy({ description, label }: { description: ReactNode; label: string }) {
+  return (
+    <span>
+      <KoshText as="strong" variant={KoshTextVariant.Label}>
+        {label}
+      </KoshText>
+      <KoshText as="small" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+        {description}
+      </KoshText>
+    </span>
   );
 }

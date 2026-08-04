@@ -17,6 +17,8 @@ import type {
   TidbitRecord,
   WorkingCopyRecord,
 } from "../backend/contracts";
+import { KoshText } from "../components/KoshText";
+import { KoshTextTone, KoshTextVariant } from "../components/kosh-text-types";
 import {
   KOSH_NOTE_PLACEHOLDER,
   KoshBlockNoteEditor,
@@ -144,8 +146,12 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
     return (
       <main className="note-page note-page--error">
         <div role="alert">
-          <p>Could not open this note.</p>
-          <span>{loadError.message}</span>
+          <KoshText as="p" variant={KoshTextVariant.Subheading}>
+            Could not open this note.
+          </KoshText>
+          <KoshText as="span" tone={KoshTextTone.Danger} variant={KoshTextVariant.Supporting}>
+            {loadError.message}
+          </KoshText>
         </div>
       </main>
     );
@@ -714,7 +720,9 @@ function NoteEditorSession({
         />
         {error && (
           <div className="note-page__error" role="alert">
-            <span>{error}</span>
+            <KoshText as="span" tone={KoshTextTone.Danger} variant={KoshTextVariant.Supporting}>
+              {error}
+            </KoshText>
             {snapshot.error && (
               <button onClick={() => void coordinator.retry()} type="button">
                 Retry
@@ -772,9 +780,16 @@ function NoteFindBar({ inputRef, onClose, onMove, onQueryChange, state }: NoteFi
         type="search"
         value={state.query}
       />
-      <span aria-live="polite" className="note-find__status" role="status">
+      <KoshText
+        aria-live="polite"
+        as="span"
+        className="note-find__status"
+        role="status"
+        tone={KoshTextTone.Muted}
+        variant={KoshTextVariant.Caption}
+      >
         {status}
-      </span>
+      </KoshText>
       <button
         aria-label="Previous match"
         disabled={state.count === 0}
@@ -819,9 +834,15 @@ function SearchEvidenceNotice({
   return (
     <aside aria-label="Search result location" className="note-search-evidence" role="status">
       <div>
-        <strong>{citationOwner(citation)}</strong>
-        <span>{citationLocation(citation)}</span>
-        <q>{citation.excerpt}</q>
+        <KoshText as="strong" variant={KoshTextVariant.Label}>
+          {citationOwner(citation)}
+        </KoshText>
+        <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Caption}>
+          {citationLocation(citation)}
+        </KoshText>
+        <KoshText as="q" tone={KoshTextTone.Muted} variant={KoshTextVariant.Body}>
+          {citation.excerpt}
+        </KoshText>
       </div>
       <button aria-label="Dismiss search result location" onClick={onDismiss} type="button">
         ×
@@ -840,9 +861,17 @@ function SearchIntegrityNotice({
   return (
     <aside aria-label="Search citation warning" className="note-search-warning" role="alert">
       <div>
-        <strong>{focus.phase === "HISTORICAL" ? "Older revision" : "Match unavailable"}</strong>
-        <span>{focus.message}</span>
-        {focus.citation && <q>{focus.citation.excerpt}</q>}
+        <KoshText as="strong" tone={KoshTextTone.Warning} variant={KoshTextVariant.Label}>
+          {focus.phase === "HISTORICAL" ? "Older revision" : "Match unavailable"}
+        </KoshText>
+        <KoshText as="span" tone={KoshTextTone.Warning} variant={KoshTextVariant.Supporting}>
+          {focus.message}
+        </KoshText>
+        {focus.citation && (
+          <KoshText as="q" tone={KoshTextTone.Muted} variant={KoshTextVariant.Body}>
+            {focus.citation.excerpt}
+          </KoshText>
+        )}
       </div>
       <button aria-label="Dismiss search citation warning" onClick={onDismiss} type="button">
         ×

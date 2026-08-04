@@ -1,5 +1,5 @@
 :root {
-  font-family: Inter, system-ui, sans-serif;
+  font-family: var(--font-family-app);
   color-scheme: light dark;
 }
 
@@ -15,7 +15,6 @@ body {
   --accent: #d97745;
   --accent-soft: rgba(217, 119, 69, 0.13);
   --danger: #a63232;
-  --font-family-app: Inter, system-ui, sans-serif;
   --harness-bg: #f6f4ef;
   --harness-ink: #24201c;
   --ink: #24201c;
@@ -42,10 +41,11 @@ body {
 
 .kosh-editor-harness__label {
   margin: 0 0 24px;
-  font:
-    600 12px/1.2 ui-monospace,
-    monospace;
-  letter-spacing: 0.08em;
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-supporting);
+  font-weight: var(--type-weight-caption);
+  line-height: var(--type-leading-caption);
+  letter-spacing: var(--type-tracking-eyebrow);
   text-transform: uppercase;
   opacity: 0.58;
 }

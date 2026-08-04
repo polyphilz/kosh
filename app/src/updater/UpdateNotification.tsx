@@ -1,4 +1,6 @@
 import { Button } from "../components/Button.tsx";
+import { KoshText } from "../components/KoshText.tsx";
+import { KoshTextTone, KoshTextVariant } from "../components/kosh-text-types.ts";
 import { UpdateCheckOrigin, UpdatePhase, type UpdateState } from "./contracts.ts";
 import type { UpdateController } from "./controller.ts";
 
@@ -27,8 +29,16 @@ export function UpdateNotification({
       role={state.phase === UpdatePhase.Error ? "alert" : "status"}
     >
       <div>
-        <strong>{content.heading}</strong>
-        <span>{content.detail}</span>
+        <KoshText as="strong" variant={KoshTextVariant.Label}>
+          {content.heading}
+        </KoshText>
+        <KoshText
+          as="span"
+          tone={state.phase === UpdatePhase.Error ? KoshTextTone.Danger : KoshTextTone.Muted}
+          variant={KoshTextVariant.Supporting}
+        >
+          {content.detail}
+        </KoshText>
       </div>
       <div className="update-notification-actions">
         {state.phase === UpdatePhase.Available && (

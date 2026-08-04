@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Button } from "./Button";
+import { KoshText } from "./KoshText";
+import { KoshTextTone, KoshTextVariant } from "./kosh-text-types";
 
 interface StateProps {
   action?: ReactNode;
@@ -18,8 +20,14 @@ export function EmptyState({ action, detail, title }: StateProps) {
       <span aria-hidden="true" className="kosh-state__mark">
         ◌
       </span>
-      <h2>{title}</h2>
-      {detail && <p>{detail}</p>}
+      <KoshText as="h2" variant={KoshTextVariant.Subheading}>
+        {title}
+      </KoshText>
+      {detail && (
+        <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+          {detail}
+        </KoshText>
+      )}
       {action}
     </section>
   );
@@ -32,8 +40,12 @@ export function LoadingState({
   return (
     <section aria-live="polite" className="kosh-state" role="status">
       <span aria-hidden="true" className="kosh-spinner" />
-      <h2>{title}</h2>
-      <p>{detail}</p>
+      <KoshText as="h2" variant={KoshTextVariant.Subheading}>
+        {title}
+      </KoshText>
+      <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+        {detail}
+      </KoshText>
     </section>
   );
 }
@@ -44,8 +56,14 @@ export function ErrorState({ action, detail, title }: StateProps) {
       <span aria-hidden="true" className="kosh-state__mark">
         !
       </span>
-      <h2>{title}</h2>
-      {detail && <p>{detail}</p>}
+      <KoshText as="h2" variant={KoshTextVariant.Subheading}>
+        {title}
+      </KoshText>
+      {detail && (
+        <KoshText as="p" tone={KoshTextTone.Danger} variant={KoshTextVariant.Supporting}>
+          {detail}
+        </KoshText>
+      )}
       {action}
     </section>
   );

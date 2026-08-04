@@ -34,7 +34,9 @@
 
 .kosh-blocknote-editor .bn-editor {
   padding: 13px 15px;
-  font: 14px/1.6 var(--font-family-app);
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-subheading);
+  line-height: var(--type-leading-body);
 }
 
 .kosh-blocknote-editor .bn-inline-content {
@@ -96,7 +98,10 @@
   border-radius: 5px;
   box-shadow: var(--shadow);
   content: attr(aria-label);
-  font: 9px/1.2 var(--font-family-app);
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-caption);
+  line-height: var(--type-leading-caption);
   opacity: 0;
   pointer-events: none;
   transform: translateX(-50%);
@@ -111,9 +116,9 @@
 }
 
 .kosh-blocknote-editor .kosh-gutter-button--add > span {
-  font-size: 18px;
-  font-weight: 400;
-  line-height: 1;
+  font-size: var(--icon-glyph-size-large);
+  font-weight: var(--type-weight-body);
+  line-height: var(--type-leading-label);
 }
 
 .kosh-gutter-dots {
@@ -233,8 +238,8 @@
   display: flex;
   flex-direction: column;
   padding: 0;
-  font-size: 15px;
-  line-height: 1.7;
+  font-size: var(--type-size-content-editor);
+  line-height: var(--type-leading-content-editor);
 }
 
 .kosh-blocknote-editor--page .bn-editor > .bn-block-group {
@@ -253,23 +258,24 @@
 }
 
 .kosh-blocknote-editor--page [data-kosh-block-type="heading-1"] {
-  font-size: 2.25em;
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: -0.04em;
+  font-size: var(--type-size-content-heading-1);
+  font-weight: var(--type-weight-content-heading-1);
+  line-height: var(--type-leading-content-heading-1);
+  letter-spacing: var(--type-tracking-content-heading-1);
 }
 
 .kosh-blocknote-editor--page [data-kosh-block-type="heading-2"] {
-  font-size: 1.65em;
-  font-weight: 680;
-  line-height: 1.3;
-  letter-spacing: -0.025em;
+  font-size: var(--type-size-content-heading-2);
+  font-weight: var(--type-weight-content-heading-2);
+  line-height: var(--type-leading-content-heading-2);
+  letter-spacing: var(--type-tracking-content-heading-2);
 }
 
 .kosh-blocknote-editor--page [data-kosh-block-type="heading-3"] {
-  font-size: 1.3em;
-  font-weight: 660;
-  line-height: 1.4;
+  font-size: var(--type-size-content-heading-3);
+  font-weight: var(--type-weight-content-heading-3);
+  line-height: var(--type-leading-content-heading-3);
+  letter-spacing: var(--type-tracking-content-heading-3);
 }
 
 .kosh-math-editor {
@@ -290,7 +296,7 @@
   width: 100%;
   padding: 18px 24px;
   overflow-x: auto;
-  font-size: 1.25rem;
+  font-size: var(--type-size-content-math-display);
   text-align: center;
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
   border-radius: 8px;
@@ -299,9 +305,10 @@
 .kosh-math-editor__source {
   width: 100%;
   color: inherit;
-  font:
-    13px/1.5 ui-monospace,
-    monospace;
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-content-code);
+  font-weight: var(--type-weight-body);
+  line-height: var(--type-leading-supporting);
   background: transparent;
   border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
   border-radius: 5px;
@@ -348,6 +355,7 @@
   border: 1px solid var(--line-strong);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
 }
 
 .kosh-math-editor__controls {
@@ -355,13 +363,20 @@
   gap: 8px;
   align-items: center;
   padding: 10px;
+  pointer-events: none;
+}
+
+.kosh-math-editor__source,
+.kosh-math-editor__done,
+.kosh-math-editor__error {
+  pointer-events: auto;
 }
 
 .kosh-math-editor--inline .kosh-math-editor__source {
   flex: 1;
   min-width: 0;
   padding: 8px 10px;
-  font-size: 14px;
+  font-size: var(--type-size-subheading);
   border-color: var(--line-strong);
 }
 
@@ -373,7 +388,10 @@
 .kosh-math-editor__done {
   flex: none;
   padding: 7px 10px;
-  font: 650 13px/1 var(--font-family-app);
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-body);
+  font-weight: var(--type-weight-title);
+  line-height: var(--type-leading-label);
   color: #fff;
   cursor: pointer;
   background: var(--accent);
@@ -389,14 +407,20 @@
 .kosh-math-editor__error {
   padding: 9px 12px 11px;
   overflow-wrap: anywhere;
-  font: 12px/1.45 var(--font-family-app);
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-supporting);
+  font-weight: var(--type-weight-supporting);
+  line-height: var(--type-leading-supporting);
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
   border-top: 1px solid var(--line);
 }
 
 .kosh-math-editor__invalid-preview {
-  font: 600 12px/1.4 var(--font-family-app);
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-supporting);
+  font-weight: var(--type-weight-caption);
+  line-height: var(--type-leading-caption);
   color: var(--danger);
 }
 
@@ -452,7 +476,9 @@
   display: grid;
   flex: 1;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-caption);
+  line-height: var(--type-leading-caption);
 }
 
 .kosh-blocknote-image input,
@@ -463,11 +489,17 @@
   background: transparent;
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
   border-radius: 5px;
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-control-value);
+  font-weight: var(--type-weight-body);
+  line-height: var(--type-leading-body);
 }
 
 .kosh-blocknote-media__footer {
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--type-size-supporting);
+  font-weight: var(--type-weight-supporting);
+  line-height: var(--type-leading-supporting);
 }
 
 .kosh-blocknote-media__footer button,
@@ -487,9 +519,10 @@
 }
 
 .kosh-blocknote-file__icon {
-  font:
-    700 11px/1 ui-monospace,
-    monospace;
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-label);
+  line-height: var(--type-leading-label);
 }
 
 .kosh-blocknote-file__details {
@@ -505,9 +538,16 @@
   white-space: nowrap;
 }
 
+.kosh-blocknote-file__details strong {
+  font-size: var(--type-size-body);
+  font-weight: var(--type-weight-label);
+  line-height: var(--type-leading-label);
+}
+
 .kosh-blocknote-file__details span,
 .kosh-blocknote-pending-media {
-  font-size: 12px;
+  font-size: var(--type-size-supporting);
+  line-height: var(--type-leading-supporting);
   opacity: 0.68;
 }
 

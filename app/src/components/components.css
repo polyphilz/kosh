@@ -7,8 +7,6 @@
   color: var(--ink);
   background: var(--surface);
   font-family: var(--font-family-app);
-  font-weight: 680;
-  line-height: 1;
   cursor: pointer;
   transition:
     color 120ms ease,
@@ -21,14 +19,20 @@
   min-height: 34px;
   padding: 8px 11px;
   border-radius: 8px;
-  font-size: 11px;
+  font-size: var(--type-size-label);
+  font-weight: var(--type-weight-label);
+  line-height: var(--type-leading-label);
+  letter-spacing: var(--type-tracking-label);
 }
 
 .kosh-button--compact {
   min-height: 28px;
   padding: 6px 9px;
   border-radius: 7px;
-  font-size: 10px;
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-caption);
+  line-height: var(--type-leading-caption);
+  letter-spacing: var(--type-tracking-caption);
 }
 
 .kosh-button--icon {
@@ -36,7 +40,9 @@
   height: 32px;
   padding: 0;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: var(--icon-glyph-size-small);
+  font-weight: var(--type-weight-label);
+  line-height: var(--type-leading-label);
 }
 
 .kosh-button:hover:not(:disabled) {
@@ -128,15 +134,20 @@
 .kosh-input {
   min-height: 38px;
   padding: 8px 11px;
-  font-size: 12px;
 }
 
 .kosh-textarea {
   min-height: 220px;
   padding: 13px;
   resize: vertical;
-  font-size: 12px;
-  line-height: 1.65;
+}
+
+.kosh-input,
+.kosh-textarea {
+  font-size: var(--type-size-control-value);
+  font-weight: var(--type-weight-body);
+  line-height: var(--type-leading-body);
+  letter-spacing: var(--type-tracking-body);
 }
 
 .kosh-input::placeholder,
@@ -159,7 +170,11 @@
   border-radius: 7px;
   color: var(--ink);
   background: var(--surface-solid);
-  font: 650 11px/1.1 var(--font-family-app);
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-control-value);
+  font-weight: var(--type-weight-body);
+  line-height: var(--type-leading-body);
+  letter-spacing: var(--type-tracking-body);
   cursor: pointer;
 }
 
@@ -230,8 +245,10 @@
   border-radius: 999px;
   color: var(--muted);
   background: var(--surface);
-  font-size: 9px;
-  font-weight: 620;
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-caption);
+  line-height: var(--type-leading-caption);
+  letter-spacing: var(--type-tracking-caption);
 }
 
 .kosh-status > span {
@@ -270,7 +287,11 @@
   border-radius: 5px;
   color: var(--muted);
   background: color-mix(in srgb, var(--surface-solid) 88%, transparent);
-  font: 620 9px/1 var(--font-family-app);
+  font-family: var(--font-family-app);
+  font-size: var(--type-size-eyebrow);
+  font-weight: var(--type-weight-eyebrow);
+  line-height: var(--type-leading-eyebrow);
+  letter-spacing: var(--type-tracking-eyebrow);
   box-shadow: 0 1px 0 var(--line);
 }
 
@@ -292,8 +313,10 @@
   color: var(--ink);
   background: var(--surface-raised);
   box-shadow: var(--shadow);
-  font-size: 9px;
-  line-height: 1.35;
+  font-size: var(--type-size-caption);
+  font-weight: var(--type-weight-caption);
+  line-height: var(--type-leading-caption);
+  letter-spacing: var(--type-tracking-caption);
   pointer-events: none;
   opacity: 0;
   transform: translate(-50%, 3px);
@@ -327,15 +350,11 @@
 
 .kosh-state h2 {
   margin: 10px 0 5px;
-  color: var(--ink);
-  font-size: 13px;
 }
 
 .kosh-state p {
   max-width: 390px;
   margin: 0 0 16px;
-  font-size: 10px;
-  line-height: 1.55;
 }
 
 .kosh-state__mark {
@@ -347,7 +366,7 @@
   border-radius: 50%;
   color: var(--accent);
   background: var(--surface);
-  font-size: 14px;
+  font-size: var(--icon-glyph-size-medium);
 }
 
 .kosh-state--error .kosh-state__mark {
@@ -393,24 +412,10 @@
 
 .kosh-dialog header > p {
   margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 8px;
-  font-weight: 720;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .kosh-dialog h2 {
   margin: 0 0 8px;
-  font-size: 18px;
-  letter-spacing: -0.035em;
-}
-
-.kosh-dialog header > span,
-.kosh-dialog__body {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.55;
 }
 
 .kosh-dialog__body {
