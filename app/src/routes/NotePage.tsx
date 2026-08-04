@@ -26,6 +26,10 @@ import { useNoteDeletion } from "../notes/deletion";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { registerSearchCheckpoint } from "../search/checkpoint";
 import { citationLocation, citationOwner } from "../search/presentation";
+import {
+  SEARCH_RESULT_SELECTED_EVENT,
+  type SearchResultSelectedDetail,
+} from "../search/SearchOverlay";
 import { TauriEvent } from "../tauriProtocol";
 
 interface FileDropNotice {
@@ -144,6 +148,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
+  const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
   const editorInitialValue = useRef(coordinator.getSnapshot().bodyMarkdown).current;
 
@@ -206,6 +211,17 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       }
     },
   });
+
+  useEffect(() => {
+    const repeatSelection = (event: Event) => {
+      const detail = (event as CustomEvent<SearchResultSelectedDetail>).detail;
+      if (detail.noteId === noteId && detail.passageId === passageId) {
+        setSearchSelectionRevision((current) => current + 1);
+      }
+    };
+    window.addEventListener(SEARCH_RESULT_SELECTED_EVENT, repeatSelection);
+    return () => window.removeEventListener(SEARCH_RESULT_SELECTED_EVENT, repeatSelection);
+  }, [noteId, passageId]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -296,7 +312,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       if (flashTimer !== null) window.clearTimeout(flashTimer);
       editorRef.current?.clearSearchFocus();
     };
-  }, [backend, navigate, noteId, passageId]);
+  }, [backend, navigate, noteId, passageId, searchSelectionRevision]);
 
   useEffect(() => {
     if (disposeTimerRef.current !== null) {

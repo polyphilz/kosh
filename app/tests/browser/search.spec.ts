@@ -105,6 +105,7 @@ test("a blocked route cleanup retains its search match", async ({ page }) => {
   await expect(match).toContainText("precise passage");
   await page.waitForTimeout(1_800);
   await expect(match).toHaveCount(1);
+  await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=`, "u"));
 });
 
@@ -317,6 +318,12 @@ test("attachment results retain their exact page evidence after opening the owni
   await expect(location).toBeVisible();
   await page.waitForTimeout(1_500);
   await expect(location).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
+  await page.getByRole("option", { name: /Vector chapter/u }).click();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
 
   await page.getByRole("button", { name: "Dismiss search result location" }).click();
   await expect(location).toBeHidden();
