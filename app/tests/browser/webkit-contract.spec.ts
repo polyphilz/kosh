@@ -36,6 +36,25 @@ test("the titleless note route focuses and checkpoints in WebKit", async ({ page
   await expect(editor).toContainText("WebKit preserves this titleless note automatically.");
 });
 
+test("the collapsed sidebar preserves a usable WebKit writing width", async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 640 });
+  await page.goto("/#/");
+  await page.getByRole("button", { name: "Hide sidebar" }).click();
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  const editorBox = await editor.boundingBox();
+  if (!editorBox) throw new Error("collapsed WebKit editor was not measurable");
+  expect(editorBox.width).toBeGreaterThan(300);
+
+  await editor.fill("WebKit stays horizontal.");
+  const paragraphBox = await page
+    .locator('.bn-block-content[data-content-type="paragraph"]')
+    .first()
+    .boundingBox();
+  if (!paragraphBox) throw new Error("collapsed WebKit paragraph was not measurable");
+  expect(paragraphBox.height).toBeLessThan(40);
+});
+
 test("Command-F finds and cycles through the current note in WebKit", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

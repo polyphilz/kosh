@@ -277,6 +277,7 @@ button {
 }
 
 .app-content {
+  grid-column: 2;
   min-width: 0;
 }
 
@@ -1529,6 +1530,10 @@ button {
   .app-shell,
   .app-shell[data-sidebar="closed"] {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-content {
+    grid-column: 1;
   }
 
   .app-sidebar {
