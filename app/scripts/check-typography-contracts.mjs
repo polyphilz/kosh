@@ -21,10 +21,11 @@ const rawTypographyNumericPattern =
   /(?<![\w$-])-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?:[a-z%]+)?(?![\w$-])/i;
 const typographyProperties = ["font-size", "font", "font-weight", "letter-spacing", "line-height"];
 
-function stripComments(contents) {
-  return contents
-    .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+function stripComments(contents, lineComments) {
+  const withoutBlocks = contents.replace(/\/\*[\s\S]*?\*\//g, (comment) =>
+    comment.replace(/[^\n]/g, " "),
+  );
+  return lineComments ? withoutBlocks.replace(/(^|[^:])\/\/.*$/gm, "$1") : withoutBlocks;
 }
 
 function lineAt(contents, offset) {
@@ -155,15 +156,16 @@ function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) 
     letterSpacing: TypographyCheckKind.LetterSpacing,
     lineHeight: TypographyCheckKind.LineHeight,
   };
+  const propertyNames = Object.keys(properties).join("|");
   const assignments = new RegExp(
-    `\\b(${Object.keys(properties).join("|")})\\b\\s*(?::|=)\\s*`,
+    `(?:(["'])(${propertyNames})\\1|\\b(${propertyNames})\\b)\\s*(?::|=)\\s*`,
     "g",
   );
   const referencedVariables = [];
 
   for (const match of analyzed.matchAll(assignments)) {
     const value = readInlineValue(analyzed, match.index + match[0].length);
-    const property = match[1];
+    const property = match[2] ?? match[3];
     const line = lineAt(analyzed, match.index);
     if (rawTypographyNumericPattern.test(value)) {
       violations.push({
@@ -254,15 +256,16 @@ function readInlineValue(contents, start) {
 }
 
 export function findTypographyViolations(path, contents) {
-  const analyzed = stripComments(contents);
-  return extname(path) === ".css"
+  const css = extname(path) === ".css";
+  const analyzed = stripComments(contents, !css);
+  return css
     ? cssViolations(path, contents, analyzed, undefined, undefined)
     : inlineViolations(path, contents, analyzed);
 }
 
 export function findTypographyViolationsInSources(sources, allowedTokenSource) {
   const analyzedSources = sources.map(({ path, contents }) => ({
-    analyzed: stripComments(contents),
+    analyzed: stripComments(contents, extname(path) !== ".css"),
     contents,
     path,
   }));

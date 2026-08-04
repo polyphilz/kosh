@@ -155,6 +155,19 @@ describe("typography contract", () => {
     ]);
   });
 
+  test("rejects raw inline values behind quoted property keys", () => {
+    const found = findTypographyViolations(
+      "src/Feature.tsx",
+      `const invalid = { "fontSize": 12, 'fontWeight': 700 };
+       const valid = { "lineHeight": "var(--type-leading-body)" };`,
+    );
+
+    expect(found.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.InlineFontSize,
+      TypographyCheckKind.FontWeight,
+    ]);
+  });
+
   test("checks complete inline fallbacks without rejecting numbered tokens", () => {
     const found = findTypographyViolations(
       "src/Feature.tsx",
@@ -259,5 +272,13 @@ describe("typography contract", () => {
         .icon { width: 12px; height: 12px; }
       `),
     ).toEqual([]);
+  });
+
+  test("keeps protocol-relative CSS URLs from hiding later declarations", () => {
+    const found = cssViolations(
+      `.copy { background: url(//cdn.example/copy.png); font-size: 12px; }`,
+    );
+
+    expect(found.map((entry) => entry.check)).toEqual([TypographyCheckKind.FontSize]);
   });
 });
