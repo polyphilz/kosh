@@ -42,6 +42,33 @@ describe("typography contract", () => {
     ]);
   });
 
+  test("rejects scientific notation in CSS and inline typography values", () => {
+    const cssFound = cssViolations(`
+      .copy {
+        font-size: 1e2px;
+        font-weight: 7e2;
+        line-height: 1.4e0;
+        letter-spacing: 2e-2em;
+      }
+    `);
+    const inlineFound = findTypographyViolations(
+      "src/Feature.tsx",
+      `const style = { fontSize: "1e2px", fontWeight: 7e2, lineHeight: 1.4e0 };`,
+    );
+
+    expect(cssFound.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.FontSize,
+      TypographyCheckKind.FontWeight,
+      TypographyCheckKind.LineHeight,
+      TypographyCheckKind.LetterSpacing,
+    ]);
+    expect(inlineFound.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.InlineFontSize,
+      TypographyCheckKind.FontWeight,
+      TypographyCheckKind.LineHeight,
+    ]);
+  });
+
   test("does not mistake numbers in token names for raw typography values", () => {
     expect(
       cssViolations(`
@@ -151,6 +178,33 @@ describe("typography contract", () => {
       "src/feature-tokens.css",
     ]);
     expect(found.map((entry) => entry.line)).toEqual([2, 3]);
+  });
+
+  test("resolves typography variables referenced by inline styles", () => {
+    const found = findTypographyViolationsInSources(
+      [
+        {
+          path: "src/typography.css",
+          contents: ":root { --type-size-body: 1rem; }",
+        },
+        {
+          path: "src/feature-tokens.css",
+          contents:
+            ":root { --feature-copy: var(--feature-copy-base); --feature-copy-base: 12px; }",
+        },
+        {
+          path: "src/Feature.tsx",
+          contents: `const style = { fontSize: "var(--feature-copy)" };`,
+        },
+      ],
+      "src/typography.css",
+    );
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      check: TypographyCheckKind.TypographyVariable,
+      path: "src/feature-tokens.css",
+    });
   });
 
   test("accepts centralized token references and inheritance", () => {

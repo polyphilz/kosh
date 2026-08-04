@@ -15,9 +15,10 @@ export const TypographyCheckKind = {
   TypographyVariable: "typography variable",
 };
 
-const sizedNumericPattern = /(?:\d+(?:\.\d*)?|\.\d+)\s*(?:%|[a-z]+)(?![\w-])/i;
-const unitlessZeroPattern = /(^|[^\w$.-])-?0(?:\.0*)?(?![\w$.-])/i;
-const rawTypographyNumericPattern = /(?<![\w$-])-?(?:\d+(?:\.\d*)?|\.\d+)(?:[a-z%]+)?(?![\w$-])/i;
+const sizedNumericPattern = /(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?\s*(?:%|[a-z]+)(?![\w-])/i;
+const unitlessZeroPattern = /(^|[^\w$.-])-?0(?:\.0*)?(?:e[+-]?\d+)?(?![\w$.-])/i;
+const rawTypographyNumericPattern =
+  /(?<![\w$-])-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?:[a-z%]+)?(?![\w$-])/i;
 const typographyProperties = ["font-size", "font", "font-weight", "letter-spacing", "line-height"];
 
 function stripComments(contents) {
@@ -146,7 +147,7 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
   return violations;
 }
 
-function inlineViolations(path, raw, analyzed) {
+function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) {
   const violations = [];
   const properties = {
     fontSize: TypographyCheckKind.InlineFontSize,
@@ -158,19 +159,49 @@ function inlineViolations(path, raw, analyzed) {
     `\\b(${Object.keys(properties).join("|")})\\b\\s*(?::|=)\\s*`,
     "g",
   );
+  const referencedVariables = [];
 
   for (const match of analyzed.matchAll(assignments)) {
     const value = readInlineValue(analyzed, match.index + match[0].length);
-    if (!rawTypographyNumericPattern.test(value)) continue;
     const property = match[1];
     const line = lineAt(analyzed, match.index);
-    violations.push({
-      path,
-      line,
-      check: properties[property],
-      message: `${property} uses a raw numeric value instead of a type token`,
-      source: sourceAt(raw, line),
-    });
+    if (rawTypographyNumericPattern.test(value)) {
+      violations.push({
+        path,
+        line,
+        check: properties[property],
+        message: `${property} uses a raw numeric value instead of a type token`,
+        source: sourceAt(raw, line),
+      });
+    }
+    referencedVariables.push(...value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]));
+  }
+
+  if (!definitions) return violations;
+  const visited = new Set();
+  while (referencedVariables.length > 0) {
+    const variable = referencedVariables.pop();
+    if (!variable) continue;
+    for (const definition of definitions.get(variable) ?? []) {
+      const identity = `${definition.path}:${definition.line}:${variable}`;
+      if (visited.has(identity)) continue;
+      visited.add(identity);
+      referencedVariables.push(
+        ...definition.value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]),
+      );
+      if (
+        definition.path !== allowedTokenSource &&
+        rawTypographyNumericPattern.test(definition.value)
+      ) {
+        violations.push({
+          path: definition.path,
+          line: definition.line,
+          check: TypographyCheckKind.TypographyVariable,
+          message: "a typography variable hides a raw numeric value outside the token source",
+          source: sourceAt(definition.raw, definition.line),
+        });
+      }
+    }
   }
   return violations;
 }
@@ -253,7 +284,13 @@ export function findTypographyViolationsInSources(sources, allowedTokenSource) {
             definitions,
             allowedTokenSource,
           )
-        : inlineViolations(source.path, source.contents, source.analyzed),
+        : inlineViolations(
+            source.path,
+            source.contents,
+            source.analyzed,
+            definitions,
+            allowedTokenSource,
+          ),
     );
   return [
     ...new Map(
