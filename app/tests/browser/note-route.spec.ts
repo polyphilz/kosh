@@ -143,7 +143,8 @@ test("the page gutter selects contiguous blocks beside the add and move controls
   const firstBox = await blocks.nth(0).boundingBox();
   const secondBox = await blocks.nth(1).boundingBox();
   const thirdBox = await blocks.nth(2).boundingBox();
-  if (!railBox || !sidebarBox || !addBox || !firstBox || !secondBox || !thirdBox) {
+  const lastBox = await blocks.nth(3).boundingBox();
+  if (!railBox || !sidebarBox || !addBox || !firstBox || !secondBox || !thirdBox || !lastBox) {
     throw new Error("the gutter layout is not rendered");
   }
   expect(railBox.width).toBeGreaterThanOrEqual(40);
@@ -166,6 +167,12 @@ test("the page gutter selects contiguous blocks beside the add and move controls
       { x: railX, y: firstBox.y + firstBox.height / 2 },
     ),
   ).toBe("note-gutter-selection-rail");
+
+  const belowBlocksY = lastBox.y + lastBox.height + 80;
+  expect(belowBlocksY).toBeLessThan(railBox.y + railBox.height);
+  await page.mouse.click(railX, belowBlocksY);
+  await expect(editor.locator('[data-kosh-gutter-selected="true"]')).toHaveCount(0);
+
   await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
   await page.mouse.down();
   const selectionX = thirdBox.x + Math.min(250, thirdBox.width - 2);

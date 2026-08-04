@@ -502,19 +502,10 @@ function topLevelBlockElements(root: HTMLElement): HTMLElement[] {
 }
 
 function blockElementAtY(blocks: HTMLElement[], clientY: number): HTMLElement | undefined {
-  let closest: { distance: number; element: HTMLElement } | undefined;
-  for (const element of blocks) {
+  return blocks.find((element) => {
     const bounds = element.getBoundingClientRect();
-    const distance =
-      clientY < bounds.top
-        ? bounds.top - clientY
-        : clientY > bounds.bottom
-          ? clientY - bounds.bottom
-          : 0;
-    if (!closest || distance < closest.distance) closest = { distance, element };
-    if (distance === 0) return element;
-  }
-  return closest?.element;
+    return clientY >= bounds.top && clientY <= bounds.bottom;
+  });
 }
 
 function focusCitation(
