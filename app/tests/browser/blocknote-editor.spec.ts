@@ -169,6 +169,78 @@ test("real keyboard input covers undo, redo, IME, and list nesting", async ({ pa
   });
 });
 
+test("the gutter controls add below and expose stable hover guidance", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => {
+    document.documentElement.dataset.appearance = "DARK";
+  });
+  const before = await readHarnessSnapshot(page);
+  const targetIndex = 3;
+  const targetId = before.blocks[targetIndex]!.id;
+  await page.locator(`.bn-block-outer[data-id="${targetId}"]`).hover();
+
+  const addBelow = page.getByRole("button", { name: "Click to add below" });
+  const drag = page.getByRole("button", { name: "Drag to move" });
+  await expect(addBelow).toBeVisible();
+  await expect(drag).toBeVisible();
+  for (const button of [addBelow, drag]) {
+    await button.hover();
+    const highlight = await button.evaluate((element) => {
+      const icon = element.firstElementChild;
+      if (!(icon instanceof HTMLElement)) throw new Error("gutter icon wrapper is missing");
+      const accentProbe = document.createElement("span");
+      accentProbe.style.color = "var(--accent)";
+      element.append(accentProbe);
+      const accent = getComputedStyle(accentProbe).color;
+      accentProbe.remove();
+      const buttonStyle = getComputedStyle(element);
+      const iconStyle = getComputedStyle(icon);
+      return {
+        accent,
+        buttonBackground: buttonStyle.backgroundColor,
+        buttonWidth: element.getBoundingClientRect().width,
+        iconBackground: iconStyle.backgroundColor,
+        iconColor: iconStyle.color,
+        iconWidth: icon.getBoundingClientRect().width,
+      };
+    });
+    expect(highlight).toMatchObject({
+      buttonBackground: "rgba(0, 0, 0, 0)",
+      buttonWidth: 24,
+      iconWidth: 20,
+    });
+    expect(highlight.iconBackground).not.toBe("rgba(0, 0, 0, 0)");
+    expect(highlight.iconColor).toBe(highlight.accent);
+  }
+  await addBelow.hover();
+  await expect
+    .poll(() =>
+      addBelow.evaluate((button) => ({
+        content: getComputedStyle(button, "::after").content,
+        opacity: getComputedStyle(button, "::after").opacity,
+      })),
+    )
+    .toEqual({ content: '"Click to add below"', opacity: "1" });
+  await drag.hover();
+  await expect
+    .poll(() =>
+      drag.evaluate((button) => ({
+        content: getComputedStyle(button, "::after").content,
+        opacity: getComputedStyle(button, "::after").opacity,
+      })),
+    )
+    .toEqual({ content: '"Drag to move"', opacity: "1" });
+
+  await addBelow.hover();
+  await addBelow.click();
+  await expect
+    .poll(async () => (await readHarnessSnapshot(page)).blocks.length)
+    .toBe(before.blocks.length + 1);
+  const after = await readHarnessSnapshot(page);
+  expect(after.blocks[targetIndex + 1]).toMatchObject({ content: [], type: "paragraph" });
+  expect(after.focused).toBe(true);
+});
+
 test("the gutter selects, deletes, reorders, and restores editor focus", async ({ page }) => {
   await openHarness(page);
   let snapshot = await readHarnessSnapshot(page);
@@ -186,7 +258,7 @@ test("the gutter selects, deletes, reorders, and restores editor focus", async (
   expect(selected).toEqual(snapshot.blocks.slice(1, 4).map((block) => block.id));
 
   await page.locator(`.bn-block-outer[data-id="${selected[0]}"]`).hover();
-  await page.getByRole("button", { name: "Open block menu" }).click();
+  await page.getByRole("button", { name: "Drag to move" }).click();
   await page.getByRole("menuitem", { name: "Delete selected blocks" }).click();
   await expect.poll(async () => (await readHarnessSnapshot(page)).focused).toBe(true);
   snapshot = await readHarnessSnapshot(page);
@@ -286,7 +358,7 @@ async function pointerSelect(page: Page, start: Locator, end = start) {
 
 async function dragBlockBefore(page: Page, sourceId: string, targetId: string) {
   await page.locator(`.bn-block-outer[data-id="${sourceId}"]`).hover();
-  const handleBox = await page.getByRole("button", { name: "Open block menu" }).boundingBox();
+  const handleBox = await page.getByRole("button", { name: "Drag to move" }).boundingBox();
   const targetBox = await page.locator(`.bn-block[data-id="${targetId}"]`).boundingBox();
   if (!handleBox || !targetBox) throw new Error("drag source or target is not rendered");
   const sourceX = handleBox.x + handleBox.width / 2;

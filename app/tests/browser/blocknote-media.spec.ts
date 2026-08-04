@@ -45,7 +45,7 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
   const snapshot = await readHarnessSnapshot(page);
   const pdfBlock = snapshot.blocks.find((block) => block.type === "koshPdf")!;
   await page.locator(`.bn-block-outer[data-id="${pdfBlock.id}"]`).hover();
-  await page.getByRole("button", { name: "Open block menu" }).click();
+  await page.getByRole("button", { name: "Drag to move" }).click();
   await page.getByRole("menuitem", { name: "Move block up" }).click();
   await expect
     .poll(async () => {

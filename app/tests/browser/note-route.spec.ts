@@ -107,6 +107,153 @@ test("the blank canvas below the last block continues the note", async ({ page }
   await expect(blocks.last()).toContainText("Continue from anywhere below.");
 });
 
+test("the page gutter selects contiguous blocks beside the add and move controls", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/#/search");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown:
+        "First gutter block.\n\nSecond gutter block.\n\n$$\n\\sum_i a_i\n$$\n\nLast gutter block.",
+      sources: [],
+    });
+  });
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}`;
+  }, note.id);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  const blocks = editor.locator(
+    ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+  );
+  await expect(blocks).toHaveCount(4);
+  await blocks.first().hover();
+  const addBelow = page.getByRole("button", { name: "Click to add below" });
+  const drag = page.getByRole("button", { name: "Drag to move" });
+  await expect(addBelow).toBeVisible();
+  await expect(drag).toBeVisible();
+
+  const rail = page.getByTestId("note-gutter-selection-rail");
+  const railBox = await rail.boundingBox();
+  const sidebarBox = await page.locator(".app-sidebar").boundingBox();
+  const addBox = await addBelow.boundingBox();
+  const firstBox = await blocks.nth(0).boundingBox();
+  const secondBox = await blocks.nth(1).boundingBox();
+  const thirdBox = await blocks.nth(2).boundingBox();
+  const lastBox = await blocks.nth(3).boundingBox();
+  if (!railBox || !sidebarBox || !addBox || !firstBox || !secondBox || !thirdBox || !lastBox) {
+    throw new Error("the gutter layout is not rendered");
+  }
+  expect(railBox.width).toBeGreaterThanOrEqual(40);
+  expect(railBox.x).toBeGreaterThanOrEqual(sidebarBox.x + sidebarBox.width - 1);
+  expect(railBox.x + railBox.width).toBeLessThan(addBox.x);
+
+  const railX = railBox.x + railBox.width / 2;
+  expect(
+    await blocks.evaluateAll((elements) =>
+      elements.map(
+        (element) =>
+          element.getAttribute("data-id") ??
+          element.querySelector("[data-id]")?.getAttribute("data-id"),
+      ),
+    ),
+  ).toEqual([expect.any(String), expect.any(String), expect.any(String), expect.any(String)]);
+  expect(
+    await page.evaluate(
+      ({ x, y }) => document.elementFromPoint(x, y)?.getAttribute("data-testid"),
+      { x: railX, y: firstBox.y + firstBox.height / 2 },
+    ),
+  ).toBe("note-gutter-selection-rail");
+
+  const belowBlocksY = lastBox.y + lastBox.height + 80;
+  expect(belowBlocksY).toBeLessThan(railBox.y + railBox.height);
+  await page.mouse.click(railX, belowBlocksY);
+  await expect(editor.locator('[data-kosh-gutter-selected="true"]')).toHaveCount(0);
+
+  await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
+  await page.mouse.down();
+  const selectionX = thirdBox.x + Math.min(250, thirdBox.width - 2);
+  const thirdY = thirdBox.y + thirdBox.height / 2;
+  await page.mouse.move(selectionX, thirdY, { steps: 12 });
+
+  const marquee = page.getByTestId("note-gutter-selection-marquee");
+  await expect(marquee).toBeVisible();
+  const marqueeBox = await marquee.boundingBox();
+  if (!marqueeBox) throw new Error("the gutter marquee is not rendered");
+  expect(marqueeBox.x).toBeLessThan(firstBox.x);
+  expect(marqueeBox.x + marqueeBox.width).toBeGreaterThan(firstBox.x);
+
+  const selected = editor.locator('[data-kosh-gutter-selected="true"]');
+  await expect(selected).toHaveCount(3);
+  await page.mouse.move(selectionX, secondBox.y + secondBox.height / 2, { steps: 8 });
+  await expect(selected).toHaveCount(2);
+  await expect(selected.nth(0)).toContainText("First gutter block.");
+  await expect(selected.nth(1)).toContainText("Second gutter block.");
+  await page.mouse.move(selectionX, thirdY, { steps: 8 });
+  await expect(selected).toHaveCount(3);
+  await page.mouse.move(railX, thirdY, { steps: 8 });
+  await expect(selected).toHaveCount(0);
+  await page.mouse.move(selectionX, thirdY, { steps: 8 });
+  await expect(selected).toHaveCount(3);
+  await page.mouse.up();
+
+  await expect(marquee).toBeHidden();
+  await expect(selected).toHaveCount(3);
+  await expect(selected.nth(0)).toContainText("First gutter block.");
+  await expect(selected.nth(1)).toContainText("Second gutter block.");
+  await expect(selected.nth(2)).toContainText("∑");
+  const selectionText = await page.evaluate(() => window.getSelection()?.toString() ?? "");
+  expect(selectionText).toContain("First gutter block.");
+  expect(selectionText).toContain("Second gutter block.");
+  expect(selectionText).not.toContain("Last gutter block.");
+
+  await page.keyboard.press("Backspace");
+  await expect(blocks).toHaveCount(1);
+  await expect(blocks.first()).toContainText("Last gutter block.");
+  await expect(selected).toHaveCount(0);
+});
+
+test("a gutter marquee keeps its anchor while auto-scrolling a long note", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await page.goto("/#/search");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown: Array.from({ length: 48 }, (_, index) => `Long block ${index + 1}`).join(
+        "\n\n",
+      ),
+      sources: [],
+    });
+  });
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}`;
+  }, note.id);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  const blocks = editor.locator(
+    ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+  );
+  await expect(blocks).toHaveCount(48);
+  const railBox = await page.getByTestId("note-gutter-selection-rail").boundingBox();
+  const firstBox = await blocks.first().boundingBox();
+  if (!railBox || !firstBox) throw new Error("the long-note gutter is not rendered");
+
+  const railX = railBox.x + railBox.width / 2;
+  await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(firstBox.x + 260, 492, { steps: 12 });
+  await page.waitForFunction(() => window.scrollY > 150);
+
+  const selected = editor.locator('[data-kosh-gutter-selected="true"]');
+  await expect.poll(() => selected.count()).toBeGreaterThan(8);
+  await expect(selected.first()).toContainText("Long block 1");
+  await page.mouse.up();
+});
+
 test("new notes, settings, back, and forward use the transient route stack", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

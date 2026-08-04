@@ -88,3 +88,43 @@ test("the trailing note canvas appends after an atomic block in WebKit", async (
   await expect(blocks).toHaveCount(3);
   await expect(blocks.last()).toContainText("Continue below the equation.");
 });
+
+test("the block gutter selects a range containing an atomic block in WebKit", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/#/search");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown: "First block.\n\nSecond block.\n\n$$\n\\sum_i a_i\n$$\n\nLast block.",
+      sources: [],
+    });
+  });
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}`;
+  }, note.id);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  const blocks = editor.locator(
+    ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+  );
+  await expect(blocks).toHaveCount(4);
+  const railBox = await page.getByTestId("note-gutter-selection-rail").boundingBox();
+  const firstBox = await blocks.nth(0).boundingBox();
+  const thirdBox = await blocks.nth(2).boundingBox();
+  if (!railBox || !firstBox || !thirdBox) throw new Error("the WebKit gutter is not rendered");
+
+  const railX = railBox.x + railBox.width / 2;
+  const selectionX = thirdBox.x + Math.min(250, thirdBox.width - 2);
+  await page.mouse.move(railX, firstBox.y + firstBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(selectionX, thirdBox.y + thirdBox.height / 2, { steps: 12 });
+  await expect(page.getByTestId("note-gutter-selection-marquee")).toBeVisible();
+  await page.mouse.up();
+
+  await expect(page.getByTestId("note-gutter-selection-marquee")).toBeHidden();
+  await expect(editor.locator('[data-kosh-gutter-selected="true"]')).toHaveCount(3);
+  await page.keyboard.press("Backspace");
+  await expect(blocks).toHaveCount(1);
+  await expect(blocks.first()).toContainText("Last block.");
+});

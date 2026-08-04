@@ -304,8 +304,33 @@ function KoshRemoveBlockItem() {
 function KoshHarnessSideMenu(properties: SideMenuProps) {
   return (
     <SideMenu {...properties}>
+      <KoshHarnessAddBlockButton />
       <KoshHarnessDragHandleButton />
     </SideMenu>
+  );
+}
+
+function KoshHarnessAddBlockButton() {
+  const Components = useComponentsContext()!;
+  const editor = useBlockNoteEditor(koshHarnessSchema);
+  const hoveredBlock = useExtensionState(SideMenuExtension, {
+    editor,
+    selector: (state) => state?.block,
+  });
+  if (!hoveredBlock) return null;
+
+  return (
+    <Components.SideMenu.Button
+      className="bn-button kosh-gutter-button kosh-gutter-button--add"
+      icon={<span aria-hidden>+</span>}
+      label="Click to add below"
+      onClick={() => {
+        const inserted = editor.insertBlocks([{ type: "paragraph" }], hoveredBlock, "after")[0];
+        if (!inserted) return;
+        editor.setTextCursorPosition(inserted, "start");
+        editor.focus();
+      }}
+    />
   );
 }
 
@@ -329,10 +354,16 @@ function KoshHarnessDragHandleButton() {
     >
       <Components.Generic.Menu.Trigger>
         <Components.SideMenu.Button
-          className="bn-button"
+          className="bn-button kosh-gutter-button kosh-gutter-button--drag"
           draggable
-          icon={<span aria-hidden>⋮⋮</span>}
-          label="Open block menu"
+          icon={
+            <span aria-hidden className="kosh-gutter-dots">
+              {Array.from({ length: 6 }, (_, index) => (
+                <i key={index} />
+              ))}
+            </span>
+          }
+          label="Drag to move"
           onDragEnd={() => {
             sideMenu.blockDragEnd();
             requestAnimationFrame(() => {
