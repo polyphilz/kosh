@@ -19,3 +19,7 @@ export interface TypographyViolation {
 }
 
 export function findTypographyViolations(path: string, contents: string): TypographyViolation[];
+export function findTypographyViolationsInSources(
+  sources: readonly { path: string; contents: string }[],
+  allowedTokenSource?: string,
+): TypographyViolation[];

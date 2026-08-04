@@ -65,21 +65,38 @@ function cssCheck(property, value) {
     : null;
 }
 
-function cssViolations(path, raw, analyzed) {
+function cssDefinitions(path, raw, analyzed) {
+  const definitions = new Map();
+  const definitionPattern = /(?:^|[;{])\s*(--[\w-]+)\s*:\s*([^;}]+)/gm;
+  for (const match of analyzed.matchAll(definitionPattern)) {
+    const name = match[1];
+    const definition = {
+      line: lineAt(analyzed, match.index + match[0].indexOf(name)),
+      path,
+      raw,
+      value: match[2],
+    };
+    const matches = definitions.get(name) ?? [];
+    matches.push(definition);
+    definitions.set(name, matches);
+  }
+  return definitions;
+}
+
+function mergeDefinitions(target, source) {
+  for (const [name, definitions] of source) {
+    target.set(name, [...(target.get(name) ?? []), ...definitions]);
+  }
+  return target;
+}
+
+function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSource) {
   const violations = [];
   const declarations = new RegExp(
     `(?:^|[;{])\\s*(${typographyProperties.join("|")})\\s*:\\s*([^;}]+)`,
     "gm",
   );
-  const definitions = new Map();
-  const definitionPattern = /(?:^|[;{])\s*(--[\w-]+)\s*:\s*([^;}]+)/gm;
-
-  for (const match of analyzed.matchAll(definitionPattern)) {
-    definitions.set(match[1], {
-      line: lineAt(analyzed, match.index + match[0].indexOf(match[1])),
-      value: match[2],
-    });
-  }
+  const definitions = sharedDefinitions ?? cssDefinitions(path, raw, analyzed);
 
   const referencedVariables = [];
   for (const match of analyzed.matchAll(declarations)) {
@@ -102,21 +119,23 @@ function cssViolations(path, raw, analyzed) {
   const visited = new Set();
   while (referencedVariables.length > 0) {
     const variable = referencedVariables.pop();
-    if (!variable || visited.has(variable)) continue;
-    visited.add(variable);
-    const definition = definitions.get(variable);
-    if (!definition) continue;
-    referencedVariables.push(
-      ...definition.value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]),
-    );
-    if (numericPattern.test(definition.value)) {
-      violations.push({
-        path,
-        line: definition.line,
-        check: TypographyCheckKind.TypographyVariable,
-        message: "a typography variable hides a raw numeric value outside the token source",
-        source: sourceAt(raw, definition.line),
-      });
+    if (!variable) continue;
+    for (const definition of definitions.get(variable) ?? []) {
+      const identity = `${definition.path}:${definition.line}:${variable}`;
+      if (visited.has(identity)) continue;
+      visited.add(identity);
+      referencedVariables.push(
+        ...definition.value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]),
+      );
+      if (definition.path !== allowedTokenSource && numericPattern.test(definition.value)) {
+        violations.push({
+          path: definition.path,
+          line: definition.line,
+          check: TypographyCheckKind.TypographyVariable,
+          message: "a typography variable hides a raw numeric value outside the token source",
+          source: sourceAt(definition.raw, definition.line),
+        });
+      }
     }
   }
 
@@ -154,8 +173,44 @@ function inlineViolations(path, raw, analyzed) {
 export function findTypographyViolations(path, contents) {
   const analyzed = stripComments(contents);
   return extname(path) === ".css"
-    ? cssViolations(path, contents, analyzed)
+    ? cssViolations(path, contents, analyzed, undefined, undefined)
     : inlineViolations(path, contents, analyzed);
+}
+
+export function findTypographyViolationsInSources(sources, allowedTokenSource) {
+  const analyzedSources = sources.map(({ path, contents }) => ({
+    analyzed: stripComments(contents),
+    contents,
+    path,
+  }));
+  const definitions = analyzedSources
+    .filter(({ path }) => extname(path) === ".css")
+    .reduce(
+      (all, source) =>
+        mergeDefinitions(all, cssDefinitions(source.path, source.contents, source.analyzed)),
+      new Map(),
+    );
+  const violations = analyzedSources
+    .filter(({ path }) => path !== allowedTokenSource)
+    .flatMap((source) =>
+      extname(source.path) === ".css"
+        ? cssViolations(
+            source.path,
+            source.contents,
+            source.analyzed,
+            definitions,
+            allowedTokenSource,
+          )
+        : inlineViolations(source.path, source.contents, source.analyzed),
+    );
+  return [
+    ...new Map(
+      violations.map((violation) => [
+        `${violation.path}:${violation.line}:${violation.check}`,
+        violation,
+      ]),
+    ).values(),
+  ];
 }
 
 function listSourceFiles(directory) {
@@ -167,10 +222,11 @@ function listSourceFiles(directory) {
 }
 
 function main() {
-  const files = listSourceFiles(sourceRoot).filter((path) => path !== tokenSource);
-  const violations = files.flatMap((path) =>
-    findTypographyViolations(path, readFileSync(path, "utf8")),
-  );
+  const sources = listSourceFiles(sourceRoot).map((path) => ({
+    contents: readFileSync(path, "utf8"),
+    path,
+  }));
+  const violations = findTypographyViolationsInSources(sources, tokenSource);
 
   if (violations.length > 0) {
     for (const violation of violations) {
@@ -184,7 +240,7 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`Typography contracts passed: ${files.length} source files checked.`);
+  console.log(`Typography contracts passed: ${sources.length - 1} source files checked.`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main();

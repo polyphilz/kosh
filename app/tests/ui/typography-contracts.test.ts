@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   findTypographyViolations,
+  findTypographyViolationsInSources,
   TypographyCheckKind,
 } from "../../scripts/check-typography-contracts.mjs";
 
@@ -64,6 +65,36 @@ describe("typography contract", () => {
 
     expect(found).toHaveLength(1);
     expect(found[0].check).toBe(TypographyCheckKind.TypographyVariable);
+  });
+
+  test("resolves cross-file variables and preserves repeated definitions", () => {
+    const found = findTypographyViolationsInSources(
+      [
+        {
+          path: "src/typography.css",
+          contents: ":root { --type-size-body: 1rem; }",
+        },
+        {
+          path: "src/feature-tokens.css",
+          contents: `
+            :root { --feature-copy: 12px; }
+            @media (min-width: 800px) { :root { --feature-copy: 14px; } }
+          `,
+        },
+        {
+          path: "src/feature.css",
+          contents: ".copy { font-size: var(--feature-copy); }",
+        },
+      ],
+      "src/typography.css",
+    );
+
+    expect(found).toHaveLength(2);
+    expect(found.map((entry) => entry.path)).toEqual([
+      "src/feature-tokens.css",
+      "src/feature-tokens.css",
+    ]);
+    expect(found.map((entry) => entry.line)).toEqual([2, 3]);
   });
 
   test("accepts centralized token references and inheritance", () => {
