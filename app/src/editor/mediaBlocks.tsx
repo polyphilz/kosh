@@ -370,6 +370,7 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
 
 function KoshPdfBlock({ block, editor }: PdfRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
+  const disabled = useKoshEditorDisabled();
   const [pollRevision, setPollRevision] = useState(0);
   const [status, setStatus] = useState<PdfStatusRecord | null>(null);
   const attachmentId = block.props.attachmentId;
@@ -398,16 +399,21 @@ function KoshPdfBlock({ block, editor }: PdfRenderProps) {
 
   useEffect(() => {
     if (
-      editor.isEditable &&
-      status?.displayFilename &&
-      status.displayFilename !== block.props.displayFilename
+      disabled ||
+      !status?.displayFilename ||
+      status.displayFilename === block.props.displayFilename
     ) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      if (!editor.isEditable) return;
       editor.transact((transaction) => {
         editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
         transaction.setMeta("addToHistory", false);
       });
-    }
-  }, [block, editor, status?.displayFilename]);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [block, disabled, editor, status?.displayFilename]);
 
   const extractionStatus = status?.extractionStatus ?? block.props.extractionStatus;
   const extractionError = status?.extractionError ?? block.props.extractionError;
@@ -450,7 +456,8 @@ function KoshPdfBlock({ block, editor }: PdfRenderProps) {
 
 function KoshFileBlock({ block, editor }: FileRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
-  const locked = useKoshEditorDisabled() || !editor.isEditable;
+  const disabled = useKoshEditorDisabled();
+  const locked = disabled || !editor.isEditable;
   const [status, setStatus] = useState<GenericAttachmentStatusRecord | null>(null);
   const [replacing, setReplacing] = useState(false);
   const attachmentId = block.props.attachmentId;
@@ -471,16 +478,21 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
 
   useEffect(() => {
     if (
-      editor.isEditable &&
-      status?.displayFilename &&
-      status.displayFilename !== block.props.displayFilename
+      disabled ||
+      !status?.displayFilename ||
+      status.displayFilename === block.props.displayFilename
     ) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      if (!editor.isEditable) return;
       editor.transact((transaction) => {
         editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
         transaction.setMeta("addToHistory", false);
       });
-    }
-  }, [block, editor, status?.displayFilename]);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [block, disabled, editor, status?.displayFilename]);
 
   const filename = status?.displayFilename ?? block.props.displayFilename;
   const replace = actions.pickReplacement

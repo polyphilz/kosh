@@ -273,6 +273,12 @@ test("find refreshes when visible attachment metadata hydrates", async ({ page }
           }),
         );
       });
+    backend.deleteTidbit = async () =>
+      new Promise((_, reject) => {
+        Reflect.set(window, "__KOSH_REJECT_FIND_DELETE__", () =>
+          reject(new Error("Synthetic delete failure")),
+        );
+      });
     window.location.hash = `/notes/${note.id}`;
     return note;
   });
@@ -285,9 +291,20 @@ test("find refreshes when visible attachment metadata hydrates", async ({ page }
   const findBar = page.getByRole("search", { name: "Find in note" });
   await findBar.getByRole("searchbox", { name: "Find in note" }).fill("hydrated-manual");
   await expect(findBar.getByRole("status")).toContainText("No matches");
+
+  await page.getByRole("button", { name: "Delete note" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete this note?" })
+    .getByRole("button", { name: "Delete note" })
+    .click();
+  await expect
+    .poll(() => page.evaluate(() => typeof Reflect.get(window, "__KOSH_REJECT_FIND_DELETE__")))
+    .toBe("function");
   await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_FIND_PDF_STATUS__")());
 
   await expect(page.locator("[data-kosh-pdf='true']")).toContainText("hydrated-manual.pdf");
+  await expect(findBar.getByRole("status")).toContainText("No matches");
+  await page.evaluate(() => Reflect.get(window, "__KOSH_REJECT_FIND_DELETE__")());
   await expect(findBar.getByRole("status")).toContainText("1 of 1");
   await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}$`, "u"));
 });
