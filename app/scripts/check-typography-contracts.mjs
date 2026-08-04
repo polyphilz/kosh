@@ -66,6 +66,28 @@ function stripComments(contents, lineComments) {
   return analyzed;
 }
 
+function maskQuotedCssStrings(contents) {
+  let analyzed = "";
+  let quote = null;
+  let escaped = false;
+  for (const character of contents) {
+    if (quote !== null) {
+      analyzed += character === "\n" ? "\n" : " ";
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      analyzed += " ";
+      continue;
+    }
+    analyzed += character;
+  }
+  return analyzed;
+}
+
 function lineAt(contents, offset) {
   return contents.slice(0, offset).split("\n").length;
 }
@@ -133,6 +155,55 @@ function referencedTypographyVariables(value) {
   return [...value.matchAll(/var\(\s*(--[\w-]+)/gi)].map((entry) => entry[1]);
 }
 
+function variableReferences(value, origin) {
+  return referencedTypographyVariables(value).map((name) => ({ ...origin, name }));
+}
+
+function variableViolations(references, definitions, allowedTokenSource, requireDefinitions) {
+  const violations = [];
+  const visited = new Set();
+  while (references.length > 0) {
+    const reference = references.pop();
+    if (!reference) continue;
+    const matches = definitions.get(reference.name) ?? [];
+    if (matches.length === 0) {
+      const identity = `${reference.path}:${reference.line}:${reference.name}:undefined`;
+      if (!requireDefinitions || visited.has(identity)) continue;
+      visited.add(identity);
+      violations.push({
+        path: reference.path,
+        line: reference.line,
+        check: TypographyCheckKind.TypographyVariable,
+        message: `typography references undefined token ${reference.name}`,
+        source: sourceAt(reference.raw, reference.line),
+      });
+      continue;
+    }
+    for (const definition of matches) {
+      const identity = `${definition.path}:${definition.line}:${reference.name}`;
+      if (visited.has(identity)) continue;
+      visited.add(identity);
+      references.push(
+        ...variableReferences(definition.value, {
+          line: definition.line,
+          path: definition.path,
+          raw: definition.raw,
+        }),
+      );
+      if (definition.path !== allowedTokenSource && !approvedCssTypographyValue(definition.value)) {
+        violations.push({
+          path: definition.path,
+          line: definition.line,
+          check: TypographyCheckKind.TypographyVariable,
+          message: "a typography variable hides an untokenized value outside the token source",
+          source: sourceAt(definition.raw, definition.line),
+        });
+      }
+    }
+  }
+  return violations;
+}
+
 function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSource) {
   const violations = [];
   const declarations = new RegExp(
@@ -156,31 +227,16 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
         source: sourceAt(raw, line),
       });
     }
-    referencedVariables.push(...referencedTypographyVariables(value));
+    referencedVariables.push(...variableReferences(value, { line, path, raw }));
   }
-
-  const visited = new Set();
-  while (referencedVariables.length > 0) {
-    const variable = referencedVariables.pop();
-    if (!variable) continue;
-    for (const definition of definitions.get(variable) ?? []) {
-      const identity = `${definition.path}:${definition.line}:${variable}`;
-      if (visited.has(identity)) continue;
-      visited.add(identity);
-      referencedVariables.push(...referencedTypographyVariables(definition.value));
-      if (definition.path !== allowedTokenSource && !approvedCssTypographyValue(definition.value)) {
-        violations.push({
-          path: definition.path,
-          line: definition.line,
-          check: TypographyCheckKind.TypographyVariable,
-          message: "a typography variable hides an untokenized value outside the token source",
-          source: sourceAt(definition.raw, definition.line),
-        });
-      }
-    }
-  }
-
-  return violations;
+  return violations.concat(
+    variableViolations(
+      referencedVariables,
+      definitions,
+      allowedTokenSource,
+      sharedDefinitions !== undefined,
+    ),
+  );
 }
 
 function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) {
@@ -217,31 +273,13 @@ function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) 
         source: sourceAt(raw, line),
       });
     }
-    referencedVariables.push(...referencedTypographyVariables(value));
+    referencedVariables.push(...variableReferences(value, { line, path, raw }));
   }
 
   if (!definitions) return violations;
-  const visited = new Set();
-  while (referencedVariables.length > 0) {
-    const variable = referencedVariables.pop();
-    if (!variable) continue;
-    for (const definition of definitions.get(variable) ?? []) {
-      const identity = `${definition.path}:${definition.line}:${variable}`;
-      if (visited.has(identity)) continue;
-      visited.add(identity);
-      referencedVariables.push(...referencedTypographyVariables(definition.value));
-      if (definition.path !== allowedTokenSource && !approvedCssTypographyValue(definition.value)) {
-        violations.push({
-          path: definition.path,
-          line: definition.line,
-          check: TypographyCheckKind.TypographyVariable,
-          message: "a typography variable hides an untokenized value outside the token source",
-          source: sourceAt(definition.raw, definition.line),
-        });
-      }
-    }
-  }
-  return violations;
+  return violations.concat(
+    variableViolations(referencedVariables, definitions, allowedTokenSource, true),
+  );
 }
 
 function staticInlineCssValue(value) {
@@ -315,18 +353,23 @@ function readInlineValue(contents, start) {
 
 export function findTypographyViolations(path, contents) {
   const css = extname(path) === ".css";
-  const analyzed = stripComments(contents, !css);
+  const withoutComments = stripComments(contents, !css);
+  const analyzed = css ? maskQuotedCssStrings(withoutComments) : withoutComments;
   return css
     ? cssViolations(path, contents, analyzed, undefined, undefined)
     : inlineViolations(path, contents, analyzed);
 }
 
 export function findTypographyViolationsInSources(sources, allowedTokenSource) {
-  const analyzedSources = sources.map(({ path, contents }) => ({
-    analyzed: stripComments(contents, extname(path) !== ".css"),
-    contents,
-    path,
-  }));
+  const analyzedSources = sources.map(({ path, contents }) => {
+    const css = extname(path) === ".css";
+    const withoutComments = stripComments(contents, !css);
+    return {
+      analyzed: css ? maskQuotedCssStrings(withoutComments) : withoutComments,
+      contents,
+      path,
+    };
+  });
   const definitions = analyzedSources
     .filter(({ path }) => extname(path) === ".css")
     .reduce(

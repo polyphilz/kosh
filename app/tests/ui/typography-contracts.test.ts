@@ -268,6 +268,32 @@ describe("typography contract", () => {
     });
   });
 
+  test("rejects undefined typography tokens in CSS and inline styles", () => {
+    const found = findTypographyViolationsInSources(
+      [
+        {
+          path: "src/typography.css",
+          contents: ":root { --type-size-body: 1rem; }",
+        },
+        {
+          path: "src/feature.css",
+          contents: ".copy { font-size: var(--type-szie-body); }",
+        },
+        {
+          path: "src/Feature.tsx",
+          contents: `const style = { lineHeight: "var(--type-leading-missing)" };`,
+        },
+      ],
+      "src/typography.css",
+    );
+
+    expect(found).toHaveLength(2);
+    expect(found.map((entry) => entry.path)).toEqual(["src/feature.css", "src/Feature.tsx"]);
+    expect(found.every((entry) => entry.check === TypographyCheckKind.TypographyVariable)).toBe(
+      true,
+    );
+  });
+
   test("resolves cross-file variables and preserves repeated definitions", () => {
     const found = findTypographyViolationsInSources(
       [
@@ -414,5 +440,16 @@ describe("typography contract", () => {
     );
 
     expect(found.map((entry) => entry.check)).toEqual([TypographyCheckKind.FontSize]);
+  });
+
+  test("ignores declaration-like text inside quoted CSS values", () => {
+    expect(
+      cssViolations(`
+        .asset {
+          background: url("data:text/css;font-size:12px");
+          content: "; font-weight: bold; line-height: 1";
+        }
+      `),
+    ).toEqual([]);
   });
 });
