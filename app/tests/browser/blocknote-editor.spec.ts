@@ -74,6 +74,12 @@ test("the editor exposes only Kosh's restricted BlockNote schema", async ({ page
   );
 
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph());
+  await page.locator(".kosh-editor-harness").evaluate((element) => {
+    (element as HTMLElement).style.setProperty(
+      "--font-family-app",
+      '"Kosh Editor Mono", monospace',
+    );
+  });
   await page.keyboard.type("/");
   const slashMenu = page.getByRole("listbox");
   const options = slashMenu.getByRole("option");
@@ -93,6 +99,9 @@ test("the editor exposes only Kosh's restricted BlockNote schema", async ({ page
     "PDF",
     "File",
   ]);
+  await expect
+    .poll(() => options.first().evaluate((option) => getComputedStyle(option).fontFamily))
+    .toContain("Kosh Editor Mono");
   await slashMenu.getByRole("option", { name: "Display math" }).click();
   await expect
     .poll(async () => (await readHarnessSnapshot(page)).blocks.at(-1)?.type)

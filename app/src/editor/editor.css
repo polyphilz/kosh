@@ -28,6 +28,10 @@
   background: transparent;
 }
 
+.kosh-blocknote-editor .bn-root {
+  --bn-font-family: var(--font-family-app);
+}
+
 .kosh-blocknote-editor .bn-editor {
   padding: 13px 15px;
   font: 14px/1.6 var(--font-family-app);
