@@ -44,6 +44,12 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   expect(await searchStorageKeys(page)).toEqual([]);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0, { timeout: 3_000 });
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}$`, "u"));
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("slow simmering");
+  await page.getByRole("option", { name: /Tomato technique/u }).click();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
   await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
 
   await page.getByRole("textbox", { name: "Note" }).fill("A replacement passage.");

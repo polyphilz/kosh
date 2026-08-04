@@ -265,6 +265,14 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
             flashTimer = window.setTimeout(() => {
               if (!active) return;
               editorRef.current?.clearSearchFocus();
+              if (!citation.attachment) {
+                void navigate({
+                  to: "/notes/$noteId",
+                  params: { noteId },
+                  search: {},
+                  replace: true,
+                });
+              }
               setSearchFocus((current) =>
                 current?.phase === "FOCUSED" && current.citation.passageId === citation.passageId
                   ? current.citation.attachment
@@ -289,7 +297,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       if (flashTimer !== null) window.clearTimeout(flashTimer);
       editorRef.current?.clearSearchFocus();
     };
-  }, [backend, noteId, passageId]);
+  }, [backend, navigate, noteId, passageId]);
 
   useEffect(() => {
     if (disposeTimerRef.current !== null) {
