@@ -86,6 +86,46 @@ describe("FakeBackend tidbits", () => {
     expect(created.displayTitle).toBe("Visible title");
   });
 
+  it("does not expose editor structure markers through search or citations", async () => {
+    const backend = new FakeBackend();
+    const created = await backend.seedNote({
+      bodyMarkdown: [
+        "Visible parent",
+        "",
+        "<!-- kosh:children:start -->",
+        "",
+        "Nested evidence",
+        "",
+        "<!-- kosh:block:empty -->",
+        "",
+        "<!-- kosh:children:end -->",
+      ].join("\n"),
+    });
+
+    await expect(
+      backend.searchPassages({ query: "children empty", mode: "DEFAULT", limit: 10 }),
+    ).resolves.toMatchObject({ results: [] });
+
+    const response = await backend.searchPassages({
+      query: "nested evidence",
+      mode: "EXACT",
+      limit: 10,
+    });
+    expect(response.results).toHaveLength(1);
+    const result = response.results[0]!;
+    expect(result.citation).toMatchObject({
+      passageId: `fake-passage:${created.currentRevisionId}`,
+      excerpt: expect.not.stringContaining("kosh:"),
+    });
+    expect(result.citation.excerpt).toContain("Nested evidence");
+    expect(
+      result.highlights.every(
+        ({ startChar, endChar }) =>
+          result.citation.excerpt.slice(startChar, endChar).trim().length > 0,
+      ),
+    ).toBe(true);
+  });
+
   it("allocates generated IDs beyond IDs already present in seeded tidbits", async () => {
     const source = new FakeBackend();
     const seed = await source.seedNote({

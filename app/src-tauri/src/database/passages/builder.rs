@@ -263,7 +263,15 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
     if blocks.is_empty() {
         let source = markdown.trim();
         if !source.is_empty() {
-            let normalized = authored_text(source);
+            let passage_source = source
+                .lines()
+                .filter(|line| !crate::database::markdown::is_kosh_structure_marker(line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if passage_source.trim().is_empty() {
+                return blocks;
+            }
+            let normalized = authored_text(passage_source.trim());
             let content = if normalized.trim().is_empty() {
                 // A media node is authored structure, but its opaque storage ID is
                 // not authored evidence. Keep a non-tokenizing object marker so
@@ -1108,6 +1116,22 @@ mod tests {
         assert!(content.contains("After."));
         assert!(!content.contains("kosh:"));
         assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn marker_only_revisions_do_not_produce_searchable_passages() {
+        let markdown = [
+            "<!-- kosh:block:empty -->",
+            "",
+            "<!-- kosh:children:start -->",
+            "",
+            "<!-- kosh:block:empty -->",
+            "",
+            "<!-- kosh:children:end -->",
+        ]
+        .join("\n");
+
+        assert!(build_markdown_passages(&markdown).is_empty());
     }
 
     #[test]
