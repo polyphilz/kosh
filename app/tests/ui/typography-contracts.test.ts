@@ -155,6 +155,29 @@ describe("typography contract", () => {
     ]);
   });
 
+  test("checks inline font shorthand while allowing inheritance", () => {
+    const found = findTypographyViolations(
+      "src/Feature.tsx",
+      `const invalid = { font: "700 12px/1.4 monospace" };
+       const valid = { font: "inherit" };`,
+    );
+
+    expect(found.map((entry) => entry.check)).toEqual([TypographyCheckKind.FontShorthand]);
+  });
+
+  test("rejects dynamic inline typography expressions", () => {
+    const found = findTypographyViolations(
+      "src/Feature.tsx",
+      `const invalid = { fontSize: sizeFromPreferences, lineHeight: computeLeading() };
+       const valid = { fontWeight: "var(--type-weight-body)" };`,
+    );
+
+    expect(found.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.InlineFontSize,
+      TypographyCheckKind.LineHeight,
+    ]);
+  });
+
   test("rejects raw inline values behind quoted property keys", () => {
     const found = findTypographyViolations(
       "src/Feature.tsx",
@@ -239,6 +262,33 @@ describe("typography contract", () => {
         {
           path: "src/Feature.tsx",
           contents: `const style = { fontSize: "var(--feature-copy)" };`,
+        },
+      ],
+      "src/typography.css",
+    );
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      check: TypographyCheckKind.TypographyVariable,
+      path: "src/feature-tokens.css",
+    });
+  });
+
+  test("resolves case-insensitive CSS var functions recursively", () => {
+    const found = findTypographyViolationsInSources(
+      [
+        {
+          path: "src/typography.css",
+          contents: ":root { --type-size-body: 1rem; }",
+        },
+        {
+          path: "src/feature-tokens.css",
+          contents:
+            ":root { --feature-copy: VAR(--feature-copy-base); --feature-copy-base: 12px; }",
+        },
+        {
+          path: "src/feature.css",
+          contents: ".copy { font-size: VAR(--feature-copy); }",
         },
       ],
       "src/typography.css",

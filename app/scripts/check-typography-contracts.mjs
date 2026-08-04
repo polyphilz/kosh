@@ -133,6 +133,10 @@ function mergeDefinitions(target, source) {
   return target;
 }
 
+function referencedTypographyVariables(value) {
+  return [...value.matchAll(/var\(\s*(--[\w-]+)/gi)].map((entry) => entry[1]);
+}
+
 function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSource) {
   const violations = [];
   const declarations = new RegExp(
@@ -156,7 +160,7 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
         source: sourceAt(raw, line),
       });
     }
-    referencedVariables.push(...value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]));
+    referencedVariables.push(...referencedTypographyVariables(value));
   }
 
   const visited = new Set();
@@ -167,9 +171,7 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
       const identity = `${definition.path}:${definition.line}:${variable}`;
       if (visited.has(identity)) continue;
       visited.add(identity);
-      referencedVariables.push(
-        ...definition.value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]),
-      );
+      referencedVariables.push(...referencedTypographyVariables(definition.value));
       if (
         definition.path !== allowedTokenSource &&
         rawTypographyNumericPattern.test(definition.value)
@@ -191,6 +193,7 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
 function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) {
   const violations = [];
   const properties = {
+    font: TypographyCheckKind.FontShorthand,
     fontSize: TypographyCheckKind.InlineFontSize,
     fontWeight: TypographyCheckKind.FontWeight,
     letterSpacing: TypographyCheckKind.LetterSpacing,
@@ -207,16 +210,21 @@ function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) 
     const value = readInlineValue(analyzed, match.index + match[0].length);
     const property = match[2] ?? match[3];
     const line = lineAt(analyzed, match.index);
-    if (rawTypographyNumericPattern.test(value)) {
+    const staticValue = staticInlineCssValue(value);
+    if (
+      rawTypographyNumericPattern.test(value) ||
+      staticValue === null ||
+      !approvedInlineCssValue(staticValue)
+    ) {
       violations.push({
         path,
         line,
         check: properties[property],
-        message: `${property} uses a raw numeric value instead of a type token`,
+        message: `${property} must use a static type token or inheritance value`,
         source: sourceAt(raw, line),
       });
     }
-    referencedVariables.push(...value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]));
+    referencedVariables.push(...referencedTypographyVariables(value));
   }
 
   if (!definitions) return violations;
@@ -228,9 +236,7 @@ function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) 
       const identity = `${definition.path}:${definition.line}:${variable}`;
       if (visited.has(identity)) continue;
       visited.add(identity);
-      referencedVariables.push(
-        ...definition.value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]),
-      );
+      referencedVariables.push(...referencedTypographyVariables(definition.value));
       if (
         definition.path !== allowedTokenSource &&
         rawTypographyNumericPattern.test(definition.value)
@@ -246,6 +252,28 @@ function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) 
     }
   }
   return violations;
+}
+
+function staticInlineCssValue(value) {
+  let candidate = value.trim();
+  if (candidate.startsWith("{") && candidate.endsWith("}")) {
+    candidate = candidate.slice(1, -1).trim();
+  }
+  const quote = candidate[0];
+  if (
+    (quote !== '"' && quote !== "'" && quote !== "`") ||
+    candidate.at(-1) !== quote ||
+    (quote === "`" && candidate.includes("${"))
+  ) {
+    return null;
+  }
+  return candidate.slice(1, -1).trim();
+}
+
+function approvedInlineCssValue(value) {
+  if (/^(?:inherit|initial|revert|revert-layer|unset)$/i.test(value)) return true;
+  const withoutTokens = value.replace(/var\(\s*--[\w-]+\s*\)/gi, "");
+  return withoutTokens !== value && /^[\s/]*$/.test(withoutTokens);
 }
 
 function readInlineValue(contents, start) {
