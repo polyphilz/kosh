@@ -27,8 +27,6 @@
 - Keep changes scoped to the active slice and preserve unrelated user work.
 - Run targeted verification and the complete available check suite before
   committing.
-- After committing, run `scripts/loop/runtime-gate.sh` for the exact head before
-  pushing.
 - Commit messages are one succinct, descriptive line.
 - Never commit `.env`, credentials, tokens, local databases, model weights, or
   `.kosh-loop/` state.
