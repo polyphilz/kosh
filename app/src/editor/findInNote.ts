@@ -174,10 +174,19 @@ function findBlockMatches(
   expression.lastIndex = 0;
   const matches: FindMatch[] = [];
   const matchKeys = new Set<string>();
+  let segmentIndex = 0;
   for (const match of text.matchAll(expression)) {
     const start = match.index;
     const end = start + match[0].length;
-    const parts = segments.flatMap((segment) => matchPart(segment, start, end));
+    while (segmentIndex < segments.length && segments[segmentIndex]!.textEnd <= start) {
+      segmentIndex += 1;
+    }
+    const parts: FindPart[] = [];
+    for (let index = segmentIndex; index < segments.length; index += 1) {
+      const segment = segments[index]!;
+      if (segment.textStart >= end) break;
+      parts.push(...matchPart(segment, start, end));
+    }
     if (parts.length === 0) continue;
     const key = parts
       .map((part) => `${part.atom ? "atom" : "text"}:${part.from}:${part.to}`)
