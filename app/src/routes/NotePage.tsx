@@ -25,6 +25,7 @@ import { hasMeaningfulAuthoredContent } from "../notes/content";
 import { useNoteDeletion } from "../notes/deletion";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { registerSearchCheckpoint } from "../search/checkpoint";
+import { citationLocation, citationOwner } from "../search/presentation";
 import { TauriEvent } from "../tauriProtocol";
 
 interface FileDropNotice {
@@ -266,7 +267,9 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
               editorRef.current?.clearSearchFocus();
               setSearchFocus((current) =>
                 current?.phase === "FOCUSED" && current.citation.passageId === citation.passageId
-                  ? null
+                  ? current.citation.attachment
+                    ? { phase: "EVIDENCE", citation: current.citation }
+                    : null
                   : current,
               );
             }, SEARCH_MATCH_FLASH_MS);
@@ -447,9 +450,18 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
             Search match
           </span>
         )}
-        {searchFocus && searchFocus.phase !== "FOCUSED" && searchFocus.phase !== "LOADING" && (
-          <SearchIntegrityNotice focus={searchFocus} onDismiss={() => setSearchFocus(null)} />
-        )}
+        {searchFocus &&
+          (searchFocus.phase === "HISTORICAL" || searchFocus.phase === "UNAVAILABLE") && (
+            <SearchIntegrityNotice focus={searchFocus} onDismiss={() => setSearchFocus(null)} />
+          )}
+        {searchFocus &&
+          (searchFocus.phase === "FOCUSED" || searchFocus.phase === "EVIDENCE") &&
+          searchFocus.citation.attachment && (
+            <SearchEvidenceNotice
+              citation={searchFocus.citation}
+              onDismiss={() => setSearchFocus(null)}
+            />
+          )}
         <KoshBlockNoteEditor
           ariaLabel="Note"
           attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
@@ -538,7 +550,28 @@ type SearchFocusState =
       message: string;
       phase: "HISTORICAL" | "UNAVAILABLE";
     }
-  | { citation: CitationResolution; phase: "FOCUSED" };
+  | { citation: CitationResolution; phase: "EVIDENCE" | "FOCUSED" };
+
+function SearchEvidenceNotice({
+  citation,
+  onDismiss,
+}: {
+  citation: CitationResolution;
+  onDismiss: () => void;
+}) {
+  return (
+    <aside aria-label="Search result location" className="note-search-evidence" role="status">
+      <div>
+        <strong>{citationOwner(citation)}</strong>
+        <span>{citationLocation(citation)}</span>
+        <q>{citation.excerpt}</q>
+      </div>
+      <button aria-label="Dismiss search result location" onClick={onDismiss} type="button">
+        ×
+      </button>
+    </aside>
+  );
+}
 
 function SearchIntegrityNotice({
   focus,

@@ -50,6 +50,24 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
 });
 
+test("reduced motion leaves the cited passage visibly highlighted", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/#/");
+  await seedTidbit(page, {
+    bodyMarkdown: "Reduced-motion evidence stays visible without an animation.",
+    sources: [],
+  });
+
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("stays visible");
+  await page.getByRole("option", { name: /Reduced-motion evidence/u }).click();
+
+  const match = page.locator('[data-kosh-search-hit="true"]');
+  await expect(match).toBeVisible();
+  await expect(match).toHaveCSS("animation-name", "none");
+  await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+});
+
 test("search checkpoints the active note before querying", async ({ page }) => {
   await page.goto("/#/");
   await page
@@ -252,7 +270,13 @@ test("attachment results retain their exact page evidence after opening the owni
   await page.getByRole("option", { name: /Vector chapter/u }).click();
 
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
-  await expect(page.getByLabel("Search result location")).toHaveCount(0);
+  const location = page.getByRole("status", { name: "Search result location" });
+  await expect(location).toContainText("vectors.pdf");
+  await expect(location).toContainText("Vector chapter · page 7");
+  await expect(location).toContainText("Page-seven matrix evidence remains exact.");
+  await expect(location).toBeVisible();
+  await page.waitForTimeout(1_500);
+  await expect(location).toBeVisible();
 });
 
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {

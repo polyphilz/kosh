@@ -387,8 +387,9 @@ describe("production BlockNote editor", () => {
 
     expect(ref.current?.focusCitation(characterCitation)).toBe(true);
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
-      "zero αβ exact slice omega",
+      "exact slice",
     );
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).not.toHaveTextContent("zero");
 
     view.rerender(
       <AppearanceProvider>
@@ -413,11 +414,11 @@ describe("production BlockNote editor", () => {
     };
 
     expect(ref.current?.focusCitation(lineCitation)).toBe(true);
-    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent("first");
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).not.toHaveTextContent("first");
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
-      "second target",
+      /second target\s+third/u,
     );
-    expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent("fourth");
+    expect(document.querySelector('[data-kosh-search-hit="true"]')).not.toHaveTextContent("fourth");
 
     const mismatchedLocator: CitationResolution = {
       ...characterCitation,
@@ -458,7 +459,7 @@ describe("production BlockNote editor", () => {
 
     expect(ref.current?.focusCitation(citation)).toBe(true);
     expect(document.querySelector('[data-kosh-search-hit="true"]')).toHaveTextContent(
-      "zero x<y exact slice omega",
+      "exact slice",
     );
   });
 

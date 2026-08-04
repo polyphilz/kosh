@@ -502,7 +502,8 @@ button {
   background: var(--accent-soft);
 }
 
-.note-search-warning {
+.note-search-warning,
+.note-search-evidence {
   position: fixed;
   z-index: 20;
   right: 18px;
@@ -521,24 +522,32 @@ button {
   font-size: 10px;
 }
 
-.note-search-warning > div {
+.note-search-warning > div,
+.note-search-evidence > div {
   display: grid;
   min-width: 0;
   gap: 3px;
 }
 
 .note-search-warning span,
-.note-search-warning q {
+.note-search-warning q,
+.note-search-evidence span,
+.note-search-evidence q {
   color: var(--muted);
 }
 
-.note-search-warning button {
+.note-search-warning button,
+.note-search-evidence button {
   padding: 0 3px;
   border: 0;
   color: var(--muted);
   background: transparent;
   cursor: pointer;
   font: inherit;
+}
+
+.note-search-evidence {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
 }
 
 .search-overlay {

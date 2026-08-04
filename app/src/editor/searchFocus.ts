@@ -44,11 +44,24 @@ export const KoshSearchFocusExtension = createExtension({
           state.doc.descendants((node, position) => {
             const id = typeof node.attrs.id === "string" ? node.attrs.id : null;
             if (!id || !target.blockIds.has(id)) return;
+            if (target.inlineRange?.blockId === id) {
+              const range = resolveInlineRange(node, position, target.inlineRange);
+              if (range) {
+                decorations.push(
+                  Decoration.inline(range.from, range.to, {
+                    "data-kosh-search-hit": "true",
+                    "data-kosh-search-hit-inline": "true",
+                  }),
+                );
+              }
+              return false;
+            }
             decorations.push(
               Decoration.node(position, position + node.nodeSize, {
                 "data-kosh-search-hit": "true",
               }),
             );
+            return false;
           });
           return DecorationSet.create(state.doc, decorations);
         },
