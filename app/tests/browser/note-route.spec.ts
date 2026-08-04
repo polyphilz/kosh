@@ -224,7 +224,6 @@ test("a gutter marquee keeps its anchor while auto-scrolling a long note", async
       bodyMarkdown: Array.from({ length: 48 }, (_, index) => `Long block ${index + 1}`).join(
         "\n\n",
       ),
-      sources: [],
     });
   });
   await page.evaluate((noteId) => {

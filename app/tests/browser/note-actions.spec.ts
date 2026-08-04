@@ -470,7 +470,6 @@ test("find refreshes when visible attachment metadata hydrates", async ({ page }
     if (!backend) throw new Error("fake backend is unavailable");
     const note = await backend.seedNote({
       bodyMarkdown: "{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
-      sources: [],
     });
     backend.pdfStatus = async (attachmentId) =>
       new Promise((resolve) => {
