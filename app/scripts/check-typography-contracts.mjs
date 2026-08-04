@@ -15,8 +15,6 @@ export const TypographyCheckKind = {
   TypographyVariable: "typography variable",
 };
 
-const sizedNumericPattern = /(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?\s*(?:%|[a-z]+)(?![\w-])/i;
-const unitlessZeroPattern = /(^|[^\w$.-])-?0(?:\.0*)?(?:e[+-]?\d+)?(?![\w$.-])/i;
 const rawTypographyNumericPattern =
   /(?<![\w$-])-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?(?:[a-z%]+)?(?![\w$-])/i;
 const typographyProperties = ["font-size", "font", "font-weight", "letter-spacing", "line-height"];
@@ -77,35 +75,33 @@ function sourceAt(contents, line) {
 }
 
 function cssCheck(property, value) {
+  if (approvedCssTypographyValue(value)) return null;
   if (property === "font-size") {
-    return sizedNumericPattern.test(value) || unitlessZeroPattern.test(value)
-      ? [TypographyCheckKind.FontSize, "font-size uses a raw size instead of a type token"]
-      : null;
+    return [TypographyCheckKind.FontSize, "font-size uses an untokenized typography value"];
   }
   if (property === "font") {
-    return rawTypographyNumericPattern.test(value)
-      ? [
-          TypographyCheckKind.FontShorthand,
-          "font shorthand embeds a raw typography value instead of separate type tokens",
-        ]
-      : null;
+    return [
+      TypographyCheckKind.FontShorthand,
+      "font shorthand embeds an untokenized typography value",
+    ];
   }
   if (property === "font-weight") {
-    return rawTypographyNumericPattern.test(value)
-      ? [TypographyCheckKind.FontWeight, "font-weight uses a raw number instead of a type token"]
-      : null;
+    return [TypographyCheckKind.FontWeight, "font-weight uses an untokenized typography value"];
   }
   if (property === "letter-spacing") {
-    return rawTypographyNumericPattern.test(value)
-      ? [
-          TypographyCheckKind.LetterSpacing,
-          "letter-spacing uses a raw number instead of a type token",
-        ]
-      : null;
+    return [
+      TypographyCheckKind.LetterSpacing,
+      "letter-spacing uses an untokenized typography value",
+    ];
   }
-  return rawTypographyNumericPattern.test(value)
-    ? [TypographyCheckKind.LineHeight, "line-height uses a raw number instead of a type token"]
-    : null;
+  return [TypographyCheckKind.LineHeight, "line-height uses an untokenized typography value"];
+}
+
+function approvedCssTypographyValue(value) {
+  const candidate = value.replace(/\s*!important\s*$/i, "").trim();
+  if (/^(?:inherit|initial|revert|revert-layer|unset)$/i.test(candidate)) return true;
+  const withoutTokens = candidate.replace(/var\(\s*--[\w-]+\s*\)/gi, "");
+  return withoutTokens !== candidate && /^[\s/]*$/.test(withoutTokens);
 }
 
 function cssDefinitions(path, raw, analyzed) {
@@ -172,15 +168,12 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
       if (visited.has(identity)) continue;
       visited.add(identity);
       referencedVariables.push(...referencedTypographyVariables(definition.value));
-      if (
-        definition.path !== allowedTokenSource &&
-        rawTypographyNumericPattern.test(definition.value)
-      ) {
+      if (definition.path !== allowedTokenSource && !approvedCssTypographyValue(definition.value)) {
         violations.push({
           path: definition.path,
           line: definition.line,
           check: TypographyCheckKind.TypographyVariable,
-          message: "a typography variable hides a raw numeric value outside the token source",
+          message: "a typography variable hides an untokenized value outside the token source",
           source: sourceAt(definition.raw, definition.line),
         });
       }
@@ -237,15 +230,12 @@ function inlineViolations(path, raw, analyzed, definitions, allowedTokenSource) 
       if (visited.has(identity)) continue;
       visited.add(identity);
       referencedVariables.push(...referencedTypographyVariables(definition.value));
-      if (
-        definition.path !== allowedTokenSource &&
-        rawTypographyNumericPattern.test(definition.value)
-      ) {
+      if (definition.path !== allowedTokenSource && !approvedCssTypographyValue(definition.value)) {
         violations.push({
           path: definition.path,
           line: definition.line,
           check: TypographyCheckKind.TypographyVariable,
-          message: "a typography variable hides a raw numeric value outside the token source",
+          message: "a typography variable hides an untokenized value outside the token source",
           source: sourceAt(definition.raw, definition.line),
         });
       }

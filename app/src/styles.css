@@ -97,7 +97,7 @@ body {
   color: var(--ink);
   background: var(--canvas);
   font-family: var(--font-family-app);
-  line-height: normal;
+  line-height: var(--type-leading-root);
 }
 
 button,

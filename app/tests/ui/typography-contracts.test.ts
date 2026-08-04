@@ -26,6 +26,30 @@ describe("typography contract", () => {
     ]);
   });
 
+  test("rejects untokenized CSS keywords while allowing CSS-wide inheritance", () => {
+    const found = cssViolations(`
+      .invalid {
+        font-size: small;
+        font-weight: bold;
+        line-height: normal;
+        letter-spacing: normal;
+      }
+      .valid {
+        font-size: inherit;
+        font-weight: initial;
+        line-height: unset;
+        letter-spacing: revert-layer;
+      }
+    `);
+
+    expect(found.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.FontSize,
+      TypographyCheckKind.FontWeight,
+      TypographyCheckKind.LineHeight,
+      TypographyCheckKind.LetterSpacing,
+    ]);
+  });
+
   test("rejects raw typography values nested inside CSS functions", () => {
     const found = cssViolations(`
       .copy {
@@ -215,6 +239,33 @@ describe("typography contract", () => {
 
     expect(found).toHaveLength(1);
     expect(found[0].check).toBe(TypographyCheckKind.TypographyVariable);
+  });
+
+  test("rejects feature variables that hide untokenized keywords", () => {
+    const found = findTypographyViolationsInSources(
+      [
+        {
+          path: "src/typography.css",
+          contents: ":root { --type-weight-body: 450; }",
+        },
+        {
+          path: "src/feature.css",
+          contents:
+            ":root { --feature-weight: bold; } .copy { font-weight: var(--feature-weight); }",
+        },
+        {
+          path: "src/Feature.tsx",
+          contents: `const style = { fontWeight: "var(--feature-weight)" };`,
+        },
+      ],
+      "src/typography.css",
+    );
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      check: TypographyCheckKind.TypographyVariable,
+      path: "src/feature.css",
+    });
   });
 
   test("resolves cross-file variables and preserves repeated definitions", () => {
