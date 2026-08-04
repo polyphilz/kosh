@@ -171,19 +171,89 @@ describe("restricted BlockNote Markdown adapter", () => {
     }
   });
 
-  it("flattens nested non-list blocks without dropping their authored content", () => {
-    expect(
-      koshBlocksToMarkdown([
-        {
-          type: "paragraph",
-          content: "Parent",
-          children: [
-            { type: "paragraph", content: "Nested paragraph" },
-            { type: "heading", props: { level: 2 }, content: "Nested heading" },
-          ],
-        },
-      ]),
-    ).toBe("Parent\n\nNested paragraph\n\n## Nested heading");
+  it("preserves arbitrary nested block structure", () => {
+    const markdown = koshBlocksToMarkdown([
+      {
+        type: "paragraph",
+        content: "Parent",
+        children: [
+          { type: "paragraph", content: "Nested paragraph" },
+          {
+            type: "heading",
+            props: { level: 2 },
+            content: "Nested heading",
+            children: [{ type: "paragraph", content: "Deep paragraph" }],
+          },
+        ],
+      },
+    ]);
+
+    expect(markdown).toBe(
+      [
+        "Parent",
+        "",
+        "<!-- kosh:children:start -->",
+        "",
+        "Nested paragraph",
+        "",
+        "## Nested heading",
+        "",
+        "<!-- kosh:children:start -->",
+        "",
+        "Deep paragraph",
+        "",
+        "<!-- kosh:children:end -->",
+        "",
+        "<!-- kosh:children:end -->",
+      ].join("\n"),
+    );
+    const restored = markdownToKoshBlocks(markdown);
+    expect(restored).toMatchObject([
+      {
+        type: "paragraph",
+        children: [
+          { type: "paragraph" },
+          { type: "heading", props: { level: 2 }, children: [{ type: "paragraph" }] },
+        ],
+      },
+    ]);
+    expect(koshBlocksToMarkdown(restored)).toBe(markdown);
+  });
+
+  it("preserves non-list children nested beneath list items", () => {
+    const blocks = [
+      {
+        type: "bulletListItem",
+        content: "Parent item",
+        children: [
+          { type: "paragraph" },
+          { type: "heading", props: { level: 3 }, content: "Nested heading" },
+        ],
+      },
+    ];
+
+    const markdown = koshBlocksToMarkdown(blocks);
+    expect(markdown).toContain("<!-- kosh:children:start -->");
+    expect(markdown).toContain("<!-- kosh:block:empty -->");
+    const restored = markdownToKoshBlocks(markdown);
+    expect(restored).toMatchObject([
+      {
+        type: "bulletListItem",
+        children: [{ type: "paragraph" }, { type: "heading", props: { level: 3 } }],
+      },
+    ]);
+    expect(koshBlocksToMarkdown(restored)).toBe(markdown);
+  });
+
+  it("rejects malformed or unbalanced structure markers", () => {
+    for (const markdown of [
+      "<!-- kosh:children:start -->",
+      "<!-- kosh:children:end -->",
+      "Parent\n\n<!-- kosh:children:start -->\n\nChild",
+      "<!-- kosh:block:empty-ish -->",
+    ]) {
+      expect(() => markdownToKoshBlocks(markdown)).toThrow(/Unsupported Markdown block/u);
+    }
   });
 
   it("keeps punctuation inside its authored style", () => {
@@ -198,14 +268,29 @@ describe("restricted BlockNote Markdown adapter", () => {
     expect(koshBlocksToMarkdown(markdownToKoshBlocks(markdown))).toBe(markdown);
   });
 
-  it("omits structural empty cursor paragraphs from persisted Markdown", () => {
+  it("preserves authored empty paragraphs without making them visible text", () => {
+    const markdown = koshBlocksToMarkdown([
+      { type: "paragraph", content: "Before" },
+      { type: "paragraph" },
+      { type: "paragraph", content: "After" },
+    ]);
+
+    expect(markdown).toBe("Before\n\n<!-- kosh:block:empty -->\n\nAfter");
+    const restored = markdownToKoshBlocks(markdown);
+    expect(restored.map((block) => block.type)).toEqual(["paragraph", "paragraph", "paragraph"]);
+    expect(restored[1]).toMatchObject({ type: "paragraph" });
+    expect(koshBlocksToMarkdown(restored)).toBe(markdown);
+  });
+
+  it("omits only top-level boundary cursor paragraphs", () => {
     expect(
       koshBlocksToMarkdown([
-        { type: "paragraph", content: "Before" },
         { type: "paragraph" },
-        { type: "paragraph", content: "After" },
+        { type: "paragraph", content: "Kept" },
+        { type: "paragraph" },
       ]),
-    ).toBe("Before\n\nAfter");
+    ).toBe("Kept");
+    expect(koshBlocksToMarkdown([{ type: "paragraph" }])).toBe("");
   });
 
   it("canonicalizes adjacent styled runs without ambiguous Markdown delimiters", () => {

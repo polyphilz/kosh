@@ -1,5 +1,7 @@
+import { withoutKoshStructureMarkers } from "../markdown/structureMarkers";
+
 export function hasMeaningfulAuthoredContent(markdown: string): boolean {
-  const mediaAware = markdown.replace(
+  const mediaAware = withoutKoshStructureMarkers(markdown).replace(
     /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu,
     "media",
   );

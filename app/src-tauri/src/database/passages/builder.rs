@@ -457,7 +457,10 @@ fn finish_capture(
     blocks: &mut Vec<SourceBlock>,
 ) {
     let content = normalize_block_content(&capture.content, capture.kind);
-    if content.is_empty() {
+    if content.is_empty()
+        || (capture.kind == BlockKind::Html
+            && crate::database::markdown::is_kosh_structure_marker(&content))
+    {
         return;
     }
     let heading_context = current_heading_context(headings);
@@ -1075,6 +1078,36 @@ mod tests {
                 .join("\n"),
             "alpha\nbeta gamma\ndelta\nepsilon"
         );
+    }
+
+    #[test]
+    fn editor_structure_markers_are_not_searchable_passages() {
+        let markdown = [
+            "Before.",
+            "",
+            "<!-- kosh:block:empty -->",
+            "",
+            "<!-- kosh:children:start -->",
+            "",
+            "Nested evidence.",
+            "",
+            "<!-- kosh:children:end -->",
+            "",
+            "After.",
+        ]
+        .join("\n");
+        let passages = build_markdown_passages(&markdown);
+        let content = passages
+            .iter()
+            .map(|passage| passage.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(content.contains("Before."));
+        assert!(content.contains("Nested evidence."));
+        assert!(content.contains("After."));
+        assert!(!content.contains("kosh:"));
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
     }
 
     #[test]

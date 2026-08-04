@@ -69,6 +69,23 @@ describe("FakeBackend tidbits", () => {
     expect((await backend.loadTidbit(deleted.id)).deletedAtMs).toBe(deleted.deletedAtMs);
   });
 
+  it("does not expose editor structure markers as a note title", async () => {
+    const backend = new FakeBackend();
+    const created = await backend.seedNote({
+      bodyMarkdown: [
+        "<!-- kosh:block:empty -->",
+        "",
+        "<!-- kosh:children:start -->",
+        "",
+        "Visible title",
+        "",
+        "<!-- kosh:children:end -->",
+      ].join("\n"),
+    });
+
+    expect(created.displayTitle).toBe("Visible title");
+  });
+
   it("allocates generated IDs beyond IDs already present in seeded tidbits", async () => {
     const source = new FakeBackend();
     const seed = await source.seedNote({

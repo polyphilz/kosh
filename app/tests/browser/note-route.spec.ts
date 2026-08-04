@@ -47,6 +47,44 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
   );
 });
 
+test("the first checkpoint preserves authored blank blocks", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+
+  await editor.pressSequentially("1");
+  for (const value of ["2", "3", "4", "5"]) {
+    await editor.press("Enter");
+    await editor.press("Enter");
+    await editor.pressSequentially(value);
+  }
+  const blocks = editor.locator(
+    ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+  );
+  await expect(blocks).toHaveCount(9);
+
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  await expect(blocks).toHaveCount(9);
+});
+
+test("the first checkpoint preserves arbitrary nested blocks", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+
+  await editor.pressSequentially("Parent");
+  await editor.press("Enter");
+  await editor.pressSequentially("Nested child");
+  await editor.press("Tab");
+  const parent = editor.locator(
+    ":scope > .bn-block-group > .bn-block-outer:not(.bn-trailing-block)",
+  );
+  await expect(parent).toHaveCount(1);
+  await expect(parent.locator(".bn-block-group .bn-block-content")).toHaveCount(1);
+
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  await expect(parent).toHaveCount(1);
+  await expect(parent.locator(".bn-block-group .bn-block-content")).toHaveCount(1);
+});
+
 test("deleting the first edit before checkpoint keeps the note ephemeral and empty", async ({
   page,
 }) => {

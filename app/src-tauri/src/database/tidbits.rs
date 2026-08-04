@@ -372,7 +372,11 @@ pub(super) fn derive_display_title(body_markdown: &str) -> String {
 
 fn useful_markdown_line(line: &str) -> Option<&str> {
     let mut value = line.trim();
-    if value.is_empty() || value.starts_with("```") || value.starts_with("~~~") {
+    if value.is_empty()
+        || value.starts_with("```")
+        || value.starts_with("~~~")
+        || super::markdown::is_kosh_structure_marker(value)
+    {
         return None;
     }
     loop {
@@ -397,5 +401,27 @@ fn truncate(value: &str, limit: usize) -> String {
         format!("{head}…")
     } else {
         head
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_display_title;
+
+    #[test]
+    fn editor_structure_markers_do_not_become_display_titles() {
+        let markdown = [
+            "<!-- kosh:block:empty -->",
+            "<!-- kosh:children:start -->",
+            "## Visible title",
+            "<!-- kosh:children:end -->",
+        ]
+        .join("\n");
+
+        assert_eq!(derive_display_title(&markdown), "Visible title");
+        assert_eq!(
+            derive_display_title("<!-- kosh:block:empty -->"),
+            "Untitled note"
+        );
     }
 }

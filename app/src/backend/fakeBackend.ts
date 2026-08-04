@@ -44,6 +44,7 @@ import type {
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
+import { withoutKoshStructureMarkers } from "../markdown/structureMarkers";
 
 interface FakeCitationSnapshot {
   revision: TidbitRecord;
@@ -1180,7 +1181,7 @@ function validateBody(value: string): string {
 }
 
 function deriveDisplayTitle(bodyMarkdown: string): string {
-  const line = bodyMarkdown
+  const line = withoutKoshStructureMarkers(bodyMarkdown)
     .split(/\r?\n/u)
     .map((candidate) => candidate.trim())
     .find((candidate) => candidate && !candidate.startsWith("```") && !candidate.startsWith("~~~"));

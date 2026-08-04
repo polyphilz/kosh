@@ -5,6 +5,7 @@ pub(crate) mod connection;
 pub(crate) mod embedding_index;
 mod error;
 mod maintenance;
+mod markdown;
 pub(crate) mod media;
 mod migrations;
 mod offsite_checkpoint;
