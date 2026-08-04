@@ -149,9 +149,10 @@ restart measurement.
 ## E. Installed application
 
 After the isolated profile passes, install the exact candidate in
-`/Applications` using `docs/RELEASE.md`. Repeat a short titleless note, Quick
-Add, Command-K citation, normal quit, and reopen against the intended
-production profile. No development tools are required on the installed Mac.
+`/Applications` using `docs/RELEASE.md`. Repeat a short titleless note, activate
+the main window from another application with the configured shortcut, verify a
+Command-K citation, quit normally, and reopen against the intended production
+profile. No development tools are required on the installed Mac.
 
 ## F. Packaged off-site recovery
 

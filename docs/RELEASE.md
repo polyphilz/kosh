@@ -114,7 +114,7 @@ app/src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app
 
 `release:smoke` starts that exact bundle twice with a temporary isolated home
 and Finder-like minimal `PATH`. The packaged React root creates a URL-bearing
-canary through normal capture IPC, both packaged surfaces resolve its exact
+canary through normal capture IPC, the packaged main webview resolves its exact
 search citation, and the second launch proves the same cited revision survives.
 The native executable embeds its source commit, and the lane rejects a bundle
 whose embedded commit differs from the checkout under test. Release build and
