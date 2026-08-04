@@ -185,10 +185,33 @@ describe("shortcut settings", () => {
       expect(screen.getByRole("button", { name: "Main window shortcut: ⌘L" })).toBeVisible(),
     );
 
+    await user.click(screen.getByRole("button", { name: "Quick Add shortcut: ⌃⌥⌘K" }));
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyT",
+      ctrlKey: true,
+      key: "t",
+      metaKey: true,
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Quick Add shortcut: ⌃⌥⌘T" })).toBeVisible(),
+    );
+    await user.click(screen.getByRole("button", { name: "Copy exact link shortcut: ⇧⌘L" }));
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyK",
+      ctrlKey: true,
+      key: "k",
+      metaKey: true,
+    });
+    expect(screen.getByRole("button", { name: "Copy exact link shortcut: ⌃⌥⌘K" })).toBeVisible();
+
     await user.click(screen.getByRole("button", { name: "Reset shortcuts" }));
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌘L" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Delete note shortcut: ⇧⌘⌫" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Copy exact link shortcut: ⇧⌘L" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Quick Add shortcut: ⌃⌥⌘K" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" })).toBeVisible();
     });
   });
