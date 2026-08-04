@@ -28,3 +28,22 @@ test("the Markdown adapter edits and serializes the restricted schema in WebKit"
     "const value = 1;",
   );
 });
+
+test("paired-dollar input and slash insertion create editable inline math in WebKit", async ({
+  page,
+}) => {
+  await page.goto("/editor-harness.html");
+  await page.waitForFunction(() => window.__KOSH_BLOCKNOTE_HARNESS__?.capability === "blocknote");
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph("Energy "));
+  await page.keyboard.type("$$E = mc^2$$");
+
+  await expect(page.getByRole("button", { name: "Edit inline math: E = mc^2" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown()))
+    .toContain("Energy $E = mc^2$");
+
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph());
+  await page.keyboard.type("/inline");
+  await page.getByRole("listbox").getByRole("option", { name: "Inline math" }).click();
+  await expect(page.getByLabel("Inline math source")).toBeFocused();
+});

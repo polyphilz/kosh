@@ -126,6 +126,95 @@ test("slash menu rows keep one height while filtering", async ({ page }) => {
   expect(await options.first().evaluate((row) => row.getBoundingClientRect().height)).toBe(40);
 });
 
+test("inline math supports paired-dollar input and opens directly from the slash menu", async ({
+  page,
+}) => {
+  await openHarness(page);
+  const typedBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph("Energy "),
+  );
+  await page.keyboard.type("$$E = mc^2$$");
+
+  await expect(page.getByRole("button", { name: "Edit inline math: E = mc^2" })).toBeVisible();
+  await expect
+    .poll(async () => blockContentSnapshot(await readHarnessSnapshot(page), typedBlockId))
+    .toEqual([
+      { type: "text", text: "Energy ", styles: {} },
+      { type: "inlineMath", props: { latex: "E = mc^2" } },
+    ]);
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown()))
+    .toContain("Energy $E = mc^2$");
+
+  const undoBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  await page.keyboard.type("$$x$");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("$");
+  await expect(page.getByRole("button", { name: "Edit inline math: x" })).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect
+    .poll(async () => blockText(await readHarnessSnapshot(page), undoBlockId))
+    .toBe("$$x$$");
+
+  const spacedBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  await page.keyboard.type("$$x\\ $$");
+  await expect
+    .poll(async () => blockContentSnapshot(await readHarnessSnapshot(page), spacedBlockId))
+    .toEqual([{ type: "inlineMath", props: { latex: "x\\ " } }]);
+
+  const literalBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  await page.keyboard.type("$$$$");
+  await expect
+    .poll(async () => blockText(await readHarnessSnapshot(page), literalBlockId))
+    .toBe("$$$$");
+  const escapedBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  await page.keyboard.type("\\$$literal$$");
+  await expect
+    .poll(async () => blockText(await readHarnessSnapshot(page), escapedBlockId))
+    .toBe("\\$$literal$$");
+
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph());
+  await page.keyboard.type("/inline");
+  await page.getByRole("listbox").getByRole("option", { name: "Inline math" }).click();
+  const source = page.getByLabel("Inline math source");
+  await expect(source).toBeFocused();
+  await expect(source).toHaveValue("");
+  await source.fill("x_i");
+  await source.press("Enter");
+  await expect(source).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit inline math: x_i" })).toBeVisible();
+
+  const emptyMathBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  const markdownBeforeEmptyMath = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.markdown(),
+  );
+  await page.keyboard.type("/inline");
+  await page.getByRole("listbox").getByRole("option", { name: "Inline math" }).click();
+  await expect(source).toBeFocused();
+  await page.waitForTimeout(500);
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown()))
+    .toBe(markdownBeforeEmptyMath);
+  await source.press("Escape");
+  await expect(source).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit inline math: empty equation" })).toHaveCount(
+    0,
+  );
+  await expect
+    .poll(async () => blockContentSnapshot(await readHarnessSnapshot(page), emptyMathBlockId))
+    .toEqual([]);
+});
+
 test("real keyboard input covers undo, redo, IME, and list nesting", async ({ page }) => {
   await openHarness(page);
   const undoBlockId = await page.evaluate(() =>
@@ -347,6 +436,13 @@ function blockText(snapshot: HarnessSnapshot, blockId: string): string {
       ?.content?.map((content) => content.text ?? "")
       .join("") ?? ""
   );
+}
+
+function blockContentSnapshot(
+  snapshot: HarnessSnapshot,
+  blockId: string,
+): HarnessInlineContent[] | undefined {
+  return flatten(snapshot.blocks).find((block) => block.id === blockId)?.content;
 }
 
 function blockContent(page: Page, blockId: string): Locator {

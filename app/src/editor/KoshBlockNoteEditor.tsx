@@ -54,6 +54,7 @@ import {
   KoshGutterSelectionExtension,
   setGutterBlockSelection,
 } from "./gutterSelection";
+import { insertInlineMathForEditing, KoshInlineMathInputExtension } from "./inlineMathInput";
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
@@ -147,7 +148,12 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       initialContent: markdownToKoshBlocks(initialValue),
       placeholders: { default: initialPlaceholder },
       tabBehavior: "prefer-indent",
-      extensions: [KoshFindInNoteExtension, KoshGutterSelectionExtension, KoshSearchFocusExtension],
+      extensions: [
+        KoshFindInNoteExtension,
+        KoshGutterSelectionExtension,
+        KoshInlineMathInputExtension,
+        KoshSearchFocusExtension,
+      ],
       domAttributes: {
         editor: {
           ...KOSH_WRITING_ASSISTANCE_ATTRIBUTES,
@@ -884,9 +890,7 @@ function restrictedSlashItems(
       aliases: ["equation", "math"],
       onItemClick: () => {
         insertOrUpdateBlockForSlashMenu(editor, { type: "paragraph" });
-        editor.insertInlineContent([{ type: "inlineMath", props: { latex: "a_i" } }], {
-          updateSelection: true,
-        });
+        insertInlineMathForEditing(editor);
       },
     },
   ];

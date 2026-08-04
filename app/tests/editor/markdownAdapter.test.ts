@@ -121,6 +121,17 @@ describe("restricted BlockNote Markdown adapter", () => {
         { type: "paragraph", content: "After" },
       ]),
     ).toBe("Before\n\nAfter");
+    expect(
+      koshBlocksToMarkdown([
+        {
+          type: "paragraph",
+          content: [
+            { type: "inlineMath", props: { latex: "" } },
+            { type: "inlineMath", props: { latex: "   " } },
+          ],
+        },
+      ]),
+    ).toBe("");
   });
 
   it("neutralizes unsafe links and inline HTML and rejects block HTML", () => {
