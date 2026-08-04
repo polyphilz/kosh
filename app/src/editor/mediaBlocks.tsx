@@ -402,7 +402,10 @@ function KoshPdfBlock({ block, editor }: PdfRenderProps) {
       status?.displayFilename &&
       status.displayFilename !== block.props.displayFilename
     ) {
-      editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
+      editor.transact((transaction) => {
+        editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
+        transaction.setMeta("addToHistory", false);
+      });
     }
   }, [block, editor, status?.displayFilename]);
 
@@ -472,7 +475,10 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
       status?.displayFilename &&
       status.displayFilename !== block.props.displayFilename
     ) {
-      editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
+      editor.transact((transaction) => {
+        editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
+        transaction.setMeta("addToHistory", false);
+      });
     }
   }, [block, editor, status?.displayFilename]);
 

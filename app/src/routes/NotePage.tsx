@@ -568,7 +568,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(bodyMarkdown) => {
             coordinator.update(bodyMarkdown);
-            if (findOpen) updateFindState(findState.query, findState.activeIndex);
             if (
               searchFocus?.phase === "FOCUSED" &&
               !editorRef.current?.revalidateCitationFocus(searchFocus.citation)
@@ -579,6 +578,9 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
                 citation: searchFocus.citation,
               });
             }
+          }}
+          onFindStateChange={() => {
+            if (findOpen) updateFindState(findState.query, findState.activeIndex);
           }}
           onImageError={(reason) =>
             setMediaError(`Could not add attachment: ${errorMessage(reason)}`)

@@ -138,6 +138,10 @@ function AppShell() {
       event.preventDefault();
       event.stopPropagation();
       setSearchOpen(false);
+      document
+        .querySelector<HTMLElement>('[role="dialog"][aria-label="Note sources"]')
+        ?.querySelector<HTMLButtonElement>('[aria-label="Close sources"]')
+        ?.click();
       window.requestAnimationFrame(() => {
         window.dispatchEvent(new Event(FIND_IN_NOTE_REQUEST_EVENT));
       });

@@ -82,6 +82,12 @@ test("valid sources autosave while invalid partial edits remain local", async ({
   const sources = page.getByRole("button", { name: "Sources" });
   await sources.click();
   const sourceDialog = page.getByRole("dialog", { name: "Note sources" });
+  await page.keyboard.press("Meta+f");
+  await expect(sourceDialog).toHaveCount(0);
+  await expect(page.getByRole("searchbox", { name: "Find in note" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await sources.click();
+  await expect(sourceDialog).toBeVisible();
   await sourceDialog.getByLabel("Label").fill("NumPy guide");
   await sourceDialog
     .getByLabel("URL")
@@ -174,6 +180,49 @@ test("Command-F stays contained by the delete confirmation", async ({ page }) =>
   await expect(confirmation).toBeVisible();
   await expect(cancel).toBeFocused();
   await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
+});
+
+test("find refreshes when visible attachment metadata hydrates", async ({ page }) => {
+  await page.goto("/#/settings");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const note = await backend.seedNote({
+      bodyMarkdown: "{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
+      sources: [],
+    });
+    backend.pdfStatus = async (attachmentId) =>
+      new Promise((resolve) => {
+        Reflect.set(window, "__KOSH_RELEASE_FIND_PDF_STATUS__", () =>
+          resolve({
+            attachmentId,
+            displayFilename: "hydrated-manual.pdf",
+            extractedPageCount: 2,
+            extractionError: null,
+            extractionStatus: "READY",
+            nextAttemptAtMs: null,
+            pageCount: 2,
+            unavailablePageCount: 0,
+          }),
+        );
+      });
+    window.location.hash = `/notes/${note.id}`;
+    return note;
+  });
+  await expect(page.getByRole("textbox", { name: "Note" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => typeof Reflect.get(window, "__KOSH_RELEASE_FIND_PDF_STATUS__")))
+    .toBe("function");
+
+  await page.keyboard.press("Meta+f");
+  const findBar = page.getByRole("search", { name: "Find in note" });
+  await findBar.getByRole("searchbox", { name: "Find in note" }).fill("hydrated-manual");
+  await expect(findBar.getByRole("status")).toContainText("No matches");
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_FIND_PDF_STATUS__")());
+
+  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("hydrated-manual.pdf");
+  await expect(findBar.getByRole("status")).toContainText("1 of 1");
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}$`, "u"));
 });
 
 test("history never reopens a deleted note as editable", async ({ page }) => {

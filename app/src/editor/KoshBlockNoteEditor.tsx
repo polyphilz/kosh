@@ -87,6 +87,7 @@ export interface KoshBlockNoteEditorProps {
   disabled?: boolean;
   imageStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
   onChange: (value: string) => void;
+  onFindStateChange?: () => void;
   onImageError?: (error: unknown) => void;
   onPendingImagesChange?: (pending: boolean) => void;
   openAttachmentExternal?: (attachmentId: string) => Promise<void>;
@@ -317,6 +318,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                 filePanel={false}
                 formattingToolbar
                 onChange={() => {
+                  propertiesRef.current.onFindStateChange?.();
                   if (replacingValue.current || pendingExternalValue.current !== undefined) return;
                   const markdown = koshBlocksToMarkdown(editor.document);
                   if (markdown.trim() === "/" && !propertiesRef.current.value.trim()) {
