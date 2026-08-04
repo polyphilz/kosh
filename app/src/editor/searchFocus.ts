@@ -61,7 +61,7 @@ export const KoshSearchFocusExtension = createExtension({
                 "data-kosh-search-hit": "true",
               }),
             );
-            return false;
+            return true;
           });
           return DecorationSet.create(state.doc, decorations);
         },
