@@ -15,8 +15,8 @@ export const TypographyCheckKind = {
   TypographyVariable: "typography variable",
 };
 
-const numericPattern = /(^|[^\w$])(?:\d+(?:\.\d*)?|\.\d+)(?:[a-z%]+)?(?![\w$])/i;
 const sizedNumericPattern = /(?:\d+(?:\.\d*)?|\.\d+)\s*(?:%|[a-z]+)(?![\w-])/i;
+const unitlessZeroPattern = /(^|[^\w$.-])-?0(?:\.0*)?(?![\w$.-])/i;
 const rawTypographyNumericPattern = /(?<![\w$-])-?(?:\d+(?:\.\d*)?|\.\d+)(?:[a-z%]+)?(?![\w$-])/i;
 const typographyProperties = ["font-size", "font", "font-weight", "letter-spacing", "line-height"];
 
@@ -36,12 +36,12 @@ function sourceAt(contents, line) {
 
 function cssCheck(property, value) {
   if (property === "font-size") {
-    return sizedNumericPattern.test(value)
+    return sizedNumericPattern.test(value) || unitlessZeroPattern.test(value)
       ? [TypographyCheckKind.FontSize, "font-size uses a raw size instead of a type token"]
       : null;
   }
   if (property === "font") {
-    return sizedNumericPattern.test(value)
+    return sizedNumericPattern.test(value) || unitlessZeroPattern.test(value)
       ? [
           TypographyCheckKind.FontShorthand,
           "font shorthand embeds a raw size instead of separate type tokens",
@@ -128,7 +128,10 @@ function cssViolations(path, raw, analyzed, sharedDefinitions, allowedTokenSourc
       referencedVariables.push(
         ...definition.value.matchAll(/var\(\s*(--[\w-]+)/g).map((entry) => entry[1]),
       );
-      if (definition.path !== allowedTokenSource && numericPattern.test(definition.value)) {
+      if (
+        definition.path !== allowedTokenSource &&
+        rawTypographyNumericPattern.test(definition.value)
+      ) {
         violations.push({
           path: definition.path,
           line: definition.line,
@@ -152,12 +155,13 @@ function inlineViolations(path, raw, analyzed) {
     lineHeight: TypographyCheckKind.LineHeight,
   };
   const assignments = new RegExp(
-    `\\b(${Object.keys(properties).join("|")})\\b\\s*(?::|=\\s*\\{?)\\s*([\\s\\S]*?)(?=,|;|\\}|\\n\\s*[A-Za-z_$][\\w$]*\\s*:|$)`,
+    `\\b(${Object.keys(properties).join("|")})\\b\\s*(?::|=)\\s*`,
     "g",
   );
 
   for (const match of analyzed.matchAll(assignments)) {
-    if (!numericPattern.test(match[2])) continue;
+    const value = readInlineValue(analyzed, match.index + match[0].length);
+    if (!rawTypographyNumericPattern.test(value)) continue;
     const property = match[1];
     const line = lineAt(analyzed, match.index);
     violations.push({
@@ -169,6 +173,53 @@ function inlineViolations(path, raw, analyzed) {
     });
   }
   return violations;
+}
+
+function readInlineValue(contents, start) {
+  const first = contents[start];
+  const wrappedByQuote = first === '"' || first === "'" || first === "`" ? first : null;
+  const wrappedByBrace = first === "{";
+  let quote = null;
+  let escaped = false;
+  let roundDepth = 0;
+  let squareDepth = 0;
+  let curlyDepth = 0;
+
+  for (let index = start; index < contents.length; index += 1) {
+    const character = contents[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+        if (wrappedByQuote === character) return contents.slice(start, index + 1);
+      }
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") roundDepth += 1;
+    else if (character === ")" && roundDepth > 0) roundDepth -= 1;
+    else if (character === "[") squareDepth += 1;
+    else if (character === "]" && squareDepth > 0) squareDepth -= 1;
+    else if (character === "{") curlyDepth += 1;
+    else if (character === "}" && curlyDepth > 0) {
+      curlyDepth -= 1;
+      if (wrappedByBrace && curlyDepth === 0) return contents.slice(start, index + 1);
+    } else if (
+      roundDepth === 0 &&
+      squareDepth === 0 &&
+      curlyDepth === 0 &&
+      (character === "," || character === ";" || character === "\n" || character === ">")
+    ) {
+      return contents.slice(start, index);
+    }
+  }
+  return contents.slice(start);
 }
 
 export function findTypographyViolations(path, contents) {

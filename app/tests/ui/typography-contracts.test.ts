@@ -70,6 +70,18 @@ describe("typography contract", () => {
     ]);
   });
 
+  test("rejects unitless zero font sizes", () => {
+    const found = cssViolations(`
+      .hidden { font-size: 0; }
+      .collapsed { font: 0 monospace; }
+    `);
+
+    expect(found.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.FontSize,
+      TypographyCheckKind.FontShorthand,
+    ]);
+  });
+
   test("rejects raw inline style values", () => {
     const found = findTypographyViolations(
       "src/Feature.tsx",
@@ -82,6 +94,22 @@ describe("typography contract", () => {
       TypographyCheckKind.FontWeight,
       TypographyCheckKind.LineHeight,
       TypographyCheckKind.LetterSpacing,
+    ]);
+  });
+
+  test("checks complete inline fallbacks without rejecting numbered tokens", () => {
+    const found = findTypographyViolations(
+      "src/Feature.tsx",
+      `const valid = { fontSize: "var(--type-size-content-heading-1)" };
+       const invalid = {
+         fontSize: "var(--type-size-body, 12px)",
+         fontWeight: "var(--type-weight-body, 700)",
+       };`,
+    );
+
+    expect(found.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.InlineFontSize,
+      TypographyCheckKind.FontWeight,
     ]);
   });
 
