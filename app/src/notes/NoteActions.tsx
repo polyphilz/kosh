@@ -9,9 +9,11 @@ interface NoteActionsProps {
   canDelete: boolean;
   deleteError: string | null;
   deleteShortcut?: string;
+  deleteOpen?: boolean;
   deleting: boolean;
   disabled: boolean;
   onDelete: () => void;
+  onDeleteOpenChange?: (open: boolean) => void;
   onSourcesChange: (sources: SourceDraft[]) => void;
   sources: SourceDraft[];
 }
@@ -21,16 +23,23 @@ export function NoteActions({
   canDelete,
   deleteError,
   deleteShortcut,
+  deleteOpen: controlledDeleteOpen,
   deleting,
   disabled,
   onDelete,
+  onDeleteOpenChange,
   onSourcesChange,
   sources,
 }: NoteActionsProps) {
   const firstInput = useRef<HTMLInputElement>(null);
   const sourcesTrigger = useRef<HTMLButtonElement>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [uncontrolledDeleteOpen, setUncontrolledDeleteOpen] = useState(false);
+  const deleteOpen = controlledDeleteOpen ?? uncontrolledDeleteOpen;
+  const setDeleteOpen = (open: boolean) => {
+    setUncontrolledDeleteOpen(open);
+    onDeleteOpenChange?.(open);
+  };
   const [drafts, setDrafts] = useState<SourceDraft[]>(sources);
   const [sourceError, setSourceError] = useState<string | null>(null);
 

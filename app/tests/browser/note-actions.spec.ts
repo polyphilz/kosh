@@ -413,6 +413,22 @@ test("delete flushes the latest note and Undo restores it immediately", async ({
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
 });
 
+test("the delete confirmation survives a new note's first checkpoint", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await editor.fill("Pause before deleting this freshly captured note.");
+  await page.keyboard.press("Meta+Shift+Backspace");
+
+  const confirmation = page.getByRole("dialog", { name: "Delete this note?" });
+  await expect(confirmation).toBeVisible();
+  await page.waitForTimeout(2_500);
+  await expect(confirmation).toBeVisible();
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u);
+});
+
 test("Command-F stays contained by the delete confirmation", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

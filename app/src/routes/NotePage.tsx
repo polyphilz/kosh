@@ -171,6 +171,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const findRequestRoute = `/${mode === "ephemeral" ? "new" : "notes"}/${noteId}`;
   const [initialFindTransfer] = useState(() => consumeFindInNoteTransfer(findRequestRoute));
   const [findOpen, setFindOpen] = useState(initialFindTransfer !== null);
@@ -419,7 +420,14 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   }, [coordinator, flushForNavigation, noteId]);
 
   useEffect(() => {
-    if (mode !== "ephemeral" || snapshot.baseRevisionId === null || leavingNoteRef.current) return;
+    if (
+      mode !== "ephemeral" ||
+      snapshot.baseRevisionId === null ||
+      leavingNoteRef.current ||
+      deleteOpen
+    ) {
+      return;
+    }
     const durableRoute = `/notes/${noteId}`;
     if (findOpen) transferFindInNote(durableRoute, findState.query, findState.activeIndex);
     void navigate({
@@ -428,6 +436,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       replace: true,
     }).catch(() => clearFindInNoteTransfer(durableRoute));
   }, [
+    deleteOpen,
     findOpen,
     findState.activeIndex,
     findState.query,
@@ -578,10 +587,12 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
         }
         deleteError={actionError}
+        deleteOpen={deleteOpen}
         deleteShortcut={deleteShortcut}
         deleting={deleting}
         disabled={mediaPending || lifecyclePreparing}
         onDelete={() => void deleteCurrentNote()}
+        onDeleteOpenChange={setDeleteOpen}
         onSourcesChange={(sources) => {
           setActionError(null);
           const current = coordinator.getSnapshot();
