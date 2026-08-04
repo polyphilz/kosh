@@ -74,6 +74,39 @@ test("deleting the first edit before checkpoint keeps the note ephemeral and emp
   ).toEqual({ notes: 0, workingCopies: 0 });
 });
 
+test("the blank canvas below the last block continues the note", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/#/search");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown: "Before the equation.\n\n$$\n\\sum_i a_i\n$$",
+      sources: [],
+    });
+  });
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}`;
+  }, note.id);
+
+  const editor = page.getByRole("textbox", { name: "Note" });
+  await expect(editor).toBeVisible();
+  const trailingCanvas = editor.locator(".bn-trailing-block");
+  await expect(trailingCanvas).toBeVisible();
+  expect(
+    await trailingCanvas.evaluate((element) => element.getBoundingClientRect().height),
+  ).toBeGreaterThan(300);
+
+  const canvasBox = await trailingCanvas.boundingBox();
+  if (!canvasBox) throw new Error("the trailing writing canvas is not rendered");
+  await page.mouse.click(canvasBox.x + 80, canvasBox.y + canvasBox.height - 40);
+  await page.keyboard.type("Continue from anywhere below.");
+
+  const blocks = editor.locator(":scope > .bn-block-group > .bn-block-outer");
+  await expect(blocks).toHaveCount(3);
+  await expect(blocks.last()).toContainText("Continue from anywhere below.");
+});
+
 test("new notes, settings, back, and forward use the transient route stack", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

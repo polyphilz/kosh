@@ -85,9 +85,26 @@
 }
 
 .kosh-blocknote-editor--page .bn-editor {
-  padding: 0 0 40vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
   font-size: 15px;
   line-height: 1.7;
+}
+
+.kosh-blocknote-editor--page .bn-editor > .bn-block-group {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+
+.kosh-blocknote-editor--page .bn-editor > .bn-block-group > .bn-block-outer {
+  flex: 0 0 auto;
+}
+
+.kosh-blocknote-editor--page .bn-editor > .bn-block-group > .bn-trailing-block {
+  flex: 1 0 40vh;
+  height: auto;
 }
 
 .kosh-blocknote-editor--page [data-kosh-block-type="heading-1"] {
