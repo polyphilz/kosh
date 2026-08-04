@@ -116,6 +116,24 @@ test("inline math editing stays within the viewport at the right edge", async ({
   expect(reflowedBounds!.x + reflowedBounds!.width).toBeLessThanOrEqual(505);
 });
 
+test("closing inline math restores the caret after the equation", async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown("Before $a$ after"));
+  await page.locator(".bn-inline-content").click({ position: { x: 2, y: 10 } });
+
+  const equation = page.getByRole("button", { name: "Edit inline math: a" });
+  await equation.focus();
+  await page.keyboard.press("Enter");
+  await page.getByLabel("Inline math source").fill("b");
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
+    .toBe(true);
+  await page.keyboard.type("!");
+
+  await expect.poll(() => editorMarkdown(page)).toContain("Before $b$! after");
+});
+
 test("keyboard focus closes an earlier inline math editor before opening another", async ({
   page,
 }) => {

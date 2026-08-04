@@ -57,7 +57,7 @@ const inlineMath = createReactInlineContentSpec(
     content: "none",
   },
   {
-    render: ({ inlineContent, updateInlineContent }) => (
+    render: ({ editor, inlineContent, updateInlineContent }) => (
       <MathSource
         label="Inline math source"
         latex={inlineContent.props.latex}
@@ -67,6 +67,11 @@ const inlineMath = createReactInlineContentSpec(
             props: { latex },
           })
         }
+        onRestoreCaret={(root) => {
+          const position = editor._tiptapEditor.view.posAtDOM(root, 0);
+          editor._tiptapEditor.commands.setTextSelection(position + 1);
+          editor.focus();
+        }}
       />
     ),
   },
@@ -124,15 +129,25 @@ function MathSource({
   label,
   latex,
   onChange,
+  onRestoreCaret,
 }: {
   display?: boolean;
   label: string;
   latex: string;
   onChange: (latex: string) => void;
+  onRestoreCaret?: (root: HTMLElement) => void;
 }) {
   const disabled = useKoshEditorDisabled();
   if (!display) {
-    return <InlineMathSource disabled={disabled} label={label} latex={latex} onChange={onChange} />;
+    return (
+      <InlineMathSource
+        disabled={disabled}
+        label={label}
+        latex={latex}
+        onChange={onChange}
+        onRestoreCaret={onRestoreCaret!}
+      />
+    );
   }
 
   return (
@@ -159,11 +174,13 @@ function InlineMathSource({
   label,
   latex,
   onChange,
+  onRestoreCaret,
 }: {
   disabled: boolean;
   label: string;
   latex: string;
   onChange: (latex: string) => void;
+  onRestoreCaret: (root: HTMLElement) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [popoverOffset, setPopoverOffset] = useState(0);
@@ -216,7 +233,8 @@ function InlineMathSource({
   const close = () => {
     setOpen(false);
     window.requestAnimationFrame(() => {
-      rootRef.current?.closest<HTMLElement>('.ProseMirror[contenteditable="true"]')?.focus();
+      const root = rootRef.current;
+      if (root) onRestoreCaret(root);
     });
   };
   const accessibleEquation = rendering.error ? "Invalid equation" : latex || "empty equation";
