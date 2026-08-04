@@ -2,7 +2,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v2";
+pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v3";
 
 const TARGET_PASSAGE_CHARS: usize = 700;
 const MAX_PROSE_SEGMENT_CHARS: usize = 1_000;
@@ -78,6 +78,7 @@ struct SuspendedCapture {
 
 pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
     let blocks = parse_source_blocks(markdown);
+    let editor_starts = editor_block_starts(markdown);
     let mut pending = Vec::new();
     let mut passages = Vec::new();
 
@@ -98,7 +99,7 @@ pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
             BlockKind::Empty => pending.push(block),
             BlockKind::Prose if char_count(&block.content) > MAX_PROSE_SEGMENT_CHARS => {
                 flush_group(&mut pending, &mut passages);
-                passages.extend(split_prose_block(block));
+                passages.extend(split_oversized_prose_block(markdown, &editor_starts, block));
             }
             BlockKind::Prose => {
                 let projected = pending
@@ -123,6 +124,57 @@ pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
         passage.ordinal = u32::try_from(ordinal).expect("passage count fits in u32");
     }
     passages
+}
+
+fn split_oversized_prose_block(
+    markdown: &str,
+    editor_starts: &[usize],
+    block: SourceBlock,
+) -> Vec<BuiltPassage> {
+    let editor_blocks = editor_starts
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, start)| {
+            (*start >= block.source_start_byte && *start < block.source_end_byte)
+                .then_some((ordinal, *start))
+        })
+        .collect::<Vec<_>>();
+    if editor_blocks.len() <= 1 {
+        return split_prose_block(block);
+    }
+
+    editor_blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(index, (ordinal, start))| {
+            let end = editor_blocks
+                .get(index + 1)
+                .map_or(block.source_end_byte, |(_, next_start)| *next_start);
+            let content = parse_source_blocks(&markdown[*start..end])
+                .into_iter()
+                .filter_map(|source| (!source.content.is_empty()).then_some(source.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if content.is_empty() {
+                return Vec::new();
+            }
+            let ordinal = u32::try_from(*ordinal).expect("Markdown block count fits in u32");
+            let source = SourceBlock {
+                ordinal,
+                end_ordinal: ordinal,
+                kind: BlockKind::Prose,
+                content,
+                heading_context: block.heading_context.clone(),
+                source_start_byte: *start,
+                source_end_byte: end,
+            };
+            if char_count(&source.content) > MAX_PROSE_SEGMENT_CHARS {
+                split_prose_block(source)
+            } else {
+                vec![single_block_passage(source)]
+            }
+        })
+        .collect()
 }
 
 fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
@@ -925,7 +977,7 @@ mod tests {
         let second = build_markdown_passages(&markdown);
 
         assert_eq!(first, second);
-        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v2");
+        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v3");
         assert_eq!(first.len(), 5);
         assert_eq!(first[0].content, "Thermodynamics");
         assert_eq!(
@@ -1264,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn split_nested_prose_uses_only_its_exact_editor_block_span() {
+    fn split_nested_prose_uses_exact_single_block_character_ranges() {
         let sentence = "A nested sentence carries exact evidence. ";
         let markdown = format!("- {}\n  - Nested child.", sentence.repeat(40));
         let passages = build_markdown_passages(&markdown);
@@ -1276,12 +1328,24 @@ mod tests {
         assert!(split_parent.len() > 1);
         for passage in split_parent {
             assert_eq!(passage.locator.start, 0);
-            assert_eq!(passage.locator.end, 1);
-            assert_eq!(passage.locator.start_char, None);
-            assert_eq!(passage.locator.end_char, None);
+            assert_eq!(passage.locator.end, 0);
+            let start = passage.locator.start_char.expect("split start character");
+            let end = passage.locator.end_char.expect("split end character");
+            assert!(start < end);
+            assert_eq!(
+                sentence.repeat(40)[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()]
+                    .trim(),
+                passage.content
+            );
             assert_eq!(passage.locator.start_line, None);
             assert_eq!(passage.locator.end_line, None);
         }
+        let nested = passages
+            .iter()
+            .find(|passage| passage.content == "Nested child.")
+            .expect("nested child passage");
+        assert_eq!((nested.locator.start, nested.locator.end), (1, 1));
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
     }
 
     #[test]
