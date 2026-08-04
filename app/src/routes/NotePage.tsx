@@ -77,8 +77,16 @@ const reconciliationStarted = new WeakSet<Backend>();
 const activeNoteIds = new WeakMap<Backend, string>();
 const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>>();
 const pendingDeleteDialogTransfers = new Set<string>();
+const pendingDeleteDialogCleanupTimers = new Map<string, number>();
 const SEARCH_MATCH_FLASH_MS = 1_400;
 const EMPTY_FIND_RESULT: FindInNoteResult = { activeIndex: -1, count: 0 };
+
+function clearPendingDeleteDialogTransfer(noteId: string): void {
+  pendingDeleteDialogTransfers.delete(noteId);
+  const timer = pendingDeleteDialogCleanupTimers.get(noteId);
+  if (timer !== undefined) window.clearTimeout(timer);
+  pendingDeleteDialogCleanupTimers.delete(noteId);
+}
 
 export function NotePage({ mode, noteId, passageId }: NotePageProps) {
   const backend = useBackend();
@@ -103,6 +111,7 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
       })
       .catch((reason: unknown) => {
         if (!active) return;
+        if (mode === "durable") clearPendingDeleteDialogTransfer(noteId);
         if (reason instanceof DeletedNoteError) {
           void navigate({
             to: "/new/$noteId",
@@ -117,6 +126,19 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
       active = false;
     };
   }, [backend, mode, navigate, noteId]);
+
+  useEffect(() => {
+    if (mode !== "durable") return;
+    const pendingCleanup = pendingDeleteDialogCleanupTimers.get(noteId);
+    if (pendingCleanup !== undefined) {
+      window.clearTimeout(pendingCleanup);
+      pendingDeleteDialogCleanupTimers.delete(noteId);
+    }
+    return () => {
+      const timer = window.setTimeout(() => clearPendingDeleteDialogTransfer(noteId), 0);
+      pendingDeleteDialogCleanupTimers.set(noteId, timer);
+    };
+  }, [mode, noteId]);
 
   if (loadError?.noteId === noteId) {
     return (
@@ -138,6 +160,7 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
   return (
     <NoteEditorSession
       coordinator={session.coordinator}
+      durableSessionReady={mode === "durable" && session.note !== null}
       key={session.coordinator.getSnapshot().editGeneration === 0 ? "clean" : "recovered"}
       mode={mode}
       noteId={noteId}
@@ -148,12 +171,19 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
 
 interface NoteEditorSessionProps {
   coordinator: NoteAutosaveCoordinator;
+  durableSessionReady: boolean;
   mode: NotePageProps["mode"];
   noteId: string;
   passageId?: string;
 }
 
-function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorSessionProps) {
+function NoteEditorSession({
+  coordinator,
+  durableSessionReady,
+  mode,
+  noteId,
+  passageId,
+}: NoteEditorSessionProps) {
   const backend = useBackend();
   const announceDeletedNote = useNoteDeletion();
   const navigate = useNavigate();
@@ -172,7 +202,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(() => pendingDeleteDialogTransfers.delete(noteId));
+  const [deleteOpen, setDeleteOpen] = useState(() => pendingDeleteDialogTransfers.has(noteId));
   const findRequestRoute = `/${mode === "ephemeral" ? "new" : "notes"}/${noteId}`;
   const [initialFindTransfer] = useState(() => consumeFindInNoteTransfer(findRequestRoute));
   const [findOpen, setFindOpen] = useState(initialFindTransfer !== null);
@@ -188,6 +218,10 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   const deleteShortcut =
     localBindingFor(localBindings, LocalShortcutCommand.DeleteNote)?.accelerator ??
     DEFAULT_DELETE_NOTE_ACCELERATOR;
+
+  useEffect(() => {
+    if (durableSessionReady) clearPendingDeleteDialogTransfer(noteId);
+  }, [durableSessionReady, noteId]);
 
   const updateFindState = useCallback((query: string, activeIndex = 0) => {
     const result = editorRef.current?.findInNote(query, activeIndex) ?? EMPTY_FIND_RESULT;
@@ -317,18 +351,20 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      const findInput = findInputRef.current;
-      if (findInput) {
-        findInput.focus();
-        findInput.select();
-      } else {
-        editorRef.current?.focus();
+      if (!deleteOpen) {
+        const findInput = findInputRef.current;
+        if (findInput) {
+          findInput.focus();
+          findInput.select();
+        } else {
+          editorRef.current?.focus();
+        }
       }
       restoreScroll(noteId);
       scheduleWorkingCopyReconciliation(backend);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [backend, noteId]);
+  }, [backend, deleteOpen, noteId]);
 
   useEffect(() => {
     editorRef.current?.clearSearchFocus();
@@ -427,14 +463,14 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     const durableRoute = `/notes/${noteId}`;
     if (findOpen) transferFindInNote(durableRoute, findState.query, findState.activeIndex);
     if (deleteOpen) pendingDeleteDialogTransfers.add(noteId);
-    else pendingDeleteDialogTransfers.delete(noteId);
+    else clearPendingDeleteDialogTransfer(noteId);
     void navigate({
       to: "/notes/$noteId",
       params: { noteId },
       replace: true,
     }).catch(() => {
       clearFindInNoteTransfer(durableRoute);
-      pendingDeleteDialogTransfers.delete(noteId);
+      clearPendingDeleteDialogTransfer(noteId);
     });
   }, [
     deleteOpen,
