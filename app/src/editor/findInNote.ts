@@ -228,6 +228,7 @@ function findBlockMatches(
       parts.push(...matchPart(segment, start, end));
     }
     if (parts.length === 0) continue;
+    if (parts.length > 1 && parts.some((part) => part.atom)) continue;
     const key = parts
       .map((part) => `${part.atom ? "atom" : "text"}:${part.from}:${part.to}`)
       .join("|");

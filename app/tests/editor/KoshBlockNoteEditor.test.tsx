@@ -319,6 +319,24 @@ describe("production BlockNote editor", () => {
     expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
   });
 
+  it("does not match across an atomic math boundary", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value="Inline $ababa$b"
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByRole("button", { name: "Edit inline math: ababa" });
+
+    expect(ref.current?.findInNote("ab")).toEqual({ activeIndex: 0, count: 1 });
+    expect(document.querySelectorAll('[data-kosh-find-match="true"]')).toHaveLength(1);
+  });
+
   it("finds visible media filenames, alt text, and captions", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(
