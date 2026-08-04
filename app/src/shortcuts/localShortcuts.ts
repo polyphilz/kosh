@@ -28,6 +28,7 @@ const STORAGE_KEY = "kosh.local-shortcuts.v1";
 const NOTE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const reservedAccelerators = new Set([
   "alt+shift+super+keyv",
+  "alt+super+keyh",
   "shift+super+keyv",
   "shift+super+keyz",
   "super+bracketleft",
@@ -37,11 +38,15 @@ const reservedAccelerators = new Set([
   "super+keyb",
   "super+keyc",
   "super+keyf",
+  "super+keyh",
   "super+keyi",
   "super+keyk",
+  "super+keym",
   "super+keyn",
+  "super+keyq",
   "super+keyu",
   "super+keyv",
+  "super+keyw",
   "super+keyx",
   "super+keyz",
   "super+slash",

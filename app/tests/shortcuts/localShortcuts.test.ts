@@ -57,7 +57,12 @@ describe("local shortcut settings", () => {
     for (const accelerator of [
       "super+KeyA",
       "super+KeyC",
+      "super+KeyH",
+      "alt+super+KeyH",
+      "super+KeyM",
+      "super+KeyQ",
       "super+KeyV",
+      "super+KeyW",
       "super+KeyX",
       "super+KeyZ",
       "shift+super+KeyZ",
