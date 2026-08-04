@@ -70,6 +70,15 @@ describe("local shortcut settings", () => {
       expect(validateLocalKeyboardBindings(withCopyNoteLink(accelerator))).toMatch(/reserved/iu);
     }
     expect(validateLocalKeyboardBindings(withCopyNoteLink("super+keyc"))).toMatch(/reserved/iu);
+    for (const accelerator of [
+      "shift+ArrowLeft",
+      "alt+ArrowRight",
+      "alt+shift+ArrowUp",
+      "shift+super+ArrowDown",
+      "control+alt+super+ArrowLeft",
+    ]) {
+      expect(validateLocalKeyboardBindings(withCopyNoteLink(accelerator))).toMatch(/reserved/iu);
+    }
   });
 });
 

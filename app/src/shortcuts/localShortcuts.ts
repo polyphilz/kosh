@@ -93,10 +93,18 @@ export function validateLocalKeyboardBindings(
   if (accelerators.some((accelerator) => globals.has(accelerator))) {
     return "That shortcut is already used by a global Kosh command.";
   }
-  if (accelerators.some((accelerator) => reservedAccelerators.has(accelerator))) {
+  if (accelerators.some(isReservedAccelerator)) {
     return "That shortcut is reserved by another Kosh command.";
   }
   return null;
+}
+
+function isReservedAccelerator(accelerator: string): boolean {
+  if (reservedAccelerators.has(accelerator)) return true;
+  const code = accelerator.split("+").at(-1);
+  return (
+    code === "arrowdown" || code === "arrowleft" || code === "arrowright" || code === "arrowup"
+  );
 }
 
 export function localBindingFor(
