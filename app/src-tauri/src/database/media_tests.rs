@@ -2032,7 +2032,7 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
                     note_id: CAPTURE_DRAFT_ID.into(),
                     base_revision_id: None,
                     edit_generation: now_ms,
-                    document_json: super::document::single_paragraph(&body),
+                    document_json: super::document::fixture_from_markdown(&body),
                     body_markdown: body.clone(),
                     sources: Vec::new(),
                 },
@@ -2074,6 +2074,81 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
             .expect("renewed media expiry"),
         33
     );
+}
+
+#[test]
+fn attachment_ownership_follows_the_stable_note_block_identity() {
+    let library = TestLibrary::new();
+    let attachment = library.ingest(
+        (0x752, 0x753, 0x754),
+        "owned.png",
+        "image/png",
+        b"owned image",
+        11,
+        MediaLimits::default(),
+    );
+    let body = format!("{{{{kosh:image:{};width=90%}}}}", attachment.id);
+    let document = |block_id: &str, paragraph_first: bool| {
+        let media = serde_json::json!({
+            "id": block_id,
+            "type": "koshImage",
+            "props": {"attachmentId": attachment.id},
+            "content": [],
+            "children": [],
+        });
+        let paragraph = serde_json::json!({
+            "id": "ownership-paragraph",
+            "type": "paragraph",
+            "props": {},
+            "content": [],
+            "children": [],
+        });
+        let blocks = if paragraph_first {
+            vec![paragraph, media]
+        } else {
+            vec![media, paragraph]
+        };
+        serde_json::json!({"schemaVersion": 1, "blocks": blocks}).to_string()
+    };
+    let save = |generation, document_json| {
+        library
+            .database
+            .client()
+            .save_working_copy(SaveWorkingCopyWrite {
+                input: SaveWorkingCopyInput {
+                    note_id: CAPTURE_DRAFT_ID.into(),
+                    base_revision_id: None,
+                    edit_generation: generation,
+                    document_json,
+                    body_markdown: body.clone(),
+                    sources: Vec::new(),
+                },
+                now_ms: generation,
+                media_limits: MediaLimits::default(),
+                allow_empty_ephemeral: true,
+            })
+    };
+
+    save(12, document("owned-image-block", false)).expect("claim attachment for note block");
+    let owner = library
+        .database
+        .open_main_read_only()
+        .expect("main reader")
+        .query_row(
+            "SELECT owner_note_id, owner_block_id FROM attachment WHERE id = ?1",
+            params![&attachment.id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .expect("attachment owner");
+    assert_eq!(owner, (CAPTURE_DRAFT_ID.into(), "owned-image-block".into()));
+
+    save(13, document("owned-image-block", true))
+        .expect("moving the stable block keeps attachment ownership");
+    let error = save(14, document("copied-image-block", true))
+        .expect_err("copying the attachment into a new block must fail");
+    assert!(error
+        .to_string()
+        .contains("already belongs to a different note block"));
 }
 
 #[test]
@@ -2198,7 +2273,7 @@ fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
                 note_id: CAPTURE_DRAFT_ID.into(),
                 base_revision_id: None,
                 edit_generation: 12,
-                document_json: super::document::single_paragraph(&canonical),
+                document_json: super::document::fixture_from_markdown(&canonical),
                 body_markdown: canonical,
                 sources: Vec::new(),
             },
@@ -2216,7 +2291,7 @@ fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
                 note_id: CAPTURE_DRAFT_ID.into(),
                 base_revision_id: None,
                 edit_generation: 13,
-                document_json: super::document::single_paragraph(&malformed),
+                document_json: super::document::fixture_from_markdown(&malformed),
                 body_markdown: malformed,
                 sources: Vec::new(),
             },
@@ -2266,7 +2341,7 @@ fn startup_recovery_renews_expired_media_still_referenced_by_a_saved_draft() {
                 note_id: CAPTURE_DRAFT_ID.into(),
                 base_revision_id: None,
                 edit_generation: 12,
-                document_json: super::document::single_paragraph(&body),
+                document_json: super::document::fixture_from_markdown(&body),
                 body_markdown: body,
                 sources: Vec::new(),
             },
@@ -2815,7 +2890,7 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
                 note_id: tidbit.id.clone(),
                 base_revision_id: Some(tidbit.current_revision_id.clone()),
                 edit_generation: 14,
-                document_json: super::document::single_paragraph(&body),
+                document_json: super::document::fixture_from_markdown(&body),
                 body_markdown: body.clone(),
                 sources: Vec::new(),
             },

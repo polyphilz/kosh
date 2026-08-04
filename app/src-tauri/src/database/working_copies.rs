@@ -235,6 +235,7 @@ pub(super) fn save(
     media::sync_draft_media_leases(
         &transaction,
         &draft_id,
+        &write.input.document_json,
         &write.input.body_markdown,
         saved_at_ms,
         limits.max_attachments_per_draft,
@@ -400,6 +401,7 @@ fn checkpoint_new(
         &write.revision_id,
         None,
         &working_copy.id,
+        &prepared.attachments,
         &prepared.body_markdown,
         write.now_ms,
     )?;
@@ -451,6 +453,7 @@ fn checkpoint_existing(
         &write.revision_id,
         Some(base_revision_id),
         &working_copy.id,
+        &prepared.attachments,
         &prepared.body_markdown,
         updated_at_ms,
     )?;
@@ -712,7 +715,7 @@ mod tests {
                         note_id: NOTE_ID.into(),
                         base_revision_id,
                         edit_generation: generation,
-                        document_json: super::document::single_paragraph(body),
+                        document_json: super::document::fixture_from_markdown(body),
                         body_markdown: body.into(),
                         sources,
                     },

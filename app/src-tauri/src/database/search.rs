@@ -2493,18 +2493,21 @@ mod tests {
             .execute_batch(
                 "INSERT INTO attachment(
                     id, created_at, updated_at, sha256, display_filename,
-                    media_type, byte_length, kind, extraction_state
+                    media_type, byte_length, kind, extraction_state,
+                    owner_note_id, owner_block_id
                  ) VALUES(
                     '019f547b-6200-7000-8000-000000009501',
                     10, 10, zeroblob(32), 'calibration-plate.pdf',
-                    'application/pdf', 128, 'PDF', 'READY'
+                    'application/pdf', 128, 'PDF', 'READY',
+                    '019f547b-6200-7000-8000-000000009511',
+                    'attachment-search-fixture'
                  );
                  INSERT INTO tidbit_revision_attachment(
-                    tidbit_revision_id, attachment_id, sort_order, display_role
+                    tidbit_revision_id, attachment_id, block_id, sort_order, display_role
                  ) VALUES(
                     '019f547b-6200-7000-8000-000000009512',
                     '019f547b-6200-7000-8000-000000009501',
-                    0, 'ATTACHMENT'
+                    'attachment-search-fixture', 0, 'ATTACHMENT'
                  );",
             )
             .expect("associate attachment with current revision");

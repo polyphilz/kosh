@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{search, DatabaseError, Result};
+use super::{document, search, DatabaseError, Result};
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_FILENAME_CHARS: usize = 255;
@@ -629,19 +629,11 @@ pub(crate) enum AttachmentDisplayRole {
     Attachment,
 }
 
-impl AttachmentDisplayRole {
-    fn as_db_str(self) -> &'static str {
-        match self {
-            Self::Inline => "INLINE",
-            Self::Attachment => "ATTACHMENT",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AttachmentReference {
+pub(super) struct AttachmentReference {
     pub id: String,
     pub display_role: AttachmentDisplayRole,
+    pub kind: document::AttachmentBlockKind,
 }
 
 pub(crate) fn ingest_attachment(
@@ -3554,25 +3546,36 @@ fn accumulate_cleanup(total: &mut MediaCleanupResult, increment: MediaCleanupRes
     Ok(())
 }
 
-pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference> {
+pub(super) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference> {
     let mut references = Vec::<AttachmentReference>::new();
     let mut positions = HashMap::<String, usize>::new();
     let mut cursor = 0;
     while cursor < markdown.len() {
         let remainder = &markdown[cursor..];
-        let next_image = remainder
-            .find(IMAGE_TOKEN_PREFIX)
-            .map(|offset| (offset, IMAGE_TOKEN_PREFIX, AttachmentDisplayRole::Inline));
+        let next_image = remainder.find(IMAGE_TOKEN_PREFIX).map(|offset| {
+            (
+                offset,
+                IMAGE_TOKEN_PREFIX,
+                AttachmentDisplayRole::Inline,
+                document::AttachmentBlockKind::Image,
+            )
+        });
         let next_attachment = remainder.find(ATTACHMENT_TOKEN_PREFIX).map(|offset| {
             (
                 offset,
                 ATTACHMENT_TOKEN_PREFIX,
                 AttachmentDisplayRole::Attachment,
+                document::AttachmentBlockKind::File,
             )
         });
-        let next_pdf = remainder
-            .find(PDF_TOKEN_PREFIX)
-            .map(|offset| (offset, PDF_TOKEN_PREFIX, AttachmentDisplayRole::Attachment));
+        let next_pdf = remainder.find(PDF_TOKEN_PREFIX).map(|offset| {
+            (
+                offset,
+                PDF_TOKEN_PREFIX,
+                AttachmentDisplayRole::Attachment,
+                document::AttachmentBlockKind::Pdf,
+            )
+        });
         let Some(next) = [next_image, next_attachment, next_pdf]
             .into_iter()
             .flatten()
@@ -3592,12 +3595,14 @@ pub(crate) fn referenced_attachments(markdown: &str) -> Vec<AttachmentReference>
             if let Some(position) = positions.get(id).copied() {
                 if next.2 == AttachmentDisplayRole::Inline {
                     references[position].display_role = AttachmentDisplayRole::Inline;
+                    references[position].kind = next.3;
                 }
             } else {
                 positions.insert(id.to_owned(), references.len());
                 references.push(AttachmentReference {
                     id: id.to_owned(),
                     display_role: next.2,
+                    kind: next.3,
                 });
             }
         }
@@ -3712,9 +3717,10 @@ fn canonical_hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-pub(crate) fn sync_draft_media_leases(
+pub(super) fn sync_draft_media_leases(
     transaction: &Transaction<'_>,
     draft_id: &str,
+    document_json: &str,
     body_markdown: &str,
     now_ms: i64,
     max_attachments_per_draft: u32,
@@ -3726,7 +3732,8 @@ pub(crate) fn sync_draft_media_leases(
             "draft media lease duration must be positive".into(),
         ));
     }
-    let references = referenced_attachments(body_markdown);
+    let references = document::extract_attachments(document_json)?;
+    validate_document_attachment_projection(&references, body_markdown)?;
     let reference_count = u32::try_from(references.len())
         .map_err(|_| DatabaseError::InvalidInput("too many attachment references".into()))?;
     if reference_count > max_attachments_per_draft {
@@ -3735,6 +3742,31 @@ pub(crate) fn sync_draft_media_leases(
         )));
     }
     for reference in references {
+        let attachment = transaction
+            .query_row(
+                "SELECT kind, owner_note_id, owner_block_id
+                 FROM attachment
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                params![&reference.attachment_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or_else(|| DatabaseError::NotFound {
+                entity: "attachment",
+                id: reference.attachment_id.clone(),
+            })?;
+        if !reference.kind.accepts_database_kind(&attachment.0) {
+            return Err(DatabaseError::InvalidInput(format!(
+                "attachment {} does not match its document block type",
+                reference.attachment_id
+            )));
+        }
         let lease_id = transaction
             .query_row(
                 "SELECT lease.id
@@ -3746,21 +3778,21 @@ pub(crate) fn sync_draft_media_leases(
                    AND lease.attachment_id = ?2
                    AND lease.state = 'COMMITTED'
                    AND attachment.deleted_at IS NULL",
-                params![draft_id, &reference.id],
+                params![draft_id, &reference.attachment_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        if let Some(lease_id) = lease_id {
+        let actively_leased = lease_id.is_some();
+        if let Some(lease_id) = lease_id.as_deref() {
             transaction.execute(
                 "UPDATE media_ingest_lease
                  SET expires_at = max(expires_at, ?1)
                  WHERE id = ?2",
                 params![
                     checked_timestamp_add(now_ms, lease_duration_ms, "draft media lease renewal")?,
-                    lease_id
+                    lease_id,
                 ],
             )?;
-            continue;
         }
         let inherited_from_base_revision = transaction
             .query_row(
@@ -3772,17 +3804,45 @@ pub(crate) fn sync_draft_media_leases(
                    ON attachment.id = membership.attachment_id
                  WHERE draft.id = ?1
                    AND membership.attachment_id = ?2
+                   AND membership.block_id = ?3
                    AND attachment.deleted_at IS NULL",
-                params![draft_id, &reference.id],
+                params![draft_id, &reference.attachment_id, &reference.block_id],
                 |_| Ok(()),
             )
             .optional()?
             .is_some();
-        if !inherited_from_base_revision {
+        if !actively_leased && !inherited_from_base_revision {
             return Err(DatabaseError::InvalidInput(format!(
                 "attachment {} is not authorized for this draft",
-                reference.id
+                reference.attachment_id
             )));
+        }
+        match (&attachment.1, &attachment.2) {
+            (None, None) if actively_leased => {
+                let claimed = transaction.execute(
+                    "UPDATE attachment
+                     SET owner_note_id = ?1, owner_block_id = ?2
+                     WHERE id = ?3
+                       AND owner_note_id IS NULL
+                       AND owner_block_id IS NULL
+                       AND deleted_at IS NULL",
+                    params![draft_id, &reference.block_id, &reference.attachment_id],
+                )?;
+                if claimed != 1 {
+                    return Err(DatabaseError::InvalidInput(format!(
+                        "attachment {} could not be claimed by its document block",
+                        reference.attachment_id
+                    )));
+                }
+            }
+            (Some(note_id), Some(block_id))
+                if note_id == draft_id && block_id == &reference.block_id => {}
+            _ => {
+                return Err(DatabaseError::InvalidInput(format!(
+                    "attachment {} already belongs to a different note block",
+                    reference.attachment_id
+                )));
+            }
         }
     }
     Ok(())
@@ -3809,15 +3869,16 @@ pub(crate) fn abandon_draft_media_leases(
     Ok(())
 }
 
-pub(crate) fn link_revision_attachments(
+pub(super) fn link_revision_attachments(
     transaction: &Transaction<'_>,
     revision_id: &str,
     current_revision_id: Option<&str>,
     draft_id: &str,
+    references: &[document::DocumentAttachment],
     body_markdown: &str,
     now_ms: i64,
 ) -> Result<()> {
-    let references = referenced_attachments(body_markdown);
+    validate_document_attachment_projection(references, body_markdown)?;
     for (sort_order, reference) in references.iter().enumerate() {
         let already_linked = current_revision_id
             .map(|current_revision_id| {
@@ -3825,8 +3886,14 @@ pub(crate) fn link_revision_attachments(
                     .query_row(
                         "SELECT 1
                          FROM tidbit_revision_attachment
-                         WHERE tidbit_revision_id = ?1 AND attachment_id = ?2",
-                        params![current_revision_id, &reference.id],
+                         WHERE tidbit_revision_id = ?1
+                           AND attachment_id = ?2
+                           AND block_id = ?3",
+                        params![
+                            current_revision_id,
+                            &reference.attachment_id,
+                            &reference.block_id
+                        ],
                         |_| Ok(()),
                     )
                     .optional()
@@ -3847,7 +3914,7 @@ pub(crate) fn link_revision_attachments(
                    AND lease.state = 'COMMITTED'
                    AND lease.expires_at > ?2
                    AND draft_lease.draft_id = ?3",
-                params![&reference.id, now_ms, draft_id],
+                params![&reference.attachment_id, now_ms, draft_id],
                 |_| Ok(()),
             )
             .optional()?
@@ -3855,21 +3922,66 @@ pub(crate) fn link_revision_attachments(
         if !already_linked && !actively_leased {
             return Err(DatabaseError::InvalidInput(format!(
                 "attachment {} is not authorized for this revision",
-                reference.id
+                reference.attachment_id
+            )));
+        }
+        let owned = transaction
+            .query_row(
+                "SELECT kind
+                 FROM attachment
+                 WHERE id = ?1
+                   AND owner_note_id = ?2
+                   AND owner_block_id = ?3
+                   AND deleted_at IS NULL",
+                params![&reference.attachment_id, draft_id, &reference.block_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(database_kind) = owned else {
+            return Err(DatabaseError::InvalidInput(format!(
+                "attachment {} does not belong to this note block",
+                reference.attachment_id
+            )));
+        };
+        if !reference.kind.accepts_database_kind(&database_kind) {
+            return Err(DatabaseError::InvalidInput(format!(
+                "attachment {} does not match its document block type",
+                reference.attachment_id
             )));
         }
         transaction.execute(
             "INSERT INTO tidbit_revision_attachment(
-                tidbit_revision_id, attachment_id, sort_order, display_role
-             ) VALUES(?1, ?2, ?3, ?4)",
+                tidbit_revision_id, attachment_id, block_id, sort_order, display_role
+             ) VALUES(?1, ?2, ?3, ?4, ?5)",
             params![
                 revision_id,
-                &reference.id,
+                &reference.attachment_id,
+                &reference.block_id,
                 i64::try_from(sort_order)
                     .map_err(|_| DatabaseError::InvalidInput("too many attachments".into()))?,
-                reference.display_role.as_db_str()
+                reference.kind.display_role(),
             ],
         )?;
+    }
+    Ok(())
+}
+
+fn validate_document_attachment_projection(
+    document_attachments: &[document::DocumentAttachment],
+    body_markdown: &str,
+) -> Result<()> {
+    let markdown_attachments = referenced_attachments(body_markdown);
+    if document_attachments.len() != markdown_attachments.len()
+        || !document_attachments
+            .iter()
+            .zip(&markdown_attachments)
+            .all(|(document, markdown)| {
+                document.attachment_id == markdown.id && document.kind == markdown.kind
+            })
+    {
+        return Err(DatabaseError::InvalidInput(
+            "documentJson attachment blocks must match the derived bodyMarkdown projection".into(),
+        ));
     }
     Ok(())
 }

@@ -96,9 +96,11 @@ CREATE TABLE tidbit_revision_source (
 CREATE TABLE tidbit_revision_attachment (
     tidbit_revision_id TEXT NOT NULL,
     attachment_id TEXT NOT NULL,
+    block_id TEXT NOT NULL CHECK (length(block_id) BETWEEN 1 AND 256),
     sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
     display_role TEXT NOT NULL CHECK (display_role IN ('INLINE', 'ATTACHMENT')),
     PRIMARY KEY (tidbit_revision_id, attachment_id),
+    UNIQUE (tidbit_revision_id, block_id),
     UNIQUE (tidbit_revision_id, sort_order),
     FOREIGN KEY (tidbit_revision_id) REFERENCES tidbit_revision(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
@@ -865,9 +867,28 @@ CREATE TABLE "attachment" (
     media_type TEXT NOT NULL CHECK (length(media_type) > 0),
     byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
     kind TEXT NOT NULL CHECK (kind IN ('IMAGE', 'PDF', 'TEXT', 'BINARY')),
+    owner_note_id TEXT
+        CHECK (
+            owner_note_id IS NULL
+            OR (
+                length(owner_note_id) = 36
+                AND lower(owner_note_id) = owner_note_id
+                AND substr(owner_note_id, 9, 1) = '-'
+                AND substr(owner_note_id, 14, 1) = '-'
+                AND substr(owner_note_id, 15, 1) = '7'
+                AND substr(owner_note_id, 19, 1) = '-'
+                AND substr(owner_note_id, 20, 1) GLOB '[89ab]'
+                AND substr(owner_note_id, 24, 1) = '-'
+                AND length(replace(owner_note_id, '-', '')) = 32
+                AND replace(owner_note_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+            )
+        ),
+    owner_block_id TEXT CHECK (owner_block_id IS NULL OR length(owner_block_id) BETWEEN 1 AND 256),
     extraction_state TEXT NOT NULL
         CHECK (extraction_state IN ('PENDING', 'READY', 'FAILED', 'NOT_APPLICABLE')),
-    UNIQUE (id, sha256)
+    UNIQUE (id, sha256),
+    UNIQUE (owner_note_id, owner_block_id),
+    CHECK ((owner_note_id IS NULL) = (owner_block_id IS NULL))
 ) STRICT;
 CREATE INDEX attachment_sha256_idx
     ON attachment(sha256, id);
@@ -884,6 +905,26 @@ CREATE TRIGGER attachment_identity_prevent_update
 BEFORE UPDATE OF created_at, sha256, byte_length, kind ON attachment
 BEGIN
     SELECT RAISE(ABORT, 'attachment identity is immutable');
+END;
+CREATE TRIGGER attachment_owner_prevent_change
+BEFORE UPDATE OF owner_note_id, owner_block_id ON attachment
+WHEN old.owner_note_id IS NOT NULL OR old.owner_block_id IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'attachment block ownership is immutable');
+END;
+CREATE TRIGGER tidbit_revision_attachment_owner_validate
+BEFORE INSERT ON tidbit_revision_attachment
+BEGIN
+    SELECT RAISE(ABORT, 'revision attachment does not match its note block owner')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM tidbit_revision AS revision
+        JOIN attachment ON attachment.id = new.attachment_id
+        WHERE revision.id = new.tidbit_revision_id
+          AND attachment.owner_note_id = revision.tidbit_id
+          AND attachment.owner_block_id = new.block_id
+          AND attachment.deleted_at IS NULL
+    );
 END;
 CREATE TRIGGER passage_attachment_locator_validate
 BEFORE INSERT ON passage
