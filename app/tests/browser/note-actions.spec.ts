@@ -70,6 +70,38 @@ test("the minimal sidebar persists and its commands leave editor shortcuts alone
   expect(page.url()).not.toBe(priorUrl);
 });
 
+test("Command-F waits for a loading note session", async ({ page }) => {
+  await page.goto("/#/");
+  await page.getByRole("textbox", { name: "Note" }).fill("A cold-loaded note to search.");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+  const noteId = page.url().split("/").at(-1)!;
+  await page.keyboard.press("Meta+n");
+  await expect(page).toHaveURL(/\/#\/new\/[0-9a-f-]{36}$/u);
+
+  await page.evaluate((id) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    const load = backend.loadTidbit.bind(backend);
+    let release!: () => void;
+    const loading = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Reflect.set(window, "__KOSH_RELEASE_NOTE_LOAD__", release);
+    backend.loadTidbit = async (input) => {
+      await loading;
+      return load(input);
+    };
+    window.location.hash = `#/notes/${id}`;
+  }, noteId);
+
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${noteId}$`, "u"));
+  await expect(page.getByText("Opening note", { exact: true })).toBeAttached();
+  await page.keyboard.press("Meta+f");
+  await page.evaluate(() => Reflect.get(window, "__KOSH_RELEASE_NOTE_LOAD__")());
+
+  await expect(page.getByRole("searchbox", { name: "Find in note" })).toBeFocused();
+});
+
 test("valid sources autosave while invalid partial edits remain local", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });

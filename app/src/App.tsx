@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TidbitRecord } from "./backend/contracts";
 import { useBackend } from "./backend/context";
 import { ErrorBoundary } from "./components/States";
-import { FIND_IN_NOTE_REQUEST_EVENT } from "./editor/findInNote";
+import { requestFindInNote } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
@@ -143,7 +143,7 @@ function AppShell() {
         ?.querySelector<HTMLButtonElement>('[aria-label="Close sources"]')
         ?.click();
       window.requestAnimationFrame(() => {
-        window.dispatchEvent(new Event(FIND_IN_NOTE_REQUEST_EVENT));
+        requestFindInNote();
       });
     };
     window.addEventListener("keydown", onKeyDown, true);

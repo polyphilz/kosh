@@ -22,7 +22,11 @@ import {
   KoshBlockNoteEditor,
   type KoshBlockNoteEditorHandle,
 } from "../editor/KoshBlockNoteEditor";
-import { FIND_IN_NOTE_REQUEST_EVENT, type FindInNoteResult } from "../editor/findInNote";
+import {
+  consumeFindInNoteRequest,
+  FIND_IN_NOTE_REQUEST_EVENT,
+  type FindInNoteResult,
+} from "../editor/findInNote";
 import {
   createUuidV7,
   NoteAutosaveCoordinator,
@@ -188,6 +192,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   useEffect(() => {
     const openFind = () => {
+      consumeFindInNoteRequest();
       setFindOpen(true);
       setFindState((current) => {
         const result =
@@ -200,6 +205,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       });
     };
     window.addEventListener(FIND_IN_NOTE_REQUEST_EVENT, openFind);
+    if (consumeFindInNoteRequest()) openFind();
     return () => window.removeEventListener(FIND_IN_NOTE_REQUEST_EVENT, openFind);
   }, []);
 

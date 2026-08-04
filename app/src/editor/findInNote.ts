@@ -5,6 +5,18 @@ import { Decoration, DecorationSet } from "prosemirror-view";
 import type { KoshBlockNoteEditor } from "./schema";
 
 export const FIND_IN_NOTE_REQUEST_EVENT = "kosh:find-in-note";
+let findInNoteRequestPending = false;
+
+export function requestFindInNote(): void {
+  findInNoteRequestPending = true;
+  window.dispatchEvent(new Event(FIND_IN_NOTE_REQUEST_EVENT));
+}
+
+export function consumeFindInNoteRequest(): boolean {
+  const pending = findInNoteRequestPending;
+  findInNoteRequestPending = false;
+  return pending;
+}
 
 export interface FindInNoteResult {
   activeIndex: number;
