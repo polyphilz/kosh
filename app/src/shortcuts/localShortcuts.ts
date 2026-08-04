@@ -27,14 +27,24 @@ export const DEFAULT_LOCAL_KEYBOARD_BINDINGS: readonly LocalKeyboardBinding[] = 
 const STORAGE_KEY = "kosh.local-shortcuts.v1";
 const NOTE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const reservedAccelerators = new Set([
-  "super+BracketLeft",
-  "super+BracketRight",
-  "super+Comma",
-  "super+KeyB",
-  "super+KeyF",
-  "super+KeyK",
-  "super+KeyN",
-  "super+Slash",
+  "alt+shift+super+keyv",
+  "shift+super+keyv",
+  "shift+super+keyz",
+  "super+bracketleft",
+  "super+bracketright",
+  "super+comma",
+  "super+keya",
+  "super+keyb",
+  "super+keyc",
+  "super+keyf",
+  "super+keyi",
+  "super+keyk",
+  "super+keyn",
+  "super+keyu",
+  "super+keyv",
+  "super+keyx",
+  "super+keyz",
+  "super+slash",
 ]);
 
 export function readLocalKeyboardBindings(
@@ -78,7 +88,7 @@ export function validateLocalKeyboardBindings(
   if (accelerators.some((accelerator) => globals.has(accelerator))) {
     return "That shortcut is already used by a global Kosh command.";
   }
-  if (bindings.some((binding) => reservedAccelerators.has(binding.accelerator))) {
+  if (accelerators.some((accelerator) => reservedAccelerators.has(accelerator))) {
     return "That shortcut is reserved by another Kosh command.";
   }
   return null;

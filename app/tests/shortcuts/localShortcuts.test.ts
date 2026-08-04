@@ -57,6 +57,33 @@ describe("local shortcut settings", () => {
         },
       ]),
     ).toMatch(/reserved/iu);
+    for (const accelerator of [
+      "super+KeyA",
+      "super+KeyC",
+      "super+KeyV",
+      "super+KeyX",
+      "super+KeyZ",
+      "shift+super+KeyZ",
+    ]) {
+      expect(
+        validateLocalKeyboardBindings([
+          { command: LocalShortcutCommand.CopyNoteLink, accelerator },
+          {
+            command: LocalShortcutCommand.CopyExactNoteLink,
+            accelerator: "shift+super+KeyL",
+          },
+        ]),
+      ).toMatch(/reserved/iu);
+    }
+    expect(
+      validateLocalKeyboardBindings([
+        { command: LocalShortcutCommand.CopyNoteLink, accelerator: "super+keyc" },
+        {
+          command: LocalShortcutCommand.CopyExactNoteLink,
+          accelerator: "shift+super+KeyL",
+        },
+      ]),
+    ).toMatch(/reserved/iu);
   });
 });
 
