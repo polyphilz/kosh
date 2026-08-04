@@ -290,6 +290,35 @@ describe("production BlockNote editor", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("counts each atomic math node once when its source repeats the query", async () => {
+    const ref = createRef<KoshBlockNoteEditorHandle>();
+    render(
+      <AppearanceProvider>
+        <KoshBlockNoteEditor
+          ariaLabel="Body"
+          onChange={() => undefined}
+          ref={ref}
+          value={"Inline $token + token$.\n\n$$\ntoken + token\n$$"}
+        />
+      </AppearanceProvider>,
+    );
+    await screen.findByRole("button", { name: "Edit inline math: token + token" });
+
+    let result: { activeIndex: number; count: number } | undefined;
+    act(() => {
+      result = ref.current?.findInNote("token");
+    });
+    expect(result).toEqual({ activeIndex: 0, count: 2 });
+    expect(document.querySelectorAll('[data-kosh-find-match="true"]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+
+    act(() => {
+      result = ref.current?.moveFindInNote("next");
+    });
+    expect(result).toEqual({ activeIndex: 1, count: 2 });
+    expect(document.querySelectorAll('[data-kosh-find-active="true"]')).toHaveLength(1);
+  });
+
   it("refuses to retarget a citation whose excerpt is absent from the editor", async () => {
     const ref = createRef<KoshBlockNoteEditorHandle>();
     render(

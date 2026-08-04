@@ -173,11 +173,18 @@ function findBlockMatches(
   if (!text) return [];
   expression.lastIndex = 0;
   const matches: FindMatch[] = [];
+  const matchKeys = new Set<string>();
   for (const match of text.matchAll(expression)) {
     const start = match.index;
     const end = start + match[0].length;
     const parts = segments.flatMap((segment) => matchPart(segment, start, end));
-    if (parts.length > 0) matches.push({ parts });
+    if (parts.length === 0) continue;
+    const key = parts
+      .map((part) => `${part.atom ? "atom" : "text"}:${part.from}:${part.to}`)
+      .join("|");
+    if (matchKeys.has(key)) continue;
+    matchKeys.add(key);
+    matches.push({ parts });
   }
   return matches;
 }
