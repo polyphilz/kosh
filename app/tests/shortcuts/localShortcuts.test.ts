@@ -11,6 +11,11 @@ import {
 } from "../../src/shortcuts/localShortcuts";
 
 describe("local shortcut settings", () => {
+  const withCopyNoteLink = (accelerator: string) =>
+    DEFAULT_LOCAL_KEYBOARD_BINDINGS.map((binding) =>
+      binding.command === LocalShortcutCommand.CopyNoteLink ? { ...binding, accelerator } : binding,
+    );
+
   it("persists complete bindings and falls back from malformed storage", () => {
     let stored: string | null = null;
     const storage = {
@@ -48,15 +53,7 @@ describe("local shortcut settings", () => {
     expect(validateLocalKeyboardBindings(DEFAULT_LOCAL_KEYBOARD_BINDINGS, ["super+KeyL"])).toMatch(
       /global Kosh command/iu,
     );
-    expect(
-      validateLocalKeyboardBindings([
-        { command: LocalShortcutCommand.CopyNoteLink, accelerator: "super+KeyF" },
-        {
-          command: LocalShortcutCommand.CopyExactNoteLink,
-          accelerator: "shift+super+KeyL",
-        },
-      ]),
-    ).toMatch(/reserved/iu);
+    expect(validateLocalKeyboardBindings(withCopyNoteLink("super+KeyF"))).toMatch(/reserved/iu);
     for (const accelerator of [
       "super+KeyA",
       "super+KeyC",
@@ -65,25 +62,9 @@ describe("local shortcut settings", () => {
       "super+KeyZ",
       "shift+super+KeyZ",
     ]) {
-      expect(
-        validateLocalKeyboardBindings([
-          { command: LocalShortcutCommand.CopyNoteLink, accelerator },
-          {
-            command: LocalShortcutCommand.CopyExactNoteLink,
-            accelerator: "shift+super+KeyL",
-          },
-        ]),
-      ).toMatch(/reserved/iu);
+      expect(validateLocalKeyboardBindings(withCopyNoteLink(accelerator))).toMatch(/reserved/iu);
     }
-    expect(
-      validateLocalKeyboardBindings([
-        { command: LocalShortcutCommand.CopyNoteLink, accelerator: "super+keyc" },
-        {
-          command: LocalShortcutCommand.CopyExactNoteLink,
-          accelerator: "shift+super+KeyL",
-        },
-      ]),
-    ).toMatch(/reserved/iu);
+    expect(validateLocalKeyboardBindings(withCopyNoteLink("super+keyc"))).toMatch(/reserved/iu);
   });
 });
 
