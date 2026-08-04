@@ -264,7 +264,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
             });
             flashTimer = window.setTimeout(() => {
               if (!active) return;
-              editorRef.current?.clearSearchFocus();
               if (!citation.attachment) {
                 void navigate({
                   to: "/notes/$noteId",
@@ -272,12 +271,12 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
                   search: {},
                   replace: true,
                 });
+                return;
               }
+              editorRef.current?.clearSearchFocus();
               setSearchFocus((current) =>
                 current?.phase === "FOCUSED" && current.citation.passageId === citation.passageId
-                  ? current.citation.attachment
-                    ? { phase: "EVIDENCE", citation: current.citation }
-                    : null
+                  ? { phase: "EVIDENCE", citation: current.citation }
                   : current,
               );
             }, SEARCH_MATCH_FLASH_MS);
@@ -433,8 +432,10 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
   }, [announceDeletedNote, backend, coordinator, deleting, flushForNavigation, navigate, noteId]);
 
   const dismissSearchFocus = useCallback(() => {
-    setSearchFocus(null);
-    if (!passageId) return;
+    if (!passageId) {
+      setSearchFocus(null);
+      return;
+    }
     void navigate({
       to: "/notes/$noteId",
       params: { noteId },

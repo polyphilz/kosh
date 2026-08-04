@@ -74,6 +74,40 @@ test("reduced motion leaves the cited passage visibly highlighted", async ({ pag
   await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 });
 
+test("a blocked route cleanup retains its search match", async ({ page }) => {
+  await page.goto("/#/");
+  const note = await seedTidbit(page, {
+    bodyMarkdown: "Blocked cleanup must keep this precise passage visible.",
+    sources: [],
+  });
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("precise passage");
+  const result = page.getByRole("option", { name: /Blocked cleanup/u });
+  await expect(result).toBeVisible();
+  await page.evaluate(async (seeded) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    await backend.saveWorkingCopy({
+      noteId: seeded.id,
+      baseRevisionId: seeded.currentRevisionId,
+      editGeneration: 1,
+      bodyMarkdown: seeded.bodyMarkdown,
+      sources: seeded.sources,
+    });
+    backend.checkpointWorkingCopy = async () => {
+      throw new Error("simulated search cleanup failure");
+    };
+  }, note);
+
+  await result.click();
+
+  const match = page.locator('[data-kosh-search-hit="true"]');
+  await expect(match).toContainText("precise passage");
+  await page.waitForTimeout(1_800);
+  await expect(match).toHaveCount(1);
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=`, "u"));
+});
+
 test("search checkpoints the active note before querying", async ({ page }) => {
   await page.goto("/#/");
   await page
