@@ -25,6 +25,7 @@ export const DEFAULT_LOCAL_KEYBOARD_BINDINGS: readonly LocalKeyboardBinding[] = 
 ];
 
 const STORAGE_KEY = "kosh.local-shortcuts.v1";
+const NOTE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const reservedAccelerators = new Set([
   "super+BracketLeft",
   "super+BracketRight",
@@ -107,12 +108,49 @@ export function keyboardEventMatchesAccelerator(
 }
 
 export function noteLinkForLocation(href: string, exact: boolean): string {
-  if (exact) return href;
   const url = new URL(href);
-  url.search = "";
-  const queryIndex = url.hash.indexOf("?");
-  if (queryIndex >= 0) url.hash = url.hash.slice(0, queryIndex);
-  return url.href;
+  const route = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
+  const queryIndex = route.indexOf("?");
+  const pathname = queryIndex >= 0 ? route.slice(0, queryIndex) : route;
+  const match = /^\/(?:new|notes)\/([^/]+)$/u.exec(pathname);
+  const noteId = match?.[1]?.toLowerCase();
+  if (!noteId || !NOTE_ID_PATTERN.test(noteId)) {
+    throw new Error("The current page is not a linkable note.");
+  }
+  const link = new URL(`kosh://note/${noteId}`);
+  if (exact && queryIndex >= 0) link.search = route.slice(queryIndex);
+  return link.href;
+}
+
+export interface NoteDeepLinkTarget {
+  noteId: string;
+  passage?: string;
+}
+
+export function noteTargetForDeepLink(href: string): NoteDeepLinkTarget | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "kosh:" ||
+    url.hostname !== "note" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.hash
+  ) {
+    return null;
+  }
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length !== 1) return null;
+  const noteId = segments[0]?.toLowerCase();
+  if (!noteId || !NOTE_ID_PATTERN.test(noteId)) return null;
+  const passages = url.searchParams.getAll("passage");
+  if (passages.length > 1 || (passages[0]?.length ?? 0) > 256) return null;
+  return passages[0] ? { noteId, passage: passages[0] } : { noteId };
 }
 
 function cloneDefaultBindings(): LocalKeyboardBinding[] {

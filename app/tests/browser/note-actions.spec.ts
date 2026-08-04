@@ -254,9 +254,16 @@ test("a queued Command-F request does not leak after leaving a loading note", as
 test("note link shortcuts copy clean and exact routes", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
+  const noteId = page.url().match(/\/new\/([0-9a-f-]{36})$/u)?.[1];
+  if (!noteId) throw new Error("the new-note route did not contain an id");
   await editor.fill("A linkable note with an exact search destination.");
-  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
-  const cleanUrl = page.url();
+
+  await page.keyboard.press("Meta+l");
+  await expect(page.getByRole("status")).toHaveText("Note link copied");
+  expect(await page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest())).toBe(
+    `kosh://note/${noteId}`,
+  );
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${noteId}$`, "u"), { timeout: 5_000 });
   await page.evaluate(() => {
     window.history.replaceState(
       null,
@@ -266,16 +273,10 @@ test("note link shortcuts copy clean and exact routes", async ({ page }) => {
   });
   const exactUrl = page.url();
 
-  await page.keyboard.press("Meta+l");
-  await expect(page.getByRole("status")).toHaveText("Note link copied");
-  expect(await page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest())).toBe(
-    cleanUrl,
-  );
-
   await page.keyboard.press("Meta+Shift+l");
   await expect(page.getByRole("status")).toHaveText("Exact note link copied");
   expect(await page.evaluate(() => window.__KOSH_FAKE_BACKEND__?.copiedTextForTest())).toBe(
-    exactUrl,
+    `kosh://note/${noteId}?passage=passage-1&query=linkable`,
   );
   await expect(page).toHaveURL(exactUrl);
 });

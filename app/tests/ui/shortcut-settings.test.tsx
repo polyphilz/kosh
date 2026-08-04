@@ -147,7 +147,20 @@ describe("shortcut settings", () => {
     );
     expect(screen.getByRole("button", { name: "Copy exact link shortcut: ⇧⌘L" })).toBeVisible();
 
+    await user.click(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" }));
+    fireEvent.keyDown(window, {
+      code: "KeyL",
+      key: "l",
+      metaKey: true,
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Main window shortcut: ⌘L" })).toBeVisible(),
+    );
+
     await user.click(screen.getByRole("button", { name: "Reset shortcuts" }));
-    expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌘L" })).toBeVisible();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Copy note link shortcut: ⌘L" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Main window shortcut: ⌃⌥⌘O" })).toBeVisible();
+    });
   });
 });

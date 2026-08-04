@@ -4,6 +4,7 @@ import {
   LocalShortcutCommand,
   keyboardEventMatchesAccelerator,
   noteLinkForLocation,
+  noteTargetForDeepLink,
   readLocalKeyboardBindings,
   validateLocalKeyboardBindings,
   writeLocalKeyboardBindings,
@@ -60,9 +61,27 @@ describe("local shortcut settings", () => {
 });
 
 describe("note links", () => {
-  it("keeps the exact URL and strips all search state from a clean note link", () => {
-    const href = "http://tauri.localhost/?outer=debug#/notes/019f?passage=passage-1&query=cool";
-    expect(noteLinkForLocation(href, true)).toBe(href);
-    expect(noteLinkForLocation(href, false)).toBe("http://tauri.localhost/#/notes/019f");
+  const noteId = "019f547b-6200-7000-8000-000000000001";
+
+  it("emits external app links and strips search state from a clean note link", () => {
+    const href = `http://tauri.localhost/?outer=debug#/notes/${noteId}?passage=passage-1&query=cool`;
+    expect(noteLinkForLocation(href, true)).toBe(
+      `kosh://note/${noteId}?passage=passage-1&query=cool`,
+    );
+    expect(noteLinkForLocation(href, false)).toBe(`kosh://note/${noteId}`);
+    expect(noteLinkForLocation(`http://localhost/#/new/${noteId}`, false)).toBe(
+      `kosh://note/${noteId}`,
+    );
+  });
+
+  it("accepts only canonical Kosh note targets", () => {
+    expect(noteTargetForDeepLink(`kosh://note/${noteId}?passage=passage-1`)).toEqual({
+      noteId,
+      passage: "passage-1",
+    });
+    expect(noteTargetForDeepLink(`http://tauri.localhost/#/notes/${noteId}`)).toBeNull();
+    expect(noteTargetForDeepLink(`kosh://note/${noteId}/extra`)).toBeNull();
+    expect(noteTargetForDeepLink(`kosh://note/${noteId}?passage=one&passage=two`)).toBeNull();
+    expect(noteTargetForDeepLink(`kosh://note/${noteId}#unexpected`)).toBeNull();
   });
 });

@@ -48,10 +48,10 @@ describe("desktop security boundary", () => {
     );
   });
 
-  it("grants no filesystem, shell, network, dialog, or process plugin capability", () => {
+  it("grants only core access and bounded note-link ingress to the main window", () => {
     expect(defaultCapability).toMatchObject({
       windows: ["main"],
-      permissions: ["core:default"],
+      permissions: ["core:default", "deep-link:default"],
     });
     expect(quickAddCapability).toMatchObject({
       windows: ["quick-add"],

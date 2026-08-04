@@ -1,5 +1,6 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TidbitRecord } from "./backend/contracts";
 import { useBackend } from "./backend/context";
@@ -8,12 +9,14 @@ import { clearFindInNoteRequest, requestFindInNote } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
+import { checkpointBeforeSearch } from "./search/checkpoint";
 import { ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
 import {
   LocalShortcutCommand,
   keyboardEventMatchesAccelerator,
   localBindingFor,
   noteLinkForLocation,
+  noteTargetForDeepLink,
 } from "./shortcuts/localShortcuts";
 import { TauriEvent } from "./tauriProtocol";
 import { AppUpdater } from "./updater";
@@ -123,6 +126,39 @@ function AppShell() {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let active = true;
     let unlisten: (() => void) | undefined;
+    const openDeepLink = (urls: string[], replace: boolean) => {
+      if (!active) return;
+      const target = urls.map(noteTargetForDeepLink).find((candidate) => candidate !== null);
+      if (!target) return;
+      setSearchOpen(false);
+      void navigate({
+        to: "/notes/$noteId",
+        params: { noteId: target.noteId },
+        search: target.passage ? { passage: target.passage } : {},
+        replace,
+      });
+    };
+    void getCurrent()
+      .then((urls) => {
+        if (urls) openDeepLink(urls, true);
+      })
+      .catch((reason: unknown) => console.error("Could not read the launch link", reason));
+    void onOpenUrl((urls) => openDeepLink(urls, false))
+      .then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      })
+      .catch((reason: unknown) => console.error("Could not listen for note links", reason));
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
     void listen<"BACK" | "FORWARD" | "NEW_NOTE" | "SEARCH" | "TOGGLE_SIDEBAR">(
       TauriEvent.NavigationCommand,
       (event) => {
@@ -160,31 +196,38 @@ function AppShell() {
       if (!exact && !clean) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      const link = noteLinkForLocation(window.location.href, exact);
-      void backend.copyText(link).then(
-        () => {
-          if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
-          setLinkCopyNotice({
-            message: exact ? "Exact note link copied" : "Note link copied",
-            tone: "success",
-          });
-          linkCopyTimer.current = window.setTimeout(() => {
-            linkCopyTimer.current = null;
-            setLinkCopyNotice(null);
-          }, LINK_COPY_NOTICE_DURATION_MS);
-        },
-        (reason: unknown) => {
-          if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
-          setLinkCopyNotice({
-            message: `Could not copy note link: ${errorMessage(reason)}`,
-            tone: "danger",
-          });
-          linkCopyTimer.current = window.setTimeout(() => {
-            linkCopyTimer.current = null;
-            setLinkCopyNotice(null);
-          }, LINK_COPY_NOTICE_DURATION_MS);
-        },
-      );
+      void checkpointBeforeSearch()
+        .then(async () => {
+          const link = noteLinkForLocation(window.location.href, exact);
+          const target = noteTargetForDeepLink(link);
+          if (!target) throw new Error("The current page is not a linkable note.");
+          await backend.loadTidbit(target.noteId);
+          await backend.copyText(link);
+        })
+        .then(
+          () => {
+            if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+            setLinkCopyNotice({
+              message: exact ? "Exact note link copied" : "Note link copied",
+              tone: "success",
+            });
+            linkCopyTimer.current = window.setTimeout(() => {
+              linkCopyTimer.current = null;
+              setLinkCopyNotice(null);
+            }, LINK_COPY_NOTICE_DURATION_MS);
+          },
+          (reason: unknown) => {
+            if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+            setLinkCopyNotice({
+              message: `Could not copy note link: ${errorMessage(reason)}`,
+              tone: "danger",
+            });
+            linkCopyTimer.current = window.setTimeout(() => {
+              linkCopyTimer.current = null;
+              setLinkCopyNotice(null);
+            }, LINK_COPY_NOTICE_DURATION_MS);
+          },
+        );
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);

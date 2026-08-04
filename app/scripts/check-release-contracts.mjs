@@ -27,6 +27,7 @@ assertEqual(local.bundle, { active: false }, "development bundle policy");
 assertEqual(local.app.macOSPrivateApi, true, "macOS private API policy");
 assertEqual(local.app.security.freezePrototype, true, "prototype freeze");
 assertEqual(local.app.security.capabilities, ["default", "quick-add"], "capability allowlist");
+assertEqual(local.plugins["deep-link"], { desktop: { schemes: ["kosh"] } }, "note-link URL scheme");
 assertEqual(
   local.plugins.updater.endpoints,
   ["https://github.com/polyphilz/kosh/releases/latest/download/latest.json"],
@@ -113,7 +114,7 @@ assertEqual(
     identifier: "default",
     description: "Capability for the main Kosh window",
     windows: ["main"],
-    permissions: ["core:default"],
+    permissions: ["core:default", "deep-link:default"],
   },
   "main-window capability",
 );

@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 use runtime::RuntimeState;
 use tauri::{Builder, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 const DATA_DIR_ENV: &str = "KOSH_DATA_DIR";
 
@@ -189,8 +190,6 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
 pub fn run() {
     let app = with_commands(
         tauri::Builder::default()
-            .plugin(tauri_plugin_process::init())
-            .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_single_instance::init(
                 |app, _arguments, _working_directory| {
                     if let Err(error) = windows::show_main(app.clone()) {
@@ -198,6 +197,9 @@ pub fn run() {
                     }
                 },
             ))
+            .plugin(tauri_plugin_deep_link::init())
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .register_uri_scheme_protocol("kosh-media", |context, request| {
                 media::protocol_response(context.app_handle(), request)
@@ -208,6 +210,12 @@ pub fn run() {
             }),
     )
     .setup(|app| {
+        let deep_link_app = app.handle().clone();
+        app.deep_link().on_open_url(move |_| {
+            if let Err(error) = windows::show_main(deep_link_app.clone()) {
+                log::error!("failed to show Kosh for a deep link: {error}");
+            }
+        });
         let data_dir = select_data_dir(
             app.path().app_data_dir()?,
             std::env::var_os(DATA_DIR_ENV).map(PathBuf::from),

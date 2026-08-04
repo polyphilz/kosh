@@ -54,14 +54,19 @@ export function SettingsPage() {
     }).catch(() => undefined);
   };
 
-  const resetBindings = () => {
+  const resetBindings = async () => {
     if (!settings) return;
-    setShortcutResetToken((value) => value + 1);
-    resetLocalBindings();
-    void update({
-      expectedRevision: settings.revision,
-      keyboardBindings: DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
-    }).catch(() => undefined);
+    const keyboardBindings = DEFAULT_KEYBOARD_BINDINGS.map((binding) => ({ ...binding }));
+    try {
+      await update({
+        expectedRevision: settings.revision,
+        keyboardBindings,
+      });
+      resetLocalBindings(keyboardBindings.map((binding) => binding.accelerator));
+      setShortcutResetToken((value) => value + 1);
+    } catch {
+      // The settings provider keeps the actionable error visible.
+    }
   };
 
   return (
@@ -179,7 +184,7 @@ export function SettingsPage() {
         <Button
           className="settings-list__reset"
           disabled={loading || !settings}
-          onClick={resetBindings}
+          onClick={() => void resetBindings()}
           size="compact"
           variant="ghost"
         >

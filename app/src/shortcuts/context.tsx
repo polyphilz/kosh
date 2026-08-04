@@ -32,7 +32,7 @@ interface ShortcutSettingsContextValue {
   updateAutomaticChecks: (enabled: boolean) => Promise<void>;
   update: (input: SetShortcutSettingsInput) => Promise<void>;
   updateLocalBinding: (command: LocalShortcutCommand, accelerator: string) => void;
-  resetLocalBindings: () => void;
+  resetLocalBindings: (globalAccelerators?: readonly string[]) => void;
 }
 
 const ShortcutSettingsContext = createContext<ShortcutSettingsContextValue | null>(null);
@@ -115,10 +115,10 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
   );
 
   const replaceLocalBindings = useCallback(
-    (next: LocalKeyboardBinding[]) => {
+    (next: LocalKeyboardBinding[], globalAccelerators?: readonly string[]) => {
       const conflict = validateLocalKeyboardBindings(
         next,
-        settings?.keyboardBindings.map((binding) => binding.accelerator),
+        globalAccelerators ?? settings?.keyboardBindings.map((binding) => binding.accelerator),
       );
       if (conflict) {
         setError(conflict);
@@ -146,9 +146,15 @@ export function ShortcutSettingsProvider({ children }: { children: ReactNode }) 
     [localBindings, replaceLocalBindings],
   );
 
-  const resetLocalBindings = useCallback(() => {
-    replaceLocalBindings(DEFAULT_LOCAL_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })));
-  }, [replaceLocalBindings]);
+  const resetLocalBindings = useCallback(
+    (globalAccelerators?: readonly string[]) => {
+      replaceLocalBindings(
+        DEFAULT_LOCAL_KEYBOARD_BINDINGS.map((binding) => ({ ...binding })),
+        globalAccelerators,
+      );
+    },
+    [replaceLocalBindings],
+  );
 
   const updateAutomaticChecks = useCallback(
     async (enabled: boolean) => {

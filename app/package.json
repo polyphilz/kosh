@@ -71,6 +71,7 @@
     "@mantine/hooks": "8.3.11",
     "@tanstack/react-router": "1.170.18",
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-deep-link": "2.4.9",
     "@tauri-apps/plugin-process": "2.3.1",
     "@tauri-apps/plugin-updater": "2.10.1",
     "katex": "0.17.0",
