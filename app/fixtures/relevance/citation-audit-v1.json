@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fixtureDigest": "05c002e1ed3454c5032db48dee4286b3191c1e7875369e88a6c640b47a4e13c5",
+  "fixtureDigest": "268902a9c45a9eedfa3911a1328f7b8ef4b67dad28591ce6fb2d08d6aec0a8c5",
   "reviewedAt": "2026-07-29",
   "reviewer": "Codex implementation audit",
   "entries": [
@@ -49,7 +49,7 @@
         "startBlock": 1,
         "endBlock": 1,
         "sourceStartByte": 10,
-        "sourceEndByte": 91,
+        "sourceEndByte": 132,
         "startChar": null,
         "endChar": null,
         "startLine": null,

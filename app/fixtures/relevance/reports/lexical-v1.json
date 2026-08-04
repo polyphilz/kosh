@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "fixtureId": "kosh-relevance-v1",
-  "fixtureDigest": "05c002e1ed3454c5032db48dee4286b3191c1e7875369e88a6c640b47a4e13c5",
+  "fixtureDigest": "268902a9c45a9eedfa3911a1328f7b8ef4b67dad28591ce6fb2d08d6aec0a8c5",
   "retriever": "kosh-lexical-v1",
   "resultLimit": 10,
   "passed": true,
@@ -272,7 +272,7 @@
     },
     {
       "queryId": "query-sqlite-link",
-      "text": "FTS5 tokenizer",
+      "text": "sqlite.org fts5.html tokenizers",
       "searchMode": "DEFAULT",
       "category": "EXACT",
       "passed": true,
@@ -288,13 +288,13 @@
       "hits": [
         {
           "passageId": "passage-link-sqlite",
-          "score": 27.2327868852459,
+          "score": 24.7327868852459,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 10,
-            "sourceEndByte": 91,
+            "sourceEndByte": 132,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -684,27 +684,8 @@
           ]
         },
         {
-          "passageId": "passage-link-rust",
-          "score": 21.8718487394958,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
           "passageId": "passage-heat-modern",
-          "score": 21.871635610766045,
+          "score": 21.8718487394958,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -723,13 +704,32 @@
         },
         {
           "passageId": "passage-heat-caloric",
-          "score": 21.871428571428574,
+          "score": 21.871635610766045,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 29,
             "sourceEndByte": 137,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-link-rust",
+          "score": 21.871428571428574,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -859,7 +859,7 @@
     },
     {
       "queryId": "query-rust-link",
-      "text": "lazy iterator adaptor",
+      "text": "doc.rust-lang.org std iter iterator",
       "searchMode": "DEFAULT",
       "category": "EXACT",
       "passed": true,
@@ -875,13 +875,13 @@
       "hits": [
         {
           "passageId": "passage-link-rust",
-          "score": 26.5327868852459,
+          "score": 36.032786885245905,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 12,
-            "sourceEndByte": 94,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1240,13 +1240,13 @@
       "hits": [
         {
           "passageId": "passage-link-sqlite",
-          "score": 24.03055037313433,
+          "score": 24.030309988518944,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 10,
-            "sourceEndByte": 91,
+            "sourceEndByte": 132,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1259,7 +1259,7 @@
         },
         {
           "passageId": "passage-synonym-automobile",
-          "score": 21.015625,
+          "score": 21.015873015873016,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1278,7 +1278,7 @@
         },
         {
           "passageId": "passage-heat-caloric",
-          "score": 19.531778058007568,
+          "score": 19.532018442622952,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1297,13 +1297,13 @@
         },
         {
           "passageId": "passage-link-rust",
-          "score": 19.515873015873016,
+          "score": 19.515384615384615,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 12,
-            "sourceEndByte": 94,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1354,7 +1354,7 @@
         },
         {
           "passageId": "passage-misspelling-concurrency",
-          "score": 15.015384615384615,
+          "score": 15.015625,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,

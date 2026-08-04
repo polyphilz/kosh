@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "fixtureId": "kosh-relevance-v1",
-  "fixtureDigest": "05c002e1ed3454c5032db48dee4286b3191c1e7875369e88a6c640b47a4e13c5",
+  "fixtureDigest": "268902a9c45a9eedfa3911a1328f7b8ef4b67dad28591ce6fb2d08d6aec0a8c5",
   "retriever": "kosh-hybrid-jina-v1",
   "resultLimit": 10,
   "passed": true,
@@ -272,7 +272,7 @@
     },
     {
       "queryId": "query-sqlite-link",
-      "text": "FTS5 tokenizer",
+      "text": "sqlite.org fts5.html tokenizers",
       "searchMode": "DEFAULT",
       "category": "EXACT",
       "passed": true,
@@ -294,7 +294,7 @@
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 10,
-            "sourceEndByte": 91,
+            "sourceEndByte": 132,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -666,7 +666,7 @@
         },
         {
           "passageId": "passage-heat-caloric",
-          "score": 0.03257175660160735,
+          "score": 0.03282051282051282,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -684,27 +684,8 @@
           ]
         },
         {
-          "passageId": "passage-link-rust",
-          "score": 0.03231884057971014,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
           "passageId": "passage-formula-fourier",
-          "score": 0.03164583333333334,
+          "score": 0.03179898648648649,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -722,8 +703,27 @@
           ]
         },
         {
+          "passageId": "passage-link-rust",
+          "score": 0.030736318407960195,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 151,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
           "passageId": "passage-heat-modern",
-          "score": 0.03006282335550628,
+          "score": 0.030493827160493828,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -866,7 +866,7 @@
     },
     {
       "queryId": "query-rust-link",
-      "text": "lazy iterator adaptor",
+      "text": "doc.rust-lang.org std iter iterator",
       "searchMode": "DEFAULT",
       "category": "EXACT",
       "passed": true,
@@ -888,7 +888,7 @@
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 12,
-            "sourceEndByte": 94,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1265,14 +1265,14 @@
           ]
         },
         {
-          "passageId": "passage-heat-caloric",
-          "score": 0.033513708513708516,
+          "passageId": "passage-link-sqlite",
+          "score": 0.03363031598954621,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
-            "sourceStartByte": 29,
-            "sourceEndByte": 137,
+            "sourceStartByte": 10,
+            "sourceEndByte": 132,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1284,14 +1284,14 @@
           ]
         },
         {
-          "passageId": "passage-link-sqlite",
-          "score": 0.03311703096539162,
+          "passageId": "passage-heat-caloric",
+          "score": 0.033513708513708516,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 91,
+            "sourceStartByte": 29,
+            "sourceEndByte": 137,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1329,7 +1329,7 @@
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 12,
-            "sourceEndByte": 94,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,

@@ -27,11 +27,10 @@ the same report contract.
 
 `relevance:lexical` writes a local copy of the report and should match the
 checked-in `reports/lexical-v1.{json,txt}` baseline. The media-aware baseline
-passes 24 of 25 queries, has Recall@10 0.96, MRR 0.8950, nDCG@10 0.9056,
-citation-locator accuracy 0.96, exact and phrase success 1.0, and zero forbidden
-hits. OCR, PDF-page, and text-line queries pass, while the authored passage
-ranks first in a PDF-volume stress query. The remaining miss is the misspelled
-concurrency query marked for combined lexical and semantic retrieval.
+passes all 25 queries, has Recall@10 1.0, MRR 0.9650, nDCG@10 0.9684,
+citation-locator accuracy 1.0, exact and phrase success 1.0, and zero forbidden
+hits. OCR, PDF-page, text-line, pasted-URL, and misspelled concurrency queries
+pass, while the authored passage ranks first in a PDF-volume stress query.
 
 `relevance:hybrid` validates `jina-v1-vectors.json` against both the relevance
 fixture digest and the shipped Jina v1 model hash, then writes a local report
