@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { acceleratorForKeyboardEvent, formatAccelerator } from "../shortcuts/accelerator";
 import { Button } from "./Button";
+import { KoshText } from "./KoshText";
+import { KoshTextTone, KoshTextVariant } from "./kosh-text-types";
 
 interface ShortcutRecorderProps {
   accelerator: string;
@@ -87,11 +89,21 @@ export function ShortcutRecorder({
         {recording ? "Press shortcut…" : formatAccelerator(accelerator)}
       </Button>
       {error && (
-        <span id={`${label}-shortcut-error`} role="alert">
+        <KoshText
+          as="span"
+          id={`${label}-shortcut-error`}
+          role="alert"
+          tone={KoshTextTone.Danger}
+          variant={KoshTextVariant.Caption}
+        >
           {error}
-        </span>
+        </KoshText>
       )}
-      {recording && !error && <span>Press a complete shortcut · Esc to cancel</span>}
+      {recording && !error && (
+        <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Caption}>
+          Press a complete shortcut · Esc to cancel
+        </KoshText>
+      )}
     </div>
   );
 }

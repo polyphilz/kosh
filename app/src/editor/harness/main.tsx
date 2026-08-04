@@ -1,6 +1,8 @@
 import "@mantine/core/styles.css";
 import "@blocknote/mantine/style.css";
+import "@fontsource-variable/reddit-mono";
 import "katex/dist/katex.min.css";
+import "../../typography.css";
 import "../editor.css";
 import "./harness.css";
 

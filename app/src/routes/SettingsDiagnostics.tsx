@@ -9,6 +9,8 @@ import type {
 import { useBackend } from "../backend/context";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
+import { KoshText } from "../components/KoshText";
+import { KoshTextTone, KoshTextVariant } from "../components/kosh-text-types";
 
 type MaintenanceAction =
   | "INTEGRITY"
@@ -166,9 +168,15 @@ export function SettingsDiagnostics() {
   if (!state && loading) {
     return (
       <section aria-label="Data and diagnostics" className="settings-panel">
-        <p className="settings-diagnostics__message" role="status">
+        <KoshText
+          as="p"
+          className="settings-diagnostics__message"
+          role="status"
+          tone={KoshTextTone.Muted}
+          variant={KoshTextVariant.Supporting}
+        >
           Loading local diagnostics…
-        </p>
+        </KoshText>
       </section>
     );
   }
@@ -176,12 +184,15 @@ export function SettingsDiagnostics() {
   if (!state) {
     return (
       <section aria-label="Data and diagnostics" className="settings-panel">
-        <p
+        <KoshText
+          as="p"
           className="settings-diagnostics__message settings-diagnostics__message--error"
           role="alert"
+          tone={KoshTextTone.Danger}
+          variant={KoshTextVariant.Supporting}
         >
           {loadError ?? "Local diagnostics are unavailable."}
-        </p>
+        </KoshText>
         <Button onClick={() => void reload()} size="compact">
           Try again
         </Button>
@@ -232,7 +243,9 @@ export function SettingsDiagnostics() {
         </dl>
         {modelActionVisible && (
           <div className="settings-panel__inline-action">
-            <span>Keyword search remains available while the model is unavailable.</span>
+            <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+              Keyword search remains available while the model is unavailable.
+            </KoshText>
             <Button disabled={disabled} onClick={() => void prepareSemanticModel()} size="compact">
               {active === "SEMANTIC_MODEL"
                 ? "Preparing…"
@@ -302,12 +315,15 @@ export function SettingsDiagnostics() {
           ))}
         </details>
         {loadError && (
-          <p
+          <KoshText
+            as="p"
             className="settings-maintenance-result settings-maintenance-result--error"
             role="alert"
+            tone={KoshTextTone.Danger}
+            variant={KoshTextVariant.Supporting}
           >
             Diagnostics could not refresh: {loadError}
-          </p>
+          </KoshText>
         )}
       </section>
 
@@ -350,24 +366,39 @@ export function SettingsDiagnostics() {
           />
         </div>
         {active && (
-          <p className="settings-maintenance-result" role="status">
+          <KoshText
+            as="p"
+            className="settings-maintenance-result"
+            role="status"
+            tone={KoshTextTone.Muted}
+            variant={KoshTextVariant.Supporting}
+          >
             {active === "SEMANTIC_MODEL"
               ? "Preparing the local semantic model…"
               : actionCopy[active].running}
-          </p>
+          </KoshText>
         )}
         {notice && !active && (
-          <p className="settings-maintenance-result" role="status">
+          <KoshText
+            as="p"
+            className="settings-maintenance-result"
+            role="status"
+            tone={KoshTextTone.Success}
+            variant={KoshTextVariant.Supporting}
+          >
             {notice}
-          </p>
+          </KoshText>
         )}
         {operationError && !active && (
-          <p
+          <KoshText
+            as="p"
             className="settings-maintenance-result settings-maintenance-result--error"
             role="alert"
+            tone={KoshTextTone.Danger}
+            variant={KoshTextVariant.Supporting}
           >
             {operationError}
-          </p>
+          </KoshText>
         )}
       </section>
 
@@ -392,10 +423,10 @@ export function SettingsDiagnostics() {
         open={confirmation !== null}
         title={confirmation ? actionCopy[confirmation].title : "Confirm maintenance"}
       >
-        <p>
+        <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Body}>
           This operation is serialized with other maintenance work and can be safely run again after
           completion or failure.
-        </p>
+        </KoshText>
       </Dialog>
     </>
   );
@@ -417,8 +448,12 @@ function SettingsPanelHeader({
   return (
     <header className="settings-panel__header">
       <div>
-        <h2 id={id}>{title}</h2>
-        <p>{description}</p>
+        <KoshText as="h2" id={id} variant={KoshTextVariant.Subheading}>
+          {title}
+        </KoshText>
+        <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+          {description}
+        </KoshText>
       </div>
       {children}
     </header>
@@ -442,10 +477,28 @@ function DiagnosticItem({
         warning ? "settings-diagnostic settings-diagnostic--warning" : "settings-diagnostic"
       }
     >
-      <dt>{label}</dt>
+      <KoshText
+        as="dt"
+        tone={warning ? KoshTextTone.Warning : KoshTextTone.Muted}
+        variant={KoshTextVariant.Eyebrow}
+      >
+        {label}
+      </KoshText>
       <dd>
-        <strong>{value}</strong>
-        <span>{detail}</span>
+        <KoshText
+          as="strong"
+          tone={warning ? KoshTextTone.Warning : KoshTextTone.Default}
+          variant={KoshTextVariant.Label}
+        >
+          {value}
+        </KoshText>
+        <KoshText
+          as="span"
+          tone={warning ? KoshTextTone.Warning : KoshTextTone.Muted}
+          variant={KoshTextVariant.Caption}
+        >
+          {detail}
+        </KoshText>
       </dd>
     </div>
   );
@@ -467,8 +520,16 @@ function MaintenanceRow({
   return (
     <div>
       <span>
-        <strong>{action}</strong>
-        <small>{description}</small>
+        <KoshText
+          as="strong"
+          tone={danger ? KoshTextTone.Danger : KoshTextTone.Default}
+          variant={KoshTextVariant.Label}
+        >
+          {action}
+        </KoshText>
+        <KoshText as="small" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+          {description}
+        </KoshText>
       </span>
       <Button
         disabled={disabled}
@@ -485,7 +546,9 @@ function MaintenanceRow({
 function PathValue({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <span>{label}</span>
+      <KoshText as="span" tone={KoshTextTone.Muted} variant={KoshTextVariant.Caption}>
+        {label}
+      </KoshText>
       <code>{value}</code>
     </div>
   );

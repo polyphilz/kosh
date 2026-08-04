@@ -4,7 +4,9 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TidbitRecord } from "./backend/contracts";
 import { useBackend } from "./backend/context";
+import { KoshText } from "./components/KoshText";
 import { ErrorBoundary } from "./components/States";
+import { KoshTextTone, KoshTextVariant } from "./components/kosh-text-types";
 import { clearFindInNoteRequest, requestFindInNote } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
@@ -418,11 +420,15 @@ function AppShell() {
           />
           {deletedNote && (
             <div className="note-undo" role={undoError ? "alert" : "status"}>
-              <span>
+              <KoshText
+                as="span"
+                tone={undoError ? KoshTextTone.Danger : KoshTextTone.Inherit}
+                variant={KoshTextVariant.Caption}
+              >
                 {undoError
                   ? `Could not restore note: ${undoError}`
                   : `Deleted “${deletedNote.displayTitle}”`}
-              </span>
+              </KoshText>
               <button disabled={undoing} onClick={() => void undoDelete()} type="button">
                 {undoing ? "Restoring…" : "Undo"}
               </button>
@@ -440,13 +446,16 @@ function AppShell() {
             </div>
           )}
           {linkCopyNotice && (
-            <div
+            <KoshText
+              as="div"
               className="link-copy-notice"
               data-tone={linkCopyNotice.tone}
               role={linkCopyNotice.tone === "danger" ? "alert" : "status"}
+              tone={linkCopyNotice.tone === "danger" ? KoshTextTone.Danger : KoshTextTone.Inherit}
+              variant={KoshTextVariant.Caption}
             >
               {linkCopyNotice.message}
-            </div>
+            </KoshText>
           )}
         </div>
       </NoteDeletionContext.Provider>

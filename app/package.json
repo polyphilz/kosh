@@ -14,6 +14,7 @@
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "test": "vitest run",
+    "test:typography-contracts": "node scripts/check-typography-contracts.mjs",
     "test:browser": "pnpm test:browser:functional && pnpm test:browser:webkit && pnpm test:browser:hardening && pnpm test:browser:visual",
     "test:browser:functional": "playwright test --project=chromium-functional",
     "test:browser:webkit": "playwright test --project=webkit-contract",
@@ -57,7 +58,7 @@
     "backup:verify-fault-matrix": "node scripts/check-backup-fault-matrix.mjs",
     "backup:r2-canary": "../scripts/run-litestream-r2-canary.sh",
     "check:bundle": "pnpm build && ../scripts/check-bundle.sh",
-    "check:frontend": "pnpm lint && pnpm fmt:check && pnpm build && pnpm test && pnpm test:browser",
+    "check:frontend": "pnpm lint && pnpm fmt:check && pnpm test:typography-contracts && pnpm build && pnpm test && pnpm test:browser",
     "check:native": "pnpm backup:verify-fault-matrix && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && pnpm lint:native && cargo test --locked --manifest-path src-tauri/Cargo.toml --features test-support",
     "check": "pnpm check:frontend && pnpm check:native"
   },

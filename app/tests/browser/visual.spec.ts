@@ -91,7 +91,9 @@ test("diagnostics and maintenance settings stay visually stable", async ({ page 
     threshold: 0.35,
   });
 
-  await expect(recovery).toHaveScreenshot("settings-recovery.png", {
+  const recoverySnapshot =
+    process.platform === "darwin" ? "settings-recovery-darwin.png" : "settings-recovery-linux.png";
+  await expect(recovery).toHaveScreenshot(recoverySnapshot, {
     animations: "disabled",
     caret: "hide",
     maxDiffPixelRatio: 0.015,

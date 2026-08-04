@@ -65,8 +65,9 @@ test("the production adapter edits math source and preserves canonical Markdown"
   const code = page.locator('.bn-block-content[data-content-type="codeBlock"]');
   await page.getByRole("button", { name: "Edit inline math: b^2" }).click();
   await expect(inlineSource).toBeVisible();
-  await code.click();
+  await page.locator(".bn-editor").click({ position: { x: 5, y: 5 } });
   await expect(inlineSource).toHaveCount(0);
+  await code.click();
   await page.keyboard.press("Tab");
   await expect
     .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.snapshot().focused))
@@ -108,6 +109,9 @@ test("inline math editing stays within the viewport at the right edge", async ({
   const source = page.getByLabel("Inline math source");
   await expect(source).toBeVisible();
   await expect(page.getByRole("button", { name: /Done/u })).toBeVisible();
+
+  await page.mouse.click(bounds!.x + 5, bounds!.y + 20);
+  await expect(popover).toBeVisible();
 
   await source.fill("\\sum_{i=0}^{100000} \\frac{x_i^2 + y_i^2}{z_i^2}");
   const reflowedBounds = await popover.boundingBox();

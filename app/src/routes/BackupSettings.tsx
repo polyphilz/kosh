@@ -9,9 +9,11 @@ import { useBackend } from "../backend/context";
 import { Button } from "../components/Button";
 import { Dialog } from "../components/Dialog";
 import { Input } from "../components/Input";
+import { KoshText } from "../components/KoshText";
 import { Select } from "../components/Select";
 import { Status } from "../components/Status";
 import { Toggle } from "../components/Toggle";
+import { KoshTextTone, KoshTextVariant } from "../components/kosh-text-types";
 
 type BackupAction =
   | "LOAD"
@@ -306,25 +308,37 @@ export function BackupSettings() {
         </PanelHeader>
 
         {active === "LOAD" && !snapshot ? (
-          <p className="settings-diagnostics__message" role="status">
+          <KoshText
+            as="p"
+            className="settings-diagnostics__message"
+            role="status"
+            tone={KoshTextTone.Muted}
+            variant={KoshTextVariant.Supporting}
+          >
             Loading recovery settings…
-          </p>
+          </KoshText>
         ) : (
           <>
             <div className="backup-settings__intro">
-              <p>
+              <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
                 Kosh keeps capture and search local and available even when R2, Litestream, or your
                 network is down. Only one installation may write a backup set at a time.
-              </p>
+              </KoshText>
               {config && !editing && (
                 <div className="backup-settings__switch">
                   <span>
-                    <strong>Back up this library</strong>
-                    <small>
+                    <KoshText as="strong" variant={KoshTextVariant.Label}>
+                      Back up this library
+                    </KoshText>
+                    <KoshText
+                      as="small"
+                      tone={KoshTextTone.Muted}
+                      variant={KoshTextVariant.Supporting}
+                    >
                       {config.enabled
                         ? "Relational data and referenced media replicate in the background."
                         : "The saved target and existing recovery points remain untouched."}
-                    </small>
+                    </KoshText>
                   </span>
                   <Toggle
                     checked={config.enabled}
@@ -540,10 +554,12 @@ export function BackupSettings() {
             {config && !editing && (
               <>
                 <div className="backup-settings__subhead">
-                  <h3>Backup health</h3>
-                  <p>
+                  <KoshText as="h3" variant={KoshTextVariant.Subheading}>
+                    Backup health
+                  </KoshText>
+                  <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
                     Relational replication, immutable media, and complete checkpoints are separate.
-                  </p>
+                  </KoshText>
                 </div>
                 <dl className="settings-diagnostics-grid backup-settings__health">
                   <BackupDiagnostic
@@ -568,11 +584,13 @@ export function BackupSettings() {
 
                 <div className="backup-settings__subhead backup-settings__subhead--recovery">
                   <div>
-                    <h3>Recovery points</h3>
-                    <p>
+                    <KoshText as="h3" variant={KoshTextVariant.Subheading}>
+                      Recovery points
+                    </KoshText>
+                    <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
                       Preview an exact restore plan or rebuild and validate a disposable copy. Your
                       live library is never changed by these controls.
-                    </p>
+                    </KoshText>
                   </div>
                   <Button
                     disabled={disabled}
@@ -620,25 +638,35 @@ export function BackupSettings() {
                 {preview && (
                   <div className="backup-settings__preview">
                     <div>
-                      <strong>Verified restore preview</strong>
-                      <span>
+                      <KoshText as="strong" variant={KoshTextVariant.Label}>
+                        Verified restore preview
+                      </KoshText>
+                      <KoshText
+                        as="span"
+                        tone={KoshTextTone.Muted}
+                        variant={KoshTextVariant.Caption}
+                      >
                         {preview.planFileCount.toLocaleString()} Litestream file
                         {preview.planFileCount === 1 ? "" : "s"} ·{" "}
                         {formatBytes(preview.planTotalBytes)} ·{" "}
                         {preview.checkpoint.referencedMediaCount.toLocaleString()} media object
                         {preview.checkpoint.referencedMediaCount === 1 ? "" : "s"}
-                      </span>
+                      </KoshText>
                     </div>
                     <div>
-                      <strong>
+                      <KoshText as="strong" variant={KoshTextVariant.Label}>
                         {preview.owner.isCurrentInstallation
                           ? "Owned by this installation"
                           : "Owned by another installation"}
-                      </strong>
-                      <span>
+                      </KoshText>
+                      <KoshText
+                        as="span"
+                        tone={KoshTextTone.Muted}
+                        variant={KoshTextVariant.Caption}
+                      >
                         Epoch {shortId(preview.owner.replicaEpochId)} · owner{" "}
                         {shortId(preview.owner.writerId)}
-                      </span>
+                      </KoshText>
                     </div>
                     {!preview.owner.isCurrentInstallation && (
                       <Button
@@ -662,30 +690,39 @@ export function BackupSettings() {
 
             <details className="backup-settings__retention">
               <summary>Retention and recovery details</summary>
-              <p>
+              <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
                 Litestream exact transaction history is configured for{" "}
                 {snapshot?.retention.exactTransactionDays ?? 30} days.{" "}
                 {snapshot?.retention.checkpointPolicy} {snapshot?.retention.mediaPolicy}
-              </p>
-              <p>
+              </KoshText>
+              <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
                 Installing a recovery point is intentionally an offline operator procedure. A
                 pre-restore local safety snapshot and post-restore database validation protect the
                 live pair.
-              </p>
+              </KoshText>
             </details>
 
             {notice && (
-              <p className="settings-maintenance-result" role="status">
+              <KoshText
+                as="p"
+                className="settings-maintenance-result"
+                role="status"
+                tone={KoshTextTone.Success}
+                variant={KoshTextVariant.Supporting}
+              >
                 {notice}
-              </p>
+              </KoshText>
             )}
             {error && (
-              <p
+              <KoshText
+                as="p"
                 className="settings-maintenance-result settings-maintenance-result--error"
                 role="alert"
+                tone={KoshTextTone.Danger}
+                variant={KoshTextVariant.Supporting}
               >
                 {error}
-              </p>
+              </KoshText>
             )}
             {!snapshot && error && (
               <div className="backup-settings__retry">
@@ -731,12 +768,14 @@ export function BackupSettings() {
         open={takeoverOpen}
         title="Take over this backup set?"
       >
-        <p>
+        <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Body}>
           Confirm the other Kosh installation is no longer writing this backup set. Backup must
           remain off here until the transfer completes.
-        </p>
+        </KoshText>
         <label className="backup-settings__takeover-confirmation">
-          <span>Type TAKE OVER to continue</span>
+          <KoshText as="span" variant={KoshTextVariant.Label}>
+            Type TAKE OVER to continue
+          </KoshText>
           <Input
             aria-label="Takeover confirmation"
             autoComplete="off"
@@ -762,8 +801,12 @@ function PanelHeader({
   return (
     <header className="settings-panel__header">
       <div>
-        <h2 id="backup-title">{title}</h2>
-        <p>{description}</p>
+        <KoshText as="h2" id="backup-title" variant={KoshTextVariant.Subheading}>
+          {title}
+        </KoshText>
+        <KoshText as="p" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+          {description}
+        </KoshText>
       </div>
       {children}
     </header>
@@ -782,8 +825,12 @@ function BackupField({
   return (
     <label>
       <span>
-        <strong>{label}</strong>
-        <small>{hint}</small>
+        <KoshText as="strong" variant={KoshTextVariant.Label}>
+          {label}
+        </KoshText>
+        <KoshText as="small" tone={KoshTextTone.Muted} variant={KoshTextVariant.Supporting}>
+          {hint}
+        </KoshText>
       </span>
       {children}
     </label>
@@ -807,10 +854,28 @@ function BackupDiagnostic({
         warning ? "settings-diagnostic settings-diagnostic--warning" : "settings-diagnostic"
       }
     >
-      <dt>{label}</dt>
+      <KoshText
+        as="dt"
+        tone={warning ? KoshTextTone.Warning : KoshTextTone.Muted}
+        variant={KoshTextVariant.Eyebrow}
+      >
+        {label}
+      </KoshText>
       <dd>
-        <strong>{value}</strong>
-        <span>{detail}</span>
+        <KoshText
+          as="strong"
+          tone={warning ? KoshTextTone.Warning : KoshTextTone.Default}
+          variant={KoshTextVariant.Label}
+        >
+          {value}
+        </KoshText>
+        <KoshText
+          as="span"
+          tone={warning ? KoshTextTone.Warning : KoshTextTone.Muted}
+          variant={KoshTextVariant.Caption}
+        >
+          {detail}
+        </KoshText>
       </dd>
     </div>
   );

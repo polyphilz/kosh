@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { KoshText } from "./KoshText";
+import { KoshTextTone, KoshTextVariant } from "./kosh-text-types";
 
 interface DialogProps {
   children: ReactNode;
@@ -97,9 +99,22 @@ export function Dialog({
         tabIndex={-1}
       >
         <header>
-          <p>Focused action</p>
-          <h2 id={titleId}>{title}</h2>
-          {description && <span id={descriptionId}>{description}</span>}
+          <KoshText as="p" tone={KoshTextTone.Accent} variant={KoshTextVariant.Eyebrow}>
+            Focused action
+          </KoshText>
+          <KoshText as="h2" id={titleId} variant={KoshTextVariant.Heading}>
+            {title}
+          </KoshText>
+          {description && (
+            <KoshText
+              as="span"
+              id={descriptionId}
+              tone={KoshTextTone.Muted}
+              variant={KoshTextVariant.Supporting}
+            >
+              {description}
+            </KoshText>
+          )}
         </header>
         <div className="kosh-dialog__body">{children}</div>
         {footer && <footer>{footer}</footer>}
