@@ -14,7 +14,6 @@ describe("settings diagnostics and maintenance", () => {
     const backend = new FakeBackend();
     await backend.seedNote({
       bodyMarkdown: "A searchable local passage.",
-      sources: [],
     });
     const rebuild = vi.spyOn(backend, "rebuildSearchIndexes");
     renderSettings(backend);

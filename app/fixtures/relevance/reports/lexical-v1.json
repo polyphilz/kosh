@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "fixtureId": "kosh-relevance-v1",
-  "fixtureDigest": "9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8",
+  "fixtureDigest": "268902a9c45a9eedfa3911a1328f7b8ef4b67dad28591ce6fb2d08d6aec0a8c5",
   "retriever": "kosh-lexical-v1",
   "resultLimit": 10,
   "passed": true,
@@ -10,8 +10,8 @@
     "passedQueryCount": 25,
     "recallAt5": 0.9466666666666668,
     "recallAt10": 1.0,
-    "meanReciprocalRank": 0.9383333333333335,
-    "ndcgAt10": 0.9484224952357101,
+    "meanReciprocalRank": 0.965,
+    "ndcgAt10": 0.9684224952357101,
     "citationLocatorAccuracy": 1.0,
     "exactPhraseSuccess": 1.0,
     "forbiddenHitsAt10": 0
@@ -29,8 +29,8 @@
       "forbiddenHitsAt10": 0
     },
     "EXACT": {
-      "queryCount": 2,
-      "passedQueryCount": 2,
+      "queryCount": 4,
+      "passedQueryCount": 4,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
@@ -127,24 +127,13 @@
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
-    "SOURCE_DOMAIN": {
-      "queryCount": 2,
-      "passedQueryCount": 2,
-      "recallAt5": 1.0,
-      "recallAt10": 1.0,
-      "meanReciprocalRank": 1.0,
-      "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
-      "exactPhraseSuccess": null,
-      "forbiddenHitsAt10": 0
-    },
     "SYNONYM": {
       "queryCount": 3,
       "passedQueryCount": 3,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
-      "meanReciprocalRank": 0.7777777777777777,
-      "ndcgAt10": 0.8333333333333334,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
       "citationLocatorAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
@@ -282,10 +271,10 @@
       ]
     },
     {
-      "queryId": "query-sqlite-domain",
-      "text": "sqlite.org FTS5 tokenizer",
+      "queryId": "query-sqlite-link",
+      "text": "sqlite.org fts5.html tokenizers",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "EXACT",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
@@ -293,19 +282,19 @@
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
         "citationLocatorCorrect": true,
-        "exactPhraseSuccess": null,
+        "exactPhraseSuccess": true,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-source-sqlite",
-          "score": 36.73278688524591,
+          "passageId": "passage-link-sqlite",
+          "score": 24.7327868852459,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 10,
-            "sourceEndByte": 91,
+            "sourceEndByte": 132,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -313,9 +302,7 @@
           },
           "matchedFields": [
             "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
+            "body"
           ]
         }
       ]
@@ -613,55 +600,13 @@
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
-        "reciprocalRank": 0.3333333333333333,
-        "ndcgAt10": 0.5,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
         "citationLocatorCorrect": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
-        {
-          "passageId": "passage-source-rust",
-          "score": 35.87163561076604,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
-          "passageId": "passage-heat-modern",
-          "score": 35.87122736418511,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 36,
-            "sourceEndByte": 174,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
         {
           "passageId": "passage-prose-gardening",
           "score": 29.318501170960186,
@@ -739,14 +684,52 @@
           ]
         },
         {
-          "passageId": "passage-heat-caloric",
+          "passageId": "passage-heat-modern",
           "score": 21.8718487394958,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 2,
+            "endBlock": 2,
+            "sourceStartByte": 36,
+            "sourceEndByte": 174,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-heat-caloric",
+          "score": 21.871635610766045,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 29,
             "sourceEndByte": 137,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-link-rust",
+          "score": 21.871428571428574,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -778,7 +761,7 @@
         },
         {
           "passageId": "passage-pdf-distributed-112",
-          "score": 17.371428571428574,
+          "score": 17.37122736418511,
           "locator": {
             "kind": "PDF_PAGE",
             "page": 112
@@ -875,10 +858,10 @@
       ]
     },
     {
-      "queryId": "query-rust-domain",
-      "text": "doc.rust-lang.org lazy iterator adaptor",
+      "queryId": "query-rust-link",
+      "text": "doc.rust-lang.org std iter iterator",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "EXACT",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
@@ -886,19 +869,19 @@
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
         "citationLocatorCorrect": true,
-        "exactPhraseSuccess": null,
+        "exactPhraseSuccess": true,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-source-rust",
-          "score": 31.5327868852459,
+          "passageId": "passage-link-rust",
+          "score": 36.032786885245905,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 12,
-            "sourceEndByte": 94,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -906,8 +889,7 @@
           },
           "matchedFields": [
             "headingContext",
-            "body",
-            "sourceDomain"
+            "body"
           ]
         }
       ]
@@ -1257,35 +1239,14 @@
       },
       "hits": [
         {
-          "passageId": "passage-source-rust",
-          "score": 38.51538461538462,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
-          "passageId": "passage-source-sqlite",
-          "score": 38.030309988518944,
+          "passageId": "passage-link-sqlite",
+          "score": 24.030309988518944,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 10,
-            "sourceEndByte": 91,
+            "sourceEndByte": 132,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1293,9 +1254,7 @@
           },
           "matchedFields": [
             "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
+            "body"
           ]
         },
         {
@@ -1326,6 +1285,25 @@
             "endBlock": 1,
             "sourceStartByte": 29,
             "sourceEndByte": 137,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "passageId": "passage-link-rust",
+          "score": 19.515384615384615,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 151,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1500,25 +1478,6 @@
           "matchedFields": [
             "headingContext",
             "body"
-          ]
-        },
-        {
-          "passageId": "passage-source-sqlite",
-          "score": 10.53225806451613,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body",
-            "sourceLabel"
           ]
         },
         {

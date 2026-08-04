@@ -51,7 +51,7 @@ launch_receipt() {
             passageId: $passage,
             resolvedPassageId: $passage,
             revisionId: $revision,
-            sourceUrl: "https://example.invalid/kosh-progressive-operability"
+            canaryUrl: "https://example.invalid/kosh-progressive-operability"
           }
         }
       ],
@@ -68,7 +68,7 @@ launch_receipt() {
         tidbitId: $tidbit,
         revisionId: $revision,
         passageId: $passage,
-        sourceUrl: "https://example.invalid/kosh-progressive-operability"
+        canaryUrl: "https://example.invalid/kosh-progressive-operability"
       }
     }'
 }

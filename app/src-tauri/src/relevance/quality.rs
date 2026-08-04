@@ -35,7 +35,6 @@ pub struct CitationAuditEntry {
     pub passage_id: String,
     pub evidence_excerpt: String,
     pub locator: EvaluationLocator,
-    pub source_domain: Option<String>,
     pub attachment_filename: Option<String>,
     pub verified: bool,
 }
@@ -245,18 +244,6 @@ fn validate_citation_audit(
                 entry.query_id
             ),
         )?;
-        if let Some(domain) = &entry.source_domain {
-            require(
-                passage
-                    .sources
-                    .iter()
-                    .any(|source| &source.domain == domain),
-                format!(
-                    "{} source domain is not cited by the passage",
-                    entry.query_id
-                ),
-            )?;
-        }
         if let Some(filename) = &entry.attachment_filename {
             require(
                 passage

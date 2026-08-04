@@ -1,4 +1,3 @@
-import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
 test("the minimal sidebar persists and its commands leave editor shortcuts alone", async ({
@@ -312,65 +311,6 @@ test("note link shortcuts copy clean and exact routes", async ({ page }) => {
   await expect(page).toHaveURL(exactUrl);
 });
 
-test("valid sources autosave while invalid partial edits remain local", async ({ page }) => {
-  await page.goto("/#/");
-  const editor = page.getByRole("textbox", { name: "Note" });
-  await expect(page.getByRole("button", { name: "Sources" })).toBeDisabled();
-  await editor.fill("# Matrix notes\n\nA source-backed observation.");
-  await expect(page.getByRole("button", { name: "Sources" })).toBeEnabled();
-  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
-  const noteId = page.url().split("/").at(-1)!;
-
-  const sources = page.getByRole("button", { name: "Sources" });
-  await sources.click();
-  const sourceDialog = page.getByRole("dialog", { name: "Note sources" });
-  await page.keyboard.press("Meta+f");
-  await expect(sourceDialog).toHaveCount(0);
-  await expect(page.getByRole("searchbox", { name: "Find in note" })).toBeFocused();
-  await page.keyboard.press("Escape");
-  await sources.click();
-  await expect(sourceDialog).toBeVisible();
-  await sourceDialog.getByLabel("Label").fill("NumPy guide");
-  await sourceDialog
-    .getByLabel("URL")
-    .fill("https://numpy.org/doc/stable/user/absolute_beginners.html");
-  await expect(page.getByRole("button", { name: "Sources 1" })).toBeVisible();
-  await sourceDialog.getByLabel("URL").fill("not a complete URL");
-  await expect(sourceDialog.getByRole("alert")).toHaveText("Enter a complete HTTP or HTTPS URL.");
-  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-
-  await page.keyboard.press("Meta+k");
-  await expect(page.getByRole("dialog", { name: "Search notes" })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "Search notes" })).toBeHidden();
-  await expect(sourceDialog).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(sourceDialog).toBeHidden();
-  await expect(sources).toBeFocused();
-  await sources.click();
-  await expect(sourceDialog.getByLabel("Label")).toHaveValue("NumPy guide");
-  await expect(sourceDialog.getByLabel("URL")).toHaveValue(
-    "https://numpy.org/doc/stable/user/absolute_beginners.html",
-  );
-  await page.keyboard.press("Escape");
-
-  await page.getByRole("link", { name: "Settings" }).click();
-  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-  expect(
-    await page.evaluate(async (id) => {
-      const backend = window.__KOSH_FAKE_BACKEND__;
-      if (!backend) throw new Error("fake backend is unavailable");
-      return (await backend.loadTidbit(id)).sources;
-    }, noteId),
-  ).toEqual([
-    {
-      id: expect.any(String),
-      label: "NumPy guide",
-      url: "https://numpy.org/doc/stable/user/absolute_beginners.html",
-    },
-  ]);
-});
-
 test("delete flushes the latest note and Undo restores it immediately", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
@@ -530,7 +470,6 @@ test("find refreshes when visible attachment metadata hydrates", async ({ page }
     if (!backend) throw new Error("fake backend is unavailable");
     const note = await backend.seedNote({
       bodyMarkdown: "{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
-      sources: [],
     });
     backend.pdfStatus = async (attachmentId) =>
       new Promise((resolve) => {

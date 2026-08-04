@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use super::{RelevanceError, Result};
 
-pub const SCALE_SCHEMA_VERSION: u32 = 1;
-const SCALE_GENERATOR_VERSION: &str = "kosh-scale-v1";
+pub const SCALE_SCHEMA_VERSION: u32 = 2;
+const SCALE_GENERATOR_VERSION: &str = "kosh-scale-v2";
 const DEFAULT_SCALE_SEED: u64 = 0x4b4f_5348_5f56_3108;
 const DEFAULT_SCALE_COUNT: usize = 10_000;
 const BASE_TIMESTAMP_MS: u64 = 1_785_139_200_000;
@@ -44,17 +44,9 @@ pub struct ScaleTidbit {
     pub created_at_ms: u64,
     pub body_markdown: String,
     pub length_class: ScaleLengthClass,
-    pub sources: Vec<ScaleSource>,
     pub attachments: Vec<ScaleAttachment>,
     pub exact_duplicate_of: Option<String>,
     pub near_duplicate_of: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScaleSource {
-    pub label: String,
-    pub url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,7 +89,7 @@ pub struct ScaleStats {
     pub near_duplicate_count: u32,
     pub with_code_count: u32,
     pub with_formula_count: u32,
-    pub with_source_count: u32,
+    pub with_link_count: u32,
     pub with_attachment_count: u32,
 }
 
@@ -151,7 +143,10 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
             requested_formula,
             random.next(),
         );
-        let mut sources = generated_sources(index);
+        if let Some(link) = generated_link(index) {
+            body_markdown.push_str("\n\n");
+            body_markdown.push_str(&link);
+        }
         let mut attachments = generated_attachments(options.seed, index);
         let mut exact_duplicate_of = None;
         let mut near_duplicate_of = None;
@@ -159,7 +154,6 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
             let previous = &tidbits[index - 1];
             body_markdown.clone_from(&previous.body_markdown);
             length_class = previous.length_class;
-            sources.clone_from(&previous.sources);
             attachments.clone_from(&previous.attachments);
             exact_duplicate_of = Some(previous.id.clone());
             stats.exact_duplicate_count += 1;
@@ -186,7 +180,7 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
         }
         stats.with_code_count += u32::from(with_code);
         stats.with_formula_count += u32::from(with_formula);
-        stats.with_source_count += u32::from(!sources.is_empty());
+        stats.with_link_count += u32::from(body_markdown.contains("https://"));
         stats.with_attachment_count += u32::from(!attachments.is_empty());
 
         tidbits.push(ScaleTidbit {
@@ -195,7 +189,6 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
             created_at_ms: BASE_TIMESTAMP_MS + index as u64,
             body_markdown,
             length_class,
-            sources,
             attachments,
             exact_duplicate_of,
             near_duplicate_of,
@@ -336,9 +329,9 @@ fn display_seed(seed: u64) -> String {
     format!("0x{seed:016x}")
 }
 
-fn generated_sources(index: usize) -> Vec<ScaleSource> {
+fn generated_link(index: usize) -> Option<String> {
     if !index.is_multiple_of(3) {
-        return Vec::new();
+        return None;
     }
     const SOURCES: [(&str, &str); 4] = [
         ("SQLite documentation", "https://sqlite.org/fts5.html"),
@@ -355,11 +348,8 @@ fn generated_sources(index: usize) -> Vec<ScaleSource> {
             "https://knowledge.example.test/evidence",
         ),
     ];
-    let source = SOURCES[(index / 3) % SOURCES.len()];
-    vec![ScaleSource {
-        label: source.0.into(),
-        url: format!("{}?fixture={index}", source.1),
-    }]
+    let (label, url) = SOURCES[(index / 3) % SOURCES.len()];
+    Some(format!("{label}: {url}?fixture={index}"))
 }
 
 fn generated_attachments(seed: u64, index: usize) -> Vec<ScaleAttachment> {
@@ -524,7 +514,6 @@ mod tests {
                 .expect("referenced exact duplicate");
             assert_eq!(duplicate.body_markdown, original.body_markdown);
             assert_eq!(duplicate.length_class, original.length_class);
-            assert_eq!(duplicate.sources, original.sources);
             assert_eq!(duplicate.attachments, original.attachments);
         }
     }

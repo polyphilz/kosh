@@ -254,10 +254,6 @@ function AppShell() {
       event.preventDefault();
       event.stopPropagation();
       setSearchOpen(false);
-      document
-        .querySelector<HTMLElement>('[role="dialog"][aria-label="Note sources"]')
-        ?.querySelector<HTMLButtonElement>('[aria-label="Close sources"]')
-        ?.click();
       if (pendingFrame !== null) window.cancelAnimationFrame(pendingFrame);
       pendingFrame = window.requestAnimationFrame(() => {
         pendingFrame = null;

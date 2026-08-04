@@ -29,7 +29,7 @@ local aggregation, not a substitute for any required CI job.
 | Durable boundary | Forced/interrupted state exercised | Required recovery |
 | --- | --- | --- |
 | working copy and checkpoint | continuous typing, stale completion, navigation, failed quit, renderer interruption, restart | newest content remains recoverable; only exact generations checkpoint and a failed flush blocks quit |
-| authored revision and FTS projection | concurrent create/edit/search/rebuild, shutdown, reopen | authored body, revision, source URL, exact passage ID, and citation remain stable |
+| authored revision and FTS projection | concurrent create/edit/search/rebuild, shutdown, reopen | authored body, revision, inline links, exact passage ID, and citation remain stable |
 | draft and attachment staging | interrupted reader, orphaned stage, committed/missing blob, concurrent ingestion | partial bytes removed; committed references never reaped |
 | text/PDF/OCR extraction | pending, running, retry-wait, ready, failed, stale extractor, retired attachment | bounded batch requeue or terminal failure; stale output never becomes current |
 | embedding index | dirty, running, partial vectors, model/version change | incomplete vectors requeued; index activates only when complete |

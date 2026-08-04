@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "fixtureId": "kosh-relevance-v1",
   "description": "Synthetic citation-sized passages spanning lexical, semantic, attachment, and near-duplicate retrieval behavior.",
   "corpus": [
@@ -10,12 +10,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Heat and temperature", "Thermodynamics", "Kinetic model"],
       "content": "Heat is impatient motion transferred between systems. Temperature describes a distribution of particle energies rather than one particle.",
-      "sources": [
-        {
-          "label": "Thermodynamics lecture",
-          "domain": "notes.example.test"
-        }
-      ],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -36,7 +30,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Obsolete caloric theory", "History of thermodynamics"],
       "content": "The obsolete caloric theory treated heat as a weightless fluid that flowed from hot bodies into cold bodies.",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -57,7 +50,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Passage cache", "Rust", "Stable identifiers"],
       "content": "fn passage_cache_key(revision: &str, ordinal: u32) -> String {\n    format!(\"{revision}:{ordinal}\")\n}",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -78,7 +70,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Bayes rule", "Probability"],
       "content": "$$P(A|B) = \\frac{P(B|A)P(A)}{P(B)}$$",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -93,25 +84,19 @@
       }
     },
     {
-      "id": "passage-source-sqlite",
+      "id": "passage-link-sqlite",
       "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-source-sqlite",
+      "tidbitId": "tidbit-link-sqlite",
       "evidenceAttachmentId": null,
       "headingContext": ["FTS tokenizer reminder", "SQLite"],
-      "content": "FTS5 tokenizers decide how query terms and document text become searchable tokens.",
-      "sources": [
-        {
-          "label": "SQLite FTS5 documentation",
-          "domain": "sqlite.org"
-        }
-      ],
+      "content": "FTS5 tokenizers decide how query terms and document text become searchable tokens. https://sqlite.org/fts5.html#tokenizers",
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
         "startBlock": 1,
         "endBlock": 1,
         "sourceStartByte": 10,
-        "sourceEndByte": 91,
+        "sourceEndByte": 132,
         "startChar": null,
         "endChar": null,
         "startLine": null,
@@ -125,7 +110,6 @@
       "evidenceAttachmentId": "attachment-workshop-receipt",
       "headingContext": [],
       "content": "Invoice QZ-4817 — replacement bearings and ceramic lubricant — total 86.40.",
-      "sources": [],
       "attachments": [
         {
           "filename": "workshop-receipt.png",
@@ -150,7 +134,6 @@
       "evidenceAttachmentId": "attachment-transformer-notes",
       "headingContext": [],
       "content": "Different attention heads can focus on distinct representation subspaces at different positions.",
-      "sources": [],
       "attachments": [
         {
           "filename": "transformer-notes.pdf",
@@ -169,7 +152,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Automobile maintenance", "Seasonal checklist"],
       "content": "An automobile upkeep schedule should include tire pressure, brake fluid, coolant, and battery inspection.",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -190,7 +172,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Concurrency limit", "Workers"],
       "content": "A semaphore bounds concurrency by requiring each worker to hold a permit while expensive work is active.",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -211,7 +192,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Embedding artifact", "Local models"],
       "content": "The checked model manifest records its SHA-256 digest, dimensions, and tokenizer revision.",
-      "sources": [],
       "attachments": [
         {
           "filename": "jina-embeddings-v5-small.onnx",
@@ -237,7 +217,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Résumé review", "Writing"],
       "content": "A naïve résumé draft mentioned the café project but omitted measurable outcomes.",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -258,7 +237,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Trusted citation boundary", "TypeScript"],
       "content": "const resolveCitationTarget = (passageId: string) => backend.resolveCitation(passageId);",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -279,7 +257,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Fourier transform", "Signals"],
       "content": "$$F(\\omega)=\\int_{-\\infty}^{\\infty} f(t)e^{-i\\omega t}\\,dt$$",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -300,7 +277,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Basil watering", "Herb garden"],
       "content": "Check the top centimeter of soil before watering basil; drooping at noon can be temporary heat stress.",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -321,7 +297,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Bread experiment", "Autolyse"],
       "content": "Resting dough before kneading lets flour hydrate and makes the dough easier to stretch.",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -336,25 +311,19 @@
       }
     },
     {
-      "id": "passage-source-rust",
+      "id": "passage-link-rust",
       "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-source-rust",
+      "tidbitId": "tidbit-link-rust",
       "evidenceAttachmentId": null,
       "headingContext": ["Rust iterator note", "Ownership"],
-      "content": "Iterator adaptors are lazy and do nothing until a consuming adaptor requests values.",
-      "sources": [
-        {
-          "label": "Rust standard library",
-          "domain": "doc.rust-lang.org"
-        }
-      ],
+      "content": "Iterator adaptors are lazy and do nothing until a consuming adaptor requests values. https://doc.rust-lang.org/std/iter/trait.Iterator.html",
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
         "startBlock": 1,
         "endBlock": 1,
         "sourceStartByte": 12,
-        "sourceEndByte": 94,
+        "sourceEndByte": 151,
         "startChar": null,
         "endChar": null,
         "startLine": null,
@@ -368,7 +337,6 @@
       "evidenceAttachmentId": "attachment-release-log",
       "headingContext": [],
       "content": "The cobalt_index rebuild completed successfully after the schema promotion.",
-      "sources": [],
       "attachments": [
         {
           "filename": "release-notes.log",
@@ -388,7 +356,6 @@
       "evidenceAttachmentId": null,
       "headingContext": ["Vector clock takeaway", "Distributed systems", "Practical rule"],
       "content": "My takeaway: vector clock reconciliation preserves causal order. Start with this authored checklist before consulting archival appendices.",
-      "sources": [],
       "attachments": [],
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
@@ -409,7 +376,6 @@
       "evidenceAttachmentId": "attachment-distributed-reader",
       "headingContext": [],
       "content": "Vector clock reconciliation preserves causal order across replicas while concurrent writes remain distinguishable.",
-      "sources": [],
       "attachments": [
         {
           "filename": "distributed-systems-reader.pdf",
@@ -428,7 +394,6 @@
       "evidenceAttachmentId": "attachment-distributed-reader",
       "headingContext": [],
       "content": "Vector clock reconciliation can expose causal order before replicas exchange every archived write.",
-      "sources": [],
       "attachments": [
         {
           "filename": "distributed-systems-reader.pdf",
@@ -447,7 +412,6 @@
       "evidenceAttachmentId": "attachment-distributed-reader",
       "headingContext": [],
       "content": "A vector clock records causal order by incrementing replica counters during reconciliation.",
-      "sources": [],
       "attachments": [
         {
           "filename": "distributed-systems-reader.pdf",
@@ -466,7 +430,6 @@
       "evidenceAttachmentId": "attachment-distributed-reader",
       "headingContext": [],
       "content": "Lease fencing uses token epoch 47 so a superseded writer cannot commit after reconciliation.",
-      "sources": [],
       "attachments": [
         {
           "filename": "distributed-systems-reader.pdf",
@@ -485,7 +448,6 @@
       "evidenceAttachmentId": "attachment-distributed-reader",
       "headingContext": [],
       "content": "Archived examples compare vector clock reconciliation with wall-clock ordering and causal broadcast.",
-      "sources": [],
       "attachments": [
         {
           "filename": "distributed-systems-reader.pdf",
@@ -504,7 +466,6 @@
       "evidenceAttachmentId": "attachment-distributed-reader",
       "headingContext": [],
       "content": "Exercises ask whether vector clock reconciliation preserves causal order under delayed delivery.",
-      "sources": [],
       "attachments": [
         {
           "filename": "distributed-systems-reader.pdf",
@@ -523,7 +484,6 @@
       "evidenceAttachmentId": "attachment-conference-notes",
       "headingContext": [],
       "content": "Conference notes summarize how vector clock reconciliation identifies causal order without synchronized clocks.",
-      "sources": [],
       "attachments": [
         {
           "filename": "conference-notes.pdf",
@@ -622,26 +582,26 @@
       }
     },
     {
-      "id": "query-sqlite-domain",
-      "text": "sqlite.org FTS5 tokenizer",
+      "id": "query-sqlite-link",
+      "text": "sqlite.org fts5.html tokenizers",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "EXACT",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-source-sqlite",
+          "passageId": "passage-link-sqlite",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-source-rust"],
+      "mustNotRank": ["passage-link-rust"],
       "expectedCitation": {
-        "passageId": "passage-source-sqlite",
+        "passageId": "passage-link-sqlite",
         "locator": {
           "kind": "MARKDOWN_BLOCKS",
           "startBlock": 1,
           "endBlock": 1,
           "sourceStartByte": 10,
-          "sourceEndByte": 91,
+          "sourceEndByte": 132,
           "startChar": null,
           "endChar": null,
           "startLine": null,
@@ -950,26 +910,26 @@
       }
     },
     {
-      "id": "query-rust-domain",
-      "text": "doc.rust-lang.org lazy iterator adaptor",
+      "id": "query-rust-link",
+      "text": "doc.rust-lang.org std iter iterator",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "EXACT",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-source-rust",
+          "passageId": "passage-link-rust",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-source-sqlite"],
+      "mustNotRank": ["passage-link-sqlite"],
       "expectedCitation": {
-        "passageId": "passage-source-rust",
+        "passageId": "passage-link-rust",
         "locator": {
           "kind": "MARKDOWN_BLOCKS",
           "startBlock": 1,
           "endBlock": 1,
           "sourceStartByte": 12,
-          "sourceEndByte": 94,
+          "sourceEndByte": 151,
           "startChar": null,
           "endChar": null,
           "startLine": null,

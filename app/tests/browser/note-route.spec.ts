@@ -82,7 +82,6 @@ test("the blank canvas below the last block continues the note", async ({ page }
     if (!backend) throw new Error("fake backend is unavailable");
     return backend.seedNote({
       bodyMarkdown: "Before the equation.\n\n$$\n\\sum_i a_i\n$$",
-      sources: [],
     });
   });
   await page.evaluate((noteId) => {
@@ -118,7 +117,6 @@ test("the page gutter selects contiguous blocks beside the add and move controls
     return backend.seedNote({
       bodyMarkdown:
         "First gutter block.\n\nSecond gutter block.\n\n$$\n\\sum_i a_i\n$$\n\nLast gutter block.",
-      sources: [],
     });
   });
   await page.evaluate((noteId) => {
@@ -226,7 +224,6 @@ test("a gutter marquee keeps its anchor while auto-scrolling a long note", async
       bodyMarkdown: Array.from({ length: 48 }, (_, index) => `Long block ${index + 1}`).join(
         "\n\n",
       ),
-      sources: [],
     });
   });
   await page.evaluate((noteId) => {
@@ -406,7 +403,6 @@ test("an interrupted new note finishes recovery before accepting input", async (
       baseRevisionId: null,
       editGeneration: 7,
       bodyMarkdown: "Recovered before the editor becomes interactive.",
-      sources: [],
     });
     const loadWorkingCopy = backend.loadWorkingCopy.bind(backend);
     backend.loadWorkingCopy = async (requestedNoteId) => {
@@ -433,27 +429,23 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
     if (!backend) throw new Error("fake backend is unavailable");
     const staleNote = await backend.seedNote({
       bodyMarkdown: "Original durable note.",
-      sources: [],
     });
     await backend.saveWorkingCopy({
       noteId: recoverableNoteId,
       baseRevisionId: null,
       editGeneration: 1,
       bodyMarkdown: "This trailing copy must still reconcile.",
-      sources: [],
     });
     await backend.saveWorkingCopy({
       noteId: staleNote.id,
       baseRevisionId: staleNote.currentRevisionId,
       editGeneration: 1,
       bodyMarkdown: "This copy will become stale.",
-      sources: [],
     });
     await backend.replaceNoteForTest({
       id: staleNote.id,
       expectedRevisionId: staleNote.currentRevisionId,
       bodyMarkdown: "A newer route already changed this note.",
-      sources: [],
     });
     window.location.hash = "/";
     return staleNote.id;
@@ -485,14 +477,12 @@ test("startup recovery discards an abandoned existing-note media reservation", a
     if (!backend) throw new Error("fake backend is unavailable");
     const note = await backend.seedNote({
       bodyMarkdown: "Do not create a phantom revision for this note.",
-      sources: [],
     });
     await backend.reserveWorkingCopyForMedia({
       noteId: note.id,
       baseRevisionId: note.currentRevisionId,
       editGeneration: 1,
       bodyMarkdown: note.bodyMarkdown,
-      sources: [],
     });
     window.location.hash = "/";
     return note.id;
@@ -531,14 +521,12 @@ test("delayed reconciliation never checkpoints the note opened during its scan",
         baseRevisionId: null,
         editGeneration: 2,
         bodyMarkdown: "The initially open interrupted note.",
-        sources: [],
       });
       await backend.saveWorkingCopy({
         noteId: opened,
         baseRevisionId: null,
         editGeneration: 4,
         bodyMarkdown: "Open this while recovery scans.",
-        sources: [],
       });
       const listWorkingCopies = backend.listWorkingCopies.bind(backend);
       backend.listWorkingCopies = async () => {

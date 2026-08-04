@@ -1,5 +1,5 @@
 Kosh relevance report v1
-fixture: kosh-relevance-v1 (9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8)
+fixture: kosh-relevance-v1 (268902a9c45a9eedfa3911a1328f7b8ef4b67dad28591ce6fb2d08d6aec0a8c5)
 retriever: kosh-hybrid-jina-v1
 status: PASS
 queries: 25/25 passed
@@ -15,7 +15,7 @@ query results:
 - [PASS] query-heat-phrase (Phrase): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-modern
 - [PASS] query-cache-identifier (CodeIdentifier): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-code-cache-key
 - [PASS] query-bayes-formula (Formula): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-formula-bayes
-- [PASS] query-sqlite-domain (SourceDomain): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-source-sqlite
+- [PASS] query-sqlite-link (Exact): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-link-sqlite
 - [PASS] query-ocr-invoice (Ocr): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-ocr-receipt
 - [PASS] query-pdf-attention (Pdf): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-pdf-transformer
 - [PASS] query-car-upkeep (Synonym): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-synonym-automobile
@@ -27,7 +27,7 @@ query results:
 - [PASS] query-herb-hydration (Synonym): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-prose-gardening
 - [PASS] query-dough-phrase (Phrase): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-phrase-dough
 - [PASS] query-fourier-formula (Formula): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-formula-fourier
-- [PASS] query-rust-domain (SourceDomain): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-source-rust
+- [PASS] query-rust-link (Exact): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-link-rust
 - [PASS] query-heat-models (Prose): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-modern
 - [PASS] query-text-attachment-lines (TextAttachment): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-text-release-log
 - [PASS] query-authored-over-pdf-volume (MediaVolume): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-vector-clock

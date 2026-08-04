@@ -33,7 +33,7 @@ debug Tauri binary twice:
 
 1. against a unique empty data root, where it migrates both databases, creates
    a canary tidbit through the production writer, finds it through exact lexical
-   search, and resolves its source-bearing citation;
+   search, and resolves its exact citation;
 2. against that same root, where the canary must already exist and resolve to
    the identical tidbit revision and passage.
 
@@ -41,9 +41,9 @@ Each launch also starts the exact-head Vite frontend and proves that the main
 window is constructed, its React root renders, the surface loads from the
 gate-owned pinned IPv4 origin, completes a Tauri IPC probe against the expected
 data directory, and executes exact search and citation resolution over Tauri IPC
-for the source-bearing canary.
+for the canary passage.
 The receipt rejects a wrong execution mode, stale citation, changed passage or
-revision, missing source URL, or more than one match. Both database files must
+revision, missing inline canary URL, or more than one match. Both database files must
 also use WAL and foreign keys with every embedded migration applied. A blank,
 stale, disconnected, or error webview therefore cannot issue a passing
 receipt. The gate-owned profile is disposable and exists only for the duration

@@ -5,7 +5,7 @@ use super::{deterministic_passage_id, CitationLocator, CitationState};
 use crate::database::{
     connection::{self, DatabaseKind, FileState},
     tidbits::CreateTidbitWrite,
-    Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput, SourceDraft, TidbitDraft,
+    Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -57,16 +57,11 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
         .create_tidbit(CreateTidbitWrite {
             input: TidbitDraft {
                 body_markdown:
-                    "# Heat\n\nHeat is impatient motion.\n\nTemperature is a distribution.".into(),
-                sources: vec![SourceDraft {
-                    label: Some("First notebook".into()),
-                    url: Some("https://example.com/first".into()),
-                }],
+                    "# Heat\n\nHeat is impatient motion. https://example.com/first\n\nTemperature is a distribution.".into(),
             },
             now_ms: 10,
             tidbit_id: tidbit_id.into(),
             revision_id: first_revision_id.into(),
-            source_ids: vec!["019f547b-6200-7000-8000-000000002003".into()],
         })
         .expect("create cited tidbit");
     let first_passages = library.active_passage_ids(tidbit_id);
@@ -88,7 +83,7 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("FTS status");
-    assert_eq!(fts_status, ("IDLE".into(), "lexical-v4".into()));
+    assert_eq!(fts_status, ("IDLE".into(), "lexical-v5".into()));
 
     let heading = library
         .database
@@ -97,7 +92,6 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
         .expect("resolve heading citation");
     assert_eq!(heading.state, CitationState::Current);
     assert_eq!(heading.excerpt, "Heat");
-    assert_eq!(heading.sources[0].label.as_deref(), Some("First notebook"));
     assert_eq!(
         heading
             .tidbit
@@ -129,11 +123,7 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             created.id.clone(),
             Some(created.current_revision_id),
             1,
-            "# Heat\n\nA revised observation.".into(),
-            vec![SourceDraft {
-                label: Some("Second notebook".into()),
-                url: Some("https://example.com/second".into()),
-            }],
+            "# Heat\n\nA revised observation. https://example.com/second".into(),
             11,
         )
         .expect("save cited edit");
@@ -143,7 +133,6 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             1,
             12,
             "019f547b-6200-7000-8000-000000002004".into(),
-            vec!["019f547b-6200-7000-8000-000000002005".into()],
         )
         .expect("checkpoint cited edit")
         .note
@@ -161,10 +150,6 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
         .expect("resolve historical citation");
     assert_eq!(historical.state, CitationState::Historical);
     assert_eq!(
-        historical.sources[0].label.as_deref(),
-        Some("First notebook")
-    );
-    assert_eq!(
         historical.tidbit.as_ref().map(|tidbit| tidbit.deleted),
         Some(false)
     );
@@ -174,7 +159,7 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
         .resolve_citation(second_passages[1].clone())
         .expect("resolve edited citation");
     assert_eq!(current.state, CitationState::Current);
-    assert_eq!(current.sources[0].label.as_deref(), Some("Second notebook"));
+    assert!(current.excerpt.contains("https://example.com/second"));
 
     let deleted = library
         .database
@@ -305,7 +290,6 @@ fn attachment_citations_resolve_typed_file_and_line_provenance() {
         .expect("resolve attachment citation");
     assert_eq!(citation.state, CitationState::Current);
     assert_eq!(citation.excerpt, "exact attachment evidence");
-    assert_eq!(citation.sources, Vec::new());
     assert!(citation.tidbit.is_none());
     assert_eq!(
         citation.attachment.as_ref().map(|attachment| {

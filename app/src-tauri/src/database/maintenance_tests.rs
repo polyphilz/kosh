@@ -30,12 +30,10 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
         .create_tidbit_with_ids(
             TidbitDraft {
                 body_markdown: "Original exact citation evidence.".into(),
-                sources: Vec::new(),
             },
             10,
             uuid_v7(),
             uuid_v7(),
-            Vec::new(),
         )
         .expect("create tidbit");
     let original_passage = client
@@ -55,12 +53,11 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
             Some(original.current_revision_id.clone()),
             1,
             "Updated searchable citation evidence.".into(),
-            Vec::new(),
             20,
         )
         .expect("save edited working copy");
     let edited = client
-        .checkpoint_working_copy_for_test(original.id.clone(), 1, 21, uuid_v7(), Vec::new())
+        .checkpoint_working_copy_for_test(original.id.clone(), 1, 21, uuid_v7())
         .expect("checkpoint edit")
         .note
         .expect("edited note");

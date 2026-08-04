@@ -800,7 +800,6 @@ function authoredCitation(): CitationResolution {
     },
     tidbit: null,
     attachment: null,
-    sources: [],
   };
 }
 
@@ -820,6 +819,5 @@ function mediaCitation(): CitationResolution {
       mediaType: "image/png",
       deleted: false,
     },
-    sources: [],
   };
 }

@@ -228,7 +228,6 @@ for (const contract of [
   "JOIN tidbit_revision AS revision ON revision.id = passage.tidbit_revision_id",
   "JOIN tidbit ON tidbit.id = revision.tidbit_id",
   "WHERE revision.id <> tidbit.current_revision_id",
-  "tidbit_revision_source.tidbit_revision_id = revision.id",
 ]) {
   assert(
     recoveredPackageSmoke.includes(contract),
@@ -237,8 +236,7 @@ for (const contract of [
 }
 assert(
   !recoveredPackageSmoke.includes("passage.tidbit_id") &&
-    !recoveredPackageSmoke.includes("passage.revision_id") &&
-    !recoveredPackageSmoke.includes("tidbit_revision_source.revision_id"),
+    !recoveredPackageSmoke.includes("passage.revision_id"),
   "packaged recovery historical-citation query uses retired schema columns",
 );
 

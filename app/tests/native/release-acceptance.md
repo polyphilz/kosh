@@ -52,9 +52,9 @@ pnpm release:acceptance launch clean-YYYYMMDD
    between the two notes and confirm neither caret nor newest content regresses.
 6. Use `Cmd+/` to hide and restore the sidebar. Confirm `Cmd+B` still toggles
    editor bold.
-7. Add an HTTPS source URL, press `Cmd+K`, search exact words and a quoted
-   phrase, then open the result. Confirm the matching block and source URL are
-   cited honestly.
+7. Paste an HTTPS link into the note, press `Cmd+K`, search its domain plus an
+   exact phrase, then open the result. Confirm the matching block is cited
+   honestly.
 8. Navigate backward and forward between the two notes and Settings; confirm
    each note is represented by its own route and restores the editing caret.
 9. Use the configurable main-window shortcut from another application and
@@ -182,7 +182,7 @@ an isolated home.
 | Long paste, IME, rapid switching, recovery | pending |
 | Performance budgets and warm reactivation  | pending |
 | Menu icon and global shortcut              | pending |
-| Rich blocks, math, lists, and sources      | pending |
+| Rich blocks, math, lists, and pasted links | pending |
 | Command-K hybrid search and URL citation   | pending |
 | Back/forward note navigation               | pending |
 | Image OCR search and region citation       | pending |

@@ -81,7 +81,6 @@ export const tauriBackend: Backend = {
     invoke<TidbitRecord>(TauriCommand.DeleteTidbit, { input }),
   restoreTidbit: (input: RestoreTidbitInput) =>
     invoke<TidbitRecord>(TauriCommand.RestoreTidbit, { input }),
-  openSourceUrl: (sourceId: string) => invoke<void>(TauriCommand.OpenSourceUrl, { sourceId }),
   resolveCitation: (passageId: string) =>
     invoke<CitationResolution>(TauriCommand.ResolveCitation, { passageId }),
   searchPassages: (input: SearchPassagesInput) =>

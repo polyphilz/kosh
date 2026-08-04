@@ -135,21 +135,6 @@ pub(crate) async fn reveal_attachment_in_finder<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub(crate) async fn open_source_url<R: tauri::Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, RuntimeState>,
-    source_id: String,
-) -> Result<(), crate::database::commands::CommandError> {
-    let client = state.database_client();
-    let source_url =
-        tauri::async_runtime::spawn_blocking(move || client.load_source_url(source_id))
-            .await
-            .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
-            .map_err(crate::database::commands::CommandError::from)?;
-    run_source_url_on_main_thread(&app, source_url).await
-}
-
-#[tauri::command]
 pub(crate) fn set_file_drop_consumer_active<R: tauri::Runtime>(
     window: tauri::Window<R>,
     state: State<'_, RuntimeState>,
@@ -827,28 +812,6 @@ async fn run_external_action_on_main_thread<R: tauri::Runtime>(
         .map_err(Into::into)
 }
 
-async fn run_source_url_on_main_thread<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    source_url: String,
-) -> Result<(), crate::database::commands::CommandError> {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    app.run_on_main_thread(move || {
-        let _ = sender.send(run_source_url(source_url));
-    })
-    .map_err(|error| {
-        crate::database::commands::CommandError::from(DatabaseError::InvalidInput(format!(
-            "could not ask macOS to open the source: {error}"
-        )))
-    })?;
-    tauri::async_runtime::spawn_blocking(move || receiver.recv())
-        .await
-        .map_err(|error| crate::database::commands::CommandError::worker(error.to_string()))?
-        .map_err(|_| {
-            crate::database::commands::CommandError::from(DatabaseError::WriterUnavailable)
-        })?
-        .map_err(Into::into)
-}
-
 #[cfg(target_os = "macos")]
 fn run_external_action(path: PathBuf, action: ExternalAction) -> Result<(), DatabaseError> {
     use objc2::MainThreadMarker;
@@ -877,36 +840,6 @@ fn run_external_action(path: PathBuf, action: ExternalAction) -> Result<(), Data
 fn run_external_action(_path: PathBuf, _action: ExternalAction) -> Result<(), DatabaseError> {
     Err(DatabaseError::InvalidInput(
         "opening attachments externally is available only on macOS".into(),
-    ))
-}
-
-#[cfg(target_os = "macos")]
-fn run_source_url(source_url: String) -> Result<(), DatabaseError> {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSWorkspace;
-    use objc2_foundation::{NSString, NSURL};
-
-    let _mtm = MainThreadMarker::new().ok_or_else(|| {
-        DatabaseError::InvalidInput("the source was not opened on the main thread".into())
-    })?;
-    let value = NSString::from_str(&source_url);
-    // The URL was loaded by ID from Kosh's normalized HTTP(S)-only source
-    // table; the native workspace never receives renderer-controlled URLs.
-    let url = NSURL::URLWithString(&value)
-        .ok_or_else(|| DatabaseError::InvalidInput("the stored source URL is invalid".into()))?;
-    if NSWorkspace::sharedWorkspace().openURL(&url) {
-        Ok(())
-    } else {
-        Err(DatabaseError::InvalidInput(
-            "macOS could not open the source".into(),
-        ))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn run_source_url(_source_url: String) -> Result<(), DatabaseError> {
-    Err(DatabaseError::InvalidInput(
-        "opening source URLs is available only on macOS".into(),
     ))
 }
 

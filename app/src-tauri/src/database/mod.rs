@@ -87,9 +87,7 @@ pub use settings::{
     validate_complete_bindings, KeyboardBinding, KoshCommand, SetAutomaticUpdateChecksInput,
     SetShortcutSettingsInput, ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR,
 };
-pub use tidbits::{
-    DeleteTidbitInput, RestoreTidbitInput, SourceDraft, Tidbit, TidbitDraft, TidbitSource,
-};
+pub use tidbits::{DeleteTidbitInput, RestoreTidbitInput, Tidbit, TidbitDraft};
 pub use working_copies::{
     CheckpointWorkingCopyInput, DiscardWorkingCopyInput, SaveWorkingCopyInput, WorkingCopy,
     WorkingCopyCheckpointResult, WorkingCopySaveResult,
@@ -854,9 +852,6 @@ fn writer_loop(
             }
             WriterMessage::LoadTidbit { id, reply } => {
                 let _ = reply.send(tidbits::load_tidbit(&main, &id));
-            }
-            WriterMessage::LoadSourceUrl { source_id, reply } => {
-                let _ = reply.send(tidbits::load_source_url(&main, &source_id));
             }
             WriterMessage::DeleteTidbit {
                 input,

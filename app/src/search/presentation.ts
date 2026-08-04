@@ -3,7 +3,6 @@ import type {
   PassageSearchResult,
   SearchField,
   SearchHighlight,
-  TidbitSource,
 } from "../backend/contracts";
 
 export interface HighlightSegment {
@@ -95,7 +94,7 @@ export function citationOwner(citation: CitationResolution): string {
   if (citation.attachment) {
     return citation.attachment.displayFilename;
   }
-  return citation.tidbit?.displayTitle ?? "Unknown source";
+  return citation.tidbit?.displayTitle ?? "Unknown passage";
 }
 
 export function citationRevision(citation: CitationResolution): string {
@@ -103,30 +102,11 @@ export function citationRevision(citation: CitationResolution): string {
   return `${revision} · ${citation.state === "CURRENT" ? "Current" : "Historical"}`;
 }
 
-export function sourceDisplay(source: TidbitSource): string {
-  const domain = sourceDomain(source.url);
-  if (source.label && domain) {
-    return `${source.label} · ${domain}`;
-  }
-  return source.label ?? domain ?? "Source";
-}
-
-export function sourceDomain(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname.replace(/^www\./u, "");
-  } catch {
-    return null;
-  }
-}
-
 export function citationCopyText(citation: CitationResolution): string {
   const lines = [
     citationOwner(citation),
     citationLocation(citation),
     citationRevision(citation),
-    ...citation.sources.map(sourceDisplay),
     `Kosh passage: ${citation.passageId}`,
     citation.excerpt,
   ].filter(Boolean);

@@ -21,7 +21,7 @@ use crate::database::CitationLocator;
 use crate::database::{
     passages, AttachmentIngestInput, CitationResolution, CitationState, Database, DatabasePaths,
     LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput, SaveOffsiteBackupConfigInput,
-    SearchPassagesInput, SourceDraft,
+    SearchPassagesInput,
 };
 
 use super::{
@@ -47,7 +47,7 @@ use super::{
 };
 
 const STARTUP_CANARY: &str = "koshstartupcanaryv1";
-const STARTUP_CANARY_SOURCE: &str = "https://example.invalid/kosh-progressive-operability";
+const STARTUP_CANARY_URL: &str = "https://example.invalid/kosh-progressive-operability";
 const INTERRUPTED_REPLICATION_WORKING_COPY_BYTES: usize = 4 * 1024 * 1024;
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
@@ -90,12 +90,11 @@ struct CanaryReport {
 struct RestoredEvidence {
     active_tidbits: u64,
     revisions: u64,
-    sources: u64,
     attachments: u64,
     media_blobs: u64,
     search_documents: u64,
     exact_result_count: u64,
-    resolved_source_url: String,
+    resolved_inline_url: String,
     historical_citations: u64,
     interrupted_replication_working_copies: u64,
 }
@@ -411,7 +410,7 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
     let note_id = Uuid::now_v7().to_string();
     database
         .client()
-        .save_working_copy_for_test(note_id.clone(), None, 1, String::new(), Vec::new(), 20)
+        .save_working_copy_for_test(note_id.clone(), None, 1, String::new(), 20)
         .expect("reserve canary working copy");
     let attachment = database
         .ingest_attachment(
@@ -433,23 +432,13 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             note_id.clone(),
             None,
             2,
-            format!("The durable historical fact is forty-two.\n\n{attachment_token}"),
-            vec![SourceDraft {
-                label: Some("Historical source".into()),
-                url: Some("https://example.com/historical-recovery".into()),
-            }],
+            format!("The durable historical fact is forty-two.\n\nhttps://example.com/historical-recovery\n\n{attachment_token}"),
             22,
         )
         .expect("save original canary working copy");
     let original = database
         .client()
-        .checkpoint_working_copy_for_test(
-            note_id.clone(),
-            2,
-            30,
-            original_revision_id.clone(),
-            vec![Uuid::now_v7().to_string()],
-        )
+        .checkpoint_working_copy_for_test(note_id.clone(), 2, 30, original_revision_id.clone())
         .expect("checkpoint original canary note")
         .note
         .expect("checkpointed original canary note");
@@ -472,23 +461,13 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             note_id.clone(),
             Some(original.current_revision_id),
             3,
-            format!("Exact citrine recovery evidence.\n\n{attachment_token}"),
-            vec![SourceDraft {
-                label: Some("Current source".into()),
-                url: Some("https://example.com/current-recovery".into()),
-            }],
+            format!("Exact citrine recovery evidence.\n\nhttps://example.com/current-recovery\n\n{attachment_token}"),
             50,
         )
         .expect("save current canary working copy");
     database
         .client()
-        .checkpoint_working_copy_for_test(
-            note_id,
-            3,
-            51,
-            Uuid::now_v7().to_string(),
-            vec![Uuid::now_v7().to_string()],
-        )
+        .checkpoint_working_copy_for_test(note_id, 3, 51, Uuid::now_v7().to_string())
         .expect("checkpoint current canary note");
     let startup_note_id = Uuid::now_v7().to_string();
     database
@@ -497,23 +476,13 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             startup_note_id.clone(),
             None,
             1,
-            STARTUP_CANARY.into(),
-            vec![SourceDraft {
-                label: Some("Startup canary source".into()),
-                url: Some(STARTUP_CANARY_SOURCE.into()),
-            }],
+            format!("{STARTUP_CANARY}\n\n{STARTUP_CANARY_URL}"),
             60,
         )
         .expect("save startup canary working copy");
     database
         .client()
-        .checkpoint_working_copy_for_test(
-            startup_note_id,
-            1,
-            61,
-            Uuid::now_v7().to_string(),
-            vec![Uuid::now_v7().to_string()],
-        )
+        .checkpoint_working_copy_for_test(startup_note_id, 1, 61, Uuid::now_v7().to_string())
         .expect("checkpoint startup canary note");
 
     let mut lease = 0_u64;
@@ -652,7 +621,6 @@ fn replicate_and_publish(
             None,
             1,
             interrupted_replication_payload(),
-            Vec::new(),
             90,
         )
         .expect("write interrupted replication fence");
@@ -953,14 +921,10 @@ fn verify_restored_library(
         })
         .expect("restored exact search before rebuild");
     assert_eq!(before.len(), 1);
-    assert_eq!(
-        before[0]
-            .citation
-            .sources
-            .iter()
-            .find_map(|source| source.url.as_deref()),
-        Some("https://example.com/current-recovery")
-    );
+    assert!(before[0]
+        .citation
+        .excerpt
+        .contains("https://example.com/current-recovery"));
     let rebuilt = client.rebuild_search().expect("rebuild restored search");
     assert!(rebuilt >= 2);
     let after = client
@@ -983,23 +947,22 @@ fn verify_restored_library(
             "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL",
         ),
         revisions: query_count(&main, "SELECT count(*) FROM tidbit_revision"),
-        sources: query_count(&main, "SELECT count(*) FROM source"),
         attachments: query_count(&main, "SELECT count(*) FROM attachment"),
         media_blobs: query_count(&media, "SELECT count(*) FROM media_blob"),
         search_documents: query_count(&main, "SELECT count(*) FROM passage_search_document"),
         exact_result_count: u64::try_from(after.len()).expect("exact result count"),
-        resolved_source_url: after[0]
+        resolved_inline_url: after[0]
             .citation
-            .sources
-            .iter()
-            .find_map(|source| source.url.clone())
-            .expect("restored result source"),
+            .excerpt
+            .lines()
+            .find(|line| *line == "https://example.com/current-recovery")
+            .expect("restored result inline URL")
+            .into(),
         historical_citations: verify_historical_citation(&main, historical_citation),
         interrupted_replication_working_copies: interrupted_replication_working_copy_count(&main),
     };
     assert!(evidence.active_tidbits >= 2);
     assert!(evidence.revisions >= 3);
-    assert!(evidence.sources >= 3);
     assert!(evidence.attachments >= 1);
     assert!(evidence.media_blobs >= 1);
     assert!(evidence.search_documents >= 2);
@@ -1021,7 +984,7 @@ fn verify_historical_citation(
     assert_eq!(resolved.state, CitationState::Historical);
     assert!(
         same_citation_provenance(stored, &resolved),
-        "restored citation changed its passage, revision, locator, or source provenance"
+        "restored citation changed its passage, revision, or locator provenance"
     );
     let tidbit = resolved
         .tidbit
@@ -1046,7 +1009,6 @@ fn same_citation_provenance(stored: &CitationResolution, resolved: &CitationReso
         && stored.locator == resolved.locator
         && stored.tidbit == resolved.tidbit
         && stored.attachment == resolved.attachment
-        && stored.sources == resolved.sources
 }
 
 fn interrupted_replication_working_copy_count(connection: &rusqlite::Connection) -> u64 {
@@ -1065,7 +1027,7 @@ fn interrupted_replication_working_copy_count(connection: &rusqlite::Connection)
 }
 
 #[test]
-fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
+fn historical_canary_evidence_requires_exact_locator_and_revision_provenance() {
     let target = R2Target {
         account_id: R2AccountId::parse("0123456789abcdef0123456789abcdef")
             .expect("test account ID"),
@@ -1087,9 +1049,6 @@ fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
         end_line: 1,
     };
     assert!(!same_citation_provenance(stored, &wrong_locator));
-    let mut wrong_sources = resolved;
-    wrong_sources.sources.clear();
-    assert!(!same_citation_provenance(stored, &wrong_sources));
 
     drop(connection);
     source

@@ -1043,7 +1043,6 @@ mod tests {
                 None,
                 1,
                 String::new(),
-                Vec::new(),
                 90,
             )
             .expect("protocol working copy");

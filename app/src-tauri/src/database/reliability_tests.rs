@@ -6,7 +6,7 @@ use std::{
 
 use super::{
     AttachmentIngestInput, Database, DatabasePaths, LexicalSearchMode, MediaLimits,
-    SearchPassagesInput, SourceDraft, TidbitDraft,
+    SearchPassagesInput, TidbitDraft,
 };
 
 const CAPTURE_THREADS: usize = 4;
@@ -23,7 +23,7 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
     let database = Arc::new(Database::initialize(paths.clone()).expect("database"));
     let setup_client = database.client();
     setup_client
-        .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), Vec::new(), 1)
+        .save_working_copy_for_test(DRAFT_ID.into(), None, 1, String::new(), 1)
         .expect("attachment working copy");
 
     let worker_count = CAPTURE_THREADS + SEARCH_THREADS + 2;
@@ -41,19 +41,12 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
                     .create_tidbit_with_ids(
                         TidbitDraft {
                             body_markdown: format!(
-                                "Concurrent stress evidence {ordinal:03}.\n\n```text\nworker={capture_thread}\n```"
+                                "Concurrent stress evidence {ordinal:03}. https://example.invalid/reliability/{ordinal:03}\n\n```text\nworker={capture_thread}\n```"
                             ),
-                            sources: vec![SourceDraft {
-                                label: Some("Reliability fixture".into()),
-                                url: Some(format!(
-                                    "https://example.invalid/reliability/{ordinal:03}"
-                                )),
-                            }],
                         },
                         10_000 + ordinal as i64,
                         uuid::Uuid::now_v7().to_string(),
                         uuid::Uuid::now_v7().to_string(),
-                        vec![uuid::Uuid::now_v7().to_string()],
                     )
                     .expect("concurrent capture");
             }
@@ -145,10 +138,10 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
         .expect("authored citation")
         .revision_id
         .clone();
-    assert_eq!(
-        exact[0].citation.sources[0].url.as_deref(),
-        Some("https://example.invalid/reliability/042")
-    );
+    assert!(exact[0]
+        .citation
+        .excerpt
+        .contains("https://example.invalid/reliability/042"));
 
     database.shutdown().expect("mixed workload shutdown");
     drop(setup_client);

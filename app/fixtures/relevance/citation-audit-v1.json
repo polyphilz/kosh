@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fixtureDigest": "9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8",
+  "fixtureDigest": "268902a9c45a9eedfa3911a1328f7b8ef4b67dad28591ce6fb2d08d6aec0a8c5",
   "reviewedAt": "2026-07-29",
   "reviewer": "Codex implementation audit",
   "entries": [
@@ -19,7 +19,6 @@
         "startLine": null,
         "endLine": null
       },
-      "sourceDomain": "notes.example.test",
       "attachmentFilename": null,
       "verified": true
     },
@@ -38,26 +37,24 @@
         "startLine": 1,
         "endLine": 3
       },
-      "sourceDomain": null,
       "attachmentFilename": null,
       "verified": true
     },
     {
-      "queryId": "query-sqlite-domain",
-      "passageId": "passage-source-sqlite",
+      "queryId": "query-sqlite-link",
+      "passageId": "passage-link-sqlite",
       "evidenceExcerpt": "FTS5 tokenizers decide",
       "locator": {
         "kind": "MARKDOWN_BLOCKS",
         "startBlock": 1,
         "endBlock": 1,
         "sourceStartByte": 10,
-        "sourceEndByte": 91,
+        "sourceEndByte": 132,
         "startChar": null,
         "endChar": null,
         "startLine": null,
         "endLine": null
       },
-      "sourceDomain": "sqlite.org",
       "attachmentFilename": null,
       "verified": true
     },
@@ -75,7 +72,6 @@
           "height": 214
         }
       },
-      "sourceDomain": null,
       "attachmentFilename": "workshop-receipt.png",
       "verified": true
     },
@@ -87,7 +83,6 @@
         "kind": "PDF_PAGE",
         "page": 42
       },
-      "sourceDomain": null,
       "attachmentFilename": "transformer-notes.pdf",
       "verified": true
     },
@@ -106,7 +101,6 @@
         "startLine": null,
         "endLine": null
       },
-      "sourceDomain": null,
       "attachmentFilename": null,
       "verified": true
     },
@@ -119,7 +113,6 @@
         "startLine": 18,
         "endLine": 20
       },
-      "sourceDomain": null,
       "attachmentFilename": "release-notes.log",
       "verified": true
     },
@@ -138,7 +131,6 @@
         "startLine": null,
         "endLine": null
       },
-      "sourceDomain": null,
       "attachmentFilename": null,
       "verified": true
     },
@@ -150,7 +142,6 @@
         "kind": "PDF_PAGE",
         "page": 113
       },
-      "sourceDomain": null,
       "attachmentFilename": "distributed-systems-reader.pdf",
       "verified": true
     },
@@ -169,7 +160,6 @@
         "startLine": 1,
         "endLine": 1
       },
-      "sourceDomain": null,
       "attachmentFilename": null,
       "verified": true
     }

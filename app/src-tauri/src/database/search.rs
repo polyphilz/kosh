@@ -29,8 +29,8 @@ const SEMANTIC_RERANK_EXPANSION: u32 = 2;
 const MAX_SEMANTIC_RERANK_CANDIDATES: u32 = 1_024;
 const SEMANTIC_EVIDENCE_PENALTY: f64 = 0.1;
 const INITIAL_RESULTS_PER_ATTACHMENT: usize = 2;
-pub(crate) const FTS_BM25_WEIGHTS: &str = "6.0, 3.5, 4.5, 5.0, 5.0, 2.25";
-pub(super) const FTS_VERSION: &str = "lexical-v4";
+pub(crate) const FTS_BM25_WEIGHTS: &str = "6.0, 3.5, 5.0, 2.25";
+pub(super) const FTS_VERSION: &str = "lexical-v5";
 
 pub(crate) fn candidate_limit(result_limit: u32) -> u32 {
     result_limit
@@ -64,8 +64,6 @@ pub struct SearchPassagesInput {
 pub enum SearchField {
     HeadingContext,
     Body,
-    SourceLabel,
-    SourceDomain,
     AttachmentName,
     ExtractedText,
 }
@@ -75,8 +73,6 @@ impl SearchField {
         match self {
             Self::HeadingContext => 6.0,
             Self::Body => 3.5,
-            Self::SourceLabel => 4.5,
-            Self::SourceDomain => 5.0,
             Self::AttachmentName => 5.0,
             Self::ExtractedText => evidence_kind.extracted_text_weight(),
         }
@@ -86,8 +82,6 @@ impl SearchField {
         match self {
             Self::HeadingContext => "headingContext",
             Self::Body => "body",
-            Self::SourceLabel => "sourceLabel",
-            Self::SourceDomain => "sourceDomain",
             Self::AttachmentName => "attachmentName",
             Self::ExtractedText => "extractedText",
         }
@@ -1068,8 +1062,6 @@ pub(super) fn replace_tidbit_documents(
             tidbit_id,
             heading_context,
             body,
-            source_labels,
-            source_domains,
             attachment_names,
             extracted_text,
             owner_content_hash,
@@ -1087,26 +1079,6 @@ pub(super) fn replace_tidbit_documents(
                 ''
             ),
             passage.content,
-            coalesce(
-                (
-                    SELECT group_concat(coalesce(source.label, ''), char(10))
-                    FROM tidbit_revision_source AS membership
-                    JOIN source ON source.id = membership.source_id
-                    WHERE membership.tidbit_revision_id = revision.id
-                    ORDER BY membership.sort_order
-                ),
-                ''
-            ),
-            coalesce(
-                (
-                    SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
-                    FROM tidbit_revision_source AS membership
-                    JOIN source ON source.id = membership.source_id
-                    WHERE membership.tidbit_revision_id = revision.id
-                    ORDER BY membership.sort_order
-                ),
-                ''
-            ),
             coalesce(
                 (
                     SELECT group_concat(
@@ -1176,8 +1148,6 @@ pub(super) fn replace_attachment_documents_in_transaction(
             tidbit_id,
             heading_context,
             body,
-            source_labels,
-            source_domains,
             attachment_names,
             extracted_text,
             owner_content_hash,
@@ -1194,8 +1164,6 @@ pub(super) fn replace_attachment_documents_in_transaction(
                 ),
                 ''
             ),
-            '',
-            '',
             '',
             attachment.display_filename || char(10) || attachment.media_type,
             passage.content,
@@ -1220,8 +1188,6 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
             tidbit_id,
             heading_context,
             body,
-            source_labels,
-            source_domains,
             attachment_names,
             extracted_text,
             owner_content_hash,
@@ -1239,26 +1205,6 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
                 ''
             ),
             passage.content,
-            coalesce(
-                (
-                    SELECT group_concat(coalesce(source.label, ''), char(10))
-                    FROM tidbit_revision_source AS membership
-                    JOIN source ON source.id = membership.source_id
-                    WHERE membership.tidbit_revision_id = revision.id
-                    ORDER BY membership.sort_order
-                ),
-                ''
-            ),
-            coalesce(
-                (
-                    SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
-                    FROM tidbit_revision_source AS membership
-                    JOIN source ON source.id = membership.source_id
-                    WHERE membership.tidbit_revision_id = revision.id
-                    ORDER BY membership.sort_order
-                ),
-                ''
-            ),
             coalesce(
                 (
                     SELECT group_concat(
@@ -1295,8 +1241,6 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
             tidbit_id,
             heading_context,
             body,
-            source_labels,
-            source_domains,
             attachment_names,
             extracted_text,
             owner_content_hash,
@@ -1313,8 +1257,6 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
                 ),
                 ''
             ),
-            '',
-            '',
             '',
             attachment.display_filename || char(10) || attachment.media_type,
             passage.content,
@@ -1442,26 +1384,6 @@ fn load_search_documents(
             passage.content,
             coalesce(
                 (
-                    SELECT group_concat(coalesce(source.label, ''), char(10))
-                    FROM tidbit_revision_source AS membership
-                    JOIN source ON source.id = membership.source_id
-                    WHERE membership.tidbit_revision_id = revision.id
-                    ORDER BY membership.sort_order
-                ),
-                ''
-            ),
-            coalesce(
-                (
-                    SELECT group_concat(coalesce(source.normalized_url, ''), char(10))
-                    FROM tidbit_revision_source AS membership
-                    JOIN source ON source.id = membership.source_id
-                    WHERE membership.tidbit_revision_id = revision.id
-                    ORDER BY membership.sort_order
-                ),
-                ''
-            ),
-            coalesce(
-                (
                     SELECT group_concat(
                         attachment.display_filename || char(10) || attachment.media_type,
                         char(10)
@@ -1508,8 +1430,6 @@ fn load_search_documents(
                 ''
             ),
             '',
-            '',
-            '',
             attachment.display_filename || char(10) || attachment.media_type,
             passage.content,
             passage.locator_kind,
@@ -1530,19 +1450,19 @@ fn load_search_documents(
     )?;
     let rows = statement.query_map(params![candidates_json], |row| {
         let word_rank = row
-            .get::<_, Option<i64>>(9)?
+            .get::<_, Option<i64>>(7)?
             .and_then(|rank| usize::try_from(rank).ok());
         let trigram_rank = row
-            .get::<_, Option<i64>>(10)?
+            .get::<_, Option<i64>>(8)?
             .and_then(|rank| usize::try_from(rank).ok());
         let short_rank = row
-            .get::<_, Option<i64>>(11)?
+            .get::<_, Option<i64>>(9)?
             .and_then(|rank| usize::try_from(rank).ok());
-        let locator_kind = row.get::<_, String>(8)?;
+        let locator_kind = row.get::<_, String>(6)?;
         let evidence_kind =
             SearchEvidenceKind::from_locator_kind(&locator_kind).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    8,
+                    6,
                     Type::Text,
                     Box::new(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -1557,10 +1477,8 @@ fn load_search_documents(
             fields: [
                 (SearchField::HeadingContext, row.get::<_, String>(2)?),
                 (SearchField::Body, row.get::<_, String>(3)?),
-                (SearchField::SourceLabel, row.get::<_, String>(4)?),
-                (SearchField::SourceDomain, row.get::<_, String>(5)?),
-                (SearchField::AttachmentName, row.get::<_, String>(6)?),
-                (SearchField::ExtractedText, row.get::<_, String>(7)?),
+                (SearchField::AttachmentName, row.get::<_, String>(4)?),
+                (SearchField::ExtractedText, row.get::<_, String>(5)?),
             ]
             .into_iter()
             .collect(),
@@ -1903,7 +1821,7 @@ mod tests {
         connection::{self, DatabaseKind, FileState},
         tidbits::CreateTidbitWrite,
         CitationLocator, Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput,
-        SourceDraft, TidbitDraft,
+        TidbitDraft,
     };
 
     fn document(
@@ -2204,18 +2122,11 @@ mod tests {
         let created = client
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
-                    body_markdown:
-                        "# SQLite\n\nThe first lexical sentinel uses `resolveCitationTarget`."
-                            .into(),
-                    sources: vec![SourceDraft {
-                        label: Some("SQLite FTS5 documentation".into()),
-                        url: Some("https://sqlite.org/fts5.html".into()),
-                    }],
+                    body_markdown: "# SQLite\n\nThe first lexical sentinel uses `resolveCitationTarget`.\n\nhttps://sqlite.org/fts5.html".into(),
                 },
                 now_ms: 10,
                 tidbit_id: "019f547b-6200-7000-8000-000000009001".into(),
                 revision_id: "019f547b-6200-7000-8000-000000009002".into(),
-                source_ids: vec!["019f547b-6200-7000-8000-000000009003".into()],
             })
             .expect("create searchable tidbit");
 
@@ -2235,9 +2146,6 @@ mod tests {
                 .map(|tidbit| tidbit.revision_id.as_str()),
             Some(created.current_revision_id.as_str())
         );
-        assert!(initial[0]
-            .matched_fields
-            .contains(&SearchField::SourceDomain));
         assert!(initial[0].matched_fields.contains(&SearchField::Body));
         assert!(initial[0]
             .highlights
@@ -2262,7 +2170,6 @@ mod tests {
                 1,
                 "# Search\n\nThe replacement carries café, a ﬁle, OpenAI, C, R2, and $$E=mc^2$$."
                     .into(),
-                Vec::new(),
                 20,
             )
             .expect("save searchable edit");
@@ -2272,7 +2179,6 @@ mod tests {
                 1,
                 21,
                 "019f547b-6200-7000-8000-000000009004".into(),
-                Vec::new(),
             )
             .expect("checkpoint searchable edit")
             .note
@@ -2381,12 +2287,10 @@ mod tests {
                         body_markdown: format!(
                             "# {atom}\n\n{atom} {atom} {atom} single-atom decoy."
                         ),
-                        sources: Vec::new(),
                     },
                     now_ms: i64::try_from(index).expect("bounded timestamp"),
                     tidbit_id: format!("019f547b-6200-7000-8000-{:012x}", index * 2 + 1),
                     revision_id: format!("019f547b-6200-7000-8000-{:012x}", index * 2 + 2),
-                    source_ids: Vec::new(),
                 })
                 .expect("create word-only decoy");
         }
@@ -2394,12 +2298,10 @@ mod tests {
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
                     body_markdown: "The pineapple and bloodorange pairing is the answer.".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 100,
                 tidbit_id: "019f547b-6200-7000-8000-000000001001".into(),
                 revision_id: "019f547b-6200-7000-8000-000000001002".into(),
-                source_ids: Vec::new(),
             })
             .expect("create substring target");
 
@@ -2462,12 +2364,10 @@ mod tests {
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
                     body_markdown: "Authored passage linked to a file.".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 5,
                 tidbit_id: "019f547b-6200-7000-8000-000000009511".into(),
                 revision_id: "019f547b-6200-7000-8000-000000009512".into(),
-                source_ids: Vec::new(),
             })
             .expect("create authored attachment host");
         database
@@ -2966,12 +2866,10 @@ mod tests {
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
                     body_markdown: "Literal OR NEAR syntax stays authored text.".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 10,
                 tidbit_id: "019f547b-6200-7000-8000-000000009101".into(),
                 revision_id: "019f547b-6200-7000-8000-000000009102".into(),
-                source_ids: Vec::new(),
             })
             .expect("create safe-query fixture");
 
@@ -3009,12 +2907,10 @@ mod tests {
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
                     body_markdown: "Immutable authored evidence.".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 10,
                 tidbit_id: "019f547b-6200-7000-8000-000000009201".into(),
                 revision_id: "019f547b-6200-7000-8000-000000009202".into(),
-                source_ids: Vec::new(),
             })
             .expect("create provenance fixture");
         database.shutdown().expect("close search database");

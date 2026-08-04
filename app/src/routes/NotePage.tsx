@@ -617,9 +617,6 @@ function NoteEditorSession({
         />
       )}
       <NoteActions
-        canEditSources={
-          snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
-        }
         canDelete={
           snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
         }
@@ -630,12 +627,6 @@ function NoteEditorSession({
         disabled={mediaPending || lifecyclePreparing}
         onDelete={() => void deleteCurrentNote()}
         onDeleteOpenChange={setDeleteOpen}
-        onSourcesChange={(sources) => {
-          setActionError(null);
-          const current = coordinator.getSnapshot();
-          coordinator.update(current.bodyMarkdown, sources);
-        }}
-        sources={snapshot.sources}
       />
       <div className="note-page__document">
         {searchFocus?.phase === "FOCUSED" && (
@@ -870,7 +861,6 @@ function coordinatorForDurableNote(
     noteId: note.id,
     baseRevisionId: note.currentRevisionId,
     bodyMarkdown: note.bodyMarkdown,
-    sources: note.sources.map(({ label, url }) => ({ label, url })),
   });
 }
 
@@ -979,7 +969,6 @@ async function reconcileWorkingCopy(backend: Backend, workingCopy: WorkingCopyRe
     baseRevisionId: workingCopy.baseRevisionId,
     editGeneration: workingCopy.editGeneration + 1,
     bodyMarkdown: workingCopy.bodyMarkdown,
-    sources: workingCopy.sources,
   });
   if (save.status !== "SAVED" || workingCopy.noteId === activeNoteIds.get(backend)) return;
   await backend.checkpointWorkingCopy({

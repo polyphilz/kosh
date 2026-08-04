@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     media, passages,
     tidbits::{self, PreparedRevision},
-    DatabaseError, Result, SourceDraft, Tidbit,
+    DatabaseError, Result, Tidbit,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -15,8 +15,6 @@ pub struct SaveWorkingCopyInput {
     pub base_revision_id: Option<String>,
     pub edit_generation: i64,
     pub body_markdown: String,
-    #[serde(default)]
-    pub sources: Vec<SourceDraft>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -44,7 +42,6 @@ pub struct WorkingCopy {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub body_markdown: String,
-    pub sources: Vec<SourceDraft>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -90,7 +87,6 @@ pub(crate) struct CheckpointWorkingCopyWrite {
     pub input: CheckpointWorkingCopyInput,
     pub now_ms: i64,
     pub revision_id: String,
-    pub source_ids: Vec<String>,
 }
 
 pub(super) fn save(
@@ -203,24 +199,6 @@ pub(super) fn save(
         write.input.note_id.clone()
     };
 
-    transaction.execute(
-        "DELETE FROM draft_source WHERE draft_id = ?1",
-        params![&draft_id],
-    )?;
-    for (position, source) in write.input.sources.iter().enumerate() {
-        transaction.execute(
-            "INSERT INTO draft_source(draft_id, position, label, url)
-             VALUES(?1, ?2, ?3, ?4)",
-            params![
-                &draft_id,
-                i64::try_from(position).map_err(|_| DatabaseError::InvalidInput(
-                    "too many working-copy sources".into()
-                ))?,
-                &source.label,
-                &source.url,
-            ],
-        )?;
-    }
     let saved_at_ms = transaction.query_row(
         "SELECT updated_at FROM draft WHERE id = ?1",
         params![&draft_id],
@@ -327,12 +305,8 @@ pub(super) fn checkpoint(
             "an ephemeral note must contain authored text or media before checkpoint".into(),
         ));
     }
-    let prepared = tidbits::prepare_revision_with_empty(
-        working_copy.body_markdown.clone(),
-        working_copy.sources.clone(),
-        allow_empty_body,
-    )?;
-    tidbits::validate_source_ids(&write.source_ids, prepared.sources.len())?;
+    let prepared =
+        tidbits::prepare_revision_with_empty(working_copy.body_markdown.clone(), allow_empty_body)?;
     if let Some(base_revision_id) = working_copy.base_revision_id.as_deref() {
         checkpoint_existing(
             &transaction,
@@ -386,7 +360,6 @@ fn checkpoint_new(
         1,
         write.now_ms,
         prepared,
-        &write.source_ids,
     )?;
     media::link_revision_attachments(
         transaction,
@@ -437,7 +410,6 @@ fn checkpoint_existing(
         revision_number,
         updated_at_ms,
         prepared,
-        &write.source_ids,
     )?;
     media::link_revision_attachments(
         transaction,
@@ -566,35 +538,16 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
                     created_at_ms: row.get(5)?,
                     updated_at_ms: row.get(6)?,
                     body_markdown: row.get(7)?,
-                    sources: Vec::new(),
                 })
             },
         )
         .optional()?;
-    row.map(|mut working_copy| {
-        let mut statement = connection.prepare(
-            "SELECT label, url
-             FROM draft_source
-             WHERE draft_id = ?1
-             ORDER BY position",
-        )?;
-        working_copy.sources = statement
-            .query_map(params![&working_copy.id], |row| {
-                Ok(SourceDraft {
-                    label: row.get(0)?,
-                    url: row.get(1)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(working_copy)
-    })
-    .transpose()
+    Ok(row)
 }
 
 fn same_authored_state(existing: &WorkingCopy, input: &SaveWorkingCopyInput) -> bool {
     existing.base_revision_id == input.base_revision_id
         && existing.body_markdown == input.body_markdown
-        && existing.sources == input.sources
 }
 
 fn save_result(
@@ -654,11 +607,8 @@ mod tests {
     };
 
     const NOTE_ID: &str = "019f547b-6200-7000-8000-000000007001";
-    const DRAFT_ID_1: &str = "019f547b-6200-7000-8000-000000007002";
-    const DRAFT_ID_2: &str = "019f547b-6200-7000-8000-000000007003";
     const REVISION_ID_1: &str = "019f547b-6200-7000-8000-000000007004";
     const REVISION_ID_2: &str = "019f547b-6200-7000-8000-000000007005";
-    const SOURCE_ID_1: &str = "019f547b-6200-7000-8000-000000007006";
 
     struct TestLibrary {
         _root: tempfile::TempDir,
@@ -681,18 +631,6 @@ mod tests {
             generation: i64,
             body: &str,
             base_revision_id: Option<String>,
-            draft_id: &str,
-        ) -> WorkingCopySaveResult {
-            self.save_with_sources(generation, body, base_revision_id, draft_id, Vec::new())
-        }
-
-        fn save_with_sources(
-            &self,
-            generation: i64,
-            body: &str,
-            base_revision_id: Option<String>,
-            _draft_id: &str,
-            sources: Vec<SourceDraft>,
         ) -> WorkingCopySaveResult {
             self.database
                 .client()
@@ -702,7 +640,6 @@ mod tests {
                         base_revision_id,
                         edit_generation: generation,
                         body_markdown: body.into(),
-                        sources,
                     },
                     now_ms: 100 + generation,
                     media_limits: media::MediaLimits::default(),
@@ -712,15 +649,6 @@ mod tests {
         }
 
         fn checkpoint(&self, generation: i64, revision_id: &str) -> WorkingCopyCheckpointResult {
-            self.checkpoint_with_sources(generation, revision_id, Vec::new())
-        }
-
-        fn checkpoint_with_sources(
-            &self,
-            generation: i64,
-            revision_id: &str,
-            source_ids: Vec<String>,
-        ) -> WorkingCopyCheckpointResult {
             self.database
                 .client()
                 .checkpoint_working_copy(CheckpointWorkingCopyWrite {
@@ -730,7 +658,6 @@ mod tests {
                     },
                     now_ms: 200 + generation,
                     revision_id: revision_id.into(),
-                    source_ids,
                 })
                 .expect("checkpoint working copy")
         }
@@ -761,7 +688,7 @@ mod tests {
     #[test]
     fn blank_ephemeral_note_never_creates_durable_state() {
         let library = TestLibrary::new();
-        let result = library.save(1, "# \n\n- ", None, DRAFT_ID_1);
+        let result = library.save(1, "# \n\n- ", None);
         assert_eq!(result.status, WorkingCopySaveStatus::Cleared);
         assert_eq!(result.accepted_edit_generation, 1);
         assert_eq!(result.working_copy, None);
@@ -780,72 +707,6 @@ mod tests {
     }
 
     #[test]
-    fn source_only_ephemeral_working_copy_is_cleared() {
-        let library = TestLibrary::new();
-        let source = SourceDraft {
-            label: Some("Discarded source".into()),
-            url: Some("https://example.com/discarded".into()),
-        };
-        let result = library.save_with_sources(1, "", None, DRAFT_ID_1, vec![source]);
-
-        assert_eq!(result.status, WorkingCopySaveStatus::Cleared);
-        assert_eq!(result.working_copy, None);
-        assert_eq!(
-            library
-                .database
-                .client()
-                .load_working_copy(NOTE_ID.into())
-                .expect("load source-only working copy")
-                .map(|copy| copy.sources),
-            None
-        );
-        assert!(matches!(
-            library.database.client().load_tidbit(NOTE_ID.into()),
-            Err(DatabaseError::NotFound { .. })
-        ));
-    }
-
-    #[test]
-    fn clearing_the_body_removes_an_existing_source_only_ephemeral_copy() {
-        let library = TestLibrary::new();
-        let source = SourceDraft {
-            label: Some("Temporary source".into()),
-            url: Some("https://example.com/temporary".into()),
-        };
-        assert_eq!(
-            library
-                .save(1, "Temporary thought", None, DRAFT_ID_1)
-                .status,
-            WorkingCopySaveStatus::Saved
-        );
-        assert_eq!(
-            library
-                .save_with_sources(
-                    2,
-                    "Temporary thought",
-                    None,
-                    DRAFT_ID_2,
-                    vec![source.clone()],
-                )
-                .status,
-            WorkingCopySaveStatus::Saved
-        );
-
-        let cleared = library.save_with_sources(3, "", None, DRAFT_ID_2, vec![source]);
-
-        assert_eq!(cleared.status, WorkingCopySaveStatus::Cleared);
-        assert_eq!(cleared.working_copy, None);
-        assert_eq!(
-            library
-                .database
-                .client()
-                .load_working_copy(NOTE_ID.into())
-                .expect("load cleared working copy"),
-            None
-        );
-    }
-
-    #[test]
     fn empty_media_reservation_is_discarded_only_at_its_exact_generation() {
         let library = TestLibrary::new();
         let reservation = library
@@ -857,7 +718,6 @@ mod tests {
                     base_revision_id: None,
                     edit_generation: 1,
                     body_markdown: String::new(),
-                    sources: Vec::new(),
                 },
                 now_ms: 101,
                 media_limits: media::MediaLimits::default(),
@@ -880,7 +740,7 @@ mod tests {
             Some(NOTE_ID)
         );
 
-        library.save(2, "newer authored text", None, DRAFT_ID_2);
+        library.save(2, "newer authored text", None);
         assert!(!library
             .database
             .client()
@@ -943,7 +803,6 @@ mod tests {
                     base_revision_id: None,
                     edit_generation: 1,
                     body_markdown: String::new(),
-                    sources: Vec::new(),
                 },
                 now_ms: 101,
                 media_limits: media::MediaLimits::default(),
@@ -964,7 +823,7 @@ mod tests {
             )
             .expect("ingest note attachment");
         let body = format!("{{{{kosh:attachment:{}}}}}", attachment.id);
-        let saved = library.save(2, &body, None, DRAFT_ID_2);
+        let saved = library.save(2, &body, None);
         assert_eq!(saved.status, WorkingCopySaveStatus::Saved);
         let checkpoint = library.checkpoint(2, REVISION_ID_1);
         assert_eq!(checkpoint.status, WorkingCopyCheckpointStatus::Checkpointed);
@@ -993,9 +852,9 @@ mod tests {
     #[test]
     fn monotonically_newer_generation_wins_and_reuse_is_rejected() {
         let library = TestLibrary::new();
-        let newer = library.save(2, "newest exact text", None, DRAFT_ID_1);
+        let newer = library.save(2, "newest exact text", None);
         assert_eq!(newer.status, WorkingCopySaveStatus::Saved);
-        let stale = library.save(1, "older completion", None, DRAFT_ID_2);
+        let stale = library.save(1, "older completion", None);
         assert_eq!(stale.status, WorkingCopySaveStatus::Stale);
         assert_eq!(stale.accepted_edit_generation, 2);
         assert_eq!(
@@ -1014,7 +873,6 @@ mod tests {
                     base_revision_id: None,
                     edit_generation: 2,
                     body_markdown: "different bytes".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 103,
                 media_limits: media::MediaLimits::default(),
@@ -1026,17 +884,8 @@ mod tests {
     #[test]
     fn exact_checkpoint_creates_titleless_revision_and_consumes_copy_atomically() {
         let library = TestLibrary::new();
-        library.save_with_sources(
-            1,
-            "Remember the blue hour.",
-            None,
-            DRAFT_ID_1,
-            vec![SourceDraft {
-                label: Some(" Reference ".into()),
-                url: Some("HTTPS://Example.COM:443/reference#fragment".into()),
-            }],
-        );
-        let result = library.checkpoint_with_sources(1, REVISION_ID_1, vec![SOURCE_ID_1.into()]);
+        library.save(1, "Remember the blue hour.", None);
+        let result = library.checkpoint(1, REVISION_ID_1);
         assert_eq!(result.status, WorkingCopyCheckpointStatus::Checkpointed);
         assert_eq!(result.consumed_edit_generation, Some(1));
         let note = result.note.expect("checkpointed note");
@@ -1044,13 +893,6 @@ mod tests {
         assert_eq!(note.current_revision_id, REVISION_ID_1);
         assert_eq!(note.revision_number, 1);
         assert_eq!(note.body_markdown, "Remember the blue hour.");
-        assert_eq!(note.sources.len(), 1);
-        assert_eq!(note.sources[0].id, SOURCE_ID_1);
-        assert_eq!(note.sources[0].label.as_deref(), Some("Reference"));
-        assert_eq!(
-            note.sources[0].url.as_deref(),
-            Some("https://example.com/reference")
-        );
         assert_eq!(
             library
                 .database
@@ -1064,8 +906,8 @@ mod tests {
     #[test]
     fn stale_checkpoint_preserves_the_newest_working_copy() {
         let library = TestLibrary::new();
-        library.save(1, "first", None, DRAFT_ID_1);
-        library.save(2, "second", None, DRAFT_ID_2);
+        library.save(1, "first", None);
+        library.save(2, "second", None);
         let result = library.checkpoint(1, REVISION_ID_1);
         assert_eq!(result.status, WorkingCopyCheckpointStatus::Stale);
         assert_eq!(result.note, None);
@@ -1084,16 +926,16 @@ mod tests {
     #[test]
     fn continuous_typing_creates_bounded_revisions_and_empty_edits_do_not_delete() {
         let library = TestLibrary::new();
-        library.save(1, "a", None, DRAFT_ID_1);
-        library.save(2, "ab", None, DRAFT_ID_2);
-        library.save(3, "abc", None, DRAFT_ID_2);
+        library.save(1, "a", None);
+        library.save(2, "ab", None);
+        library.save(3, "abc", None);
         let first = library
             .checkpoint(3, REVISION_ID_1)
             .note
             .expect("first checkpoint");
         assert_eq!(first.revision_number, 1);
 
-        library.save(4, "", Some(first.current_revision_id.clone()), DRAFT_ID_2);
+        library.save(4, "", Some(first.current_revision_id.clone()));
         let cleared = library
             .checkpoint(4, REVISION_ID_2)
             .note
@@ -1130,7 +972,6 @@ mod tests {
                     base_revision_id: None,
                     edit_generation: 7,
                     body_markdown: "recoverable saffron observation".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 300,
                 media_limits: media::MediaLimits::default(),
@@ -1169,7 +1010,6 @@ mod tests {
                 },
                 now_ms: 301,
                 revision_id: REVISION_ID_1.into(),
-                source_ids: Vec::new(),
             })
             .expect("checkpoint recovered copy");
         let response = reopened
@@ -1204,12 +1044,10 @@ mod tests {
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
                     body_markdown: "existing body".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 400,
                 tidbit_id: NOTE_ID.into(),
                 revision_id: REVISION_ID_1.into(),
-                source_ids: Vec::new(),
             })
             .expect("existing note");
         let stale = library
@@ -1221,7 +1059,6 @@ mod tests {
                     base_revision_id: Some(REVISION_ID_2.into()),
                     edit_generation: 1,
                     body_markdown: "unsafe overwrite".into(),
-                    sources: Vec::new(),
                 },
                 now_ms: 401,
                 media_limits: media::MediaLimits::default(),
@@ -1230,7 +1067,7 @@ mod tests {
         assert!(matches!(stale, Err(DatabaseError::StaleTidbit { .. })));
         assert_eq!(
             library
-                .save(1, "safe edit", Some(note.current_revision_id), DRAFT_ID_1,)
+                .save(1, "safe edit", Some(note.current_revision_id))
                 .status,
             WorkingCopySaveStatus::Saved
         );

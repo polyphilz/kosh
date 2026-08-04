@@ -50,10 +50,12 @@ try {
   const mediaDatabase = join(dataDirectory, "media.sqlite3");
   verifyDatabasePair(mainDatabase, mediaDatabase);
   assertEqual(sqlite(mainDatabase, "SELECT count(*) FROM tidbit;"), "1", "fresh canary count");
-  assertEqual(
-    sqlite(mainDatabase, "SELECT normalized_url FROM source WHERE normalized_url IS NOT NULL;"),
-    freshReceipt.canary.sourceUrl,
-    "fresh canary source URL",
+  assert(
+    sqlite(
+      mainDatabase,
+      "SELECT body_markdown FROM tidbit_revision ORDER BY created_at DESC LIMIT 1;",
+    ).includes(freshReceipt.canary.canaryUrl),
+    "fresh canary note omits its inline URL",
   );
 
   const restartReceiptPath = join(ownedRoot, "restart-receipt.json");
@@ -201,17 +203,17 @@ function verifyReceipt(receipt, expectation, captureExpected) {
       `${webview.surface} revision`,
     );
     assertEqual(
-      webview.canary.sourceUrl,
-      receipt.canary.sourceUrl,
-      `${webview.surface} source URL`,
+      webview.canary.canaryUrl,
+      receipt.canary.canaryUrl,
+      `${webview.surface} inline URL`,
     );
   }
   assertEqual(receipt.canaryPreexisting, !captureExpected, "preexisting canary state");
   assertEqual(receipt.canaryCreated, captureExpected, "created canary state");
   assertEqual(
-    receipt.canary.sourceUrl,
+    receipt.canary.canaryUrl,
     "https://example.invalid/kosh-progressive-operability",
-    "canary source URL",
+    "canary inline URL",
   );
 }
 

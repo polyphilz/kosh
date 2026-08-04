@@ -69,7 +69,7 @@ jq -e \
         and .canary.passageId == $launch.canary.passageId
         and .canary.resolvedPassageId == $launch.canary.passageId
         and .canary.revisionId == $launch.canary.revisionId
-        and .canary.sourceUrl == $launch.canary.sourceUrl
+        and .canary.canaryUrl == $launch.canary.canaryUrl
       )
       and ([$launch.webviews[].probeRequestId] | unique | length) == 1
       and
@@ -79,7 +79,7 @@ jq -e \
       and $launch.diagnostics.mediaForeignKeys == true
       and ($launch.diagnostics.migrationHeads.main | type) == "number"
       and ($launch.diagnostics.migrationHeads.media | type) == "number"
-      and $launch.canary.sourceUrl == "https://example.invalid/kosh-progressive-operability"
+      and $launch.canary.canaryUrl == "https://example.invalid/kosh-progressive-operability"
     )
   ' \
   "$receipt" >/dev/null || fail "receipt contents do not satisfy the fresh/restart contract"

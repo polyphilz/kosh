@@ -738,8 +738,7 @@ mod tests {
     use crate::database::{
         connection::FileState,
         media::{CanonicalImage, IngestAttachmentMetadata, IngestImageWrite, StagedAttachment},
-        AttachmentIngestInput, LexicalSearchMode, MediaLimits, SearchPassagesInput, SourceDraft,
-        TidbitDraft,
+        AttachmentIngestInput, LexicalSearchMode, MediaLimits, SearchPassagesInput, TidbitDraft,
     };
     use std::io::{Cursor, Seek, SeekFrom};
 
@@ -765,16 +764,12 @@ mod tests {
         let tidbit = client
             .create_tidbit_with_ids(
                 TidbitDraft {
-                    body_markdown: "Exact safety snapshot evidence.".into(),
-                    sources: vec![SourceDraft {
-                        label: Some("Snapshot source".into()),
-                        url: Some("https://example.invalid/snapshot".into()),
-                    }],
+                    body_markdown:
+                        "Exact safety snapshot evidence. https://example.invalid/snapshot".into(),
                 },
                 10,
                 Uuid::now_v7().to_string(),
                 Uuid::now_v7().to_string(),
-                vec![Uuid::now_v7().to_string()],
             )
             .expect("create evidence");
         let expected_passage = client
@@ -813,10 +808,9 @@ mod tests {
             citation.tidbit.expect("authored citation").revision_id,
             tidbit.current_revision_id
         );
-        assert_eq!(
-            citation.sources[0].url.as_deref(),
-            Some("https://example.invalid/snapshot")
-        );
+        assert!(citation
+            .excerpt
+            .contains("https://example.invalid/snapshot"));
         restored_client
             .full_integrity_check()
             .expect("restored integrity");
@@ -1106,7 +1100,7 @@ mod tests {
         let draft_id = Uuid::now_v7().to_string();
         database
             .client()
-            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), Vec::new(), 1)
+            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), 1)
             .expect("attachment working copy");
         let bytes = b"content-addressed evidence";
         database
@@ -1161,7 +1155,7 @@ mod tests {
         let draft_id = Uuid::now_v7().to_string();
         database
             .client()
-            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), Vec::new(), 1)
+            .save_working_copy_for_test(draft_id.clone(), None, 1, String::new(), 1)
             .expect("image working copy");
         let limits = MediaLimits::default();
         let staged = StagedAttachment::from_reader(

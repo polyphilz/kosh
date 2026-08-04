@@ -51,11 +51,7 @@ fn note_autosave_checkpoint_and_search_cross_the_typed_ipc_boundary() {
                 "noteId": note_id,
                 "baseRevisionId": null,
                 "editGeneration": 1,
-                "bodyMarkdown": "# IPC thought\n\nExact body.",
-                "sources": [{
-                    "label": "Reference",
-                    "url": "https://example.com/page#fragment"
-                }]
+                "bodyMarkdown": "# IPC thought\n\nExact body. https://example.com/page"
             }
         }),
     )
@@ -81,10 +77,7 @@ fn note_autosave_checkpoint_and_search_cross_the_typed_ipc_boundary() {
         .deserialize::<Tidbit>()
         .expect("loaded tidbit payload");
     assert_eq!(created.display_title, "IPC thought");
-    assert_eq!(
-        created.sources[0].url.as_deref(),
-        Some("https://example.com/page")
-    );
+    assert!(created.body_markdown.contains("https://example.com/page"));
 
     let loaded = invoke(
         &window,

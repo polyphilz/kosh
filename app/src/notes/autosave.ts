@@ -2,7 +2,6 @@ import type {
   CheckpointWorkingCopyInput,
   DiscardWorkingCopyInput,
   SaveWorkingCopyInput,
-  SourceDraft,
   TidbitRecord,
   WorkingCopyCheckpointResult,
   WorkingCopyRecord,
@@ -30,7 +29,6 @@ export interface NoteAutosaveSnapshot {
   durableGeneration: number;
   checkpointedGeneration: number;
   bodyMarkdown: string;
-  sources: SourceDraft[];
   phase: NoteSavePhase;
   error: string | null;
 }
@@ -80,7 +78,7 @@ export class NoteAutosaveCoordinator {
 
   constructor(
     gateway: NoteWorkingCopyGateway,
-    initial: Pick<NoteAutosaveSnapshot, "noteId" | "baseRevisionId" | "bodyMarkdown" | "sources"> &
+    initial: Pick<NoteAutosaveSnapshot, "noteId" | "baseRevisionId" | "bodyMarkdown"> &
       Partial<
         Pick<
           NoteAutosaveSnapshot,
@@ -107,7 +105,6 @@ export class NoteAutosaveCoordinator {
       durableGeneration,
       checkpointedGeneration,
       bodyMarkdown: initial.bodyMarkdown,
-      sources: cloneSources(initial.sources),
       phase: phaseForInitialState(initial.baseRevisionId, editGeneration),
       error: null,
     };
@@ -124,7 +121,6 @@ export class NoteAutosaveCoordinator {
         noteId: options.noteId ?? createUuidV7(),
         baseRevisionId: null,
         bodyMarkdown: "",
-        sources: [],
       },
       options,
       null,
@@ -144,7 +140,6 @@ export class NoteAutosaveCoordinator {
         editGeneration: workingCopy.editGeneration,
         durableGeneration: workingCopy.editGeneration,
         bodyMarkdown: workingCopy.bodyMarkdown,
-        sources: workingCopy.sources,
       },
       options,
       workingCopy.id,
@@ -161,16 +156,13 @@ export class NoteAutosaveCoordinator {
     return () => this.listeners.delete(listener);
   };
 
-  update(bodyMarkdown: string, sources: SourceDraft[] = this.state.sources): void {
+  update(bodyMarkdown: string): void {
     if (this.disposed) throw new Error("the note autosave coordinator is disposed");
-    if (bodyMarkdown === this.state.bodyMarkdown && sourcesEqual(sources, this.state.sources)) {
-      return;
-    }
+    if (bodyMarkdown === this.state.bodyMarkdown) return;
     const editGeneration = nextGeneration(this.state.editGeneration);
     this.publish({
       ...this.state,
       bodyMarkdown,
-      sources: cloneSources(sources),
       editGeneration,
       phase: "DIRTY",
       error: null,
@@ -218,7 +210,6 @@ export class NoteAutosaveCoordinator {
           baseRevisionId: target.baseRevisionId,
           editGeneration: target.editGeneration,
           bodyMarkdown: target.bodyMarkdown,
-          sources: cloneSources(target.sources),
         });
       } catch (reason) {
         this.fail(reason);
@@ -405,7 +396,6 @@ export class NoteAutosaveCoordinator {
         baseRevisionId: target.baseRevisionId,
         editGeneration: target.editGeneration,
         bodyMarkdown: target.bodyMarkdown,
-        sources: cloneSources(target.sources),
       });
     } catch (reason) {
       this.fail(reason);
@@ -512,7 +502,6 @@ interface AuthoredSnapshot {
   baseRevisionId: string | null;
   editGeneration: number;
   bodyMarkdown: string;
-  sources: SourceDraft[];
 }
 
 function authoredSnapshot(state: NoteAutosaveSnapshot): AuthoredSnapshot {
@@ -521,7 +510,6 @@ function authoredSnapshot(state: NoteAutosaveSnapshot): AuthoredSnapshot {
     baseRevisionId: state.baseRevisionId,
     editGeneration: state.editGeneration,
     bodyMarkdown: state.bodyMarkdown,
-    sources: cloneSources(state.sources),
   };
 }
 
@@ -542,19 +530,6 @@ function nextGeneration(generation: number): number {
     throw new Error("note edit generation overflow");
   }
   return generation + 1;
-}
-
-function cloneSources(sources: readonly SourceDraft[]): SourceDraft[] {
-  return sources.map((source) => ({ ...source }));
-}
-
-function sourcesEqual(left: readonly SourceDraft[], right: readonly SourceDraft[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (source, index) => source.label === right[index]?.label && source.url === right[index]?.url,
-    )
-  );
 }
 
 export function createUuidV7(

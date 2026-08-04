@@ -10,7 +10,7 @@ import { useBackend } from "../backend/context";
 import { Dialog } from "../components/Dialog";
 import { checkpointBeforeSearch } from "./checkpoint";
 import { HighlightedText } from "./HighlightedText";
-import { citationLocation, sourceDisplay } from "./presentation";
+import { citationLocation } from "./presentation";
 
 const SEARCH_DEBOUNCE_MS = 160;
 const SEARCH_RESULT_LIMIT = 24;
@@ -147,7 +147,7 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
           maxLength={512}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onInputKeyDown}
-          placeholder="Search a thought, phrase, source, or file…"
+          placeholder="Search a thought, phrase, link, or file…"
           role="combobox"
           spellCheck={false}
           type="search"
@@ -178,7 +178,7 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
         ) : !searching && response && results.length === 0 ? (
           <div className="search-overlay__state">
             <strong>No passages found</strong>
-            <span>Try fewer words, a source domain, filename, or remembered phrase.</span>
+            <span>Try fewer words, a pasted link, filename, or remembered phrase.</span>
           </div>
         ) : (
           <div aria-label="Matching passages" id={listboxId} role="listbox">
@@ -213,7 +213,6 @@ function SearchOverlayResult({
   result: PassageSearchResult;
 }) {
   const attachment = result.citation.attachment;
-  const sources = result.citation.sources.slice(0, 2);
   return (
     <button
       aria-selected={active}
@@ -244,7 +243,6 @@ function SearchOverlayResult({
       </span>
       <span className="search-overlay-result__meta">
         <span>{citationLocation(result.citation)}</span>
-        {sources.length > 0 && <span>{sources.map(sourceDisplay).join(" · ")}</span>}
       </span>
     </button>
   );

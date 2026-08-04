@@ -369,10 +369,6 @@ pub(super) enum WriterMessage {
         id: String,
         reply: SyncSender<Result<Tidbit>>,
     },
-    LoadSourceUrl {
-        source_id: String,
-        reply: SyncSender<Result<String>>,
-    },
     DeleteTidbit {
         input: DeleteTidbitInput,
         now_ms: i64,
@@ -1444,14 +1440,12 @@ impl DatabaseClient {
         now_ms: i64,
         tidbit_id: String,
         revision_id: String,
-        source_ids: Vec<String>,
     ) -> Result<Tidbit> {
         self.create_tidbit(CreateTidbitWrite {
             input,
             now_ms,
             tidbit_id,
             revision_id,
-            source_ids,
         })
     }
 
@@ -1459,16 +1453,6 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::LoadTidbit { id, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn load_source_url(&self, source_id: String) -> Result<String> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::LoadSourceUrl { source_id, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
@@ -1655,7 +1639,6 @@ impl DatabaseClient {
         base_revision_id: Option<String>,
         edit_generation: i64,
         body_markdown: String,
-        sources: Vec<super::SourceDraft>,
         now_ms: i64,
     ) -> Result<WorkingCopy> {
         self.save_working_copy(SaveWorkingCopyWrite {
@@ -1664,7 +1647,6 @@ impl DatabaseClient {
                 base_revision_id,
                 edit_generation,
                 body_markdown,
-                sources,
             },
             now_ms,
             media_limits: super::MediaLimits::default(),
@@ -1681,7 +1663,6 @@ impl DatabaseClient {
         expected_edit_generation: i64,
         now_ms: i64,
         revision_id: String,
-        source_ids: Vec<String>,
     ) -> Result<WorkingCopyCheckpointResult> {
         self.checkpoint_working_copy(CheckpointWorkingCopyWrite {
             input: super::CheckpointWorkingCopyInput {
@@ -1690,7 +1671,6 @@ impl DatabaseClient {
             },
             now_ms,
             revision_id,
-            source_ids,
         })
     }
 
