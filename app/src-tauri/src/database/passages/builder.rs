@@ -44,6 +44,7 @@ pub(crate) struct BuiltPassage {
 enum BlockKind {
     Code,
     DisplayMath,
+    Empty,
     Heading(u8),
     Html,
     Prose,
@@ -93,6 +94,7 @@ pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
                 flush_group(&mut pending, &mut passages);
                 passages.push(single_block_passage(block));
             }
+            BlockKind::Empty => pending.push(block),
             BlockKind::Prose if char_count(&block.content) > MAX_PROSE_SEGMENT_CHARS => {
                 flush_group(&mut pending, &mut passages);
                 passages.extend(split_prose_block(block));
@@ -326,7 +328,13 @@ fn append_event_content(capture: &mut Capture, event: Event<'_>) {
             capture.content.push_str(&value);
             capture.content.push_str("$$");
         }
-        Event::Html(value) => capture.content.push_str(&value),
+        Event::Html(value)
+            if capture.kind == BlockKind::Html
+                || !crate::database::markdown::is_kosh_structure_marker(&value) =>
+        {
+            capture.content.push_str(&value);
+        }
+        Event::Html(_) => {}
         Event::InlineHtml(value) => append_inline_html(capture, &value),
         Event::FootnoteReference(value) => {
             capture.content.push_str("[^");
@@ -465,10 +473,22 @@ fn finish_capture(
     blocks: &mut Vec<SourceBlock>,
 ) {
     let content = normalize_block_content(&capture.content, capture.kind);
-    if content.is_empty()
-        || (capture.kind == BlockKind::Html
-            && crate::database::markdown::is_kosh_structure_marker(&content))
+    if capture.kind == BlockKind::Html
+        && crate::database::markdown::is_kosh_structure_marker(&content)
     {
+        if content.trim() == crate::database::markdown::EMPTY_BLOCK_MARKER {
+            push_standalone_block(
+                BlockKind::Empty,
+                String::new(),
+                capture.source_start_byte,
+                source_end_byte,
+                headings,
+                blocks,
+            );
+        }
+        return;
+    }
+    if content.is_empty() {
         return;
     }
     let heading_context = current_heading_context(headings);
@@ -558,12 +578,17 @@ fn flush_group(pending: &mut Vec<SourceBlock>, passages: &mut Vec<BuiltPassage>)
     }
     let first = pending.first().expect("nonempty passage group");
     let last = pending.last().expect("nonempty passage group");
+    let content = pending
+        .iter()
+        .filter_map(|block| (!block.content.is_empty()).then_some(block.content.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if content.is_empty() {
+        pending.clear();
+        return;
+    }
     passages.push(finish_passage(
-        pending
-            .iter()
-            .map(|block| block.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
+        content,
         first.heading_context.clone(),
         MarkdownLocator {
             start: first.ordinal,
@@ -1115,7 +1140,53 @@ mod tests {
         assert!(content.contains("Nested evidence."));
         assert!(content.contains("After."));
         assert!(!content.contains("kosh:"));
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 3);
         assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn empty_blocks_count_toward_grouped_passage_locators() {
+        let markdown = ["Before.", "", "<!-- kosh:block:empty -->", "", "After."].join("\n");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].content, "Before.\n\nAfter.");
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 2);
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn structure_markers_nested_in_lists_are_not_searchable() {
+        let markdown = [
+            "- Parent",
+            "",
+            "  <!-- kosh:children:start -->",
+            "",
+            "  Nested evidence.",
+            "",
+            "  <!-- kosh:children:end -->",
+        ]
+        .join("\n");
+        let content = build_markdown_passages(&markdown)
+            .into_iter()
+            .map(|passage| passage.content)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(content.contains("Parent"));
+        assert!(content.contains("Nested evidence."));
+        assert!(!content.contains("kosh:"));
+    }
+
+    #[test]
+    fn fenced_code_preserves_reserved_structure_marker_text() {
+        let markdown = "```text\n<!-- kosh:block:empty -->\n```";
+        let passages = build_markdown_passages(markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].content, "<!-- kosh:block:empty -->");
     }
 
     #[test]
