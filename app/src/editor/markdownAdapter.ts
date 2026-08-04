@@ -2,6 +2,7 @@ import type {
   BlockContent,
   Content,
   DefinitionContent,
+  Html,
   List,
   ListItem,
   PhrasingContent,
@@ -17,6 +18,12 @@ import {
   serializeKoshPdfToken,
 } from "../markdown/mediaTokens";
 import { externalHttpUrl } from "../markdown/urlPolicy";
+import {
+  CHILDREN_END_MARKER,
+  CHILDREN_START_MARKER,
+  EMPTY_BLOCK_MARKER,
+  koshStructureMarker,
+} from "../markdown/structureMarkers";
 import type { KoshBlockNoteBlock, KoshBlockNotePartialBlock } from "./schema";
 
 type AdapterBlock = {
@@ -27,6 +34,8 @@ type AdapterBlock = {
 };
 
 type TextStyles = Partial<Record<"bold" | "code" | "italic" | "strike", true>>;
+type MarkdownParseNode = RootContent;
+type MarkdownSerializedNode = BlockContent | DefinitionContent;
 type AdapterInline =
   | { styles: TextStyles; text: string; type: "text" }
   | {
@@ -38,7 +47,7 @@ type AdapterInline =
 
 export function markdownToKoshBlocks(source: string): KoshBlockNotePartialBlock[] {
   const tree = parseKoshMarkdownAst(source);
-  const blocks = tree.children.flatMap((node) => blockFromMarkdown(node, source));
+  const blocks = blocksFromMarkdown(tree.children, source);
   return blocks.length > 0 ? blocks : [{ type: "paragraph" }];
 }
 
@@ -47,11 +56,27 @@ export function koshBlocksToMarkdown(
 ): string {
   const tree: Root = {
     type: "root",
-    children: blocksToMarkdown(blocks as readonly AdapterBlock[]),
+    children: topLevelBlocksToMarkdown(blocks as readonly AdapterBlock[]),
   };
   return serializeKoshMarkdownAst(tree, {
     distinctEmphasisMarker: needsDistinctEmphasisMarker(blocks as readonly AdapterBlock[]),
   });
+}
+
+function topLevelBlocksToMarkdown(blocks: readonly AdapterBlock[]): MarkdownSerializedNode[] {
+  let start = 0;
+  let end = blocks.length;
+  while (start < end && isEmptyCursorParagraph(blocks[start]!)) start += 1;
+  while (end > start && isEmptyCursorParagraph(blocks[end - 1]!)) end -= 1;
+  return blocksToMarkdown(blocks.slice(start, end));
+}
+
+function isEmptyCursorParagraph(block: AdapterBlock): boolean {
+  return (
+    (block.type === undefined || block.type === "paragraph") &&
+    inlineToMarkdown(block.content).length === 0 &&
+    (block.children?.length ?? 0) === 0
+  );
 }
 
 function needsDistinctEmphasisMarker(blocks: readonly AdapterBlock[]): boolean {
@@ -131,6 +156,61 @@ function blockFromMarkdown(node: RootContent, source: string): KoshBlockNotePart
   }
 }
 
+function blocksFromMarkdown(
+  nodes: readonly MarkdownParseNode[],
+  source: string,
+): KoshBlockNotePartialBlock[] {
+  const cursor = { index: 0 };
+  const blocks = readMarkdownBlocks(nodes, source, cursor, false);
+  if (cursor.index !== nodes.length) throw unsupportedStructureMarker();
+  return blocks;
+}
+
+function readMarkdownBlocks(
+  nodes: readonly MarkdownParseNode[],
+  source: string,
+  cursor: { index: number },
+  expectsEndMarker: boolean,
+): KoshBlockNotePartialBlock[] {
+  const blocks: KoshBlockNotePartialBlock[] = [];
+  while (cursor.index < nodes.length) {
+    const marker = structureMarker(nodes[cursor.index]!);
+    if (marker === CHILDREN_END_MARKER) {
+      if (!expectsEndMarker) throw unsupportedStructureMarker();
+      cursor.index += 1;
+      return blocks;
+    }
+    if (marker === CHILDREN_START_MARKER) throw unsupportedStructureMarker();
+
+    const converted =
+      marker === EMPTY_BLOCK_MARKER
+        ? [{ type: "paragraph" } satisfies KoshBlockNotePartialBlock]
+        : blockFromMarkdown(nodes[cursor.index]! as RootContent, source);
+    cursor.index += 1;
+
+    if (structureMarker(nodes[cursor.index]) === CHILDREN_START_MARKER) {
+      if (converted.length !== 1) throw unsupportedStructureMarker();
+      cursor.index += 1;
+      converted[0] = {
+        ...converted[0]!,
+        children: readMarkdownBlocks(nodes, source, cursor, true),
+      };
+    }
+    blocks.push(...converted);
+  }
+  if (expectsEndMarker) throw unsupportedStructureMarker();
+  return blocks;
+}
+
+function structureMarker(node: MarkdownParseNode | undefined): string | null {
+  if (node?.type !== "html") return null;
+  return koshStructureMarker(node.value);
+}
+
+function unsupportedStructureMarker(): Error {
+  return new Error("Unsupported Markdown block: html");
+}
+
 function containsTitledLink(node: RootContent): boolean {
   const candidate = node as RootContent & {
     children?: RootContent[];
@@ -148,11 +228,16 @@ function canConvertList(list: List): boolean {
   return list.children.every((item) => {
     if (item.checked !== null && item.checked !== undefined) return false;
     const [first, ...rest] = item.children;
-    return (
-      first?.type === "paragraph" &&
-      rest.every((child) => child.type === "list" && canConvertList(child))
-    );
+    return first?.type === "paragraph" && canConvertListItemChildren(rest);
   });
+}
+
+function canConvertListItemChildren(children: readonly MarkdownParseNode[]): boolean {
+  if (children.length === 0) return true;
+  if (structureMarker(children[0]) === CHILDREN_START_MARKER) {
+    return structureMarker(children.at(-1)) === CHILDREN_END_MARKER;
+  }
+  return children.every((child) => child.type === "list" && canConvertList(child));
 }
 
 function listItemFromMarkdown(
@@ -165,11 +250,25 @@ function listItemFromMarkdown(
   return {
     type: ordered ? "numberedListItem" : "bulletListItem",
     content: inlineFromMarkdown(paragraph.children, source),
-    children: nestedLists.flatMap((list) => {
-      if (list.type !== "list") return [];
-      return list.children.map((child) => listItemFromMarkdown(child, list.ordered, source));
-    }),
+    children: listItemChildrenFromMarkdown(nestedLists, source),
   };
+}
+
+function listItemChildrenFromMarkdown(
+  nodes: readonly MarkdownParseNode[],
+  source: string,
+): KoshBlockNotePartialBlock[] {
+  if (nodes.length === 0) return [];
+  if (structureMarker(nodes[0]) === CHILDREN_START_MARKER) {
+    const cursor = { index: 1 };
+    const children = readMarkdownBlocks(nodes, source, cursor, true);
+    if (cursor.index !== nodes.length) throw unsupportedStructureMarker();
+    return children;
+  }
+  return nodes.flatMap((node) => {
+    if (node.type !== "list") throw unsupportedStructureMarker();
+    return node.children.map((child) => listItemFromMarkdown(child, node.ordered, source));
+  });
 }
 
 function inlineFromMarkdown(
@@ -232,10 +331,8 @@ function unsupportedMarkdown(node: RootContent): never {
   throw new Error(`Unsupported Markdown block: ${node.type}`);
 }
 
-function blocksToMarkdown(
-  blocks: readonly AdapterBlock[],
-): Array<BlockContent | DefinitionContent> {
-  const children: Array<BlockContent | DefinitionContent> = [];
+function blocksToMarkdown(blocks: readonly AdapterBlock[]): MarkdownSerializedNode[] {
+  const children: MarkdownSerializedNode[] = [];
   for (let index = 0; index < blocks.length;) {
     const block = blocks[index]!;
     if (isListBlock(block)) {
@@ -263,9 +360,9 @@ function blocksToMarkdown(
 function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionContent> {
   switch (block.type ?? "paragraph") {
     case "paragraph":
-      return withFlattenedChildren(paragraphToMarkdown(block.content), block);
+      return withStructuredChildren(paragraphToMarkdown(block.content), block);
     case "heading":
-      return withFlattenedChildren(
+      return withStructuredChildren(
         [
           {
             type: "heading",
@@ -276,7 +373,7 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
         block,
       );
     case "codeBlock":
-      return withFlattenedChildren(
+      return withStructuredChildren(
         [
           {
             type: "code",
@@ -288,12 +385,12 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
         block,
       );
     case "displayMath":
-      return withFlattenedChildren(
+      return withStructuredChildren(
         [{ type: "math", value: stringProp(block.props?.latex) } as BlockContent],
         block,
       );
     case "koshImage":
-      return withFlattenedChildren(
+      return withStructuredChildren(
         [
           mediaParagraph(
             serializeKoshImageToken({
@@ -307,12 +404,12 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
         block,
       );
     case "koshPdf":
-      return withFlattenedChildren(
+      return withStructuredChildren(
         [mediaParagraph(serializeKoshPdfToken(stringProp(block.props?.attachmentId)))],
         block,
       );
     case "koshFileAttachment":
-      return withFlattenedChildren(
+      return withStructuredChildren(
         [
           mediaParagraph(
             serializeKoshAttachmentToken(
@@ -331,28 +428,49 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
   }
 }
 
-function withFlattenedChildren(
-  nodes: Array<BlockContent | DefinitionContent>,
+function withStructuredChildren(
+  nodes: MarkdownSerializedNode[],
   block: AdapterBlock,
-): Array<BlockContent | DefinitionContent> {
-  return [...nodes, ...blocksToMarkdown(block.children ?? [])];
+): MarkdownSerializedNode[] {
+  const children = blocksToMarkdown(block.children ?? []);
+  return children.length > 0
+    ? [
+        ...nodes,
+        structureHtml(CHILDREN_START_MARKER),
+        ...children,
+        structureHtml(CHILDREN_END_MARKER),
+      ]
+    : nodes;
 }
 
 function paragraphToMarkdown(content: unknown): BlockContent[] {
   const children = inlineToMarkdown(content);
-  return children.length > 0 ? [{ type: "paragraph", children }] : [];
+  return children.length > 0
+    ? [{ type: "paragraph", children }]
+    : [structureHtml(EMPTY_BLOCK_MARKER)];
 }
 
 function listItemToMarkdown(block: AdapterBlock): ListItem {
+  const childBlocks = block.children ?? [];
+  const children = blocksToMarkdown(childBlocks).map(definitionToNestedBlock);
+  const nestedChildren = childBlocks.length > 0 && childBlocks.every(isListBlock);
   return {
     type: "listItem",
     checked: null,
     spread: false,
     children: [
       { type: "paragraph", children: inlineToMarkdown(block.content) },
-      ...blocksToMarkdown(block.children ?? []).map(definitionToNestedBlock),
+      ...(nestedChildren
+        ? children
+        : children.length > 0
+          ? [structureHtml(CHILDREN_START_MARKER), ...children, structureHtml(CHILDREN_END_MARKER)]
+          : []),
     ],
   };
+}
+
+function structureHtml(value: string): Html {
+  return { type: "html", value };
 }
 
 function definitionToNestedBlock(node: BlockContent | DefinitionContent): BlockContent {

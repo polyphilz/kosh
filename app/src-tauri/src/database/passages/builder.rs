@@ -2,7 +2,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v2";
+pub(super) const CONSTRUCTION_VERSION: &str = "markdown-blocks-v3";
 
 const TARGET_PASSAGE_CHARS: usize = 700;
 const MAX_PROSE_SEGMENT_CHARS: usize = 1_000;
@@ -44,6 +44,7 @@ pub(crate) struct BuiltPassage {
 enum BlockKind {
     Code,
     DisplayMath,
+    Empty,
     Heading(u8),
     Html,
     Prose,
@@ -54,6 +55,7 @@ enum BlockKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SourceBlock {
     ordinal: u32,
+    end_ordinal: u32,
     kind: BlockKind,
     content: String,
     heading_context: Vec<String>,
@@ -76,6 +78,7 @@ struct SuspendedCapture {
 
 pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
     let blocks = parse_source_blocks(markdown);
+    let editor_starts = editor_block_starts(markdown);
     let mut pending = Vec::new();
     let mut passages = Vec::new();
 
@@ -93,9 +96,10 @@ pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
                 flush_group(&mut pending, &mut passages);
                 passages.push(single_block_passage(block));
             }
+            BlockKind::Empty => pending.push(block),
             BlockKind::Prose if char_count(&block.content) > MAX_PROSE_SEGMENT_CHARS => {
                 flush_group(&mut pending, &mut passages);
-                passages.extend(split_prose_block(block));
+                passages.extend(split_oversized_prose_block(markdown, &editor_starts, block));
             }
             BlockKind::Prose => {
                 let projected = pending
@@ -120,6 +124,57 @@ pub(crate) fn build_markdown_passages(markdown: &str) -> Vec<BuiltPassage> {
         passage.ordinal = u32::try_from(ordinal).expect("passage count fits in u32");
     }
     passages
+}
+
+fn split_oversized_prose_block(
+    markdown: &str,
+    editor_starts: &[usize],
+    block: SourceBlock,
+) -> Vec<BuiltPassage> {
+    let editor_blocks = editor_starts
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, start)| {
+            (*start >= block.source_start_byte && *start < block.source_end_byte)
+                .then_some((ordinal, *start))
+        })
+        .collect::<Vec<_>>();
+    if editor_blocks.len() <= 1 {
+        return split_prose_block(block);
+    }
+
+    editor_blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(index, (ordinal, start))| {
+            let end = editor_blocks
+                .get(index + 1)
+                .map_or(block.source_end_byte, |(_, next_start)| *next_start);
+            let content = parse_source_blocks(&markdown[*start..end])
+                .into_iter()
+                .filter_map(|source| (!source.content.is_empty()).then_some(source.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if content.is_empty() {
+                return Vec::new();
+            }
+            let ordinal = u32::try_from(*ordinal).expect("Markdown block count fits in u32");
+            let source = SourceBlock {
+                ordinal,
+                end_ordinal: ordinal,
+                kind: BlockKind::Prose,
+                content,
+                heading_context: block.heading_context.clone(),
+                source_start_byte: *start,
+                source_end_byte: end,
+            };
+            if char_count(&source.content) > MAX_PROSE_SEGMENT_CHARS {
+                split_prose_block(source)
+            } else {
+                vec![single_block_passage(source)]
+            }
+        })
+        .collect()
 }
 
 fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
@@ -263,7 +318,15 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
     if blocks.is_empty() {
         let source = markdown.trim();
         if !source.is_empty() {
-            let normalized = authored_text(source);
+            let passage_source = source
+                .lines()
+                .filter(|line| !crate::database::markdown::is_kosh_structure_marker(line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if passage_source.trim().is_empty() {
+                return blocks;
+            }
+            let normalized = authored_text(passage_source.trim());
             let content = if normalized.trim().is_empty() {
                 // A media node is authored structure, but its opaque storage ID is
                 // not authored evidence. Keep a non-tokenizing object marker so
@@ -275,6 +338,7 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
             let source_start_byte = markdown.find(source).unwrap_or(0);
             blocks.push(SourceBlock {
                 ordinal: 0,
+                end_ordinal: 0,
                 kind: BlockKind::Prose,
                 content: content.into(),
                 heading_context: Vec::new(),
@@ -283,7 +347,75 @@ fn parse_source_blocks(markdown: &str) -> Vec<SourceBlock> {
             });
         }
     }
+    assign_editor_ordinals(markdown, &mut blocks);
     blocks
+}
+
+fn assign_editor_ordinals(markdown: &str, blocks: &mut [SourceBlock]) {
+    let starts = editor_block_starts(markdown);
+    for block in blocks {
+        let ordinals = starts
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, start)| {
+                (*start >= block.source_start_byte && *start < block.source_end_byte)
+                    .then_some(u32::try_from(ordinal).expect("Markdown block count fits in u32"))
+            })
+            .collect::<Vec<_>>();
+        let fallback = starts
+            .partition_point(|start| *start <= block.source_start_byte)
+            .saturating_sub(1);
+        block.ordinal = ordinals
+            .first()
+            .copied()
+            .unwrap_or_else(|| u32::try_from(fallback).expect("Markdown block count fits in u32"));
+        block.end_ordinal = ordinals.last().copied().unwrap_or(block.ordinal);
+    }
+}
+
+fn editor_block_starts(markdown: &str) -> Vec<usize> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_MATH);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+
+    let mut starts = Vec::new();
+    let mut list_depth = 0usize;
+    let mut structured_child_depths = Vec::new();
+    for (event, range) in Parser::new_ext(markdown, options).into_offset_iter() {
+        let is_direct_block = || {
+            list_depth == 0
+                || structured_child_depths
+                    .last()
+                    .is_some_and(|depth| *depth == list_depth)
+        };
+        match event {
+            Event::Start(Tag::Item) => {
+                starts.push(range.start);
+                list_depth += 1;
+            }
+            Event::Start(
+                Tag::Paragraph | Tag::Heading { .. } | Tag::CodeBlock(_) | Tag::Table(_),
+            ) if is_direct_block() => starts.push(range.start),
+            Event::End(TagEnd::Item) => list_depth = list_depth.saturating_sub(1),
+            Event::Html(value) => match value.trim() {
+                crate::database::markdown::EMPTY_BLOCK_MARKER => starts.push(range.start),
+                crate::database::markdown::CHILDREN_START_MARKER => {
+                    structured_child_depths.push(list_depth);
+                }
+                crate::database::markdown::CHILDREN_END_MARKER => {
+                    structured_child_depths.pop();
+                }
+                _ if is_direct_block() => starts.push(range.start),
+                _ => {}
+            },
+            Event::DisplayMath(_) | Event::Rule if is_direct_block() => starts.push(range.start),
+            _ => {}
+        }
+    }
+    starts
 }
 
 fn captured_block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
@@ -318,7 +450,13 @@ fn append_event_content(capture: &mut Capture, event: Event<'_>) {
             capture.content.push_str(&value);
             capture.content.push_str("$$");
         }
-        Event::Html(value) => capture.content.push_str(&value),
+        Event::Html(value)
+            if capture.kind == BlockKind::Html
+                || !crate::database::markdown::is_kosh_structure_marker(&value) =>
+        {
+            capture.content.push_str(&value);
+        }
+        Event::Html(_) => {}
         Event::InlineHtml(value) => append_inline_html(capture, &value),
         Event::FootnoteReference(value) => {
             capture.content.push_str("[^");
@@ -457,6 +595,21 @@ fn finish_capture(
     blocks: &mut Vec<SourceBlock>,
 ) {
     let content = normalize_block_content(&capture.content, capture.kind);
+    if capture.kind == BlockKind::Html
+        && crate::database::markdown::is_kosh_structure_marker(&content)
+    {
+        if content.trim() == crate::database::markdown::EMPTY_BLOCK_MARKER {
+            push_standalone_block(
+                BlockKind::Empty,
+                String::new(),
+                capture.source_start_byte,
+                source_end_byte,
+                headings,
+                blocks,
+            );
+        }
+        return;
+    }
     if content.is_empty() {
         return;
     }
@@ -468,6 +621,7 @@ fn finish_capture(
     let ordinal = u32::try_from(blocks.len()).expect("Markdown block count fits in u32");
     blocks.push(SourceBlock {
         ordinal,
+        end_ordinal: ordinal,
         kind: capture.kind,
         content,
         heading_context,
@@ -494,6 +648,7 @@ fn push_standalone_block(
     let ordinal = u32::try_from(blocks.len()).expect("Markdown block count fits in u32");
     blocks.push(SourceBlock {
         ordinal,
+        end_ordinal: ordinal,
         kind,
         content,
         heading_context: current_heading_context(headings),
@@ -547,16 +702,21 @@ fn flush_group(pending: &mut Vec<SourceBlock>, passages: &mut Vec<BuiltPassage>)
     }
     let first = pending.first().expect("nonempty passage group");
     let last = pending.last().expect("nonempty passage group");
+    let content = pending
+        .iter()
+        .filter_map(|block| (!block.content.is_empty()).then_some(block.content.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if content.is_empty() {
+        pending.clear();
+        return;
+    }
     passages.push(finish_passage(
-        pending
-            .iter()
-            .map(|block| block.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
+        content,
         first.heading_context.clone(),
         MarkdownLocator {
             start: first.ordinal,
-            end: last.ordinal,
+            end: last.end_ordinal,
             source_start_byte: Some(
                 u64::try_from(first.source_start_byte).expect("source offset fits in u64"),
             ),
@@ -753,19 +913,20 @@ fn block_locator(
     start_line: Option<u32>,
     end_line: Option<u32>,
 ) -> MarkdownLocator {
+    let is_single_block = block.ordinal == block.end_ordinal;
     MarkdownLocator {
         start: block.ordinal,
-        end: block.ordinal,
+        end: block.end_ordinal,
         source_start_byte: Some(
             u64::try_from(block.source_start_byte).expect("source offset fits in u64"),
         ),
         source_end_byte: Some(
             u64::try_from(block.source_end_byte).expect("source offset fits in u64"),
         ),
-        start_char,
-        end_char,
-        start_line,
-        end_line,
+        start_char: is_single_block.then_some(start_char).flatten(),
+        end_char: is_single_block.then_some(end_char).flatten(),
+        start_line: is_single_block.then_some(start_line).flatten(),
+        end_line: is_single_block.then_some(end_line).flatten(),
     }
 }
 
@@ -816,7 +977,7 @@ mod tests {
         let second = build_markdown_passages(&markdown);
 
         assert_eq!(first, second);
-        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v2");
+        assert_eq!(CONSTRUCTION_VERSION, "markdown-blocks-v3");
         assert_eq!(first.len(), 5);
         assert_eq!(first[0].content, "Thermodynamics");
         assert_eq!(
@@ -1075,6 +1236,163 @@ mod tests {
                 .join("\n"),
             "alpha\nbeta gamma\ndelta\nepsilon"
         );
+    }
+
+    #[test]
+    fn editor_structure_markers_are_not_searchable_passages() {
+        let markdown = [
+            "Before.",
+            "",
+            "<!-- kosh:block:empty -->",
+            "",
+            "<!-- kosh:children:start -->",
+            "",
+            "Nested evidence.",
+            "",
+            "<!-- kosh:children:end -->",
+            "",
+            "After.",
+        ]
+        .join("\n");
+        let passages = build_markdown_passages(&markdown);
+        let content = passages
+            .iter()
+            .map(|passage| passage.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(content.contains("Before."));
+        assert!(content.contains("Nested evidence."));
+        assert!(content.contains("After."));
+        assert!(!content.contains("kosh:"));
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 3);
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn empty_blocks_count_toward_grouped_passage_locators() {
+        let markdown = ["Before.", "", "<!-- kosh:block:empty -->", "", "After."].join("\n");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].content, "Before.\n\nAfter.");
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 2);
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn structure_markers_nested_in_lists_are_not_searchable() {
+        let markdown = [
+            "- Parent",
+            "",
+            "  <!-- kosh:children:start -->",
+            "",
+            "  Nested evidence.",
+            "",
+            "  <!-- kosh:children:end -->",
+        ]
+        .join("\n");
+        let content = build_markdown_passages(&markdown)
+            .into_iter()
+            .map(|passage| passage.content)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(content.contains("Parent"));
+        assert!(content.contains("Nested evidence."));
+        assert!(!content.contains("kosh:"));
+    }
+
+    #[test]
+    fn nested_list_blocks_count_toward_passage_locators() {
+        let markdown = ["- Parent", "  - Nested alpha", "    - Nested beta"].join("\n");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 2);
+    }
+
+    #[test]
+    fn split_nested_prose_uses_exact_single_block_character_ranges() {
+        let sentence = "A nested sentence carries exact evidence. ";
+        let markdown = format!("- {}\n  - Nested child.", sentence.repeat(40));
+        let passages = build_markdown_passages(&markdown);
+        let split_parent = passages
+            .iter()
+            .filter(|passage| passage.content.contains("nested sentence"))
+            .collect::<Vec<_>>();
+
+        assert!(split_parent.len() > 1);
+        for passage in split_parent {
+            assert_eq!(passage.locator.start, 0);
+            assert_eq!(passage.locator.end, 0);
+            let start = passage.locator.start_char.expect("split start character");
+            let end = passage.locator.end_char.expect("split end character");
+            assert!(start < end);
+            assert_eq!(
+                sentence.repeat(40)[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()]
+                    .trim(),
+                passage.content
+            );
+            assert_eq!(passage.locator.start_line, None);
+            assert_eq!(passage.locator.end_line, None);
+        }
+        let nested = passages
+            .iter()
+            .find(|passage| passage.content == "Nested child.")
+            .expect("nested child passage");
+        assert_eq!((nested.locator.start, nested.locator.end), (1, 1));
+        assert_valid_source_ranges(&markdown, passages.iter().map(|passage| &passage.locator));
+    }
+
+    #[test]
+    fn nested_prose_and_empty_blocks_count_toward_passage_locators() {
+        let markdown = [
+            "- Parent",
+            "",
+            "  <!-- kosh:children:start -->",
+            "",
+            "  Nested evidence.",
+            "",
+            "  <!-- kosh:block:empty -->",
+            "",
+            "  <!-- kosh:children:end -->",
+        ]
+        .join("\n");
+        let passages = build_markdown_passages(&markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].locator.start, 0);
+        assert_eq!(passages[0].locator.end, 2);
+        assert!(!passages[0].content.contains("kosh:"));
+    }
+
+    #[test]
+    fn fenced_code_preserves_reserved_structure_marker_text() {
+        let markdown = "```text\n<!-- kosh:block:empty -->\n```";
+        let passages = build_markdown_passages(markdown);
+
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].content, "<!-- kosh:block:empty -->");
+    }
+
+    #[test]
+    fn marker_only_revisions_do_not_produce_searchable_passages() {
+        let markdown = [
+            "<!-- kosh:block:empty -->",
+            "",
+            "<!-- kosh:children:start -->",
+            "",
+            "<!-- kosh:block:empty -->",
+            "",
+            "<!-- kosh:children:end -->",
+        ]
+        .join("\n");
+
+        assert!(build_markdown_passages(&markdown).is_empty());
     }
 
     #[test]

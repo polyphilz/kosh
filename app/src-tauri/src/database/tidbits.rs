@@ -360,19 +360,33 @@ fn hash_text(hasher: &mut Sha256, value: &str) {
 }
 
 pub(super) fn derive_display_title(body_markdown: &str) -> String {
-    body_markdown
-        .lines()
-        .filter_map(useful_markdown_line)
-        .next()
-        .map_or_else(
-            || "Untitled note".into(),
-            |line| truncate(line, DISPLAY_TITLE_LIMIT),
-        )
+    let mut fence = None;
+    for line in body_markdown.lines() {
+        if let Some((character, length)) = fence {
+            if is_fence_closing(line, character, length) {
+                fence = None;
+                continue;
+            }
+            let value = line.trim();
+            if !value.is_empty() {
+                return truncate(value, DISPLAY_TITLE_LIMIT);
+            }
+            continue;
+        }
+        if let Some(opening) = fence_opening(line) {
+            fence = Some(opening);
+            continue;
+        }
+        if let Some(value) = useful_markdown_line(line) {
+            return truncate(value, DISPLAY_TITLE_LIMIT);
+        }
+    }
+    "Untitled note".into()
 }
 
 fn useful_markdown_line(line: &str) -> Option<&str> {
     let mut value = line.trim();
-    if value.is_empty() || value.starts_with("```") || value.starts_with("~~~") {
+    if value.is_empty() || super::markdown::is_kosh_structure_marker(value) {
         return None;
     }
     loop {
@@ -390,6 +404,37 @@ fn useful_markdown_line(line: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+fn fence_opening(line: &str) -> Option<(char, usize)> {
+    let indentation = line.bytes().take_while(|byte| *byte == b' ').count();
+    if indentation > 3 {
+        return None;
+    }
+    let value = &line[indentation..];
+    let character = value.chars().next()?;
+    if !matches!(character, '`' | '~') {
+        return None;
+    }
+    let length = value
+        .chars()
+        .take_while(|candidate| *candidate == character)
+        .count();
+    (length >= 3).then_some((character, length))
+}
+
+fn is_fence_closing(line: &str, character: char, minimum_length: usize) -> bool {
+    let Some((candidate, length)) = fence_opening(line) else {
+        return false;
+    };
+    if candidate != character || length < minimum_length {
+        return false;
+    }
+    let indentation = line.bytes().take_while(|byte| *byte == b' ').count();
+    line[indentation..]
+        .chars()
+        .skip(length)
+        .all(char::is_whitespace)
+}
+
 fn truncate(value: &str, limit: usize) -> String {
     let mut characters = value.chars();
     let head = characters.by_ref().take(limit).collect::<String>();
@@ -397,5 +442,35 @@ fn truncate(value: &str, limit: usize) -> String {
         format!("{head}…")
     } else {
         head
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_display_title;
+
+    #[test]
+    fn editor_structure_markers_do_not_become_display_titles() {
+        let markdown = [
+            "<!-- kosh:block:empty -->",
+            "<!-- kosh:children:start -->",
+            "## Visible title",
+            "<!-- kosh:children:end -->",
+        ]
+        .join("\n");
+
+        assert_eq!(derive_display_title(&markdown), "Visible title");
+        assert_eq!(
+            derive_display_title("<!-- kosh:block:empty -->"),
+            "Untitled note"
+        );
+    }
+
+    #[test]
+    fn fenced_structure_marker_text_can_be_a_display_title() {
+        assert_eq!(
+            derive_display_title("```html\n<!-- kosh:block:empty -->\n```"),
+            "<!-- kosh:block:empty -->"
+        );
     }
 }

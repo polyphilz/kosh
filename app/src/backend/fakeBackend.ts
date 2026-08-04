@@ -44,8 +44,10 @@ import type {
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
+import { withoutKoshStructureMarkers } from "../markdown/structureMarkers";
 
 interface FakeCitationSnapshot {
+  passageMarkdown: string;
   revision: TidbitRecord;
 }
 
@@ -763,7 +765,7 @@ export class FakeBackend implements Backend {
       current.currentRevisionId === snapshot.revision.currentRevisionId;
     return {
       passageId,
-      excerpt: snapshot.revision.bodyMarkdown,
+      excerpt: snapshot.passageMarkdown,
       headingContext: [],
       constructionVersion: "fake-markdown-blocks-v1",
       state: isCurrent ? "CURRENT" : "HISTORICAL",
@@ -807,7 +809,9 @@ export class FakeBackend implements Backend {
     const matches = [...this.tidbits.values()]
       .filter((tidbit) => tidbit.deletedAtMs === null)
       .flatMap((tidbit) => {
-        const fields: Array<[SearchField, string]> = [["BODY", tidbit.bodyMarkdown]];
+        const fields: Array<[SearchField, string]> = [
+          ["BODY", withoutKoshStructureMarkers(tidbit.bodyMarkdown)],
+        ];
         const matchedAtoms = atoms.map((atom) =>
           fields.some(([, value]) =>
             normalizeSearchText(value).includes(normalizeSearchText(atom)),
@@ -1080,6 +1084,7 @@ export class FakeBackend implements Backend {
   private registerCitation(revision: TidbitRecord): void {
     const passageId = `fake-passage:${revision.currentRevisionId}`;
     this.citations.set(passageId, {
+      passageMarkdown: withoutKoshStructureMarkers(revision.bodyMarkdown),
       revision: cloneTidbit(revision),
     });
   }
@@ -1180,7 +1185,7 @@ function validateBody(value: string): string {
 }
 
 function deriveDisplayTitle(bodyMarkdown: string): string {
-  const line = bodyMarkdown
+  const line = withoutKoshStructureMarkers(bodyMarkdown)
     .split(/\r?\n/u)
     .map((candidate) => candidate.trim())
     .find((candidate) => candidate && !candidate.startsWith("```") && !candidate.startsWith("~~~"));
