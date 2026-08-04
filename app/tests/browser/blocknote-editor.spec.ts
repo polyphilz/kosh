@@ -171,6 +171,21 @@ test("inline math supports paired-dollar input and opens directly from the slash
   await source.press("Enter");
   await expect(source).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Edit inline math: x_i" })).toBeVisible();
+
+  const emptyMathBlockId = await page.evaluate(() =>
+    window.__KOSH_BLOCKNOTE_HARNESS__!.appendParagraph(),
+  );
+  await page.keyboard.type("/inline");
+  await page.getByRole("listbox").getByRole("option", { name: "Inline math" }).click();
+  await expect(source).toBeFocused();
+  await source.press("Escape");
+  await expect(source).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit inline math: empty equation" })).toHaveCount(
+    0,
+  );
+  await expect
+    .poll(async () => blockContentSnapshot(await readHarnessSnapshot(page), emptyMathBlockId))
+    .toEqual([]);
 });
 
 test("real keyboard input covers undo, redo, IME, and list nesting", async ({ page }) => {

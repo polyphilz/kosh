@@ -7,7 +7,7 @@ import {
 } from "@blocknote/core";
 import { createReactBlockSpec, createReactInlineContentSpec } from "@blocknote/react";
 import { renderToString } from "katex";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { codeLanguageDefinitions } from "../markdown/languages";
 import { useKoshEditorDisabled } from "./interactionState";
 import { koshMediaBlockSpecs } from "./mediaBlocks";
@@ -72,6 +72,16 @@ const inlineMath = createReactInlineContentSpec(
           editor._tiptapEditor.commands.setTextSelection(position + 1);
           editor.focus();
         }}
+        onEmptyClose={(element) => {
+          const view = editor.prosemirrorView;
+          if (view.isDestroyed) return;
+          const wrapper = element.closest<HTMLElement>('[data-inline-content-type="inlineMath"]');
+          if (!wrapper) return;
+          const position = view.posAtDOM(wrapper, 0);
+          const node = view.state.doc.nodeAt(position);
+          if (node?.type.name !== "inlineMath") return;
+          view.dispatch(view.state.tr.delete(position, position + node.nodeSize));
+        }}
       />
     ),
   },
@@ -130,12 +140,14 @@ function MathSource({
   latex,
   onChange,
   onRestoreCaret,
+  onEmptyClose,
 }: {
   display?: boolean;
   label: string;
   latex: string;
   onChange: (latex: string) => void;
   onRestoreCaret?: (root: HTMLElement) => void;
+  onEmptyClose?: (element: HTMLElement) => void;
 }) {
   const disabled = useKoshEditorDisabled();
   if (!display) {
@@ -146,6 +158,7 @@ function MathSource({
         latex={latex}
         onChange={onChange}
         onRestoreCaret={onRestoreCaret!}
+        onEmptyClose={onEmptyClose}
       />
     );
   }
@@ -175,19 +188,41 @@ function InlineMathSource({
   latex,
   onChange,
   onRestoreCaret,
+  onEmptyClose,
 }: {
   disabled: boolean;
   label: string;
   latex: string;
   onChange: (latex: string) => void;
   onRestoreCaret: (root: HTMLElement) => void;
+  onEmptyClose?: (element: HTMLElement) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [popoverOffset, setPopoverOffset] = useState(0);
   const popoverRef = useRef<HTMLSpanElement>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
   const sourceRef = useRef<HTMLInputElement>(null);
+  const emptyCloseHandledRef = useRef(false);
   const rendering = useMemo(() => renderMath(latex, false, true), [latex]);
+
+  const dismiss = useCallback(
+    (restoreEditorFocus: boolean) => {
+      setOpen(false);
+      const root = rootRef.current;
+      const editorRoot = root?.closest<HTMLElement>('.ProseMirror[contenteditable="true"]');
+      if (!latex.trim() && root && !emptyCloseHandledRef.current) {
+        emptyCloseHandledRef.current = true;
+        onEmptyClose?.(root);
+      }
+      if (restoreEditorFocus) {
+        window.requestAnimationFrame(() => {
+          if (latex.trim() && root) onRestoreCaret(root);
+          else editorRoot?.focus();
+        });
+      }
+    },
+    [latex, onEmptyClose, onRestoreCaret],
+  );
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -216,11 +251,11 @@ function InlineMathSource({
 
     const closeOnOutsideClick = (event: MouseEvent) => {
       const root = rootRef.current;
-      if (root && !event.composedPath().includes(root)) setOpen(false);
+      if (root && !event.composedPath().includes(root)) dismiss(false);
     };
     const closeOnFocusOutside = (event: FocusEvent) => {
       const root = rootRef.current;
-      if (root && !event.composedPath().includes(root)) setOpen(false);
+      if (root && !event.composedPath().includes(root)) dismiss(false);
     };
     document.addEventListener("click", closeOnOutsideClick);
     document.addEventListener("focusin", closeOnFocusOutside);
@@ -228,15 +263,7 @@ function InlineMathSource({
       document.removeEventListener("click", closeOnOutsideClick);
       document.removeEventListener("focusin", closeOnFocusOutside);
     };
-  }, [open]);
-
-  const close = () => {
-    setOpen(false);
-    window.requestAnimationFrame(() => {
-      const root = rootRef.current;
-      if (root) onRestoreCaret(root);
-    });
-  };
+  }, [dismiss, open]);
   const accessibleEquation = rendering.error ? "Invalid equation" : latex || "empty equation";
 
   return (
@@ -299,10 +326,10 @@ function InlineMathSource({
                 event.stopPropagation();
                 if (event.key === "Escape") {
                   event.preventDefault();
-                  close();
+                  dismiss(true);
                 } else if (event.key === "Enter") {
                   event.preventDefault();
-                  if (!rendering.error) close();
+                  if (!rendering.error) dismiss(true);
                 }
               }}
               ref={sourceRef}
@@ -312,7 +339,7 @@ function InlineMathSource({
             <button
               className="kosh-math-editor__done"
               disabled={disabled || Boolean(rendering.error)}
-              onClick={close}
+              onClick={() => dismiss(true)}
               type="button"
             >
               Done <span aria-hidden>↵</span>
