@@ -26,6 +26,34 @@ describe("typography contract", () => {
     ]);
   });
 
+  test("rejects raw typography values nested inside CSS functions", () => {
+    const found = cssViolations(`
+      .copy {
+        font-weight: calc(var(--type-weight-body) + 100);
+        line-height: var(--type-leading-body, 1.4);
+        letter-spacing: var(--type-tracking-body, -0.02em);
+      }
+    `);
+
+    expect(found.map((entry) => entry.check)).toEqual([
+      TypographyCheckKind.FontWeight,
+      TypographyCheckKind.LineHeight,
+      TypographyCheckKind.LetterSpacing,
+    ]);
+  });
+
+  test("does not mistake numbers in token names for raw typography values", () => {
+    expect(
+      cssViolations(`
+        .copy {
+          font-weight: var(--type-weight-2xl);
+          line-height: var(--type-leading-2xl);
+          letter-spacing: var(--type-tracking-2xl);
+        }
+      `),
+    ).toEqual([]);
+  });
+
   test("rejects multiline font shorthand and relative sizes", () => {
     const found = cssViolations(`
       .copy {

@@ -17,6 +17,7 @@ export const TypographyCheckKind = {
 
 const numericPattern = /(^|[^\w$])(?:\d+(?:\.\d*)?|\.\d+)(?:[a-z%]+)?(?![\w$])/i;
 const sizedNumericPattern = /(?:\d+(?:\.\d*)?|\.\d+)\s*(?:%|[a-z]+)(?![\w-])/i;
+const rawTypographyNumericPattern = /(?<![\w$-])-?(?:\d+(?:\.\d*)?|\.\d+)(?:[a-z%]+)?(?![\w$-])/i;
 const typographyProperties = ["font-size", "font", "font-weight", "letter-spacing", "line-height"];
 
 function stripComments(contents) {
@@ -48,19 +49,19 @@ function cssCheck(property, value) {
       : null;
   }
   if (property === "font-weight") {
-    return /^\s*\d/.test(value)
+    return rawTypographyNumericPattern.test(value)
       ? [TypographyCheckKind.FontWeight, "font-weight uses a raw number instead of a type token"]
       : null;
   }
   if (property === "letter-spacing") {
-    return /^\s*-?\.?\d/.test(value)
+    return rawTypographyNumericPattern.test(value)
       ? [
           TypographyCheckKind.LetterSpacing,
           "letter-spacing uses a raw number instead of a type token",
         ]
       : null;
   }
-  return /^\s*\d/.test(value)
+  return rawTypographyNumericPattern.test(value)
     ? [TypographyCheckKind.LineHeight, "line-height uses a raw number instead of a type token"]
     : null;
 }
