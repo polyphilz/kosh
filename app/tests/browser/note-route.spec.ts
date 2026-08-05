@@ -97,6 +97,66 @@ test("autosave and reopen preserve canonical BlockNote block IDs", async ({ page
   expect(idsAfterReopen).toEqual(idsBeforeReopen);
 });
 
+test("stable block links flash once, remain shareable, and silently discard stale ids", async ({
+  page,
+}) => {
+  await page.goto("/#/");
+  const note = await page.evaluate(async () => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return backend.seedNote({
+      bodyMarkdown: "Opening context\n\nExact stable block\n\nClosing context",
+      documentJson: JSON.stringify({
+        schemaVersion: 1,
+        blocks: [
+          {
+            id: "opening-block",
+            type: "paragraph",
+            props: {},
+            content: [{ type: "text", text: "Opening context", styles: {} }],
+            children: [],
+          },
+          {
+            id: "exact-stable-block",
+            type: "paragraph",
+            props: {},
+            content: [{ type: "text", text: "Exact stable block", styles: {} }],
+            children: [],
+          },
+          {
+            id: "closing-block",
+            type: "paragraph",
+            props: {},
+            content: [{ type: "text", text: "Closing context", styles: {} }],
+            children: [],
+          },
+        ],
+      }),
+      sources: [],
+    });
+  });
+
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}?blockId=exact-stable-block`;
+  }, note.id);
+  const hit = page.locator('[data-kosh-search-hit="true"]');
+  await expect(hit).toContainText("Exact stable block");
+  await expect(hit).toHaveCSS("animation-duration", "1.4s");
+  await expect(page).toHaveURL(
+    new RegExp(`/#/notes/${note.id}\\?blockId=exact-stable-block$`, "u"),
+  );
+  await expect(hit).toHaveCount(0, { timeout: 3_000 });
+  await expect(page).toHaveURL(
+    new RegExp(`/#/notes/${note.id}\\?blockId=exact-stable-block$`, "u"),
+  );
+
+  await page.evaluate((noteId) => {
+    window.location.hash = `/notes/${noteId}?blockId=deleted-block`;
+  }, note.id);
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}$`, "u"));
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
+});
+
 test("deleting the first edit before checkpoint keeps the note ephemeral and empty", async ({
   page,
 }) => {

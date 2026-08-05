@@ -61,8 +61,16 @@ function NewNoteRoute() {
 
 function DurableNoteRoute() {
   const { noteId } = noteRoute.useParams();
-  const { passage } = noteRoute.useSearch();
-  return <NotePage key={`durable:${noteId}`} mode="durable" noteId={noteId} passageId={passage} />;
+  const { blockId, passage } = noteRoute.useSearch();
+  return (
+    <NotePage
+      blockId={blockId}
+      key={`durable:${noteId}`}
+      mode="durable"
+      noteId={noteId}
+      passageId={passage}
+    />
+  );
 }
 
 function SearchRoute() {
@@ -81,8 +89,17 @@ declare module "@tanstack/react-router" {
   }
 }
 
-function noteSearch(search: Record<string, unknown>): { passage?: string } {
+function noteSearch(search: Record<string, unknown>): { blockId?: string; passage?: string } {
+  const blockId = boundedSearchValue(search.blockId);
   const passage =
     typeof search.passage === "string" && search.passage.length <= 256 ? search.passage : undefined;
-  return passage ? { passage } : {};
+  return {
+    ...(blockId ? { blockId } : {}),
+    ...(passage ? { passage } : {}),
+  };
+}
+
+function boundedSearchValue(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return new TextEncoder().encode(value).byteLength <= 256 ? value : undefined;
 }

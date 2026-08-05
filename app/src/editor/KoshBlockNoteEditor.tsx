@@ -70,7 +70,9 @@ export interface KoshBlockNoteEditorHandle {
   clearSearchFocus: () => void;
   findInNote: (query: string, activeIndex?: number) => FindInNoteResult;
   focus: () => void;
+  focusBlock: (blockId: string) => boolean;
   focusCitation: (citation: CitationResolution) => boolean;
+  hasBlock: (blockId: string) => boolean;
   isSuggestionMenuOpen: () => boolean;
   insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
@@ -249,7 +251,9 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
         clearSearchFocus: () => clearSearchFocus(editor, searchFocusBlockIds),
         findInNote: (query, activeIndex) => findEditorText(editor, query, activeIndex),
         focus: () => editor.focus(),
+        focusBlock: (blockId) => focusBlock(editor, blockId, searchFocusBlockIds),
         focusCitation: (citation) => focusCitation(editor, citation, searchFocusBlockIds),
+        hasBlock: (blockId) => flattenBlocks(editor.document).some((block) => block.id === blockId),
         isSuggestionMenuOpen: () => suggestionMenuOpen.current,
         insertAttachments: (attachments) => mediaController.insert(attachments),
         insertImages: (images) =>
@@ -592,6 +596,27 @@ function focusCitation(
   const element = root.querySelector<HTMLElement>('[data-kosh-search-hit="true"]');
   element?.scrollIntoView({ behavior: "instant", block: "center" });
   return element !== null;
+}
+
+function focusBlock(
+  editor: KoshBlockNoteEditorInstance,
+  blockId: string,
+  focusedBlockIds: MutableRefObject<string[]>,
+): boolean {
+  clearSearchFocus(editor, focusedBlockIds);
+  const block = flattenBlocks(editor.document).find((candidate) => candidate.id === blockId);
+  if (!block) return false;
+  editor.setTextCursorPosition(block, "start");
+  editor.focus();
+  focusedBlockIds.current = [block.id];
+  if (!setSearchFocusBlocks(editor, focusedBlockIds.current)) {
+    clearSearchFocus(editor, focusedBlockIds);
+    return false;
+  }
+  const root = editor.domElement?.closest<HTMLElement>(".kosh-blocknote-editor");
+  const element = root?.querySelector<HTMLElement>('[data-kosh-search-hit="true"]');
+  element?.scrollIntoView({ behavior: "instant", block: "center" });
+  return element !== null && element !== undefined;
 }
 
 function clearSearchFocus(
