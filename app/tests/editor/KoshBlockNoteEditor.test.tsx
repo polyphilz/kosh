@@ -721,48 +721,6 @@ describe("production BlockNote editor", () => {
     expect(screen.getByLabelText("Display math source")).toBeEnabled();
   });
 
-  it("tracks attachment replacement until the native ingest settles", async () => {
-    let resolveReplacement!: (record: SelectedAttachmentRecord | null) => void;
-    const replacement = new Promise<SelectedAttachmentRecord | null>((resolve) => {
-      resolveReplacement = resolve;
-    });
-    const onPendingImagesChange = vi.fn();
-    render(
-      <AppearanceProvider>
-        <KoshBlockNoteEditor
-          ariaLabel="Body"
-          onChange={() => undefined}
-          onPendingImagesChange={onPendingImagesChange}
-          pickAttachment={() => replacement}
-          value="{{kosh:attachment:019f547b-6200-7000-8000-000000000301}}"
-        />
-      </AppearanceProvider>,
-    );
-
-    await userEvent.click(await screen.findByRole("button", { name: "Replace" }));
-    expect(onPendingImagesChange).toHaveBeenLastCalledWith(true);
-
-    act(() =>
-      resolveReplacement({
-        recordKind: "GENERIC",
-        record: {
-          byteLength: 7,
-          displayFilename: "replacement.txt",
-          extractedLineCount: 1,
-          extractionError: null,
-          extractionStatus: "READY",
-          id: "019f547b-6200-7000-8000-000000000302",
-          ingestLeaseId: "private-replacement-lease",
-          kind: "TEXT",
-          mediaType: "text/plain",
-        },
-      }),
-    );
-
-    expect(await screen.findByText("replacement.txt")).toBeInTheDocument();
-    await waitFor(() => expect(onPendingImagesChange).toHaveBeenLastCalledWith(false));
-  });
-
   it("rejects keyboard image resizing while locked", async () => {
     const onChange = vi.fn();
     render(

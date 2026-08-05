@@ -94,4 +94,19 @@ describe("Kosh document JSON", () => {
       expect.objectContaining({ id: "pending", type: "paragraph" }),
     ]);
   });
+
+  it("rejects one attachment reused by multiple blocks", () => {
+    const attachmentId = "019f547b-6200-7000-8000-000000002001";
+    expect(() =>
+      parseKoshDocument(
+        JSON.stringify({
+          schemaVersion: 1,
+          blocks: [
+            { id: "first", type: "koshImage", props: { attachmentId } },
+            { id: "second", type: "koshImage", props: { attachmentId } },
+          ],
+        }),
+      ),
+    ).toThrow("only one document block");
+  });
 });

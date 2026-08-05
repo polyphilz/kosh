@@ -1660,7 +1660,7 @@ impl DatabaseClient {
     ) -> Result<WorkingCopy> {
         self.save_working_copy(SaveWorkingCopyWrite {
             input: super::SaveWorkingCopyInput {
-                document_json: super::document::single_paragraph(&body_markdown),
+                document_json: super::document::fixture_from_markdown(&body_markdown),
                 note_id,
                 base_revision_id,
                 edit_generation,
@@ -1757,6 +1757,12 @@ pub(super) fn install_lexical_benchmark_attachments(
 ) -> Result<()> {
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for write in writes {
+        let owner_note_id = transaction.query_row(
+            "SELECT tidbit_id FROM tidbit_revision WHERE id = ?1",
+            params![&write.revision_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        let owner_block_id = format!("benchmark-attachment-{}", write.attachment_id);
         let kind = if write.media_type.starts_with("image/") {
             "IMAGE"
         } else if write.media_type == "application/pdf" {
@@ -1775,24 +1781,27 @@ pub(super) fn install_lexical_benchmark_attachments(
         transaction.execute(
             "INSERT OR IGNORE INTO attachment(
                 id, created_at, updated_at, sha256, display_filename,
-                media_type, byte_length, kind, extraction_state
-             ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                media_type, byte_length, kind, extraction_state,
+                owner_note_id, owner_block_id
+             ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                write.attachment_id,
+                &write.attachment_id,
                 write.created_at_ms,
                 content_hash.as_slice(),
-                write.display_filename,
-                write.media_type,
+                &write.display_filename,
+                &write.media_type,
                 write.byte_length,
                 kind,
                 extraction_state,
+                &owner_note_id,
+                &owner_block_id,
             ],
         )?;
         transaction.execute(
             "INSERT INTO tidbit_revision_attachment(
-                tidbit_revision_id, attachment_id, sort_order, display_role
-             ) VALUES(?1, ?2, 0, 'ATTACHMENT')",
-            params![write.revision_id, write.attachment_id],
+                tidbit_revision_id, attachment_id, block_id, sort_order, display_role
+             ) VALUES(?1, ?2, ?3, 0, 'ATTACHMENT')",
+            params![&write.revision_id, &write.attachment_id, &owner_block_id],
         )?;
     }
     transaction.commit()?;

@@ -11,6 +11,8 @@ const MAX_DOCUMENT_BLOCKS = 100_000;
 const MAX_BLOCK_ID_BYTES = 256;
 const MAX_BLOCK_DEPTH = 128;
 const SUPPORTED_BLOCK_TYPES = new Set<string>(supportedKoshBlockTypes);
+const ATTACHMENT_BLOCK_TYPES = new Set(["koshFileAttachment", "koshImage", "koshPdf"]);
+const UUID_V7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export interface KoshDocumentV1 {
   schemaVersion: typeof KOSH_DOCUMENT_SCHEMA_VERSION;
@@ -49,7 +51,7 @@ export function parseKoshDocument(documentJson: string): KoshBlockNotePartialBlo
     throw new Error("Kosh document blocks must be a non-empty array");
   }
   const ids = new Set<string>();
-  validateBlocks(value.blocks, ids, { count: 0 }, 0);
+  validateBlocks(value.blocks, ids, new Set(), { count: 0 }, 0);
   return structuredClone(value.blocks) as KoshBlockNotePartialBlock[];
 }
 
@@ -102,6 +104,7 @@ function withoutPendingMedia(
 function validateBlocks(
   blocks: readonly unknown[],
   ids: Set<string>,
+  attachmentIds: Set<string>,
   state: { count: number },
   depth: number,
 ): void {
@@ -120,11 +123,24 @@ function validateBlocks(
     if (typeof value.type !== "string" || !SUPPORTED_BLOCK_TYPES.has(value.type)) {
       throw new Error(`Kosh block type is unsupported: ${String(value.type)}`);
     }
+    if (ATTACHMENT_BLOCK_TYPES.has(value.type)) {
+      const attachmentId =
+        isRecord(value.props) && typeof value.props.attachmentId === "string"
+          ? value.props.attachmentId
+          : "";
+      if (!UUID_V7_PATTERN.test(attachmentId)) {
+        throw new Error("Kosh media blocks must have a lowercase UUIDv7 attachmentId");
+      }
+      if (attachmentIds.has(attachmentId)) {
+        throw new Error("A Kosh attachment may belong to only one document block");
+      }
+      attachmentIds.add(attachmentId);
+    }
     if (ids.has(value.id)) throw new Error(`Kosh block id is duplicated: ${value.id}`);
     ids.add(value.id);
     if (value.children !== undefined) {
       if (!Array.isArray(value.children)) throw new Error("Kosh block children must be an array");
-      validateBlocks(value.children, ids, state, depth + 1);
+      validateBlocks(value.children, ids, attachmentIds, state, depth + 1);
     }
   }
 }

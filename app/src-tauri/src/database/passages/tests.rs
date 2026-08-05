@@ -264,10 +264,13 @@ fn attachment_citations_resolve_typed_file_and_line_provenance() {
              );
              INSERT INTO attachment(
                 id, created_at, updated_at, sha256, display_filename,
-                media_type, byte_length, kind, extraction_state
+                media_type, byte_length, kind, extraction_state,
+                owner_note_id, owner_block_id
              ) VALUES(
                 '019f547b-6200-7000-8000-000000002101',
-                10, 10, zeroblob(32), 'evidence.txt', 'text/plain', 12, 'TEXT', 'READY'
+                10, 10, zeroblob(32), 'evidence.txt', 'text/plain', 12, 'TEXT', 'READY',
+                '019f547b-6200-7000-8000-000000002105',
+                'attachment-citation-fixture'
              );
              INSERT INTO attachment_extraction(
                 id, attachment_id, extractor, extractor_version, content_hash,
@@ -297,11 +300,11 @@ fn attachment_citations_resolve_typed_file_and_line_provenance() {
                 'text-lines-v1', '[]'
              );
              INSERT INTO tidbit_revision_attachment(
-                tidbit_revision_id, attachment_id, sort_order, display_role
+                tidbit_revision_id, attachment_id, block_id, sort_order, display_role
              ) VALUES(
                 '019f547b-6200-7000-8000-000000002106',
                 '019f547b-6200-7000-8000-000000002101',
-                0, 'ATTACHMENT'
+                'attachment-citation-fixture', 0, 'ATTACHMENT'
              );
              COMMIT;",
         )
