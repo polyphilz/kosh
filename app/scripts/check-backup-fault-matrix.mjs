@@ -56,7 +56,7 @@ const requiredFailureClasses = [
 const requiredInvariants = [
   "authored-bytes",
   "bounded-cleanup",
-  "citation-provenance",
+  "block-provenance",
   "exact-txid",
   "idempotency",
   "local-availability",

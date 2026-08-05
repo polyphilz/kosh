@@ -1,16 +1,15 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type {
-  PassageEmbeddingIndexStatus,
-  PassageSearchResult,
-  SearchPassagesResponse,
+  BlockEmbeddingIndexStatus,
+  BlockSearchResult,
+  SearchBlocksResponse,
   SemanticRuntimeStatus,
 } from "../backend/contracts";
 import { useBackend } from "../backend/context";
 import { Dialog } from "../components/Dialog";
 import { checkpointBeforeSearch } from "./checkpoint";
 import { HighlightedText } from "./HighlightedText";
-import { citationLocation, sourceDisplay } from "./presentation";
 
 const SEARCH_DEBOUNCE_MS = 160;
 const SEARCH_RESULT_LIMIT = 24;
@@ -18,7 +17,7 @@ export const SEARCH_RESULT_SELECTED_EVENT = "kosh:search-result-selected";
 
 export interface SearchResultSelectedDetail {
   noteId: string;
-  passageId: string;
+  blockId: string;
 }
 
 interface SearchOverlayProps {
@@ -33,7 +32,7 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
   const listboxId = useId();
   const request = useRef(0);
   const [query, setQuery] = useState("");
-  const [response, setResponse] = useState<SearchPassagesResponse | null>(null);
+  const [response, setResponse] = useState<SearchBlocksResponse | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +64,7 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
       void checkpointBeforeSearch()
         .then(() => {
           if (request.current !== requestId) return null;
-          return backend.searchPassages({
+          return backend.searchBlocks({
             query: trimmed,
             mode: "DEFAULT",
             limit: SEARCH_RESULT_LIMIT,
@@ -92,16 +91,16 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
   const results = response?.results ?? [];
   const selected = results[selectedIndex];
   const openResult = useCallback(
-    (result: PassageSearchResult) => {
+    (result: BlockSearchResult) => {
       void navigate({
         to: "/notes/$noteId",
-        params: { noteId: result.note.id },
-        search: { passage: result.passageId },
+        params: { noteId: result.noteId },
+        search: { blockId: result.blockId },
       }).then(() => {
         onResultOpen();
         window.dispatchEvent(
           new CustomEvent<SearchResultSelectedDetail>(SEARCH_RESULT_SELECTED_EVENT, {
-            detail: { noteId: result.note.id, passageId: result.passageId },
+            detail: { noteId: result.noteId, blockId: result.blockId },
           }),
         );
       });
@@ -127,7 +126,7 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
   return (
     <Dialog
       className="search-overlay"
-      description="Find an exact passage in your local notes."
+      description="Find an exact block in your local notes."
       onClose={onClose}
       open={open}
       title="Search notes"
@@ -135,7 +134,7 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
       <div className="search-overlay__input-wrap">
         <span aria-hidden="true">⌕</span>
         <input
-          aria-activedescendant={selected ? resultId(listboxId, selected.passageId) : undefined}
+          aria-activedescendant={selected ? resultId(listboxId, selected.blockId) : undefined}
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={queryPresent}
@@ -177,16 +176,16 @@ export function SearchOverlay({ onClose, onResultOpen, open }: SearchOverlayProp
           </div>
         ) : !searching && response && results.length === 0 ? (
           <div className="search-overlay__state">
-            <strong>No passages found</strong>
-            <span>Try fewer words, a source domain, filename, or remembered phrase.</span>
+            <strong>No matches found</strong>
+            <span>Try fewer words, a filename, or a remembered phrase.</span>
           </div>
         ) : (
-          <div aria-label="Matching passages" id={listboxId} role="listbox">
+          <div aria-label="Matching blocks" id={listboxId} role="listbox">
             {results.map((result, index) => (
               <SearchOverlayResult
                 active={index === selectedIndex}
-                id={resultId(listboxId, result.passageId)}
-                key={result.passageId}
+                id={resultId(listboxId, result.blockId)}
+                key={`${result.noteId}:${result.blockId}`}
                 onPointerMove={() => setSelectedIndex(index)}
                 onSelect={() => openResult(result)}
                 result={result}
@@ -210,10 +209,8 @@ function SearchOverlayResult({
   id: string;
   onPointerMove: () => void;
   onSelect: () => void;
-  result: PassageSearchResult;
+  result: BlockSearchResult;
 }) {
-  const attachment = result.citation.attachment;
-  const sources = result.citation.sources.slice(0, 2);
   return (
     <button
       aria-selected={active}
@@ -227,24 +224,21 @@ function SearchOverlayResult({
       type="button"
     >
       <span className="search-overlay-result__header">
-        <strong>{result.note.displayTitle}</strong>
-        <span>{attachment?.displayFilename ?? citationLocation(result.citation)}</span>
+        <strong>{result.displayTitle}</strong>
+        <span>{result.attachmentNames[0] ?? `block ${result.blockOrdinal + 1}`}</span>
       </span>
-      {result.citation.headingContext.length > 0 && (
-        <span className="search-overlay-result__heading">
-          {result.citation.headingContext.join(" › ")}
-        </span>
+      {result.headingContext.length > 0 && (
+        <span className="search-overlay-result__heading">{result.headingContext.join(" › ")}</span>
       )}
       <span className="search-overlay-result__excerpt">
         <HighlightedText
           fields={["BODY", "EXTRACTED_TEXT"]}
           highlights={result.highlights}
-          text={result.citation.excerpt}
+          text={result.excerpt}
         />
       </span>
       <span className="search-overlay-result__meta">
-        <span>{citationLocation(result.citation)}</span>
-        {sources.length > 0 && <span>{sources.map(sourceDisplay).join(" · ")}</span>}
+        <span>block {result.blockOrdinal + 1}</span>
       </span>
     </button>
   );
@@ -254,7 +248,7 @@ function useSemanticStatus(open: boolean) {
   const backend = useBackend();
   const request = useRef(0);
   const [runtime, setRuntime] = useState<SemanticRuntimeStatus | null>(null);
-  const [index, setIndex] = useState<PassageEmbeddingIndexStatus | null>(null);
+  const [index, setIndex] = useState<BlockEmbeddingIndexStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -266,7 +260,7 @@ function useSemanticStatus(open: boolean) {
       try {
         const [nextRuntime, nextIndex] = await Promise.all([
           backend.semanticRuntimeStatus(),
-          backend.passageEmbeddingIndexStatus(),
+          backend.blockEmbeddingIndexStatus(),
         ]);
         if (!active || request.current !== requestId) return;
         setRuntime(nextRuntime);
@@ -289,9 +283,9 @@ function useSemanticStatus(open: boolean) {
 }
 
 function semanticLabel(
-  response: SearchPassagesResponse | null,
+  response: SearchBlocksResponse | null,
   runtime: SemanticRuntimeStatus | null,
-  index: PassageEmbeddingIndexStatus | null,
+  index: BlockEmbeddingIndexStatus | null,
   error: string | null,
 ): string {
   if (response?.executionMode === "HYBRID") return "Hybrid";
@@ -308,18 +302,18 @@ function semanticLabel(
 function searchStatus(
   queryPresent: boolean,
   searching: boolean,
-  response: SearchPassagesResponse | null,
+  response: SearchBlocksResponse | null,
   error: string | null,
 ): string {
   if (error) return "Search needs attention";
   if (!queryPresent) return "Type to search";
   if (searching) return "Searching locally…";
   if (!response) return "Waiting to search";
-  return `${response.results.length} ${response.results.length === 1 ? "passage" : "passages"}`;
+  return `${response.results.length} ${response.results.length === 1 ? "block" : "blocks"}`;
 }
 
-function resultId(listboxId: string, passageId: string): string {
-  return `${listboxId}-${passageId}`.replace(/[^A-Za-z0-9_-]/gu, "-");
+function resultId(listboxId: string, blockId: string): string {
+  return `${listboxId}-${blockId}`.replace(/[^A-Za-z0-9_-]/gu, "-");
 }
 
 function errorMessage(reason: unknown): string {

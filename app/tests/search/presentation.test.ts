@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CitationResolution } from "../../src/backend/contracts";
-import {
-  citationCopyText,
-  citationLocation,
-  highlightedSegments,
-  sourceDomain,
-} from "../../src/search/presentation";
+import { highlightedSegments } from "../../src/search/presentation";
 
 describe("search presentation", () => {
   it("maps Unicode scalar highlight offsets without breaking the original text", () => {
@@ -38,88 +32,5 @@ describe("search presentation", () => {
         ["BODY"],
       ),
     ).toEqual([{ highlighted: true, text: "citation" }]);
-  });
-
-  it("formats typed locators and copies only resolved provenance", () => {
-    const citation: CitationResolution = {
-      passageId: "passage-1",
-      excerpt: "Supported text.",
-      headingContext: ["Chapter", "Evidence"],
-      constructionVersion: "v1",
-      state: "HISTORICAL",
-      locator: { kind: "OCR_REGION", region: [12, 24, 80, 36] },
-      tidbit: {
-        id: "tidbit-1",
-        revisionId: "revision-3",
-        revisionNumber: 3,
-        displayTitle: "Proof",
-        deleted: false,
-      },
-      attachment: {
-        id: "attachment-1",
-        extractionId: "extraction-1",
-        displayFilename: "scan.png",
-        mediaType: "image/png",
-        deleted: false,
-      },
-      sources: [
-        {
-          id: "source-1",
-          label: "Publisher",
-          url: "https://www.example.com/paper#page=7",
-        },
-      ],
-    };
-
-    expect(citationLocation(citation)).toBe("Chapter › Evidence · image region");
-    expect(citationCopyText(citation)).toBe(
-      [
-        "scan.png",
-        "Chapter › Evidence · image region",
-        "Revision 3 · Historical",
-        "Publisher · example.com",
-        "Kosh passage: passage-1",
-        "Supported text.",
-      ].join("\n"),
-    );
-    expect(sourceDomain("not a URL")).toBeNull();
-  });
-
-  it("preserves whitespace-sensitive excerpts in copied citations", () => {
-    const citation: CitationResolution = {
-      passageId: "passage-code",
-      excerpt: "  const answer = 42;\n",
-      headingContext: ["Example"],
-      constructionVersion: "v1",
-      state: "CURRENT",
-      locator: {
-        kind: "MARKDOWN_BLOCKS",
-        startBlock: 0,
-        endBlock: 0,
-        startChar: 0,
-        endChar: 21,
-        startLine: 1,
-        endLine: 1,
-      },
-      tidbit: {
-        id: "tidbit-code",
-        revisionId: "revision-code",
-        revisionNumber: 1,
-        displayTitle: "Code sample",
-        deleted: false,
-      },
-      attachment: null,
-      sources: [],
-    };
-
-    expect(citationCopyText(citation)).toBe(
-      [
-        "Code sample",
-        "Example · line 1",
-        "Revision 1 · Current",
-        "Kosh passage: passage-code",
-        "  const answer = 42;\n",
-      ].join("\n"),
-    );
   });
 });

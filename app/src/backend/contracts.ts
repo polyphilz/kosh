@@ -31,14 +31,14 @@ export interface SemanticRuntimeLogs {
   truncated: boolean;
 }
 
-export type PassageEmbeddingIndexPhase = "WAITING_FOR_RUNTIME" | "INDEXING" | "READY" | "FAILED";
+export type BlockEmbeddingIndexPhase = "WAITING_FOR_RUNTIME" | "INDEXING" | "READY" | "FAILED";
 
-export interface PassageEmbeddingIndexStatus {
-  phase: PassageEmbeddingIndexPhase;
+export interface BlockEmbeddingIndexStatus {
+  phase: BlockEmbeddingIndexPhase;
   embeddingIndexId: string;
   indexKey: string;
-  indexedPassages: number;
-  totalPassages: number;
+  indexedBlocks: number;
+  totalBlocks: number;
   active: boolean;
   message: string | null;
 }
@@ -74,9 +74,7 @@ export interface MaintenanceDiagnostics {
     activeTidbits: number;
     trashedTidbits: number;
     revisions: number;
-    authoredPassages: number;
-    attachmentPassages: number;
-    blockSearchDocuments: number;
+    searchableBlocks: number;
     attachments: number;
     attachmentBytes: number;
     imageOcr: MaintenanceQueueCounts;
@@ -347,64 +345,11 @@ export interface RestoreTidbitInput {
   expectedRevisionId: string;
 }
 
-export type CitationState = "CURRENT" | "HISTORICAL";
-
-export type CitationLocator =
-  | {
-      kind: "MARKDOWN_BLOCKS";
-      startBlock: number;
-      endBlock: number;
-      sourceStartByte: number | null;
-      sourceEndByte: number | null;
-      startChar: number | null;
-      endChar: number | null;
-      startLine: number | null;
-      endLine: number | null;
-    }
-  | {
-      kind: "OCR_REGION";
-      region: unknown;
-    };
-
-export interface CitationTidbit {
-  id: string;
-  revisionId: string;
-  revisionNumber: number;
-  displayTitle: string;
-  deleted: boolean;
-}
-
-export interface CitationAttachment {
-  id: string;
-  extractionId: string;
-  displayFilename: string;
-  mediaType: string;
-  deleted: boolean;
-}
-
-export interface CitationResolution {
-  passageId: string;
-  excerpt: string;
-  headingContext: string[];
-  constructionVersion: string;
-  state: CitationState;
-  locator: CitationLocator;
-  tidbit: CitationTidbit | null;
-  attachment: CitationAttachment | null;
-  sources: TidbitSource[];
-}
-
 export type LexicalSearchMode = "DEFAULT" | "EXACT";
 
-export type SearchField =
-  | "HEADING_CONTEXT"
-  | "BODY"
-  | "SOURCE_LABEL"
-  | "SOURCE_DOMAIN"
-  | "ATTACHMENT_NAME"
-  | "EXTRACTED_TEXT";
+export type SearchField = "HEADING_CONTEXT" | "BODY" | "ATTACHMENT_NAME" | "EXTRACTED_TEXT";
 
-export interface SearchPassagesInput {
+export interface SearchBlocksInput {
   query: string;
   mode: LexicalSearchMode;
   limit: number;
@@ -416,13 +361,18 @@ export interface SearchHighlight {
   endChar: number;
 }
 
-export interface PassageSearchResult {
-  passageId: string;
+export interface BlockSearchResult {
+  noteId: string;
+  blockId: string;
+  blockType: string;
+  blockOrdinal: number;
+  displayTitle: string;
+  headingContext: string[];
+  excerpt: string;
+  attachmentNames: string[];
   score: number;
   matchedFields: SearchField[];
   highlights: SearchHighlight[];
-  note: CitationTidbit;
-  citation: CitationResolution;
 }
 
 export type SearchExecutionMode = "EXACT" | "HYBRID" | "LEXICAL_ONLY";
@@ -434,8 +384,8 @@ export type SemanticSearchReadiness =
   | "FAILED"
   | "NOT_REQUESTED";
 
-export interface SearchPassagesResponse {
-  results: PassageSearchResult[];
+export interface SearchBlocksResponse {
+  results: BlockSearchResult[];
   executionMode: SearchExecutionMode;
   semanticReadiness: SemanticSearchReadiness;
 }
@@ -615,7 +565,7 @@ export interface Backend {
   retrySemanticRuntime(): Promise<SemanticRuntimeStatus>;
   repairSemanticRuntime(): Promise<SemanticRuntimeStatus>;
   semanticRuntimeLogs(): Promise<SemanticRuntimeLogs>;
-  passageEmbeddingIndexStatus(): Promise<PassageEmbeddingIndexStatus>;
+  blockEmbeddingIndexStatus(): Promise<BlockEmbeddingIndexStatus>;
   loadMaintenanceDiagnostics(): Promise<MaintenanceDiagnostics>;
   runIntegrityCheck(): Promise<IntegrityCheckOutcome>;
   rebuildSearchIndexes(): Promise<MaintenanceOutcome>;
@@ -626,8 +576,7 @@ export interface Backend {
   deleteTidbit(input: DeleteTidbitInput): Promise<TidbitRecord>;
   restoreTidbit(input: RestoreTidbitInput): Promise<TidbitRecord>;
   openSourceUrl(sourceId: string): Promise<void>;
-  resolveCitation(passageId: string): Promise<CitationResolution>;
-  searchPassages(input: SearchPassagesInput): Promise<SearchPassagesResponse>;
+  searchBlocks(input: SearchBlocksInput): Promise<SearchBlocksResponse>;
   saveWorkingCopy(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
   reserveWorkingCopyForMedia(input: SaveWorkingCopyInput): Promise<WorkingCopySaveResult>;
   discardWorkingCopy(input: DiscardWorkingCopyInput): Promise<boolean>;

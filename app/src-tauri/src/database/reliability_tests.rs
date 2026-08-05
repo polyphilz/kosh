@@ -6,7 +6,7 @@ use std::{
 
 use super::{
     AttachmentIngestInput, Database, DatabasePaths, LexicalSearchMode, MediaLimits,
-    SearchPassagesInput, SourceDraft, TidbitDraft,
+    SearchBlocksInput, SourceDraft, TidbitDraft,
 };
 
 const CAPTURE_THREADS: usize = 4;
@@ -70,7 +70,7 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
             start.wait();
             for _ in 0..SEARCHES_PER_THREAD {
                 client
-                    .search_passages(SearchPassagesInput {
+                    .search_blocks(SearchBlocksInput {
                         query: "concurrent stress evidence".into(),
                         mode: LexicalSearchMode::Default,
                         limit: 10,
@@ -133,25 +133,15 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
     assert_eq!(before.attachments, ATTACHMENTS as u64);
 
     let exact = setup_client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "\"Concurrent stress evidence 042\"".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
         .expect("exact result after contention");
     assert_eq!(exact.len(), 1);
-    let passage_id = exact[0].passage_id.clone();
-    let revision_id = exact[0]
-        .citation
-        .tidbit
-        .as_ref()
-        .expect("authored citation")
-        .revision_id
-        .clone();
-    assert_eq!(
-        exact[0].citation.sources[0].url.as_deref(),
-        Some("https://example.invalid/reliability/042")
-    );
+    let note_id = exact[0].note_id.clone();
+    let block_id = exact[0].block_id.clone();
 
     database.shutdown().expect("mixed workload shutdown");
     drop(setup_client);
@@ -161,15 +151,16 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
     reopened_client
         .full_integrity_check()
         .expect("restart integrity");
-    assert_eq!(
-        reopened_client
-            .resolve_citation(passage_id)
-            .expect("restart citation")
-            .tidbit
-            .expect("restart authored citation")
-            .revision_id,
-        revision_id
-    );
+    let restarted = reopened_client
+        .search_blocks(SearchBlocksInput {
+            query: "\"Concurrent stress evidence 042\"".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("restart search");
+    assert_eq!(restarted.len(), 1);
+    assert_eq!(restarted[0].note_id, note_id);
+    assert_eq!(restarted[0].block_id, block_id);
     assert_eq!(
         reopened_client
             .maintenance_snapshot()

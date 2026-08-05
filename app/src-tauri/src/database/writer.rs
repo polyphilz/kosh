@@ -22,11 +22,13 @@ use super::{
         OffsiteBackupConfig, OffsiteBackupConfigIntent, OffsiteBackupTakeoverIntent,
         SaveOffsiteBackupConfigInput,
     },
-    block_embedding_index::PendingBlockEmbedding,
-    block_search,
-    embedding_index::{
-        InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
+    block_embedding_index::{
+        BlockEmbeddingIndexProgress, InstallEmbeddingDisposition, PendingBlockEmbedding,
     },
+    block_query::{
+        BlockSearchResult, SearchBlocksInput, SearchBlocksResponse, SemanticSearchReadiness,
+    },
+    block_search,
     error::{DatabaseError, Result},
     maintenance::{ExtractionRetryReport, MaintenanceDatabaseSnapshot},
     media::{
@@ -40,11 +42,7 @@ use super::{
         CheckpointMediaReference, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
         PreparedOffsiteCheckpoint,
     },
-    passages::CitationResolution,
     safety_snapshot::SafetySnapshotReport,
-    search::{
-        PassageSearchResult, SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
-    },
     settings::{SetAutomaticUpdateChecksInput, SetShortcutSettingsInput, ShortcutSettings},
     tidbits::{CreateTidbitWrite, DeleteTidbitInput, RestoreTidbitInput, Tidbit},
     working_copies::{
@@ -235,34 +233,6 @@ pub(super) enum WriterMessage {
         now_ms: i64,
         reply: SyncSender<Result<ExtractionRetryReport>>,
     },
-    LoadEmbeddingReconciliationBatch {
-        limit: u32,
-        reply: SyncSender<Result<Vec<PendingPassageEmbedding>>>,
-    },
-    InstallPassageEmbedding {
-        pending: PendingPassageEmbedding,
-        embedding: Vec<f32>,
-        created_at_ms: i64,
-        reply: SyncSender<Result<InstallEmbeddingDisposition>>,
-    },
-    PassageEmbeddingIndexProgress {
-        reply: SyncSender<Result<PassageEmbeddingIndexProgress>>,
-    },
-    PassageEmbeddingIndexNeedsReconciliation {
-        reply: SyncSender<Result<bool>>,
-    },
-    PassageEmbeddingSearchReadiness {
-        reply: SyncSender<Result<SemanticSearchReadiness>>,
-    },
-    ActivatePassageEmbeddingIndexIfComplete {
-        activated_at_ms: i64,
-        reply: SyncSender<Result<bool>>,
-    },
-    RecordPassageEmbeddingIndexFailure {
-        error: String,
-        failed_at_ms: i64,
-        reply: SyncSender<Result<()>>,
-    },
     LoadBlockEmbeddingReconciliationBatch {
         limit: u32,
         reply: SyncSender<Result<Vec<PendingBlockEmbedding>>>,
@@ -272,6 +242,12 @@ pub(super) enum WriterMessage {
         embedding: Vec<f32>,
         created_at_ms: i64,
         reply: SyncSender<Result<InstallEmbeddingDisposition>>,
+    },
+    BlockEmbeddingIndexProgress {
+        reply: SyncSender<Result<BlockEmbeddingIndexProgress>>,
+    },
+    BlockEmbeddingSearchReadiness {
+        reply: SyncSender<Result<SemanticSearchReadiness>>,
     },
     BlockEmbeddingIndexNeedsReconciliation {
         reply: SyncSender<Result<bool>>,
@@ -369,15 +345,11 @@ pub(super) enum WriterMessage {
         now_ms: i64,
         reply: SyncSender<Result<Tidbit>>,
     },
-    ResolveCitation {
-        passage_id: String,
-        reply: SyncSender<Result<CitationResolution>>,
-    },
-    SearchPassages {
-        input: SearchPassagesInput,
+    SearchBlocks {
+        input: SearchBlocksInput,
         query_embedding: Option<Vec<f32>>,
         fallback_readiness: SemanticSearchReadiness,
-        reply: SyncSender<Result<SearchPassagesResponse>>,
+        reply: SyncSender<Result<SearchBlocksResponse>>,
     },
     RefreshAttachmentSearchDocuments {
         attachment_id: String,
@@ -1196,103 +1168,6 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn load_embedding_reconciliation_batch(
-        &self,
-        limit: u32,
-    ) -> Result<Vec<PendingPassageEmbedding>> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::LoadEmbeddingReconciliationBatch { limit, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn install_passage_embedding(
-        &self,
-        pending: PendingPassageEmbedding,
-        embedding: Vec<f32>,
-        created_at_ms: i64,
-    ) -> Result<InstallEmbeddingDisposition> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::InstallPassageEmbedding {
-                pending,
-                embedding,
-                created_at_ms,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn passage_embedding_index_progress(&self) -> Result<PassageEmbeddingIndexProgress> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::PassageEmbeddingIndexProgress { reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn passage_embedding_index_needs_reconciliation(&self) -> Result<bool> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::PassageEmbeddingIndexNeedsReconciliation { reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn passage_embedding_search_readiness(&self) -> Result<SemanticSearchReadiness> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::PassageEmbeddingSearchReadiness { reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn activate_passage_embedding_index_if_complete(
-        &self,
-        activated_at_ms: i64,
-    ) -> Result<bool> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ActivatePassageEmbeddingIndexIfComplete {
-                activated_at_ms,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn record_passage_embedding_index_failure(
-        &self,
-        error: String,
-        failed_at_ms: i64,
-    ) -> Result<()> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::RecordPassageEmbeddingIndexFailure {
-                error,
-                failed_at_ms,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
     pub(crate) fn load_block_embedding_reconciliation_batch(
         &self,
         limit: u32,
@@ -1324,6 +1199,14 @@ impl DatabaseClient {
         receiver
             .recv()
             .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn block_embedding_index_progress(&self) -> Result<BlockEmbeddingIndexProgress> {
+        self.request(|reply| WriterMessage::BlockEmbeddingIndexProgress { reply })
+    }
+
+    pub(crate) fn block_embedding_search_readiness(&self) -> Result<SemanticSearchReadiness> {
+        self.request(|reply| WriterMessage::BlockEmbeddingSearchReadiness { reply })
     }
 
     pub(crate) fn block_embedding_index_needs_reconciliation(&self) -> Result<bool> {
@@ -1445,38 +1328,21 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn resolve_citation(&self, passage_id: String) -> Result<CitationResolution> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ResolveCitation { passage_id, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn search_passages(
-        &self,
-        input: SearchPassagesInput,
-    ) -> Result<Vec<PassageSearchResult>> {
+    pub(crate) fn search_blocks(&self, input: SearchBlocksInput) -> Result<Vec<BlockSearchResult>> {
         Ok(self
-            .search_passages_with_semantics(
-                input,
-                None,
-                SemanticSearchReadiness::WaitingForRuntime,
-            )?
+            .search_blocks_with_semantics(input, None, SemanticSearchReadiness::WaitingForRuntime)?
             .results)
     }
 
-    pub(crate) fn search_passages_with_semantics(
+    pub(crate) fn search_blocks_with_semantics(
         &self,
-        input: SearchPassagesInput,
+        input: SearchBlocksInput,
         query_embedding: Option<Vec<f32>>,
         fallback_readiness: SemanticSearchReadiness,
-    ) -> Result<SearchPassagesResponse> {
+    ) -> Result<SearchBlocksResponse> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
-            .send(WriterMessage::SearchPassages {
+            .send(WriterMessage::SearchBlocks {
                 input,
                 query_embedding,
                 fallback_readiness,

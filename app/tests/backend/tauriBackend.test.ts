@@ -7,7 +7,7 @@ import type {
   DiscardWorkingCopyInput,
   RestoreTidbitInput,
   SaveWorkingCopyInput,
-  SearchPassagesInput,
+  SearchBlocksInput,
   SetAutomaticUpdateChecksInput,
   SetShortcutSettingsInput,
   TakeOverBackupInput,
@@ -45,7 +45,7 @@ describe("tauriBackend tidbit gateway", () => {
       expectedRevisionId: "revision-2",
     };
     const restoration: RestoreTidbitInput = { ...deletion };
-    const search: SearchPassagesInput = {
+    const search: SearchBlocksInput = {
       query: '"exact phrase"',
       mode: "EXACT",
       limit: 20,
@@ -66,8 +66,7 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.deleteTidbit(deletion);
     await tauriBackend.restoreTidbit(restoration);
     await tauriBackend.openSourceUrl("source-1");
-    await tauriBackend.resolveCitation("passage-1");
-    await tauriBackend.searchPassages(search);
+    await tauriBackend.searchBlocks(search);
     await tauriBackend.saveWorkingCopy(workingCopy);
     await tauriBackend.reserveWorkingCopyForMedia(workingCopy);
     await tauriBackend.loadWorkingCopy("tidbit-1");
@@ -97,8 +96,7 @@ describe("tauriBackend tidbit gateway", () => {
       ["delete_tidbit", { input: deletion }],
       ["restore_tidbit", { input: restoration }],
       ["open_source_url", { sourceId: "source-1" }],
-      ["resolve_citation", { passageId: "passage-1" }],
-      ["search_passages", { input: search }],
+      ["search_blocks", { input: search }],
       ["save_working_copy", { input: workingCopy }],
       ["reserve_working_copy_for_media", { input: workingCopy }],
       ["load_working_copy", { noteId: "tidbit-1" }],

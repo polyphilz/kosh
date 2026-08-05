@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 
-use super::{block_embedding_index, embedding_index, search, DatabaseError, Result};
+use super::{block_embedding_index, block_search, DatabaseError, Result};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,9 +28,7 @@ pub struct MaintenanceDatabaseSnapshot {
     pub active_tidbits: u64,
     pub trashed_tidbits: u64,
     pub revisions: u64,
-    pub authored_passages: u64,
-    pub attachment_passages: u64,
-    pub block_search_documents: u64,
+    pub searchable_blocks: u64,
     pub attachments: u64,
     pub attachment_bytes: u64,
     pub image_ocr: QueueCounts,
@@ -80,9 +78,7 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
         active_tidbits,
         trashed_tidbits,
         revisions: count(connection, "tidbit_revision")?,
-        authored_passages: count_where(connection, "passage", "owner_kind = 'AUTHOR'")?,
-        attachment_passages: count_where(connection, "passage", "owner_kind = 'ATTACHMENT'")?,
-        block_search_documents: count(connection, "block_search_document")?,
+        searchable_blocks: count(connection, "block_search_document")?,
         attachments,
         attachment_bytes,
         image_ocr: queue_counts(connection, "image_ocr_queue", "ocr")?,
@@ -92,13 +88,13 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
 
 pub(super) fn rebuild_search(connection: &mut Connection) -> Result<u64> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    search::rebuild_documents(&transaction)?;
-    let block_documents =
+    block_search::rebuild_documents(&transaction)?;
+    let documents =
         transaction.query_row("SELECT count(*) FROM block_search_document", [], |row| {
             nonnegative(row.get(0)?)
         })?;
     transaction.commit()?;
-    Ok(block_documents)
+    Ok(documents)
 }
 
 pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Result<u64> {
@@ -107,26 +103,9 @@ pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Re
             "embedding rebuild timestamp must not be negative".into(),
         ));
     }
-    embedding_index::ensure_vector_table(connection)?;
     block_embedding_index::ensure_vector_table(connection)?;
-    let manifest = embedding_index::manifest();
+    let manifest = crate::embedding::jina_v1_manifest();
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let queued_vectors = transaction.execute(
-        "INSERT INTO passage_embedding_reap_queue(passage_rowid)
-         SELECT rowid FROM passage_embedding_vec_jina_v1 WHERE rowid > 0
-         ON CONFLICT(passage_rowid) DO NOTHING",
-        [],
-    )? as u64;
-    let queued_documents = transaction.execute(
-        "INSERT INTO passage_embedding_reap_queue(passage_rowid)
-         SELECT rowid FROM passage_search_document WHERE true
-         ON CONFLICT(passage_rowid) DO NOTHING",
-        [],
-    )? as u64;
-    let invalidated = transaction.execute(
-        "DELETE FROM passage_embedding WHERE embedding_index_id = ?1",
-        params![manifest.id.as_str()],
-    )? as u64;
     let queued_block_vectors = transaction.execute(
         "INSERT INTO block_embedding_reap_queue(block_rowid)
          SELECT rowid FROM block_embedding_vec_jina_v1 WHERE rowid > 0
@@ -144,32 +123,12 @@ pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Re
         params![manifest.id.as_str()],
     )? as u64;
     transaction.execute(
-        "UPDATE passage_embedding_settings
-         SET active_embedding_index_id = NULL,
-             updated_at = max(updated_at + 1, ?1)
-         WHERE singleton_id = 1",
-        params![now_ms],
-    )?;
-    transaction.execute(
         "UPDATE block_embedding_settings
          SET active_embedding_index_id = NULL,
              updated_at = max(updated_at + 1, ?1)
          WHERE singleton_id = 1",
         params![now_ms],
     )?;
-    let changed = transaction.execute(
-        "UPDATE index_state
-         SET status = 'DIRTY', cursor = NULL,
-             updated_at = max(updated_at, ?1), error = NULL
-         WHERE name = 'PASSAGE_EMBEDDING' AND version = ?2",
-        params![now_ms, manifest.index_key.as_str()],
-    )?;
-    if changed != 1 {
-        return Err(DatabaseError::Validation {
-            kind: "main",
-            reason: "PASSAGE_EMBEDDING index state is missing or incompatible".into(),
-        });
-    }
     let block_changed = transaction.execute(
         "UPDATE index_state
          SET status = 'DIRTY', cursor = NULL,
@@ -184,12 +143,7 @@ pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Re
         });
     }
     transaction.commit()?;
-    Ok(invalidated.saturating_add(invalidated_blocks).max(
-        queued_vectors
-            .saturating_add(queued_documents)
-            .saturating_add(queued_block_vectors)
-            .saturating_add(queued_block_documents),
-    ))
+    Ok(invalidated_blocks.max(queued_block_vectors.saturating_add(queued_block_documents)))
 }
 
 pub(super) fn retry_failed_extractions(

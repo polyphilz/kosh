@@ -4,7 +4,7 @@ import type {
   BackupRestoreDrill,
   BackupRestorePreview,
   BackupSettingsSnapshot,
-  CitationResolution,
+  BlockSearchResult,
   CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
@@ -16,15 +16,15 @@ import type {
   IntegrityCheckOutcome,
   MaintenanceDiagnostics,
   MaintenanceOutcome,
-  PassageEmbeddingIndexStatus,
+  BlockEmbeddingIndexStatus,
   RuntimeProbe,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
   RestoreTidbitInput,
   SaveWorkingCopyInput,
   SearchField,
-  SearchPassagesInput,
-  SearchPassagesResponse,
+  SearchBlocksInput,
+  SearchBlocksResponse,
   SemanticRuntimeLogs,
   SemanticRuntimeStatus,
   SetBackupEnabledInput,
@@ -44,10 +44,6 @@ import type {
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
 import { createKoshDocumentFromMarkdown } from "../editor/document";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
-
-interface FakeCitationSnapshot {
-  revision: TidbitRecord;
-}
 
 export interface FakeNoteInput {
   bodyMarkdown: string;
@@ -89,7 +85,6 @@ export class FakeBackend implements Backend {
     message: null,
   };
   private readonly workingCopies = new Map<string, WorkingCopyRecord>();
-  private readonly citations = new Map<string, FakeCitationSnapshot>();
   private readonly sourceIds = new Map<string, string>();
   private readonly tidbits = new Map<string, TidbitRecord>();
   private shortcutSettings: ShortcutSettingsSnapshot = {
@@ -145,7 +140,6 @@ export class FakeBackend implements Backend {
         documentJson: tidbit.documentJson ?? createKoshDocumentFromMarkdown(tidbit.bodyMarkdown),
       };
       this.tidbits.set(normalized.id, cloneTidbit(normalized));
-      this.registerCitation(normalized);
       this.sequence = Math.max(
         this.sequence,
         generatedIdSequence(tidbit.id),
@@ -392,14 +386,14 @@ export class FakeBackend implements Backend {
     return { text: "", truncated: false };
   }
 
-  async passageEmbeddingIndexStatus(): Promise<PassageEmbeddingIndexStatus> {
+  async blockEmbeddingIndexStatus(): Promise<BlockEmbeddingIndexStatus> {
     const ready = this.semanticStatus.phase === "READY";
     return {
       phase: ready ? "READY" : "WAITING_FOR_RUNTIME",
       embeddingIndexId: "019f547b-6200-7000-8000-000000000002",
       indexKey: "jina_v1",
-      indexedPassages: 0,
-      totalPassages: 0,
+      indexedBlocks: 0,
+      totalBlocks: 0,
       active: ready,
       message: null,
     };
@@ -423,10 +417,10 @@ export class FakeBackend implements Backend {
       library: {
         activeTidbits,
         trashedTidbits,
-        revisions: this.citations.size,
-        authoredPassages: this.citations.size,
-        attachmentPassages: 0,
-        blockSearchDocuments: activeTidbits,
+        revisions: this.tidbits.size,
+        searchableBlocks: [...this.tidbits.values()]
+          .filter((tidbit) => tidbit.deletedAtMs === null)
+          .reduce((count, tidbit) => count + fakeSearchBlocks(tidbit).length, 0),
         attachments: 0,
         attachmentBytes: 0,
         imageOcr: {
@@ -437,9 +431,9 @@ export class FakeBackend implements Backend {
           failed: 0,
         },
         indexes: [
-          { name: "PASSAGE_FTS", version: "lexical-v4", status: "IDLE", error: null },
+          { name: "BLOCK_FTS", version: "block-lexical-v1", status: "IDLE", error: null },
           {
-            name: "PASSAGE_EMBEDDING",
+            name: "BLOCK_EMBEDDING",
             version: "jina_v1",
             status: this.semanticStatus.phase === "READY" ? "IDLE" : "DIRTY",
             error: null,
@@ -499,7 +493,7 @@ export class FakeBackend implements Backend {
     return this.maintenanceOutcome(
       "REBUILD_SEARCH",
       [...this.tidbits.values()].filter((tidbit) => tidbit.deletedAtMs === null).length,
-      "Rebuilt passages and full-text indexes.",
+      "Rebuilt current block search indexes.",
     );
   }
 
@@ -622,7 +616,6 @@ export class FakeBackend implements Backend {
       sources,
     };
     this.tidbits.set(tidbit.id, tidbit);
-    this.registerCitation(tidbit);
     return cloneTidbit(tidbit);
   }
 
@@ -692,7 +685,6 @@ export class FakeBackend implements Backend {
       sources: this.prepareSources(input.sources),
     };
     this.tidbits.set(updated.id, updated);
-    this.registerCitation(updated);
     return cloneTidbit(updated);
   }
 
@@ -732,53 +724,15 @@ export class FakeBackend implements Backend {
   }
 
   async openSourceUrl(sourceId: string): Promise<void> {
-    const source = [...this.citations.values()]
-      .flatMap(({ revision }) => revision.sources)
+    const source = [...this.tidbits.values()]
+      .flatMap((revision) => revision.sources)
       .find((candidate) => candidate.id === sourceId && candidate.url !== null);
     if (!source) {
       throw new Error(`source URL ${sourceId} was not found`);
     }
   }
 
-  async resolveCitation(passageId: string): Promise<CitationResolution> {
-    const snapshot = this.citations.get(passageId);
-    if (!snapshot) {
-      throw new Error(`passage ${passageId} was not found`);
-    }
-    const current = this.requireTidbit(snapshot.revision.id);
-    const isCurrent =
-      current.deletedAtMs === null &&
-      current.currentRevisionId === snapshot.revision.currentRevisionId;
-    return {
-      passageId,
-      excerpt: snapshot.revision.bodyMarkdown,
-      headingContext: [],
-      constructionVersion: "fake-markdown-blocks-v1",
-      state: isCurrent ? "CURRENT" : "HISTORICAL",
-      locator: {
-        kind: "MARKDOWN_BLOCKS",
-        startBlock: 0,
-        endBlock: 0,
-        sourceStartByte: 0,
-        sourceEndByte: new TextEncoder().encode(snapshot.revision.bodyMarkdown).length,
-        startChar: null,
-        endChar: null,
-        startLine: null,
-        endLine: null,
-      },
-      tidbit: {
-        id: snapshot.revision.id,
-        revisionId: snapshot.revision.currentRevisionId,
-        revisionNumber: snapshot.revision.revisionNumber,
-        displayTitle: snapshot.revision.displayTitle,
-        deleted: current.deletedAtMs !== null,
-      },
-      attachment: null,
-      sources: snapshot.revision.sources.map((source) => ({ ...source })),
-    };
-  }
-
-  async searchPassages(input: SearchPassagesInput): Promise<SearchPassagesResponse> {
+  async searchBlocks(input: SearchBlocksInput): Promise<SearchBlocksResponse> {
     if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
       throw new Error("limit must be between 1 and 100");
     }
@@ -795,67 +749,68 @@ export class FakeBackend implements Backend {
     }
     const matches = [...this.tidbits.values()]
       .filter((tidbit) => tidbit.deletedAtMs === null)
-      .flatMap((tidbit) => {
-        const fields: Array<[SearchField, string]> = [
-          ["BODY", tidbit.bodyMarkdown],
-          ["SOURCE_LABEL", tidbit.sources.flatMap((source) => source.label ?? []).join("\n")],
-          ["SOURCE_DOMAIN", tidbit.sources.flatMap((source) => source.url ?? []).join("\n")],
-        ];
-        const matchedAtoms = atoms.map((atom) =>
-          fields.some(([, value]) =>
-            normalizeSearchText(value).includes(normalizeSearchText(atom)),
-          ),
-        );
-        const matchedAtomCount = matchedAtoms.filter(Boolean).length;
-        const qualifies =
-          input.mode === "EXACT"
-            ? matchedAtoms.every(Boolean)
-            : matchedAtomCount >= Math.min(atoms.length, 2);
-        if (!qualifies) {
-          return [];
-        }
-        const matchedFields = fields
-          .filter(([, value]) =>
-            atoms.some((atom) => normalizeSearchText(value).includes(normalizeSearchText(atom))),
-          )
-          .map(([field]) => field);
-        const highlights = fields.flatMap(([field, value]) =>
-          atoms.flatMap((atom) => searchSpans(value, atom, field)),
-        );
-        return [
-          {
-            tidbit,
-            matchedFields,
-            highlights: highlights.slice(0, 32),
-            score: matchedAtomCount,
-          },
-        ];
-      })
+      .flatMap((tidbit) =>
+        fakeSearchBlocks(tidbit)
+          .map((block) => {
+            const fields: Array<[SearchField, string]> = [
+              ["BODY", block.text],
+              ["ATTACHMENT_NAME", block.attachmentName],
+            ];
+            const matchedAtoms = atoms.map((atom) =>
+              fields.some(([, value]) =>
+                normalizeSearchText(value).includes(normalizeSearchText(atom)),
+              ),
+            );
+            const matchedAtomCount = matchedAtoms.filter(Boolean).length;
+            const qualifies =
+              input.mode === "EXACT"
+                ? matchedAtoms.every(Boolean)
+                : matchedAtomCount >= Math.min(atoms.length, 2);
+            if (!qualifies) {
+              return null;
+            }
+            const matchedFields = fields
+              .filter(([, value]) =>
+                atoms.some((atom) =>
+                  normalizeSearchText(value).includes(normalizeSearchText(atom)),
+                ),
+              )
+              .map(([field]) => field);
+            const highlights = fields.flatMap(([field, value]) =>
+              atoms.flatMap((atom) => searchSpans(value, atom, field)),
+            );
+            return {
+              tidbit,
+              block,
+              matchedFields,
+              highlights: highlights.slice(0, 32),
+              score: matchedAtomCount,
+            };
+          })
+          .filter((match): match is NonNullable<typeof match> => match !== null),
+      )
       .sort(
         (left, right) =>
           right.score - left.score ||
           right.tidbit.updatedAtMs - left.tidbit.updatedAtMs ||
-          left.tidbit.id.localeCompare(right.tidbit.id),
+          left.tidbit.id.localeCompare(right.tidbit.id) ||
+          left.block.ordinal - right.block.ordinal,
       )
       .slice(0, input.limit);
 
-    const results = await Promise.all(
-      matches.map(async ({ tidbit, matchedFields, highlights, score }) => {
-        const passageId = `fake-passage:${tidbit.currentRevisionId}`;
-        return {
-          passageId,
-          score,
-          matchedFields,
-          highlights,
-          note: {
-            id: tidbit.id,
-            revisionId: tidbit.currentRevisionId,
-            revisionNumber: tidbit.revisionNumber,
-            displayTitle: tidbit.displayTitle,
-            deleted: false,
-          },
-          citation: await this.resolveCitation(passageId),
-        };
+    const results: BlockSearchResult[] = matches.map(
+      ({ tidbit, block, matchedFields, highlights, score }) => ({
+        noteId: tidbit.id,
+        blockId: block.id,
+        blockType: block.type,
+        blockOrdinal: block.ordinal,
+        displayTitle: tidbit.displayTitle,
+        headingContext: [],
+        excerpt: block.text || block.attachmentName,
+        attachmentNames: block.attachmentName ? [block.attachmentName] : [],
+        score,
+        matchedFields,
+        highlights,
       }),
     );
     return { results, executionMode, semanticReadiness };
@@ -1017,7 +972,6 @@ export class FakeBackend implements Backend {
           sources,
         };
     this.tidbits.set(note.id, note);
-    this.registerCitation(note);
     this.workingCopies.delete(input.noteId);
     return {
       status: "CHECKPOINTED",
@@ -1078,13 +1032,6 @@ export class FakeBackend implements Backend {
   private nextSequence(): number {
     this.sequence += 1;
     return this.sequence;
-  }
-
-  private registerCitation(revision: TidbitRecord): void {
-    const passageId = `fake-passage:${revision.currentRevisionId}`;
-    this.citations.set(passageId, {
-      revision: cloneTidbit(revision),
-    });
   }
 
   private requireTidbit(id: string): TidbitRecord {
@@ -1263,6 +1210,58 @@ function generatedIdSequence(value: string): number {
   }
   const sequence = Number(match[1]);
   return Number.isSafeInteger(sequence) ? sequence : 0;
+}
+
+interface FakeSearchBlock {
+  id: string;
+  type: string;
+  ordinal: number;
+  text: string;
+  attachmentName: string;
+}
+
+function fakeSearchBlocks(note: TidbitRecord): FakeSearchBlock[] {
+  let document: unknown;
+  try {
+    document = JSON.parse(note.documentJson);
+  } catch {
+    return [];
+  }
+  if (!document || typeof document !== "object" || !("blocks" in document)) return [];
+  const flattened: FakeSearchBlock[] = [];
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    const block = value as Record<string, unknown>;
+    const id = typeof block.id === "string" ? block.id : "";
+    const type = typeof block.type === "string" ? block.type : "paragraph";
+    const props =
+      block.props && typeof block.props === "object"
+        ? (block.props as Record<string, unknown>)
+        : {};
+    const attachmentName = typeof props.displayFilename === "string" ? props.displayFilename : "";
+    const text = fakeInlineText(block.content);
+    if (id && (text.trim() || attachmentName.trim())) {
+      flattened.push({ id, type, ordinal: flattened.length, text, attachmentName });
+    }
+    if (Array.isArray(block.children)) block.children.forEach(visit);
+  };
+  const blocks = (document as { blocks?: unknown }).blocks;
+  if (Array.isArray(blocks)) blocks.forEach(visit);
+  return flattened;
+}
+
+function fakeInlineText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(fakeInlineText).join("");
+  if (!value || typeof value !== "object") return "";
+  const object = value as Record<string, unknown>;
+  if (object.type === "text" && typeof object.text === "string") return object.text;
+  const props =
+    object.props && typeof object.props === "object"
+      ? (object.props as Record<string, unknown>)
+      : undefined;
+  if (object.type === "inlineMath" && typeof props?.latex === "string") return `$${props.latex}$`;
+  return fakeInlineText(object.content);
 }
 
 function parseSearchAtoms(query: string): string[] {

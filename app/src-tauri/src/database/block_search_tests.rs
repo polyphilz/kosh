@@ -3,9 +3,8 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use super::{
-    block_search,
+    block_query, block_search,
     connection::{self, DatabaseKind, FileState},
-    search,
     tidbits::CreateTidbitWrite,
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     Database, DatabasePaths, DeleteTidbitInput, LexicalBenchmarkAttachmentWrite, MediaLimits,
@@ -187,7 +186,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
         search_blocks_in(
             &library.connection(),
             "block_fts_short",
-            &search::short_grams_for_search("ci"),
+            &block_query::short_grams("ci"),
         ),
         [(note_id.clone(), "fact".into())]
     );

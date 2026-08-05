@@ -5,8 +5,8 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use super::{
-    migrations, CitationState, Database, DatabaseError, DatabasePaths, DeleteTidbitInput,
-    LexicalSearchMode, RestoreTidbitInput, SearchPassagesInput, SourceDraft,
+    migrations, Database, DatabaseError, DatabasePaths, DeleteTidbitInput, LexicalSearchMode,
+    RestoreTidbitInput, SearchBlocksInput, SourceDraft,
 };
 
 struct TestPair {
@@ -62,7 +62,6 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
         ]
     );
     for guard in [
-        "attachment_passage_revision_prevent_delete",
         "tidbit_revision_attachment_prevent_delete",
         "tidbit_revision_source_prevent_delete",
     ] {
@@ -73,7 +72,7 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
 }
 
 #[test]
-fn note_lifecycle_search_citations_delete_restore_and_restart() {
+fn note_lifecycle_search_delete_restore_and_restart() {
     let pair = TestPair::new();
     let database = Database::initialize(pair.paths.clone()).expect("database");
     let client = database.client();
@@ -106,7 +105,7 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
     assert_eq!(created.display_title, "Arrays");
 
     let first_result = client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "citrine".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
@@ -114,11 +113,8 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
         .expect("search first revision")
         .pop()
         .expect("first search result");
-    assert_eq!(first_result.citation.state, CitationState::Current);
-    assert_eq!(
-        first_result.citation.sources[0].url.as_deref(),
-        Some("https://example.com/reference")
-    );
+    assert_eq!(first_result.note_id, created.id);
+    assert_eq!(first_result.block_id, "native-fixture-block");
 
     client
         .save_working_copy_for_test(
@@ -141,22 +137,23 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
         .expect("checkpoint edited note")
         .note
         .expect("edited note");
-    assert_eq!(
-        client
-            .resolve_citation(first_result.passage_id)
-            .expect("historical citation")
-            .state,
-        CitationState::Historical
-    );
     assert!(client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
+            query: "citrine".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search removed wording")
+        .is_empty());
+    assert!(client
+        .search_blocks(SearchBlocksInput {
             query: "amber".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
         .expect("search current revision")
         .iter()
-        .any(|result| result.citation.state == CitationState::Current));
+        .any(|result| result.note_id == note_id));
 
     let deleted = client
         .delete_tidbit(
@@ -169,7 +166,7 @@ fn note_lifecycle_search_citations_delete_restore_and_restart() {
         .expect("delete note");
     assert!(deleted.deleted_at_ms.is_some());
     assert!(client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "amber".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,

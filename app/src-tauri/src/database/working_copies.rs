@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Serialize};
 
 use super::{
-    document, media, passages,
+    block_search, document, media,
     tidbits::{self, PreparedRevision},
     DatabaseError, Result, SourceDraft, Tidbit,
 };
@@ -405,13 +405,7 @@ fn checkpoint_new(
         &prepared.body_markdown,
         write.now_ms,
     )?;
-    passages::insert_author_passages(
-        transaction,
-        &write.revision_id,
-        &prepared.body_markdown,
-        write.now_ms,
-    )?;
-    passages::replace_active_author_passages(transaction, &working_copy.note_id, &write.revision_id)
+    block_search::replace_tidbit_documents(transaction, &working_copy.note_id)
 }
 
 fn checkpoint_existing(
@@ -457,12 +451,6 @@ fn checkpoint_existing(
         &prepared.body_markdown,
         updated_at_ms,
     )?;
-    passages::insert_author_passages_allow_empty(
-        transaction,
-        &write.revision_id,
-        &prepared.body_markdown,
-        updated_at_ms,
-    )?;
     let changed = transaction.execute(
         "UPDATE tidbit
          SET current_revision_id = ?1, updated_at = ?2
@@ -481,11 +469,7 @@ fn checkpoint_existing(
             actual_revision_id: current.revision_id,
         });
     }
-    passages::replace_active_author_passages_allow_empty(
-        transaction,
-        &working_copy.note_id,
-        &write.revision_id,
-    )
+    block_search::replace_tidbit_documents(transaction, &working_copy.note_id)
 }
 
 fn validate_save_input(input: &SaveWorkingCopyInput) -> Result<()> {
@@ -664,7 +648,7 @@ mod tests {
     use super::*;
     use crate::database::{
         tidbits::CreateTidbitWrite, AttachmentIngestInput, Database, DatabasePaths,
-        SearchPassagesInput, SemanticSearchReadiness, TidbitDraft,
+        SearchBlocksInput, SemanticSearchReadiness, TidbitDraft,
     };
 
     const NOTE_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -1122,15 +1106,15 @@ mod tests {
         let connection = library
             .database
             .open_main_read_only()
-            .expect("read empty revision passage state");
+            .expect("read empty block search state");
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT count(*) FROM active_passage WHERE tidbit_id = ?1",
+                    "SELECT count(*) FROM block_search_document WHERE tidbit_id = ?1",
                     params![NOTE_ID],
                     |row| row.get::<_, i64>(0),
                 )
-                .expect("active passage count"),
+                .expect("searchable block count"),
             0
         );
     }
@@ -1172,8 +1156,8 @@ mod tests {
         let recovered_document = recovered[0].document_json.clone();
         let before_checkpoint = reopened
             .client()
-            .search_passages_with_semantics(
-                SearchPassagesInput {
+            .search_blocks_with_semantics(
+                SearchBlocksInput {
                     query: "saffron".into(),
                     limit: 10,
                     mode: crate::database::LexicalSearchMode::Default,
@@ -1205,8 +1189,8 @@ mod tests {
         );
         let response = reopened
             .client()
-            .search_passages_with_semantics(
-                SearchPassagesInput {
+            .search_blocks_with_semantics(
+                SearchBlocksInput {
                     query: "saffron".into(),
                     limit: 10,
                     mode: crate::database::LexicalSearchMode::Default,
@@ -1216,14 +1200,8 @@ mod tests {
             )
             .expect("search reconciled copy");
         assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            response.results[0]
-                .citation
-                .tidbit
-                .as_ref()
-                .map(|tidbit| tidbit.id.as_str()),
-            Some(NOTE_ID)
-        );
+        assert_eq!(response.results[0].note_id, NOTE_ID);
+        assert_eq!(response.results[0].block_id, "native-fixture-block");
     }
 
     #[test]

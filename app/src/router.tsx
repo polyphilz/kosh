@@ -61,16 +61,8 @@ function NewNoteRoute() {
 
 function DurableNoteRoute() {
   const { noteId } = noteRoute.useParams();
-  const { blockId, passage } = noteRoute.useSearch();
-  return (
-    <NotePage
-      blockId={blockId}
-      key={`durable:${noteId}`}
-      mode="durable"
-      noteId={noteId}
-      passageId={passage}
-    />
-  );
+  const { blockId } = noteRoute.useSearch();
+  return <NotePage blockId={blockId} key={`durable:${noteId}`} mode="durable" noteId={noteId} />;
 }
 
 function SearchRoute() {
@@ -89,14 +81,9 @@ declare module "@tanstack/react-router" {
   }
 }
 
-function noteSearch(search: Record<string, unknown>): { blockId?: string; passage?: string } {
+function noteSearch(search: Record<string, unknown>): { blockId?: string } {
   const blockId = boundedSearchValue(search.blockId);
-  const passage =
-    typeof search.passage === "string" && search.passage.length <= 256 ? search.passage : undefined;
-  return {
-    ...(blockId ? { blockId } : {}),
-    ...(passage ? { passage } : {}),
-  };
+  return blockId ? { blockId } : {};
 }
 
 function boundedSearchValue(value: unknown): string | undefined {

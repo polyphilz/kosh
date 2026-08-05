@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     database::{
-        embedding_index,
-        search::{
+        block_embedding_index,
+        relevance_search::{
             candidate_limit, fuse_ranked_passages, parse_lexical_query, rank_lexical_documents,
             LexicalSearchMode, RankedSemanticPassage,
         },
     },
-    EmbeddingRuntime,
+    embedding, EmbeddingRuntime,
 };
 
 use super::{
@@ -39,7 +39,7 @@ pub fn generate_hybrid_vector_fixture(
     runtime: &EmbeddingRuntime,
 ) -> super::Result<HybridVectorFixture> {
     fixture.validate()?;
-    let manifest = embedding_index::manifest();
+    let manifest = embedding::jina_v1_manifest();
     let mut passage_embeddings = BTreeMap::new();
     for passage in &fixture.corpus {
         let embedding = runtime
@@ -89,7 +89,7 @@ pub fn validate_hybrid_vector_fixture(
             vectors.schema_version
         ));
     }
-    let manifest = embedding_index::manifest();
+    let manifest = embedding::jina_v1_manifest();
     if vectors.fixture_digest != fixture.digest()? {
         return hybrid_error("hybrid vectors do not match the relevance fixture".into());
     }
@@ -132,7 +132,7 @@ pub fn validate_hybrid_vector_fixture(
         .iter()
         .chain(vectors.query_embeddings.iter())
     {
-        embedding_index::validate_embedding(vector, manifest.dimension as usize).map_err(
+        block_embedding_index::validate_embedding(vector, manifest.dimension as usize).map_err(
             |error| RelevanceError::HybridVectors(format!("invalid vector for {key}: {error}")),
         )?;
     }
@@ -176,7 +176,7 @@ impl Retriever for HybridFixtureRetriever {
             .into_iter()
             .map(|(index, (word_rank, trigram_rank, short_rank))| {
                 let passage = &corpus[index];
-                crate::database::search::LexicalDocument {
+                crate::database::relevance_search::LexicalDocument {
                     passage_id: passage.id.clone(),
                     updated_at_ms: 0,
                     evidence_kind: fixture_evidence_kind(passage),

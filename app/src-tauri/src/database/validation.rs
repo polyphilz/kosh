@@ -5,18 +5,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::{
     block_embedding_index, block_search,
     connection::{self, DatabaseKind},
-    embedding_index,
     error::{DatabaseError, Result},
-    migrations, search,
+    migrations,
 };
 
 const MAIN_TABLES: &[&str] = &[
-    "active_passage",
     "attachment",
     "attachment_extraction",
     "attachment_extractor_config",
     "attachment_image",
-    "attachment_passage_revision",
     "attachment_segment",
     "block_fts_short",
     "block_fts_trigram",
@@ -40,14 +37,6 @@ const MAIN_TABLES: &[&str] = &[
     "offsite_backup_takeover_intent",
     "offsite_credential_cleanup",
     "offsite_media_upload",
-    "passage",
-    "passage_embedding",
-    "passage_embedding_reap_queue",
-    "passage_embedding_settings",
-    "passage_fts_short",
-    "passage_fts_trigram",
-    "passage_fts_word",
-    "passage_search_document",
     "image_ocr_queue",
     "shortcut_settings",
     "source",
@@ -84,7 +73,7 @@ pub fn validate_migrated_pair(
             !table.ends_with("_fts_short")
                 && !table.ends_with("_fts_trigram")
                 && !table.ends_with("_fts_word")
-                && *table != embedding_index::JINA_V1_VEC_TABLE
+                && *table != block_embedding_index::JINA_V1_VEC_TABLE
         }),
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
@@ -171,32 +160,6 @@ fn validate_optional_embedding_indexes(connection: &mut Connection) {
                 )
             }
         });
-    let passage_result = vec_result
-        .as_ref()
-        .map_err(|error| error.to_string())
-        .and_then(|()| {
-            if !table_exists(connection, embedding_index::JINA_V1_VEC_TABLE)
-                .map_err(|error| error.to_string())?
-            {
-                return Err("the Jina v1 passage vector table is missing".into());
-            }
-            embedding_index::validate_definition(connection).map_err(|error| error.to_string())?;
-            validate_vec_smoke_test(connection, embedding_index::JINA_V1_VEC_TABLE)
-                .map_err(|error| error.to_string())
-        });
-    match passage_result {
-        Ok(()) => {
-            let _ = embedding_index::release_quarantine(connection);
-        }
-        Err(error) => {
-            log::warn!("semantic passage index is unavailable at startup: {error}");
-            let _ = embedding_index::quarantine(
-                connection,
-                "semantic passage index is unavailable; repair is required",
-                0,
-            );
-        }
-    }
     let block_result = vec_result
         .as_ref()
         .map_err(|error| error.to_string())
@@ -227,7 +190,7 @@ fn validate_optional_embedding_indexes(connection: &mut Connection) {
 }
 
 fn validate_vec_smoke_test(connection: &mut Connection, table: &str) -> Result<()> {
-    let manifest = embedding_index::manifest();
+    let manifest = crate::embedding::jina_v1_manifest();
     let mut vector = vec![0.0_f32; manifest.dimension as usize];
     vector[0] = 1.0;
     let vector_json = serde_json::to_string(&vector)?;
@@ -438,80 +401,7 @@ fn recover_interrupted_derived_work(connection: &mut Connection) -> Result<()> {
 }
 
 pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
-    let passage_ready = reconcile_passage_fts(connection)?;
-    let block_ready = reconcile_block_fts(connection)?;
-    Ok(passage_ready && block_ready)
-}
-
-fn reconcile_passage_fts(connection: &mut Connection) -> Result<bool> {
-    const INDEXES: &[&str] = &[
-        "passage_fts_word",
-        "passage_fts_trigram",
-        "passage_fts_short",
-    ];
-    const VERSION: &str = search::FTS_VERSION;
-    let existing_version = connection
-        .query_row(
-            "SELECT version FROM index_state WHERE name = 'PASSAGE_FTS'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    let force_rebuild = existing_version.as_deref() != Some(VERSION);
-    // Commit the in-progress marker separately. A crash during the following
-    // atomic rebuild leaves RUNNING for startup to recover to DIRTY.
-    connection.execute(
-        "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
-         VALUES('PASSAGE_FTS', ?1, 'RUNNING', NULL, 0, NULL)
-         ON CONFLICT(name) DO UPDATE SET
-            status = 'RUNNING',
-            cursor = NULL,
-            updated_at = 0,
-            error = NULL",
-        params![existing_version.as_deref().unwrap_or(VERSION)],
-    )?;
-
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let mut failed = Vec::new();
-
-    for index in INDEXES {
-        let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 0)");
-        let needs_rebuild = force_rebuild || transaction.execute(&integrity, []).is_err();
-        if needs_rebuild
-            && (rebuild_normalized_fts(&transaction, index).is_err()
-                || transaction.execute(&integrity, []).is_err())
-        {
-            failed.push(*index);
-        }
-    }
-
-    let (status, error) = if failed.is_empty() {
-        ("IDLE", None)
-    } else {
-        (
-            "DIRTY",
-            Some(format!("could not rebuild {}", failed.join(", "))),
-        )
-    };
-    let stored_version = if failed.is_empty() {
-        VERSION
-    } else {
-        existing_version.as_deref().unwrap_or(VERSION)
-    };
-    transaction.execute(
-        "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
-         VALUES('PASSAGE_FTS', ?1, ?2, NULL, 0, ?3)
-         ON CONFLICT(name) DO UPDATE SET
-            version = excluded.version,
-            status = excluded.status,
-            cursor = NULL,
-            updated_at = excluded.updated_at,
-            error = excluded.error",
-        params![stored_version, status, error],
-    )?;
-    transaction.commit()?;
-    Ok(failed.is_empty())
+    reconcile_block_fts(connection)
 }
 
 fn reconcile_block_fts(connection: &mut Connection) -> Result<bool> {
@@ -571,41 +461,6 @@ fn reconcile_block_fts(connection: &mut Connection) -> Result<bool> {
     )?;
     transaction.commit()?;
     Ok(failed.is_empty())
-}
-
-fn rebuild_normalized_fts(
-    transaction: &rusqlite::Transaction<'_>,
-    index: &str,
-) -> rusqlite::Result<()> {
-    transaction.execute(
-        &format!("INSERT INTO {index}({index}) VALUES('delete-all')"),
-        [],
-    )?;
-    let projection = if index == "passage_fts_short" {
-        "kosh_search_short_grams"
-    } else {
-        "kosh_search_normalize"
-    };
-    transaction.execute(
-        &format!(
-            "INSERT INTO {index}(
-                rowid, heading_context, body, source_labels,
-                source_domains, attachment_names, extracted_text
-             )
-             SELECT
-                rowid,
-                {projection}(heading_context),
-                {projection}(body),
-                {projection}(source_labels),
-                {projection}(source_domains),
-                {projection}(attachment_names),
-                {projection}(extracted_text)
-             FROM passage_search_document
-             ORDER BY rowid"
-        ),
-        [],
-    )?;
-    Ok(())
 }
 
 fn rebuild_normalized_block_fts(

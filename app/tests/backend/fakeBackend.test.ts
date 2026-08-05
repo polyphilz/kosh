@@ -13,7 +13,7 @@ describe("FakeBackend tidbits", () => {
     expect(diagnostics.library).toMatchObject({
       activeTidbits: 1,
       revisions: 1,
-      blockSearchDocuments: 1,
+      searchableBlocks: 1,
     });
     expect(diagnostics.storage.dataRoot).toBe("/tmp/kosh-browser-fixture");
     expect(diagnostics.backupPhase).toBe("AVAILABLE");
@@ -157,18 +157,16 @@ describe("FakeBackend tidbits", () => {
     expect(edited.sources[0]?.id).toBe(first.sources[0]?.id);
   });
 
-  it("keeps revision-bound citations historical through edits and deletion", async () => {
+  it("searches only current blocks through edits, deletion, and restoration", async () => {
     const backend = new FakeBackend();
     const created = await backend.seedNote({
       bodyMarkdown: "Original evidence.",
       sources: [{ label: "Original source", url: "https://example.com/original" }],
     });
-    const originalPassageId = `fake-passage:${created.currentRevisionId}`;
-    await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
-      state: "CURRENT",
-      excerpt: "Original evidence.",
-      tidbit: { revisionId: created.currentRevisionId, deleted: false },
-      sources: [{ label: "Original source" }],
+    await expect(
+      backend.searchBlocks({ query: "Original", mode: "EXACT", limit: 10 }),
+    ).resolves.toMatchObject({
+      results: [{ noteId: created.id, excerpt: "Original evidence." }],
     });
 
     const edited = await backend.replaceNoteForTest({
@@ -177,50 +175,43 @@ describe("FakeBackend tidbits", () => {
       bodyMarkdown: "Replacement evidence.",
       sources: [{ label: "Replacement source", url: null }],
     });
-    const replacementPassageId = `fake-passage:${edited.currentRevisionId}`;
-    await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
-      state: "HISTORICAL",
-      excerpt: "Original evidence.",
-      tidbit: { revisionId: created.currentRevisionId, deleted: false },
-      sources: [{ label: "Original source" }],
-    });
-    await expect(backend.resolveCitation(replacementPassageId)).resolves.toMatchObject({
-      state: "CURRENT",
-      excerpt: "Replacement evidence.",
-      sources: [{ label: "Replacement source" }],
+    await expect(
+      backend.searchBlocks({ query: "Original", mode: "EXACT", limit: 10 }),
+    ).resolves.toMatchObject({ results: [] });
+    await expect(
+      backend.searchBlocks({ query: "Replacement", mode: "EXACT", limit: 10 }),
+    ).resolves.toMatchObject({
+      results: [{ noteId: edited.id, excerpt: "Replacement evidence." }],
     });
 
     const deleted = await backend.deleteTidbit({
       id: edited.id,
       expectedRevisionId: edited.currentRevisionId,
     });
-    await expect(backend.resolveCitation(replacementPassageId)).resolves.toMatchObject({
-      state: "HISTORICAL",
-      tidbit: { deleted: true },
-    });
+    await expect(
+      backend.searchBlocks({ query: "Replacement", mode: "EXACT", limit: 10 }),
+    ).resolves.toMatchObject({ results: [] });
 
     await backend.restoreTidbit({
       id: deleted.id,
       expectedRevisionId: deleted.currentRevisionId,
     });
-    await expect(backend.resolveCitation(replacementPassageId)).resolves.toMatchObject({
-      state: "CURRENT",
-      tidbit: { deleted: false },
-    });
-    await expect(backend.resolveCitation(originalPassageId)).resolves.toMatchObject({
-      state: "HISTORICAL",
+    await expect(
+      backend.searchBlocks({ query: "Replacement", mode: "EXACT", limit: 10 }),
+    ).resolves.toMatchObject({
+      results: [{ noteId: edited.id }],
     });
   });
 
-  it("returns current citation-owned lexical results and safe highlights", async () => {
+  it("returns current block-owned lexical results and safe highlights", async () => {
     const backend = new FakeBackend();
     const created = await backend.seedNote({
       bodyMarkdown: "# Résumé review\n\nA naïve draft mentioned the café outcome.",
       sources: [{ label: "Writing guide", url: "https://example.com/cafe" }],
     });
 
-    const response = await backend.searchPassages({
-      query: "resume cafe",
+    const response = await backend.searchBlocks({
+      query: "naive cafe",
       mode: "EXACT",
       limit: 10,
     });
@@ -231,12 +222,9 @@ describe("FakeBackend tidbits", () => {
     const { results } = response;
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({
-      passageId: `fake-passage:${created.currentRevisionId}`,
+      noteId: created.id,
+      blockId: expect.any(String),
       matchedFields: expect.arrayContaining(["BODY"]),
-      citation: {
-        state: "CURRENT",
-        tidbit: { revisionId: created.currentRevisionId },
-      },
     });
     expect(
       results[0]?.highlights.every(
@@ -251,7 +239,7 @@ describe("FakeBackend tidbits", () => {
       bodyMarkdown: "# ﬁle note\n\nCompatibility characters keep original offsets.",
       sources: [],
     });
-    const ligatureResponse = await backend.searchPassages({
+    const ligatureResponse = await backend.searchBlocks({
       query: "file",
       mode: "DEFAULT",
       limit: 10,
@@ -259,8 +247,9 @@ describe("FakeBackend tidbits", () => {
     const ligatureResults = ligatureResponse.results;
     expect(ligatureResults).toHaveLength(1);
     expect(ligatureResults[0]).toMatchObject({
-      passageId: `fake-passage:${ligature.currentRevisionId}`,
-      highlights: expect.arrayContaining([{ field: "BODY", startChar: 2, endChar: 5 }]),
+      noteId: ligature.id,
+      blockId: expect.any(String),
+      highlights: expect.arrayContaining([{ field: "BODY", startChar: 0, endChar: 3 }]),
     });
 
     await backend.deleteTidbit({
@@ -268,7 +257,7 @@ describe("FakeBackend tidbits", () => {
       expectedRevisionId: created.currentRevisionId,
     });
     await expect(
-      backend.searchPassages({ query: "cafe", mode: "DEFAULT", limit: 10 }),
+      backend.searchBlocks({ query: "cafe", mode: "DEFAULT", limit: 10 }),
     ).resolves.toMatchObject({ results: [], executionMode: "LEXICAL_ONLY" });
   });
 });
@@ -420,9 +409,9 @@ describe("FakeBackend semantic runtime", () => {
       sources: [],
     });
     await expect(
-      backend.searchPassages({ query: "lexical", mode: "DEFAULT", limit: 10 }),
+      backend.searchBlocks({ query: "lexical", mode: "DEFAULT", limit: 10 }),
     ).resolves.toMatchObject({
-      results: [{ citation: { tidbit: { displayTitle: "Prepared runtime" } } }],
+      results: [{ displayTitle: "Prepared runtime" }],
       executionMode: "LEXICAL_ONLY",
       semanticReadiness: "READY",
     });

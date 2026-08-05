@@ -19,12 +19,12 @@ use super::{
         MediaBlobReclamationPreflight, MediaByteRange, MediaRangeRequest, StagedAttachment,
         MEDIA_RECONCILE_BATCH_SIZE,
     },
-    search,
+    block_query,
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
-    AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput, CitationLocator, Database,
-    DatabaseClient, DatabaseError, DatabasePaths, DeleteTidbitInput, DiscardWorkingCopyInput,
-    LexicalSearchMode, MediaLimits, MediaMaintenanceReport, RestoreTidbitInput,
-    SaveWorkingCopyInput, SearchField, SearchPassagesInput, SourceDraft, Tidbit,
+    AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput, Database, DatabaseClient,
+    DatabaseError, DatabasePaths, DeleteTidbitInput, DiscardWorkingCopyInput, LexicalSearchMode,
+    MediaLimits, MediaMaintenanceReport, RestoreTidbitInput, SaveWorkingCopyInput,
+    SearchBlocksInput, SearchField, SourceDraft, Tidbit,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -306,7 +306,7 @@ fn files_are_searchable_only_by_filename_and_keep_original_bytes() {
     let client = library.database.client();
     for filename in ["chapter-archive.bin", "chapter-notes.md"] {
         let results = client
-            .search_passages(SearchPassagesInput {
+            .search_blocks(SearchBlocksInput {
                 query: filename.into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
@@ -323,7 +323,7 @@ fn files_are_searchable_only_by_filename_and_keep_original_bytes() {
         "application/octet-stream",
     ] {
         assert!(client
-            .search_passages(SearchPassagesInput {
+            .search_blocks(SearchBlocksInput {
                 query: hidden_content.into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
@@ -407,7 +407,7 @@ fn file_search_indexes_only_the_attachment_filename() {
 
     let client = library.database.client();
     let filename_results = client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "chapter-archive.bin".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
@@ -418,7 +418,7 @@ fn file_search_indexes_only_the_attachment_filename() {
         .matched_fields
         .contains(&SearchField::AttachmentName));
     assert!(client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "secret binary contents".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
@@ -575,7 +575,7 @@ fn media_only_notes_leave_and_reenter_block_search_with_the_note_lifecycle() {
 }
 
 #[test]
-fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revision() {
+fn image_ocr_adds_searchable_text_without_mutating_authored_revision() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
         (0x780, 0x781, 0x782, 0x783),
@@ -656,28 +656,19 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
         .expect("load unchanged tidbit");
     assert_eq!(loaded.current_revision_id, original_revision_id);
     let results = client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "exact image evidence".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
         .expect("search OCR text");
     assert_eq!(results.len(), 1);
-    let citation = &results[0].citation;
-    let attachment = citation.attachment.as_ref().expect("attachment citation");
-    assert_eq!(attachment.id, image.attachment.id);
-    assert_eq!(attachment.extraction_id, id(0x783));
-    assert!(citation.tidbit.is_none());
-    match &citation.locator {
-        CitationLocator::OcrRegion { region } => {
-            assert_eq!(region["coordinateSystem"], "vision-normalized-bottom-left");
-            assert_eq!(region["x"], 0.125);
-            assert_eq!(region["y"], 0.25);
-            assert_eq!(region["width"], 0.5);
-            assert_eq!(region["height"], 0.375);
-        }
-        locator => panic!("expected an OCR region locator, got {locator:?}"),
-    }
+    assert_eq!(results[0].note_id, tidbit.id);
+    assert_eq!(results[0].block_id, image_block_id);
+    assert_eq!(results[0].attachment_names, ["knowledge.png"]);
+    assert!(results[0]
+        .matched_fields
+        .contains(&SearchField::ExtractedText));
     assert_eq!(
         client
             .load_image_status(image.attachment.id.clone())
@@ -727,7 +718,7 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
         .query_row(
             "SELECT count(*) FROM block_fts_short
              WHERE block_fts_short MATCH ?1",
-            params![search::short_grams_for_search("sourcing")],
+            params![block_query::short_grams("sourcing")],
             |row| row.get(0),
         )
         .expect("query invalidated short block FTS evidence");
@@ -832,7 +823,7 @@ fn draft_only_image_ocr_never_enters_search_and_remains_hidden_after_discard() {
 
     let search = || {
         client
-            .search_passages(SearchPassagesInput {
+            .search_blocks(SearchBlocksInput {
                 query: "draft_only_evidence".into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
@@ -942,7 +933,7 @@ fn completed_draft_image_ocr_is_indexed_when_a_revision_takes_ownership() {
         )
         .expect("complete pre-save OCR");
     assert!(client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "promoted_image_evidence".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
@@ -953,7 +944,7 @@ fn completed_draft_image_ocr_is_indexed_when_a_revision_takes_ownership() {
     library.checkpoint_capture(12, 15, id(0x79b), Vec::new());
     assert_eq!(
         client
-            .search_passages(SearchPassagesInput {
+            .search_blocks(SearchBlocksInput {
                 query: "promoted_image_evidence".into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,

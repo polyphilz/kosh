@@ -738,7 +738,7 @@ mod tests {
     use crate::database::{
         connection::FileState,
         media::{CanonicalImage, IngestAttachmentMetadata, IngestImageWrite, StagedAttachment},
-        AttachmentIngestInput, LexicalSearchMode, MediaLimits, SearchPassagesInput, SourceDraft,
+        AttachmentIngestInput, LexicalSearchMode, MediaLimits, SearchBlocksInput, SourceDraft,
         TidbitDraft,
     };
     use std::io::{Cursor, Seek, SeekFrom};
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_snapshot_pair_reopens_with_search_and_citation_provenance() {
+    fn verified_snapshot_pair_reopens_with_current_block_search() {
         let root = tempfile::tempdir().expect("snapshot source");
         let paths = DatabasePaths::new(root.path());
         let database = crate::database::Database::initialize(paths).expect("database");
@@ -780,14 +780,14 @@ mod tests {
                 vec![Uuid::now_v7().to_string()],
             )
             .expect("create evidence");
-        let expected_passage = client
-            .search_passages(SearchPassagesInput {
+        let expected_block = client
+            .search_blocks(SearchBlocksInput {
                 query: "\"Exact safety snapshot evidence\"".into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
             })
             .expect("search evidence")[0]
-            .passage_id
+            .block_id
             .clone();
         let report = client
             .create_safety_snapshot_for_test(SafetySnapshotReason::MediaReclaim)
@@ -801,25 +801,15 @@ mod tests {
             .expect("reopen snapshot pair");
         let restored_client = restored.client();
         let result = restored_client
-            .search_passages(SearchPassagesInput {
+            .search_blocks(SearchBlocksInput {
                 query: "\"Exact safety snapshot evidence\"".into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
             })
             .expect("search restored evidence");
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].passage_id, expected_passage);
-        let citation = restored_client
-            .resolve_citation(expected_passage)
-            .expect("resolve restored citation");
-        assert_eq!(
-            citation.tidbit.expect("authored citation").revision_id,
-            tidbit.current_revision_id
-        );
-        assert_eq!(
-            citation.sources[0].url.as_deref(),
-            Some("https://example.invalid/snapshot")
-        );
+        assert_eq!(result[0].block_id, expected_block);
+        assert_eq!(result[0].note_id, tidbit.id);
         restored_client
             .full_integrity_check()
             .expect("restored integrity");
