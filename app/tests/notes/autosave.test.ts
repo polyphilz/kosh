@@ -163,6 +163,37 @@ describe("note autosave coordinator", () => {
     expect(coordinator.getSnapshot()).toMatchObject({ phase: "DURABLE", durableGeneration: 2 });
   });
 
+  it("never sends pending media blocks to durable storage", async () => {
+    const backend = gateway();
+    const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
+    const documentJson = JSON.stringify({
+      schemaVersion: 1,
+      blocks: [
+        {
+          id: "authored",
+          type: "paragraph",
+          content: [{ type: "text", text: "Keep", styles: {} }],
+        },
+        {
+          id: "pending",
+          type: "koshPendingMedia",
+          props: { label: "Adding attachment", requestId: "request" },
+        },
+      ],
+    });
+
+    coordinator.update("Keep", [], documentJson);
+    await coordinator.persistWorkingCopy();
+
+    expect(coordinator.getSnapshot().documentJson).toBe(documentJson);
+    expect(backend.saveWorkingCopy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bodyMarkdown: "Keep",
+        documentJson: expect.not.stringContaining("koshPendingMedia"),
+      }),
+    );
+  });
+
   it("coalesces rapid render notifications around the newest edit", async () => {
     const backend = gateway();
     const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });

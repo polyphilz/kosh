@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDurableKoshDocument,
   createEmptyKoshDocument,
   createKoshDocumentFromMarkdown,
   parseKoshDocument,
@@ -47,5 +48,50 @@ describe("Kosh document JSON", () => {
         }),
       ),
     ).toThrow("unsupported");
+  });
+
+  it("removes transient pending media from durable documents at every depth", () => {
+    const durable = createDurableKoshDocument(
+      JSON.stringify({
+        schemaVersion: 1,
+        blocks: [
+          { id: "pending-top", type: "koshPendingMedia" },
+          {
+            id: "parent",
+            type: "bulletListItem",
+            content: [{ type: "text", text: "Keep", styles: {} }],
+            children: [
+              { id: "pending-child", type: "koshPendingMedia" },
+              {
+                id: "child",
+                type: "bulletListItem",
+                content: [{ type: "text", text: "Nested", styles: {} }],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(parseKoshDocument(durable)).toEqual([
+      expect.objectContaining({
+        id: "parent",
+        children: [expect.objectContaining({ id: "child" })],
+      }),
+    ]);
+    expect(durable).not.toContain("koshPendingMedia");
+  });
+
+  it("turns a pending-only editor document into a stable empty durable document", () => {
+    const durable = createDurableKoshDocument(
+      JSON.stringify({
+        schemaVersion: 1,
+        blocks: [{ id: "pending", type: "koshPendingMedia" }],
+      }),
+    );
+
+    expect(parseKoshDocument(durable)).toEqual([
+      expect.objectContaining({ id: "pending", type: "paragraph" }),
+    ]);
   });
 });

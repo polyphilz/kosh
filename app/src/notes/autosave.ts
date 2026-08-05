@@ -9,6 +9,7 @@ import type {
   WorkingCopySaveResult,
 } from "../backend/contracts";
 import {
+  createDurableKoshDocument,
   createEmptyKoshDocument,
   createKoshDocumentFromMarkdown,
   createKoshDocumentFromPlainText,
@@ -541,7 +542,7 @@ function authoredSnapshot(state: NoteAutosaveSnapshot): AuthoredSnapshot {
     noteId: state.noteId,
     baseRevisionId: state.baseRevisionId,
     editGeneration: state.editGeneration,
-    documentJson: state.documentJson,
+    documentJson: createDurableKoshDocument(state.documentJson),
     bodyMarkdown: state.bodyMarkdown,
     sources: cloneSources(state.sources),
   };

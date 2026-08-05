@@ -17,7 +17,6 @@ const SUPPORTED_BLOCK_TYPES: &[&str] = &[
     "codeBlock",
     "displayMath",
     "koshImage",
-    "koshPendingMedia",
     "koshPdf",
     "koshFileAttachment",
 ];
@@ -142,6 +141,15 @@ mod tests {
         let error =
             validate(r#"{"schemaVersion":1,"blocks":[{"id":"a","type":"table","children":[]}]}"#)
                 .unwrap_err();
+        assert!(error.to_string().contains("unsupported block type"));
+    }
+
+    #[test]
+    fn rejects_transient_pending_media_blocks() {
+        let error = validate(
+            r#"{"schemaVersion":1,"blocks":[{"id":"pending","type":"koshPendingMedia","props":{"label":"Adding","requestId":"request"}}]}"#,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("unsupported block type"));
     }
 }

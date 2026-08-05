@@ -53,6 +53,21 @@ export function parseKoshDocument(documentJson: string): KoshBlockNotePartialBlo
   return structuredClone(value.blocks) as KoshBlockNotePartialBlock[];
 }
 
+export function createDurableKoshDocument(documentJson: string): string {
+  if (!documentJson.includes('"koshPendingMedia"')) return documentJson;
+
+  const blocks = parseKoshDocument(documentJson);
+  const durableBlocks = withoutPendingMedia(blocks);
+  if (durableBlocks.length > 0) return serializeKoshDocument(durableBlocks);
+
+  return serializeKoshDocument([
+    {
+      id: blocks[0]?.id ?? crypto.randomUUID(),
+      type: "paragraph",
+    },
+  ]);
+}
+
 export function serializeKoshDocument(blocks: readonly SerializableBlock[]): string {
   if (blocks.length === 0) throw new Error("Kosh document blocks must not be empty");
   const document: KoshDocumentV1 = {
@@ -72,6 +87,16 @@ function assignStableBlockIds(
     id: block.id ?? crypto.randomUUID(),
     children: block.children ? assignStableBlockIds(block.children) : undefined,
   })) as KoshBlockNotePartialBlock[];
+}
+
+function withoutPendingMedia(
+  blocks: readonly KoshBlockNotePartialBlock[],
+): KoshBlockNotePartialBlock[] {
+  return blocks.flatMap((block) => {
+    if (block.type === "koshPendingMedia") return [];
+    if (!block.children?.length) return [block];
+    return [{ ...block, children: withoutPendingMedia(block.children) }];
+  }) as KoshBlockNotePartialBlock[];
 }
 
 function validateBlocks(
