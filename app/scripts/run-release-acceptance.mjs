@@ -362,6 +362,30 @@ function checkJourneys(values) {
       `packaged journey evidence is missing ${label}`,
     );
   }
+  assertEqual(
+    numberSql(
+      profile.main,
+      `SELECT count(*)
+       FROM tidbit
+       JOIN tidbit_revision_attachment AS membership
+         ON membership.tidbit_revision_id = tidbit.current_revision_id
+       JOIN attachment ON attachment.id = membership.attachment_id
+       WHERE tidbit.deleted_at IS NULL
+         AND attachment.deleted_at IS NULL
+         AND attachment.kind = 'FILE'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM passage_search_document AS document
+           WHERE document.tidbit_id = tidbit.id
+             AND instr(
+               char(10) || document.attachment_names || char(10),
+               char(10) || attachment.display_filename || char(10)
+             ) > 0
+         )`,
+    ),
+    0,
+    "current file attachments missing from the filename search projection",
+  );
   console.info(
     "Packaged journey acceptance passed: titleless rich notes, source citations, image OCR, filename-only files, search, and semantic indexing are durable.",
   );

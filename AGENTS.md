@@ -4,17 +4,18 @@
 
 - Kosh is a macOS-first, local-first Tauri application.
 - Kosh is a titleless, note-first capture tool: cold launch, typing, durable
-  autosave, hybrid search, and exact passage navigation are its critical path.
+  autosave, hybrid search, and exact block navigation are its critical path.
 - Capture and lexical search must remain usable when the embedding model or
   remote backup is unavailable.
-- Search results operate on citation-sized passages. A trusted citation must
-  resolve to the exact stored revision, attachment page, OCR evidence, or text
-  line range supplied for that result.
+- Search operates on stable, nonempty note blocks. A result must resolve to a
+  current block owned by exactly one note; image blocks include current OCR
+  evidence, while other files contribute only their display filenames.
 - Research is a retired product surface. The redesign is a hard cutover with
   no deployed profiles to migrate, so do not retain its schema, rows, runtime
   adapters, fixtures, or migrations for compatibility.
-- Tidbit revisions and media blobs are immutable. Background extraction and
-  embedding work must be content-hash checked before stale results can install.
+- Kosh retains only current note state; media blobs remain immutable.
+  Background OCR and embedding work must be content-hash checked before stale
+  results can install.
 - R2 is single-writer backup/recovery, not multi-device synchronization.
 
 ## Repository workflow
@@ -64,12 +65,12 @@ contract.
 
 ## Code Review Rules
 
-### Citation integrity
+### Search-target integrity
 
-- Flag any path that lets search or agent output display a citation whose
-  target was not resolved from Kosh-owned passage and provenance data.
-- Historical citations must remain attached to the revision that was actually
-  used; edits must not silently retarget them.
+- Flag any path that lets search display or navigate to a block not resolved
+  from Kosh-owned current note data.
+- Missing or stale block IDs must silently fall back to the owning note and
+  must never retarget a different block.
 
 ### Durable background work
 

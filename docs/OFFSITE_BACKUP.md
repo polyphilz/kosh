@@ -46,8 +46,7 @@ after connectivity returns.
 ## Privacy and retention
 
 R2 objects contain authored note history, source URLs, attachment metadata,
-and the bytes of referenced images, PDFs, and other attachments. Kosh v1 does
-not add client-side
+and the bytes of referenced images and files. Kosh v1 does not add client-side
 encryption. R2 access control and the private token are therefore the privacy
 boundary; use a dedicated private bucket.
 

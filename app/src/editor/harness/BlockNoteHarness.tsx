@@ -144,8 +144,7 @@ interface HarnessMediaHarness extends BlockNoteHarnessMediaHarness {
 function createHarnessMediaHarness(): HarnessMediaHarness {
   const records = mediaFixtureRecords();
   const image = records[0]!.recordKind === "IMAGE" ? records[0].record : null;
-  const file = records[2]!.recordKind === "FILE" ? records[2].record : null;
-  if (!image || !file) throw new Error("Invalid editor harness media fixtures");
+  if (!image) throw new Error("Invalid editor harness media fixtures");
   const phases: Record<BlockNoteHarnessMediaKind, "FAILED" | "PENDING" | "READY"> = {
     image: "READY",
   };

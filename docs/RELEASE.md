@@ -137,9 +137,9 @@ against the exact candidate. The profiles live beneath ignored
 profiles and never point the candidate at production data.
 
 The required record covers titleless autosave and lexical search without a
-model, Quick Add, code/math, image OCR, PDF/text search, opaque attachments,
-hybrid search, exact source citations, forced-termination recovery, restart,
-and commit-bound performance budgets.
+model, Quick Add, code/math, image OCR, filename-only file search, opaque
+attachments, hybrid search, exact source citations, forced-termination
+recovery, restart, and commit-bound performance budgets.
 Do not claim a UI journey from database checks alone.
 
 If off-site recovery is configured for the release, also complete the packaged
@@ -241,14 +241,14 @@ Use the copy under `/Applications`, not the build directory.
 - Use `Cmd+K` to find an authored phrase and open its resolved citation.
 - Use `Cmd+N`, `Cmd+/`, and back/forward navigation between two notes and
   Settings.
-- Add a real image and PDF; wait for extraction and search their text.
-- Add a text file and an opaque binary attachment; confirm both survive restart.
+- Add a real image; wait for OCR and search its recognized text.
+- Add text, document, and opaque binary files; confirm their filenames are
+  searchable and all files survive restart.
 - Prepare semantic search, run a paraphrase, and open the exact cited passage.
 - Confirm capture and lexical search still work while semantic setup is
   unavailable or offline.
 - Quit with `Cmd+Q`, reopen, and confirm all durable content survives.
-- Quit and confirm no Kosh, `llama-server`, `litestream`, or PDF worker
-  subprocess remains.
+- Quit and confirm no Kosh, `llama-server`, or `litestream` subprocess remains.
 - Use **Kosh → Check for Updates…** and confirm the current-version result.
 - Confirm disabling automatic update checks in Settings survives restart;
   manual checks must remain available.

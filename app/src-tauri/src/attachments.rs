@@ -243,6 +243,8 @@ async fn ingest_file_attachment(
     let ingest_lease_id = ids.next().expect("requested attachment lease ID");
     let display_filename = safe_attachment_filename(filename);
     let media_type = attachment_media_type(&display_filename).to_owned();
+    validate_file_attachment_media_type(&media_type)
+        .map_err(crate::database::commands::CommandError::from)?;
 
     let record = tauri::async_runtime::spawn_blocking(move || {
         let staged = StagedAttachment::from_reader(
@@ -266,6 +268,15 @@ async fn ingest_file_attachment(
     .map_err(crate::database::commands::CommandError::from)?;
     state.wake_media_backup();
     Ok(record)
+}
+
+fn validate_file_attachment_media_type(media_type: &str) -> Result<(), DatabaseError> {
+    if media_type.starts_with("image/") {
+        return Err(DatabaseError::InvalidInput(
+            "file attachments must not use an image media type".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn read_bounded_attachment(path: &Path, max_bytes: u64) -> Result<Vec<u8>, DatabaseError> {
@@ -710,7 +721,8 @@ mod tests {
     use super::{
         attachment_media_type, emit_file_drop_notice, materialize_for_external_use,
         read_bounded_attachment, recover_attachment_open_directory, safe_attachment_filename,
-        FileDropNotice, FileDropSelection, FILE_DROP_EVENT, MAX_OPEN_MATERIALIZATIONS,
+        validate_file_attachment_media_type, FileDropNotice, FileDropSelection, FILE_DROP_EVENT,
+        MAX_OPEN_MATERIALIZATIONS,
     };
 
     #[test]
@@ -758,6 +770,8 @@ mod tests {
             attachment_media_type("pretends-to-be-an-image.png"),
             "application/octet-stream"
         );
+        assert!(validate_file_attachment_media_type("application/pdf").is_ok());
+        assert!(validate_file_attachment_media_type("image/heic").is_err());
     }
 
     #[test]

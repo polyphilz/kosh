@@ -4,12 +4,11 @@
 Every passage declares whether it is authored or image-OCR evidence. Attachment
 evidence carries a stable image identity plus its OCR-region locator; ordinary
 files contribute their filename only to authored-note search documents. Each
-query names graded relevant passage IDs,
-passages that must not rank, the retrieval mode it is meant to exercise, and
-the exact citation locator expected from a result. Only `text` and `searchMode`
-cross into a retriever. Categories, expected passages, exclusions, and
-citation locators remain private to the scorer so the system under test cannot
-read its answer key.
+query names graded relevant passage IDs, passages that must not rank, the
+retrieval mode it is meant to exercise, and the exact citation locator expected
+from a result. Only `text` and `searchMode` cross into a retriever. Categories,
+expected passages, exclusions, and citation locators remain private to the
+scorer so the system under test cannot read its answer key.
 
 Run the fixture validator and intentionally empty baseline from `app/`:
 
@@ -47,8 +46,9 @@ baseline.
 memory, requires at least 25 queries, enforces explicit lexical and hybrid
 metric floors, rejects precision regressions, and validates the ten-entry
 manual citation sample in `citation-audit-v1.json`. The audit covers authored
-Markdown blocks and image OCR regions. Its ignored JSON receipt can be retained by CI without treating
-wall-clock observations as deterministic quality evidence.
+Markdown blocks and image OCR regions. Its ignored JSON receipt can be retained
+by CI without treating wall-clock observations as deterministic quality
+evidence.
 
 Maintainers with the pinned model and sidecar can regenerate the vector fixture
 before intentionally updating the reports:

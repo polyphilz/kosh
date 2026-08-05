@@ -31,7 +31,7 @@ local aggregation, not a substitute for any required CI job.
 | working copy and checkpoint | continuous typing, stale completion, navigation, failed quit, renderer interruption, restart | newest content remains recoverable; only exact generations checkpoint and a failed flush blocks quit |
 | authored revision and FTS projection | concurrent create/edit/search/rebuild, shutdown, reopen | authored body, revision, source URL, exact passage ID, and citation remain stable |
 | draft and attachment staging | interrupted reader, orphaned stage, committed/missing blob, concurrent ingestion | partial bytes removed; committed references never reaped |
-| text/PDF/OCR extraction | pending, running, retry-wait, ready, failed, stale extractor, retired attachment | bounded batch requeue or terminal failure; stale output never becomes current |
+| image OCR extraction | pending, running, retry-wait, ready, failed, stale extractor, retired attachment | bounded batch requeue or terminal failure; stale output never becomes current |
 | embedding index | dirty, running, partial vectors, model/version change | incomplete vectors requeued; index activates only when complete |
 | migration and media reclamation | pending migration or irreversible eligible-media cleanup | verified main/media snapshot pair exists before mutation and reopens with integrity and citation provenance |
 
@@ -69,8 +69,7 @@ note-route/editor suites.
 - The web production bundle is capped at 4,000,000 uncompressed bytes,
   2,700,000 JavaScript bytes total, and 1,100,000 bytes for any JavaScript
   chunk.
-- The PDF worker is capped at 512 MiB address space and 32 MiB structured
-  output. Semantic sidecar logs rotate at 5 MiB per file.
+- Semantic sidecar logs rotate at 5 MiB per file.
 - Kosh retains at most three verified local safety-snapshot pairs. They are
   recovery points for migration/maintenance, not backup or multi-device sync.
   Before copying, Kosh rotates the oldest owned pair, computes a conservative
@@ -92,17 +91,14 @@ by widening a timeout.
 | Input | Supported maximum |
 | --- | --- |
 | attachments per working copy | 32 |
-| any direct attachment, image, or PDF | 32 MiB |
+| any attachment | 32 MiB |
 | display filename | 255 Unicode scalar values; no path separators, controls, colons, or bidirectional controls |
-| searchable text extraction | first 4 MiB and at most 5,000 passages |
-| PDF | 2,000 pages; OCR is attempted for at most 128 image-only pages |
 | OCR result | 4,096 regions, 16,384 characters per region, 1,000,000 characters total |
-| external temporary materializations | newest 16 attachments and newest 16 PDFs |
+| external temporary materializations | newest 16 attachments |
 
-Archives and unknown/mismatched binaries are retained as opaque attachments.
-Kosh never expands archives and never executes attachment content. A renamed
-PDF is recognized from its header; a non-PDF with a PDF extension remains
-opaque.
+Files are retained as opaque attachments and contribute only their display
+filenames to search. Kosh never expands archives, executes attachment content,
+or indexes file contents.
 
 ## Security and accessibility boundaries
 

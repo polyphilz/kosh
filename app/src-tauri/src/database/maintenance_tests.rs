@@ -157,7 +157,7 @@ fn empty_extraction_retry_is_idempotent() {
 }
 
 #[test]
-fn current_ocr_failures_are_reported_and_retried() {
+fn only_current_ocr_failures_are_reported_and_retried() {
     let root = tempfile::tempdir().expect("temporary extraction library");
     let paths = DatabasePaths::new(root.path());
     let database = Database::initialize(paths.clone()).expect("database");
@@ -166,20 +166,79 @@ fn current_ocr_failures_are_reported_and_retried() {
     let mut main = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
         .expect("maintenance writer");
     main.execute_batch(
-        "INSERT INTO attachment(
+        "BEGIN;
+         INSERT INTO attachment(
             id, created_at, updated_at, deleted_at, sha256, display_filename,
             media_type, byte_length, kind, extraction_state
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000009101',
-            1, 1, NULL, zeroblob(32), 'scan.png', 'image/png', 10, 'IMAGE', 'FAILED'
-         );
+         ) VALUES
+            (
+              '019f547b-6200-7000-8000-000000009101',
+              1, 1, NULL, zeroblob(32), 'scan.png', 'image/png', 10, 'IMAGE', 'FAILED'
+            ),
+            (
+              '019f547b-6200-7000-8000-000000009301',
+              1, 1, NULL, randomblob(32), 'obsolete.png', 'image/png', 10, 'IMAGE', 'FAILED'
+            ),
+            (
+              '019f547b-6200-7000-8000-000000009401',
+              1, 1, NULL, randomblob(32), 'retired.png', 'image/png', 10, 'IMAGE', 'FAILED'
+            );
          INSERT INTO attachment_image(
             attachment_id, preview_sha256, preview_media_type,
             preview_byte_length, natural_width, natural_height, created_at
-         ) VALUES(
-            '019f547b-6200-7000-8000-000000009101',
-            randomblob(32), 'image/webp', 5, 10, 10, 1
-         );
+         ) VALUES
+            (
+              '019f547b-6200-7000-8000-000000009101',
+              randomblob(32), 'image/webp', 5, 10, 10, 1
+            ),
+            (
+              '019f547b-6200-7000-8000-000000009301',
+              randomblob(32), 'image/webp', 5, 10, 10, 1
+            ),
+            (
+              '019f547b-6200-7000-8000-000000009401',
+              randomblob(32), 'image/webp', 5, 10, 10, 1
+            );
+         INSERT INTO attachment_extraction(
+            id, attachment_id, extractor, extractor_version, content_hash,
+            status, error, created_at, completed_at
+         )
+         SELECT
+            '019f547b-6200-7000-8000-000000009302',
+            attachment.id, 'ocr', config.version, attachment.sha256,
+            'FAILED', 'obsolete OCR failure', 1, 2
+         FROM attachment
+         JOIN attachment_extractor_config AS config ON config.extractor = 'ocr'
+         WHERE attachment.id = '019f547b-6200-7000-8000-000000009301';
+         INSERT INTO attachment_extraction(
+            id, attachment_id, extractor, extractor_version, content_hash,
+            status, error, created_at, completed_at
+         )
+         SELECT
+            '019f547b-6200-7000-8000-000000009402',
+            attachment.id, 'ocr', config.version, attachment.sha256,
+            'FAILED', 'retired OCR failure', 1, 2
+         FROM attachment
+         JOIN attachment_extractor_config AS config ON config.extractor = 'ocr'
+         WHERE attachment.id = '019f547b-6200-7000-8000-000000009401';
+         INSERT INTO image_ocr_queue(
+            extraction_id, state, attempt_count, next_attempt_at,
+            started_at, last_error, updated_at
+         ) VALUES
+            (
+              '019f547b-6200-7000-8000-000000009302',
+              'FAILED', 3, NULL, NULL, 'obsolete OCR failure', 2
+            ),
+            (
+              '019f547b-6200-7000-8000-000000009402',
+              'FAILED', 3, NULL, NULL, 'retired OCR failure', 2
+            );
+         UPDATE attachment
+         SET deleted_at = 2, updated_at = 2
+         WHERE id = '019f547b-6200-7000-8000-000000009401';
+         UPDATE attachment_extractor_config
+         SET version = '2', updated_at = 2
+         WHERE extractor = 'ocr';
          INSERT INTO attachment_extraction(
             id, attachment_id, extractor, extractor_version, content_hash,
             status, error, created_at, completed_at
@@ -187,7 +246,7 @@ fn current_ocr_failures_are_reported_and_retried() {
          SELECT
             '019f547b-6200-7000-8000-000000009102',
             attachment.id, 'ocr', config.version, attachment.sha256,
-            'FAILED', 'controlled OCR failure', 1, 2
+            'FAILED', 'controlled OCR failure', 3, 4
          FROM attachment
          JOIN attachment_extractor_config AS config ON config.extractor = 'ocr'
          WHERE attachment.id = '019f547b-6200-7000-8000-000000009101';
@@ -196,8 +255,9 @@ fn current_ocr_failures_are_reported_and_retried() {
             started_at, last_error, updated_at
          ) VALUES(
             '019f547b-6200-7000-8000-000000009102',
-            'FAILED', 3, NULL, NULL, 'controlled OCR failure', 2
-         );",
+            'FAILED', 3, NULL, NULL, 'controlled OCR failure', 4
+         );
+         COMMIT;",
     )
     .expect("failed OCR fixture");
 
@@ -222,6 +282,37 @@ fn current_ocr_failures_are_reported_and_retried() {
         (state.as_str(), attempts, next_attempt_at),
         ("PENDING", 0, Some(10))
     );
+    assert_eq!(
+        maintenance::retry_failed_extractions(&mut main, 11).expect("idempotent retry"),
+        Default::default()
+    );
+    assert_eq!(
+        maintenance::snapshot(&main)
+            .expect("post-retry queue snapshot")
+            .image_ocr
+            .failed,
+        0
+    );
+    for extraction_id in [
+        "019f547b-6200-7000-8000-000000009302",
+        "019f547b-6200-7000-8000-000000009402",
+    ] {
+        let (queue_state, extraction_state): (String, String) = main
+            .query_row(
+                "SELECT queue.state, extraction.status
+                 FROM image_ocr_queue AS queue
+                 JOIN attachment_extraction AS extraction
+                   ON extraction.id = queue.extraction_id
+                 WHERE extraction.id = ?1",
+                [extraction_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("excluded OCR failure");
+        assert_eq!(
+            (queue_state.as_str(), extraction_state.as_str()),
+            ("FAILED", "FAILED")
+        );
+    }
 }
 
 fn install_all_embeddings(client: &super::DatabaseClient, created_at_ms: i64) {
