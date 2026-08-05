@@ -73,16 +73,8 @@ pub enum EvaluationLocator {
         start_line: Option<u32>,
         end_line: Option<u32>,
     },
-    PdfPage {
-        page: u32,
-    },
     OcrRegion {
-        page: Option<u32>,
         region: EvaluationRegion,
-    },
-    TextLines {
-        start_line: u32,
-        end_line: u32,
     },
 }
 
@@ -100,17 +92,16 @@ pub struct EvaluationRegion {
 pub enum QueryCategory {
     CodeIdentifier,
     Exact,
+    FileName,
     Formula,
     Misspelling,
     NearDuplicate,
     Ocr,
-    Pdf,
     MediaVolume,
     Phrase,
     Prose,
     SourceDomain,
     Synonym,
-    TextAttachment,
     Unicode,
 }
 
@@ -358,26 +349,11 @@ impl EvaluationLocator {
                     true,
                 )?;
             }
-            Self::PdfPage { page } if *page == 0 => {
-                return invalid(format!("passage {passage_id} has PDF page zero"));
-            }
-            Self::OcrRegion { page, region } => {
-                if page.is_some_and(|value| value == 0) {
-                    return invalid(format!("passage {passage_id} has OCR page zero"));
-                }
+            Self::OcrRegion { region } => {
                 if region.width == 0 || region.height == 0 {
                     return invalid(format!("passage {passage_id} has an empty OCR region"));
                 }
             }
-            Self::TextLines {
-                start_line,
-                end_line,
-            } if *start_line == 0 || end_line < start_line => {
-                return invalid(format!(
-                    "passage {passage_id} has an invalid text line range"
-                ));
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -446,15 +422,14 @@ mod tests {
         }));
         for category in [
             QueryCategory::CodeIdentifier,
+            QueryCategory::FileName,
             QueryCategory::Formula,
             QueryCategory::Misspelling,
             QueryCategory::NearDuplicate,
             QueryCategory::Ocr,
-            QueryCategory::Pdf,
             QueryCategory::MediaVolume,
             QueryCategory::SourceDomain,
             QueryCategory::Synonym,
-            QueryCategory::TextAttachment,
         ] {
             assert!(
                 fixture

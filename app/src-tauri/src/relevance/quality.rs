@@ -276,8 +276,7 @@ fn validate_citation_audit(
         });
     }
     require(
-        locator_kinds
-            == BTreeSet::from(["MARKDOWN_BLOCKS", "OCR_REGION", "PDF_PAGE", "TEXT_LINES"]),
+        locator_kinds == BTreeSet::from(["MARKDOWN_BLOCKS", "OCR_REGION"]),
         "citation audit must cover every locator kind",
     )?;
     require(
@@ -290,9 +289,7 @@ fn validate_citation_audit(
 fn locator_kind(locator: &EvaluationLocator) -> &'static str {
     match locator {
         EvaluationLocator::MarkdownBlocks { .. } => "MARKDOWN_BLOCKS",
-        EvaluationLocator::PdfPage { .. } => "PDF_PAGE",
         EvaluationLocator::OcrRegion { .. } => "OCR_REGION",
-        EvaluationLocator::TextLines { .. } => "TEXT_LINES",
     }
 }
 

@@ -348,7 +348,6 @@ const QuickAddSession = forwardRef<
       />
       <KoshBlockNoteEditor
         ariaLabel="Quick note"
-        attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
         disabled={finishing}
         imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
         onChange={(documentJson, bodyMarkdown) =>
@@ -362,7 +361,6 @@ const QuickAddSession = forwardRef<
           updatePendingState();
         }}
         openAttachmentExternal={(attachmentId) => backend.openAttachmentExternal(attachmentId)}
-        openPdfExternal={(attachmentId) => backend.openPdfExternal(attachmentId)}
         pasteImage={async () => {
           clearMediaError();
           const captureId = await backend.captureClipboardImage();
@@ -385,12 +383,6 @@ const QuickAddSession = forwardRef<
           return withMediaReservation((draftId) =>
             backend.ingestSelectedImage(selectionId, draftId),
           );
-        }}
-        pickPdf={async () => {
-          clearMediaError();
-          const selectionId = await withFileDialog(() => backend.selectPdf());
-          if (!selectionId) return null;
-          return withMediaReservation((draftId) => backend.ingestSelectedPdf(selectionId, draftId));
         }}
         placeholder={KOSH_NOTE_PLACEHOLDER}
         ref={editorRef}

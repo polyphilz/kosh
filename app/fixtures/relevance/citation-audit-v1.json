@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fixtureDigest": "9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8",
+  "fixtureDigest": "4360bf6331b16bee2c7a8cb93d243d771d07390eb916467e443b639f7c42d97d",
   "reviewedAt": "2026-07-29",
   "reviewer": "Codex implementation audit",
   "entries": [
@@ -67,7 +67,6 @@
       "evidenceExcerpt": "replacement bearings and ceramic lubricant",
       "locator": {
         "kind": "OCR_REGION",
-        "page": null,
         "region": {
           "x": 84,
           "y": 122,
@@ -80,15 +79,22 @@
       "verified": true
     },
     {
-      "queryId": "query-pdf-attention",
-      "passageId": "passage-pdf-transformer",
+      "queryId": "query-transformer-attention",
+      "passageId": "passage-authored-transformer",
       "evidenceExcerpt": "distinct representation subspaces",
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 42
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 96,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       },
       "sourceDomain": null,
-      "attachmentFilename": "transformer-notes.pdf",
+      "attachmentFilename": "transformer-notes.txt",
       "verified": true
     },
     {
@@ -111,20 +117,26 @@
       "verified": true
     },
     {
-      "queryId": "query-text-attachment-lines",
-      "passageId": "passage-text-release-log",
+      "queryId": "query-authored-release-log",
+      "passageId": "passage-authored-release-log",
       "evidenceExcerpt": "cobalt_index rebuild completed",
       "locator": {
-        "kind": "TEXT_LINES",
-        "startLine": 18,
-        "endLine": 20
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 75,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       },
       "sourceDomain": null,
       "attachmentFilename": "release-notes.log",
       "verified": true
     },
     {
-      "queryId": "query-authored-over-pdf-volume",
+      "queryId": "query-authored-over-volume",
       "passageId": "passage-authored-vector-clock",
       "evidenceExcerpt": "Start with this authored checklist",
       "locator": {
@@ -144,14 +156,21 @@
     },
     {
       "queryId": "query-stale-writer",
-      "passageId": "passage-pdf-distributed-113",
+      "passageId": "passage-authored-distributed-113",
       "evidenceExcerpt": "superseded writer cannot commit",
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 113
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 92,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       },
       "sourceDomain": null,
-      "attachmentFilename": "distributed-systems-reader.pdf",
+      "attachmentFilename": "distributed-systems-reader.txt",
       "verified": true
     },
     {

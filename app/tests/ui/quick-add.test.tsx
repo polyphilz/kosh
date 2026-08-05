@@ -336,16 +336,13 @@ describe("global quick add", () => {
     const backend = new FakeBackend();
     const native = createNative();
     const attachment: SelectedAttachmentRecord = {
-      recordKind: "GENERIC",
+      recordKind: "FILE",
       record: {
         byteLength: 4_096,
         displayFilename: "chapter.txt",
-        extractedLineCount: 12,
-        extractionError: null,
-        extractionStatus: "READY",
         id: "01980c8e-6c00-7000-8000-000000000282",
         ingestLeaseId: "01980c8e-6c00-7000-8000-000000000283",
-        kind: "TEXT",
+        kind: "FILE",
         mediaType: "text/plain",
       },
     };
@@ -353,16 +350,6 @@ describe("global quick add", () => {
     const ingestAttachment = vi
       .spyOn(backend, "ingestSelectedAttachment")
       .mockResolvedValue(attachment);
-    vi.spyOn(backend, "attachmentStatus").mockResolvedValue({
-      attachmentId: attachment.record.id,
-      byteLength: attachment.record.byteLength,
-      displayFilename: attachment.record.displayFilename,
-      extractedLineCount: attachment.record.extractedLineCount,
-      extractionError: attachment.record.extractionError,
-      extractionStatus: attachment.record.extractionStatus,
-      kind: attachment.record.kind,
-      mediaType: attachment.record.mediaType,
-    });
     renderQuickAdd(backend, native.controller);
     await screen.findByRole("textbox", { name: "Quick note" });
 

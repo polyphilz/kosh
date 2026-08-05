@@ -28,11 +28,10 @@ use super::{
     error::{DatabaseError, Result},
     maintenance::{ExtractionRetryReport, MaintenanceDatabaseSnapshot},
     media::{
-        AttachmentRecord, GenericAttachmentRecord, GenericAttachmentStatusRecord,
-        ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion, ImageRecord,
-        ImageStatusRecord, IngestAttachmentWrite, IngestGenericAttachmentWrite, IngestImageWrite,
-        IngestPdfWrite, MediaIntegrityReport, MediaIntegrityScan, MediaLimits,
-        MediaMaintenanceReport, MediaMaintenanceScan, MediaPayload, MediaRangeRequest, PdfRecord,
+        AttachmentRecord, ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion,
+        ImageRecord, ImageStatusRecord, IngestAttachmentWrite, IngestImageWrite,
+        MediaIntegrityReport, MediaIntegrityScan, MediaLimits, MediaMaintenanceReport,
+        MediaMaintenanceScan, MediaPayload, MediaRangeRequest,
     },
     migrations::MigrationHeads,
     offsite_checkpoint::{
@@ -266,21 +265,9 @@ pub(super) enum WriterMessage {
         write: IngestAttachmentWrite,
         reply: SyncSender<Result<AttachmentRecord>>,
     },
-    IngestGenericAttachment {
-        write: IngestGenericAttachmentWrite,
-        reply: SyncSender<Result<GenericAttachmentRecord>>,
-    },
-    LoadGenericAttachmentStatus {
-        attachment_id: String,
-        reply: SyncSender<Result<GenericAttachmentStatusRecord>>,
-    },
     IngestImage {
         write: IngestImageWrite,
         reply: SyncSender<Result<ImageRecord>>,
-    },
-    IngestPdf {
-        write: IngestPdfWrite,
-        reply: SyncSender<Result<PdfRecord>>,
     },
     LoadImageStatus {
         attachment_id: String,
@@ -919,49 +906,10 @@ impl DatabaseClient {
             .map_err(|_| DatabaseError::WriterUnavailable)?
     }
 
-    pub(crate) fn ingest_generic_attachment(
-        &self,
-        write: IngestGenericAttachmentWrite,
-    ) -> Result<GenericAttachmentRecord> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::IngestGenericAttachment { write, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn load_generic_attachment_status(
-        &self,
-        attachment_id: String,
-    ) -> Result<GenericAttachmentStatusRecord> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::LoadGenericAttachmentStatus {
-                attachment_id,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
     pub(crate) fn ingest_image(&self, write: IngestImageWrite) -> Result<ImageRecord> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::IngestImage { write, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn ingest_pdf(&self, write: IngestPdfWrite) -> Result<PdfRecord> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::IngestPdf { write, reply })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()
@@ -1658,17 +1606,13 @@ pub(super) fn install_lexical_benchmark_attachments(
         let owner_block_id = format!("benchmark-attachment-{}", write.attachment_id);
         let kind = if write.media_type.starts_with("image/") {
             "IMAGE"
-        } else if write.media_type == "application/pdf" {
-            "PDF"
-        } else if write.media_type.starts_with("text/") {
-            "TEXT"
         } else {
-            "BINARY"
+            "FILE"
         };
-        let extraction_state = if kind == "BINARY" {
-            "NOT_APPLICABLE"
-        } else {
+        let extraction_state = if kind == "IMAGE" {
             "PENDING"
+        } else {
+            "NOT_APPLICABLE"
         };
         let content_hash = Sha256::digest(write.attachment_id.as_bytes());
         transaction.execute(

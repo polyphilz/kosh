@@ -76,14 +76,8 @@ export function citationLocation(citation: CitationResolution): string {
         }
         return rangeLabel("block", citation.locator.startBlock + 1, citation.locator.endBlock + 1);
       }
-      case "PDF_PAGE":
-        return `page ${citation.locator.page}`;
       case "OCR_REGION":
-        return citation.locator.page === null
-          ? "image region"
-          : `page ${citation.locator.page} image region`;
-      case "TEXT_LINES":
-        return rangeLabel("line", citation.locator.startLine, citation.locator.endLine);
+        return "image region";
       default:
         return citation.locator satisfies never;
     }

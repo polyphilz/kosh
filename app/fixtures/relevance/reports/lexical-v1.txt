@@ -1,12 +1,12 @@
 Kosh relevance report v1
-fixture: kosh-relevance-v1 (9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8)
+fixture: kosh-relevance-v1 (4360bf6331b16bee2c7a8cb93d243d771d07390eb916467e443b639f7c42d97d)
 retriever: kosh-lexical-v1
 status: PASS
 queries: 25/25 passed
-recall@5: 0.9467
+recall@5: 0.9867
 recall@10: 1.0000
-MRR: 0.9383
-nDCG@10: 0.9484
+MRR: 0.9413
+nDCG@10: 0.9518
 citation locator accuracy: 1.0000
 exact/phrase success: 1.0000
 forbidden hits@10: 0
@@ -17,23 +17,23 @@ query results:
 - [PASS] query-bayes-formula (Formula): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-formula-bayes
 - [PASS] query-sqlite-domain (SourceDomain): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-source-sqlite
 - [PASS] query-ocr-invoice (Ocr): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-ocr-receipt
-- [PASS] query-pdf-attention (Pdf): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-pdf-transformer
+- [PASS] query-transformer-attention (Prose): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-transformer
 - [PASS] query-car-upkeep (Synonym): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-synonym-automobile
 - [PASS] query-concurrency-misspelling (Misspelling): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-misspelling-concurrency
 - [PASS] query-obsolete-caloric (NearDuplicate): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-caloric
 - [PASS] query-resolve-citation-exact (Exact): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-code-resolve-citation
 - [PASS] query-unicode-diacritics (Unicode): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-unicode-cafe
-- [PASS] query-model-filename (Exact): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-filename-model
+- [PASS] query-model-filename (FileName): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-filename-model
 - [PASS] query-herb-hydration (Synonym): recall@10=1.0000, rr=0.3333, citation=valid, top=passage-source-rust
 - [PASS] query-dough-phrase (Phrase): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-phrase-dough
 - [PASS] query-fourier-formula (Formula): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-formula-fourier
 - [PASS] query-rust-domain (SourceDomain): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-source-rust
 - [PASS] query-heat-models (Prose): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-modern
-- [PASS] query-text-attachment-lines (TextAttachment): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-text-release-log
-- [PASS] query-authored-over-pdf-volume (MediaVolume): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-vector-clock
-- [PASS] query-pdf-fencing-page (Pdf): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-pdf-distributed-113
+- [PASS] query-authored-release-log (Exact): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-release-log
+- [PASS] query-authored-over-volume (MediaVolume): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-vector-clock
+- [PASS] query-lease-fencing (Prose): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-authored-distributed-113
 - [PASS] query-particle-distribution (Prose): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-heat-modern
 - [PASS] query-receipt-total (Ocr): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-ocr-receipt
-- [PASS] query-stale-writer (Pdf): recall@10=1.0000, rr=0.1250, citation=valid, top=passage-source-rust
+- [PASS] query-stale-writer (Synonym): recall@10=1.0000, rr=0.2000, citation=valid, top=passage-source-rust
 - [PASS] query-citation-function (CodeIdentifier): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-code-resolve-citation
 - [PASS] query-expensive-worker-limit (Synonym): recall@10=1.0000, rr=1.0000, citation=valid, top=passage-misspelling-concurrency

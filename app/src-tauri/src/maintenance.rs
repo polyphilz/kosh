@@ -270,11 +270,12 @@ fn storage_diagnostics(
     let media_database_bytes = sqlite_family_size(&paths.media)?;
     let model_bytes = directory_size(&root.join("models"))?;
     let logs_bytes = directory_size(&root.join("logs"))?;
-    let temporary_bytes = ["media-staging", "pdf-open", "attachment-open"]
-        .into_iter()
-        .try_fold(0_u64, |total, name| {
-            Ok::<_, DatabaseError>(total.saturating_add(directory_size(&root.join(name))?))
-        })?;
+    let temporary_bytes =
+        ["media-staging", "attachment-open"]
+            .into_iter()
+            .try_fold(0_u64, |total, name| {
+                Ok::<_, DatabaseError>(total.saturating_add(directory_size(&root.join(name))?))
+            })?;
     Ok(StorageDiagnostics {
         data_root: root.to_string_lossy().into_owned(),
         main_database_path: paths.main.to_string_lossy().into_owned(),

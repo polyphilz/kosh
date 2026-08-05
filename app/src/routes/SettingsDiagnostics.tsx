@@ -51,7 +51,7 @@ const actionCopy: Record<
   RETRY_EXTRACTIONS: {
     title: "Retry failed extraction?",
     description:
-      "Only current failed image OCR and PDF jobs will return to their local queues. Successful extraction evidence is untouched.",
+      "Only current failed image OCR jobs will return to the local queue. Successful OCR evidence is untouched.",
     confirm: "Retry failed jobs",
     running: "Queueing failed extraction…",
   },

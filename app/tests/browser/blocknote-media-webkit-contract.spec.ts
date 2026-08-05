@@ -12,7 +12,11 @@ test("opaque local media blocks edit and serialize in WebKit", async ({ page }) 
 
   const markdown = await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.markdown());
   expect(markdown).toContain("alt=WebKit%20diagram");
-  expect(markdown).toContain("{{kosh:pdf:019f547b-6200-7000-8000-000000000102}}");
+  expect(markdown).toContain("{{kosh:attachment:019f547b-6200-7000-8000-000000000102}}");
   expect(markdown).not.toMatch(/(?:blob:|data:|file:|\/Users\/)/u);
-  await expect(page.locator("[data-kosh-file='true']")).toContainText("appendix.txt");
+  await expect(page.locator("[data-kosh-file='true']")).toHaveCount(2);
+  await expect(page.locator("[data-kosh-file='true']")).toContainText([
+    "chapter.zip",
+    "appendix.txt",
+  ]);
 });

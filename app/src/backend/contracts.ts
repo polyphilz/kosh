@@ -362,18 +362,8 @@ export type CitationLocator =
       endLine: number | null;
     }
   | {
-      kind: "PDF_PAGE";
-      page: number;
-    }
-  | {
       kind: "OCR_REGION";
-      page: number | null;
       region: unknown;
-    }
-  | {
-      kind: "TEXT_LINES";
-      startLine: number;
-      endLine: number;
     };
 
 export interface CitationTidbit {
@@ -577,45 +567,18 @@ export interface ImageOcrDiagnostics {
   lastError: string | null;
 }
 
-export interface PdfRecord {
-  id: string;
-  ingestLeaseId: string;
-  displayFilename: string;
-  mediaType: "application/pdf";
-  byteLength: number;
-  kind: "PDF";
-  pageCount: number;
-}
-
-export type AttachmentExtractionStatus = "READY" | "FAILED" | "NOT_APPLICABLE";
-
-export interface GenericAttachmentRecord {
+export interface FileAttachmentRecord {
   id: string;
   ingestLeaseId: string;
   displayFilename: string;
   mediaType: string;
   byteLength: number;
-  kind: "TEXT" | "BINARY";
-  extractionStatus: AttachmentExtractionStatus;
-  extractionError: string | null;
-  extractedLineCount: number;
-}
-
-export interface GenericAttachmentStatusRecord {
-  attachmentId: string;
-  displayFilename: string;
-  mediaType: string;
-  byteLength: number;
-  kind: "TEXT" | "BINARY";
-  extractionStatus: AttachmentExtractionStatus;
-  extractionError: string | null;
-  extractedLineCount: number;
+  kind: "FILE";
 }
 
 export type SelectedAttachmentRecord =
   | { recordKind: "IMAGE"; record: ImageRecord }
-  | { recordKind: "PDF"; record: PdfRecord }
-  | { recordKind: "GENERIC"; record: GenericAttachmentRecord };
+  | { recordKind: "FILE"; record: FileAttachmentRecord };
 
 export interface TidbitSource {
   id: string;
@@ -682,14 +645,10 @@ export interface Backend {
   imageStatus(attachmentId: string): Promise<ImageStatusRecord>;
   retryImageOcr(attachmentId: string): Promise<ImageStatusRecord>;
   imageOcrDiagnostics(): Promise<ImageOcrDiagnostics>;
-  selectPdf(): Promise<string | null>;
-  ingestSelectedPdf(selectionId: string, draftId: string): Promise<PdfRecord>;
   selectAttachment(): Promise<string | null>;
   ingestSelectedAttachment(selectionId: string, draftId: string): Promise<SelectedAttachmentRecord>;
-  attachmentStatus(attachmentId: string): Promise<GenericAttachmentStatusRecord>;
   openAttachmentExternal(attachmentId: string): Promise<void>;
   revealAttachmentInFinder(attachmentId: string): Promise<void>;
   setFileDropConsumerActive(active: boolean): Promise<void>;
   discardFileDropSelections(selectionIds: string[]): Promise<void>;
-  openPdfExternal(attachmentId: string): Promise<void>;
 }

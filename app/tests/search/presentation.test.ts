@@ -47,7 +47,7 @@ describe("search presentation", () => {
       headingContext: ["Chapter", "Evidence"],
       constructionVersion: "v1",
       state: "HISTORICAL",
-      locator: { kind: "PDF_PAGE", page: 7 },
+      locator: { kind: "OCR_REGION", region: [12, 24, 80, 36] },
       tidbit: {
         id: "tidbit-1",
         revisionId: "revision-3",
@@ -58,8 +58,8 @@ describe("search presentation", () => {
       attachment: {
         id: "attachment-1",
         extractionId: "extraction-1",
-        displayFilename: "paper.pdf",
-        mediaType: "application/pdf",
+        displayFilename: "scan.png",
+        mediaType: "image/png",
         deleted: false,
       },
       sources: [
@@ -71,11 +71,11 @@ describe("search presentation", () => {
       ],
     };
 
-    expect(citationLocation(citation)).toBe("Chapter › Evidence · page 7");
+    expect(citationLocation(citation)).toBe("Chapter › Evidence · image region");
     expect(citationCopyText(citation)).toBe(
       [
-        "paper.pdf",
-        "Chapter › Evidence · page 7",
+        "scan.png",
+        "Chapter › Evidence · image region",
         "Revision 3 · Historical",
         "Publisher · example.com",
         "Kosh passage: passage-1",

@@ -9,7 +9,6 @@ import type {
   ConfigureBackupInput,
   DeleteTidbitInput,
   DiscardWorkingCopyInput,
-  GenericAttachmentStatusRecord,
   ImageDropIngestResult,
   ImageOcrDiagnostics,
   ImageRecord,
@@ -18,7 +17,6 @@ import type {
   MaintenanceDiagnostics,
   MaintenanceOutcome,
   PassageEmbeddingIndexStatus,
-  PdfRecord,
   RuntimeProbe,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
@@ -584,14 +582,6 @@ export class FakeBackend implements Backend {
     };
   }
 
-  async selectPdf(): Promise<string | null> {
-    return null;
-  }
-
-  async ingestSelectedPdf(_selectionId: string, _draftId: string): Promise<PdfRecord> {
-    throw new Error("Selected PDFs are unavailable in the browser fixture");
-  }
-
   async selectAttachment(): Promise<string | null> {
     return null;
   }
@@ -601,10 +591,6 @@ export class FakeBackend implements Backend {
     _draftId: string,
   ): Promise<SelectedAttachmentRecord> {
     throw new Error("Selected attachments are unavailable in the browser fixture");
-  }
-
-  async attachmentStatus(attachmentId: string): Promise<GenericAttachmentStatusRecord> {
-    throw new Error(`attachment ${attachmentId} was not found`);
   }
 
   async openAttachmentExternal(_attachmentId: string): Promise<void> {
@@ -618,10 +604,6 @@ export class FakeBackend implements Backend {
   async setFileDropConsumerActive(_active: boolean): Promise<void> {}
 
   async discardFileDropSelections(_selectionIds: string[]): Promise<void> {}
-
-  async openPdfExternal(_attachmentId: string): Promise<void> {
-    throw new Error("Opening PDFs externally is unavailable in the browser fixture");
-  }
 
   async seedNote(input: FakeNoteInput): Promise<TidbitRecord> {
     const sequence = this.nextSequence();

@@ -3,9 +3,8 @@ use tempfile::TempDir;
 
 use super::{deterministic_passage_id, CitationLocator, CitationState};
 use crate::database::{
-    connection::{self, DatabaseKind, FileState},
-    tidbits::CreateTidbitWrite,
-    Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput, SourceDraft, TidbitDraft,
+    tidbits::CreateTidbitWrite, Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput,
+    SourceDraft, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -234,102 +233,5 @@ fn authored_citations_are_deterministic_and_follow_the_tidbit_lifecycle() {
             .expect("old revision stays historical")
             .state,
         CitationState::Historical
-    );
-}
-
-#[test]
-fn attachment_citations_resolve_typed_file_and_line_provenance() {
-    let root = tempfile::tempdir().expect("temporary attachment citation library");
-    let paths = DatabasePaths::new(root.path());
-    drop(Database::initialize(paths.clone()).expect("attachment citation database"));
-    let connection = connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
-        .expect("main writer");
-    connection
-        .execute_batch(
-            "BEGIN;
-             INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-             VALUES(
-                '019f547b-6200-7000-8000-000000002105',
-                10, 10, '019f547b-6200-7000-8000-000000002106'
-             );
-             INSERT INTO tidbit_revision(
-                id, tidbit_id, revision_number, created_at,
-                document_json, body_markdown, content_hash
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002106',
-                '019f547b-6200-7000-8000-000000002105',
-                1, 10,
-                '{\"schemaVersion\":1,\"blocks\":[{\"id\":\"owner\",\"type\":\"paragraph\"}]}',
-                'Attachment citation owner.', zeroblob(32)
-             );
-             INSERT INTO attachment(
-                id, created_at, updated_at, sha256, display_filename,
-                media_type, byte_length, kind, extraction_state,
-                owner_note_id, owner_block_id
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002101',
-                10, 10, zeroblob(32), 'evidence.txt', 'text/plain', 12, 'TEXT', 'READY',
-                '019f547b-6200-7000-8000-000000002105',
-                'attachment-citation-fixture'
-             );
-             INSERT INTO attachment_extraction(
-                id, attachment_id, extractor, extractor_version, content_hash,
-                status, created_at, started_at, completed_at
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002102',
-                '019f547b-6200-7000-8000-000000002101',
-                'text', '1', zeroblob(32), 'READY', 10, 10, 10
-             );
-             INSERT INTO attachment_segment(
-                id, extraction_id, ordinal, locator_kind, line_start, line_end,
-                content, content_hash
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002103',
-                '019f547b-6200-7000-8000-000000002102',
-                0, 'TEXT_LINES', 4, 7, 'exact attachment evidence', zeroblob(32)
-             );
-             INSERT INTO passage(
-                id, attachment_segment_id, owner_kind, ordinal, content,
-                content_hash, locator_kind, locator_json, created_at,
-                construction_version, heading_context_json
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002104',
-                '019f547b-6200-7000-8000-000000002103',
-                'ATTACHMENT', 0, 'exact attachment evidence', zeroblob(32),
-                'TEXT_LINES', '{\"start\":4,\"end\":7}', 10,
-                'text-lines-v1', '[]'
-             );
-             INSERT INTO tidbit_revision_attachment(
-                tidbit_revision_id, attachment_id, block_id, sort_order, display_role
-             ) VALUES(
-                '019f547b-6200-7000-8000-000000002106',
-                '019f547b-6200-7000-8000-000000002101',
-                'attachment-citation-fixture', 0, 'ATTACHMENT'
-             );
-             COMMIT;",
-        )
-        .expect("attachment citation fixture");
-
-    let citation = super::resolve_citation(&connection, "019f547b-6200-7000-8000-000000002104")
-        .expect("resolve attachment citation");
-    assert_eq!(citation.state, CitationState::Current);
-    assert_eq!(citation.excerpt, "exact attachment evidence");
-    assert_eq!(citation.sources, Vec::new());
-    assert!(citation.tidbit.is_none());
-    assert_eq!(
-        citation.attachment.as_ref().map(|attachment| {
-            (
-                attachment.display_filename.as_str(),
-                attachment.media_type.as_str(),
-            )
-        }),
-        Some(("evidence.txt", "text/plain"))
-    );
-    assert_eq!(
-        citation.locator,
-        CitationLocator::TextLines {
-            start_line: 4,
-            end_line: 7,
-        }
     );
 }

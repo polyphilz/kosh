@@ -261,9 +261,6 @@ function searchableText(node: ProseMirrorNode): string {
   if (node.type.name === "koshImage") {
     return stringAttributes(node, ["altText", "caption"]);
   }
-  if (node.type.name === "koshPdf") {
-    return stringAttributes(node, ["displayFilename"]);
-  }
   if (node.type.name === "koshFileAttachment") {
     return stringAttributes(node, ["displayFilename", "caption"]);
   }

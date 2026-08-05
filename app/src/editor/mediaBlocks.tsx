@@ -8,11 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import type {
-  GenericAttachmentStatusRecord,
-  ImageStatusRecord,
-  SelectedAttachmentRecord,
-} from "../backend/contracts";
+import type { ImageStatusRecord, SelectedAttachmentRecord } from "../backend/contracts";
 import { attachmentMediaUrl } from "../media/gateway";
 import { useKoshEditorDisabled } from "./interactionState";
 import { clampImageWidth, initialImageWidth } from "./mediaSizing";
@@ -22,12 +18,10 @@ const STATUS_POLL_MS = 1_500;
 const STATUS_POLL_MAX_MS = 5 * 60_000;
 
 export interface KoshMediaActions {
-  attachmentStatus?: (attachmentId: string) => Promise<GenericAttachmentStatusRecord>;
   imageStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
   mediaUrl?: (attachmentId: string) => string;
   onError?: (error: unknown) => void;
   openAttachmentExternal?: (attachmentId: string) => Promise<void>;
-  openPdfExternal?: (attachmentId: string) => Promise<void>;
   revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
 }
@@ -94,21 +88,6 @@ const pendingMedia = createReactBlockSpec(
   },
 );
 
-const pdfConfig = {
-  type: "koshPdf",
-  propSchema: {
-    attachmentId: { default: "" },
-    displayFilename: { default: "PDF attachment" },
-    pageCount: { default: 0 },
-  },
-  content: "none",
-} as const;
-
-const pdf = createReactBlockSpec(pdfConfig, {
-  meta: { isolating: true, selectable: true },
-  render: ({ block, editor }) => <KoshPdfBlock block={block} editor={editor} />,
-});
-
 const fileAttachmentConfig = {
   type: "koshFileAttachment",
   propSchema: {
@@ -116,13 +95,6 @@ const fileAttachmentConfig = {
     byteLength: { default: 0 },
     caption: { default: "" },
     displayFilename: { default: "Attachment" },
-    extractedLineCount: { default: 0 },
-    extractionError: { default: "" },
-    extractionStatus: {
-      default: "NOT_APPLICABLE",
-      values: ["READY", "FAILED", "NOT_APPLICABLE"] as const,
-    },
-    kind: { default: "BINARY", values: ["TEXT", "BINARY"] as const },
     mediaType: { default: "application/octet-stream" },
   },
   content: "none",
@@ -136,13 +108,12 @@ const fileAttachment = createReactBlockSpec(fileAttachmentConfig, {
 export const koshMediaBlockSpecs = {
   koshImage: image(),
   koshPendingMedia: pendingMedia(),
-  koshPdf: pdf(),
   koshFileAttachment: fileAttachment(),
 };
 
 interface MediaPartialBlock {
   props: Record<string, boolean | number | string>;
-  type: "koshFileAttachment" | "koshImage" | "koshPdf";
+  type: "koshFileAttachment" | "koshImage";
 }
 
 export function selectedAttachmentToMediaBlock(
@@ -166,18 +137,7 @@ export function selectedAttachmentToMediaBlock(
         },
       };
     }
-    case "PDF": {
-      const record = selection.record;
-      return {
-        type: "koshPdf",
-        props: {
-          attachmentId: record.id,
-          displayFilename: record.displayFilename,
-          pageCount: record.pageCount,
-        },
-      };
-    }
-    case "GENERIC": {
+    case "FILE": {
       const record = selection.record;
       return {
         type: "koshFileAttachment",
@@ -186,10 +146,6 @@ export function selectedAttachmentToMediaBlock(
           byteLength: record.byteLength,
           caption: "",
           displayFilename: record.displayFilename,
-          extractedLineCount: record.extractedLineCount,
-          extractionError: record.extractionError ?? "",
-          extractionStatus: record.extractionStatus,
-          kind: record.kind,
           mediaType: record.mediaType,
         },
       };
@@ -198,7 +154,6 @@ export function selectedAttachmentToMediaBlock(
 }
 
 type ImageRenderProps = ReactCustomBlockRenderProps<typeof imageConfig>;
-type PdfRenderProps = ReactCustomBlockRenderProps<typeof pdfConfig>;
 type FileRenderProps = ReactCustomBlockRenderProps<typeof fileAttachmentConfig>;
 
 function KoshImageBlock({ block, editor }: ImageRenderProps) {
@@ -350,67 +305,12 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
   );
 }
 
-function KoshPdfBlock({ block, editor }: PdfRenderProps) {
-  const actions = useContext(KoshMediaActionsContext);
-  const attachmentId = block.props.attachmentId;
-  return (
-    <section className="kosh-blocknote-file" contentEditable={false} data-kosh-pdf="true">
-      <span aria-hidden className="kosh-blocknote-file__icon">
-        PDF
-      </span>
-      <div className="kosh-blocknote-file__details">
-        <strong>{block.props.displayFilename}</strong>
-        <span>{`${block.props.pageCount} page${block.props.pageCount === 1 ? "" : "s"}`}</span>
-      </div>
-      <MediaButtons
-        editor={editor}
-        onOpen={actions.openPdfExternal ? () => actions.openPdfExternal!(attachmentId) : undefined}
-        onRemove={() => editor.removeBlocks([block])}
-      />
-    </section>
-  );
-}
-
 function KoshFileBlock({ block, editor }: FileRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
   const disabled = useKoshEditorDisabled();
   const locked = disabled || !editor.isEditable;
-  const [status, setStatus] = useState<GenericAttachmentStatusRecord | null>(null);
   const attachmentId = block.props.attachmentId;
-  useEffect(() => {
-    if (!actions.attachmentStatus || !attachmentId) return;
-    let active = true;
-    void actions
-      .attachmentStatus(attachmentId)
-      .then((record) => {
-        if (!active || record.attachmentId !== attachmentId) return;
-        setStatus(record);
-      })
-      .catch((error: unknown) => actions.onError?.(error));
-    return () => {
-      active = false;
-    };
-  }, [actions, attachmentId]);
-
-  useEffect(() => {
-    if (
-      disabled ||
-      !status?.displayFilename ||
-      status.displayFilename === block.props.displayFilename
-    ) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      if (!editor.isEditable) return;
-      editor.transact((transaction) => {
-        editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
-        transaction.setMeta("addToHistory", false);
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [block, disabled, editor, status?.displayFilename]);
-
-  const filename = status?.displayFilename ?? block.props.displayFilename;
+  const filename = block.props.displayFilename;
   return (
     <section className="kosh-blocknote-file" contentEditable={false} data-kosh-file="true">
       <span aria-hidden className="kosh-blocknote-file__icon">
@@ -418,15 +318,7 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
       </span>
       <div className="kosh-blocknote-file__details">
         <strong>{filename}</strong>
-        <span title={status?.extractionError ?? block.props.extractionError}>
-          {fileStatusText({
-            byteLength: status?.byteLength ?? block.props.byteLength,
-            extractedLineCount: status?.extractedLineCount ?? block.props.extractedLineCount,
-            extractionError: status?.extractionError ?? block.props.extractionError,
-            extractionStatus: status?.extractionStatus ?? block.props.extractionStatus,
-            mediaType: status?.mediaType ?? block.props.mediaType,
-          })}
-        </span>
+        <span>{fileStatusText(block.props.byteLength, block.props.mediaType)}</span>
       </div>
       <MediaButtons
         editor={editor}
@@ -529,23 +421,8 @@ function imageStatusText(status: string, error: string): string {
   }
 }
 
-function fileStatusText(properties: {
-  byteLength: number;
-  extractedLineCount: number;
-  extractionError: string;
-  extractionStatus: string;
-  mediaType: string;
-}): string {
-  const size = formatBytes(properties.byteLength);
-  if (properties.extractionStatus === "READY") {
-    return `${size} · ${properties.mediaType} · ${properties.extractedLineCount} line${
-      properties.extractedLineCount === 1 ? "" : "s"
-    } searchable`;
-  }
-  if (properties.extractionStatus === "FAILED") {
-    return `${size} · ${properties.extractionError || "Text extraction failed"}`;
-  }
-  return `${size} · ${properties.mediaType} · Content not searchable`;
+function fileStatusText(byteLength: number, mediaType: string): string {
+  return `${formatBytes(byteLength)} · ${mediaType} · Filename searchable`;
 }
 
 function formatBytes(value: number): string {

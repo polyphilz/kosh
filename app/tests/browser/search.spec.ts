@@ -241,11 +241,13 @@ test("a result edited after retrieval opens honest historical evidence", async (
   expect(page.url()).not.toContain("cobalt");
 });
 
-test("PDF results use the attachment filename without indexing page contents", async ({ page }) => {
+test("file results use the attachment filename without indexing file contents", async ({
+  page,
+}) => {
   await page.goto("/#/");
   const attachmentId = "019f547b-6200-7000-8000-00000000d001";
   const note = await seedTidbit(page, {
-    bodyMarkdown: "# Vector chapter\n\n[vectors.pdf]",
+    bodyMarkdown: `# Vector chapter\n\n{{kosh:attachment:${attachmentId}}}`,
     documentJson: JSON.stringify({
       schemaVersion: 1,
       blocks: [
@@ -257,33 +259,49 @@ test("PDF results use the attachment filename without indexing page contents", a
         },
         {
           id: "019f547b-6200-7000-8000-00000000d102",
-          type: "koshPdf",
-          props: { attachmentId, displayFilename: "vectors.pdf", pageCount: 3 },
+          type: "koshFileAttachment",
+          props: {
+            attachmentId,
+            byteLength: 2_048,
+            caption: "",
+            displayFilename: "vectors.csv",
+            mediaType: "text/csv",
+          },
         },
       ],
     }),
     sources: [],
   });
   await page.evaluate(
-    ({ attachmentId: seededAttachmentId, note: seeded }) => {
+    ({ note: seeded }) => {
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
-      const passageId = "fake-pdf-filename-passage";
+      const passageId = "fake-file-filename-passage";
       const citation = {
         passageId,
-        excerpt: "vectors.pdf",
+        excerpt: "Vector chapter",
         headingContext: ["Vector chapter"],
-        constructionVersion: "fake-pdf-filename-v1",
+        constructionVersion: "fake-file-filename-v1",
         state: "CURRENT" as const,
-        locator: { kind: "TEXT_LINES" as const, startLine: 1, endLine: 1 },
-        tidbit: null,
-        attachment: {
-          id: seededAttachmentId,
-          extractionId: "fake-pdf-extraction",
-          displayFilename: "vectors.pdf",
-          mediaType: "application/pdf",
+        locator: {
+          kind: "MARKDOWN_BLOCKS" as const,
+          startBlock: 0,
+          endBlock: 0,
+          sourceStartByte: 0,
+          sourceEndByte: 16,
+          startChar: 0,
+          endChar: 14,
+          startLine: 1,
+          endLine: 1,
+        },
+        tidbit: {
+          id: seeded.id,
+          revisionId: seeded.currentRevisionId,
+          revisionNumber: seeded.revisionNumber,
+          displayTitle: seeded.displayTitle,
           deleted: false,
         },
+        attachment: null,
         sources: [],
       };
       backend.resolveCitation = async (requestedPassageId) => {
@@ -311,37 +329,18 @@ test("PDF results use the attachment filename without indexing page contents", a
         ],
       });
     },
-    { attachmentId, note },
+    { note },
   );
 
   await page.keyboard.press("Meta+k");
-  await page.getByRole("combobox", { name: "Search notes" }).fill("vectors.pdf");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("vectors.csv");
   await page.getByRole("option", { name: /Vector chapter/u }).click();
 
-  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
-  const location = page.getByRole("status", { name: "Search result location" });
-  await expect(location).toContainText("vectors.pdf");
-  await expect(location).toContainText("Vector chapter");
-  await expect(location).toContainText("vectors.pdf");
-  await expect(location).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("Vector chapter");
+  await expect(page.getByRole("status", { name: "Search result location" })).toHaveCount(0);
   await page.waitForTimeout(1_500);
-  await expect(location).toBeVisible();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
-
-  await page.keyboard.press("Meta+k");
-  await page.getByRole("combobox", { name: "Search notes" }).fill("vectors.pdf");
-  await page.getByRole("option", { name: /Vector chapter/u }).click();
-  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
-
-  await page.getByRole("button", { name: "Dismiss search result location" }).click();
-  await expect(location).toBeHidden();
   await expect.poll(() => new URL(page.url()).searchParams.has("passage")).toBe(false);
-
-  await page.keyboard.press("Meta+k");
-  await page.getByRole("combobox", { name: "Search notes" }).fill("vectors.pdf");
-  await page.getByRole("option", { name: /Vector chapter/u }).click();
-  await expect(location).toBeVisible();
-  await expect(location).toContainText("vectors.pdf");
 });
 
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {

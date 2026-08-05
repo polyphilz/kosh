@@ -134,7 +134,6 @@
       ],
       "locator": {
         "kind": "OCR_REGION",
-        "page": null,
         "region": {
           "x": 84,
           "y": 122,
@@ -144,22 +143,29 @@
       }
     },
     {
-      "id": "passage-pdf-transformer",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-transformer-notes",
-      "headingContext": [],
+      "id": "passage-authored-transformer",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-transformer",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "Different attention heads can focus on distinct representation subspaces at different positions.",
       "sources": [],
       "attachments": [
         {
-          "filename": "transformer-notes.pdf",
-          "mediaType": "application/pdf"
+          "filename": "transformer-notes.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 42
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 96,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
@@ -362,11 +368,11 @@
       }
     },
     {
-      "id": "passage-text-release-log",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-release-log",
-      "headingContext": [],
+      "id": "passage-authored-release-log",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-release-log",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "The cobalt_index rebuild completed successfully after the schema promotion.",
       "sources": [],
       "attachments": [
@@ -376,9 +382,15 @@
         }
       ],
       "locator": {
-        "kind": "TEXT_LINES",
-        "startLine": 18,
-        "endLine": 20
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 75,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
@@ -403,136 +415,185 @@
       }
     },
     {
-      "id": "passage-pdf-distributed-110",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-distributed-reader",
-      "headingContext": [],
+      "id": "passage-authored-distributed-110",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-distributed-110",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "Vector clock reconciliation preserves causal order across replicas while concurrent writes remain distinguishable.",
       "sources": [],
       "attachments": [
         {
-          "filename": "distributed-systems-reader.pdf",
-          "mediaType": "application/pdf"
+          "filename": "distributed-systems-reader.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 110
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 114,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
-      "id": "passage-pdf-distributed-111",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-distributed-reader",
-      "headingContext": [],
+      "id": "passage-authored-distributed-111",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-distributed-111",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "Vector clock reconciliation can expose causal order before replicas exchange every archived write.",
       "sources": [],
       "attachments": [
         {
-          "filename": "distributed-systems-reader.pdf",
-          "mediaType": "application/pdf"
+          "filename": "distributed-systems-reader.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 111
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 98,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
-      "id": "passage-pdf-distributed-112",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-distributed-reader",
-      "headingContext": [],
+      "id": "passage-authored-distributed-112",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-distributed-112",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "A vector clock records causal order by incrementing replica counters during reconciliation.",
       "sources": [],
       "attachments": [
         {
-          "filename": "distributed-systems-reader.pdf",
-          "mediaType": "application/pdf"
+          "filename": "distributed-systems-reader.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 112
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 91,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
-      "id": "passage-pdf-distributed-113",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-distributed-reader",
-      "headingContext": [],
+      "id": "passage-authored-distributed-113",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-distributed-113",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "Lease fencing uses token epoch 47 so a superseded writer cannot commit after reconciliation.",
       "sources": [],
       "attachments": [
         {
-          "filename": "distributed-systems-reader.pdf",
-          "mediaType": "application/pdf"
+          "filename": "distributed-systems-reader.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 113
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 92,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
-      "id": "passage-pdf-distributed-114",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-distributed-reader",
-      "headingContext": [],
+      "id": "passage-authored-distributed-114",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-distributed-114",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "Archived examples compare vector clock reconciliation with wall-clock ordering and causal broadcast.",
       "sources": [],
       "attachments": [
         {
-          "filename": "distributed-systems-reader.pdf",
-          "mediaType": "application/pdf"
+          "filename": "distributed-systems-reader.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 114
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 100,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
-      "id": "passage-pdf-distributed-115",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-distributed-reader",
-      "headingContext": [],
+      "id": "passage-authored-distributed-115",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-distributed-115",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "Exercises ask whether vector clock reconciliation preserves causal order under delayed delivery.",
       "sources": [],
       "attachments": [
         {
-          "filename": "distributed-systems-reader.pdf",
-          "mediaType": "application/pdf"
+          "filename": "distributed-systems-reader.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 115
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 96,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     },
     {
-      "id": "passage-pdf-conference-clock",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-conference-notes",
-      "headingContext": [],
+      "id": "passage-authored-conference-clock",
+      "ownerKind": "AUTHOR",
+      "tidbitId": "tidbit-conference-clock",
+      "evidenceAttachmentId": null,
+      "headingContext": ["Authored notes"],
       "content": "Conference notes summarize how vector clock reconciliation identifies causal order without synchronized clocks.",
       "sources": [],
       "attachments": [
         {
-          "filename": "conference-notes.pdf",
-          "mediaType": "application/pdf"
+          "filename": "conference-notes.txt",
+          "mediaType": "text/plain"
         }
       ],
       "locator": {
-        "kind": "PDF_PAGE",
-        "page": 9
+        "kind": "MARKDOWN_BLOCKS",
+        "startBlock": 0,
+        "endBlock": 0,
+        "sourceStartByte": 0,
+        "sourceEndByte": 111,
+        "startChar": null,
+        "endChar": null,
+        "startLine": null,
+        "endLine": null
       }
     }
   ],
@@ -666,7 +727,6 @@
         "passageId": "passage-ocr-receipt",
         "locator": {
           "kind": "OCR_REGION",
-          "page": null,
           "region": {
             "x": 84,
             "y": 122,
@@ -677,23 +737,30 @@
       }
     },
     {
-      "id": "query-pdf-attention",
+      "id": "query-transformer-attention",
       "text": "attention heads representation subspaces page 42",
       "searchMode": "DEFAULT",
-      "category": "PDF",
+      "category": "PROSE",
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-pdf-transformer",
+          "passageId": "passage-authored-transformer",
           "grade": 3
         }
       ],
       "mustNotRank": [],
       "expectedCitation": {
-        "passageId": "passage-pdf-transformer",
+        "passageId": "passage-authored-transformer",
         "locator": {
-          "kind": "PDF_PAGE",
-          "page": 42
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 0,
+          "endBlock": 0,
+          "sourceStartByte": 0,
+          "sourceEndByte": 96,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
         }
       }
     },
@@ -841,7 +908,7 @@
       "id": "query-model-filename",
       "text": "jina-embeddings-v5-small.onnx tokenizer digest",
       "searchMode": "EXACT",
-      "category": "EXACT",
+      "category": "FILE_NAME",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
@@ -1010,29 +1077,35 @@
       }
     },
     {
-      "id": "query-text-attachment-lines",
+      "id": "query-authored-release-log",
       "text": "cobalt_index release-notes.log",
       "searchMode": "DEFAULT",
-      "category": "TEXT_ATTACHMENT",
+      "category": "EXACT",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-text-release-log",
+          "passageId": "passage-authored-release-log",
           "grade": 3
         }
       ],
       "mustNotRank": [],
       "expectedCitation": {
-        "passageId": "passage-text-release-log",
+        "passageId": "passage-authored-release-log",
         "locator": {
-          "kind": "TEXT_LINES",
-          "startLine": 18,
-          "endLine": 20
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 0,
+          "endBlock": 0,
+          "sourceStartByte": 0,
+          "sourceEndByte": 75,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
         }
       }
     },
     {
-      "id": "query-authored-over-pdf-volume",
+      "id": "query-authored-over-volume",
       "text": "vector clock reconciliation causal order",
       "searchMode": "DEFAULT",
       "category": "MEDIA_VOLUME",
@@ -1043,11 +1116,11 @@
           "grade": 3
         },
         {
-          "passageId": "passage-pdf-distributed-110",
+          "passageId": "passage-authored-distributed-110",
           "grade": 2
         },
         {
-          "passageId": "passage-pdf-conference-clock",
+          "passageId": "passage-authored-conference-clock",
           "grade": 1
         }
       ],
@@ -1068,23 +1141,30 @@
       }
     },
     {
-      "id": "query-pdf-fencing-page",
+      "id": "query-lease-fencing",
       "text": "lease fencing token epoch 47",
       "searchMode": "DEFAULT",
-      "category": "PDF",
+      "category": "PROSE",
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-pdf-distributed-113",
+          "passageId": "passage-authored-distributed-113",
           "grade": 3
         }
       ],
       "mustNotRank": [],
       "expectedCitation": {
-        "passageId": "passage-pdf-distributed-113",
+        "passageId": "passage-authored-distributed-113",
         "locator": {
-          "kind": "PDF_PAGE",
-          "page": 113
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 0,
+          "endBlock": 0,
+          "sourceStartByte": 0,
+          "sourceEndByte": 92,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
         }
       }
     },
@@ -1133,7 +1213,6 @@
         "passageId": "passage-ocr-receipt",
         "locator": {
           "kind": "OCR_REGION",
-          "page": null,
           "region": {
             "x": 84,
             "y": 122,
@@ -1147,20 +1226,27 @@
       "id": "query-stale-writer",
       "text": "how do I stop an old lease holder from writing",
       "searchMode": "DEFAULT",
-      "category": "PDF",
+      "category": "SYNONYM",
       "retrievalNeed": "SEMANTIC",
       "relevance": [
         {
-          "passageId": "passage-pdf-distributed-113",
+          "passageId": "passage-authored-distributed-113",
           "grade": 3
         }
       ],
       "mustNotRank": [],
       "expectedCitation": {
-        "passageId": "passage-pdf-distributed-113",
+        "passageId": "passage-authored-distributed-113",
         "locator": {
-          "kind": "PDF_PAGE",
-          "page": 113
+          "kind": "MARKDOWN_BLOCKS",
+          "startBlock": 0,
+          "endBlock": 0,
+          "sourceStartByte": 0,
+          "sourceEndByte": 92,
+          "startChar": null,
+          "endChar": null,
+          "startLine": null,
+          "endLine": null
         }
       }
     },

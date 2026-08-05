@@ -172,9 +172,6 @@ impl RuntimeState {
         {
             log::warn!("startup media staging recovery could not complete: {error}");
         }
-        if let Err(error) = crate::pdf::recover_pdf_open_directory(&state.pdf_open_directory()) {
-            log::warn!("startup PDF materialization recovery could not complete: {error}");
-        }
         if let Err(error) = crate::attachments::recover_attachment_open_directory(
             &state.attachment_open_directory(),
         ) {
@@ -332,10 +329,6 @@ impl RuntimeState {
 
     pub(crate) fn wake_media_backup(&self) {
         self.media_backup.wake();
-    }
-
-    pub(crate) fn pdf_open_directory(&self) -> PathBuf {
-        self.data_dir.join("pdf-open")
     }
 
     pub(crate) fn attachment_open_directory(&self) -> PathBuf {
@@ -855,11 +848,11 @@ mod tests {
     #[test]
     fn file_drop_capabilities_require_and_follow_an_active_consumer() {
         let directory = tempfile::tempdir().expect("temporary file drop directory");
-        let picker_pdf = directory.path().join("picker.pdf");
-        let dropped_pdf = directory.path().join("dropped.txt");
+        let picker_file = directory.path().join("picker.bin");
+        let dropped_file = directory.path().join("dropped.txt");
         let quick_drop = directory.path().join("quick.txt");
-        std::fs::write(&picker_pdf, b"%PDF-picker").expect("picker file fixture");
-        std::fs::write(&dropped_pdf, b"dropped text").expect("dropped file fixture");
+        std::fs::write(&picker_file, b"picker bytes").expect("picker file fixture");
+        std::fs::write(&dropped_file, b"dropped text").expect("dropped file fixture");
         std::fs::write(&quick_drop, b"quick text").expect("quick drop fixture");
         let picker_id = "019f547b-6200-7000-8000-000000000993".to_owned();
         let dropped_id = "019f547b-6200-7000-8000-000000000994".to_owned();
@@ -875,19 +868,19 @@ mod tests {
         );
 
         assert!(matches!(
-            state.register_dropped_file_selection("main", dropped_pdf.clone()),
+            state.register_dropped_file_selection("main", dropped_file.clone()),
             Err(crate::database::DatabaseError::InvalidInput(_))
         ));
         assert_eq!(
             state
-                .register_file_selection(picker_pdf.clone())
+                .register_file_selection(picker_file.clone())
                 .expect("picker selection"),
             picker_id
         );
         state.set_file_drop_consumer_active("main", true);
         assert_eq!(
             state
-                .register_dropped_file_selection("main", dropped_pdf)
+                .register_dropped_file_selection("main", dropped_file)
                 .expect("dropped selection"),
             dropped_id
         );
@@ -904,7 +897,7 @@ mod tests {
             state
                 .take_file_selection("main", &picker_id)
                 .expect("picker survives"),
-            picker_pdf
+            picker_file
         );
         assert!(matches!(
             state.take_file_selection("main", &dropped_id),

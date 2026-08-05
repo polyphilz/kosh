@@ -384,7 +384,7 @@ fn remote_write_authorization_cancels_a_claim_after_its_last_reference_is_remove
                 id, created_at, updated_at, deleted_at, sha256, display_filename,
                 media_type, byte_length, kind, extraction_state
              ) VALUES(?1, 20, 20, NULL, ?2, 'retained.bin',
-                      'application/octet-stream', 14, 'BINARY', 'NOT_APPLICABLE')",
+                      'application/octet-stream', 14, 'FILE', 'NOT_APPLICABLE')",
             params![&attachment_id, &hash],
         )
         .expect("retained attachment");

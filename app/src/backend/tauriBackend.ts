@@ -11,7 +11,6 @@ import type {
   ConfigureBackupInput,
   DeleteTidbitInput,
   DiscardWorkingCopyInput,
-  GenericAttachmentStatusRecord,
   ImageDropIngestResult,
   ImageOcrDiagnostics,
   ImageRecord,
@@ -20,7 +19,6 @@ import type {
   MaintenanceDiagnostics,
   MaintenanceOutcome,
   PassageEmbeddingIndexStatus,
-  PdfRecord,
   RuntimeProbe,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
@@ -113,17 +111,12 @@ export const tauriBackend: Backend = {
   retryImageOcr: (attachmentId: string) =>
     invoke<ImageStatusRecord>(TauriCommand.RetryImageOcr, { attachmentId }),
   imageOcrDiagnostics: () => invoke<ImageOcrDiagnostics>(TauriCommand.ImageOcrDiagnostics),
-  selectPdf: () => invoke<string | null>(TauriCommand.SelectPdf),
-  ingestSelectedPdf: (selectionId: string, draftId: string) =>
-    invoke<PdfRecord>(TauriCommand.IngestSelectedPdf, { selectionId, draftId }),
   selectAttachment: () => invoke<string | null>(TauriCommand.SelectAttachment),
   ingestSelectedAttachment: (selectionId: string, draftId: string) =>
     invoke<SelectedAttachmentRecord>(TauriCommand.IngestSelectedAttachment, {
       selectionId,
       draftId,
     }),
-  attachmentStatus: (attachmentId: string) =>
-    invoke<GenericAttachmentStatusRecord>(TauriCommand.AttachmentStatus, { attachmentId }),
   openAttachmentExternal: (attachmentId: string) =>
     invoke<void>(TauriCommand.OpenAttachmentExternal, { attachmentId }),
   revealAttachmentInFinder: (attachmentId: string) =>
@@ -132,6 +125,4 @@ export const tauriBackend: Backend = {
     invoke<void>(TauriCommand.SetFileDropConsumerActive, { active }),
   discardFileDropSelections: (selectionIds: string[]) =>
     invoke<void>(TauriCommand.DiscardFileDropSelections, { selectionIds }),
-  openPdfExternal: (attachmentId: string) =>
-    invoke<void>(TauriCommand.OpenPdfExternal, { attachmentId }),
 };

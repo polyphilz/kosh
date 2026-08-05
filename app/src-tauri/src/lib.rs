@@ -9,7 +9,6 @@ mod maintenance;
 mod media;
 mod native_log;
 mod passage_embedding_indexer;
-mod pdf;
 pub mod relevance;
 mod runtime;
 mod startup_smoke;
@@ -78,15 +77,11 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         media::image_ocr_diagnostics,
         attachments::select_attachment,
         attachments::ingest_selected_attachment,
-        attachments::attachment_status,
         attachments::open_attachment_external,
         attachments::reveal_attachment_in_finder,
         attachments::open_source_url,
         attachments::set_file_drop_consumer_active,
         attachments::discard_file_drop_selections,
-        pdf::select_pdf,
-        pdf::ingest_selected_pdf,
-        pdf::open_pdf_external,
         database::commands::load_tidbit,
         database::commands::delete_tidbit,
         database::commands::restore_tidbit,
@@ -155,15 +150,11 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         media::image_ocr_diagnostics,
         attachments::select_attachment,
         attachments::ingest_selected_attachment,
-        attachments::attachment_status,
         attachments::open_attachment_external,
         attachments::reveal_attachment_in_finder,
         attachments::open_source_url,
         attachments::set_file_drop_consumer_active,
         attachments::discard_file_drop_selections,
-        pdf::select_pdf,
-        pdf::ingest_selected_pdf,
-        pdf::open_pdf_external,
         database::commands::load_tidbit,
         database::commands::delete_tidbit,
         database::commands::restore_tidbit,
@@ -238,21 +229,16 @@ pub fn run() {
     });
 }
 
-pub fn run_pdf_worker_if_requested() -> Option<i32> {
-    pdf::run_worker_if_requested()
-}
-
 pub fn run_recovery_cli_if_requested() -> Option<i32> {
     backup::recovery_cli::run_if_requested()
 }
 
 pub use database::{
-    AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, AttachmentRecord,
-    CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
-    Database, DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput,
-    GenericAttachmentRecord, GenericAttachmentStatusRecord, ImageOcrDiagnostics, ImageOcrRecovery,
+    AttachmentIngestInput, AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator,
+    CitationResolution, CitationState, CitationTidbit, Database, DatabaseDiagnostics,
+    DatabaseError, DatabasePaths, DeleteTidbitInput, ImageOcrDiagnostics, ImageOcrRecovery,
     ImageOcrStatus, ImageRecord, ImageStatusRecord, LexicalSearchMode, MediaCleanupResult,
-    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport, PassageSearchResult, PdfRecord,
+    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport, PassageSearchResult,
     RestoreTidbitInput, SearchExecutionMode, SearchField, SearchHighlight, SearchPassagesInput,
     SearchPassagesResponse, SemanticSearchReadiness, SetAutomaticUpdateChecksInput,
     SetShortcutSettingsInput, ShortcutSettings, SourceDraft, Tidbit, TidbitDraft, TidbitSource,

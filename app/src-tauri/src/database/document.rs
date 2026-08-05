@@ -17,14 +17,12 @@ const SUPPORTED_BLOCK_TYPES: &[&str] = &[
     "codeBlock",
     "displayMath",
     "koshImage",
-    "koshPdf",
     "koshFileAttachment",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AttachmentBlockKind {
     Image,
-    Pdf,
     File,
 }
 
@@ -32,22 +30,20 @@ impl AttachmentBlockKind {
     pub(super) fn accepts_database_kind(self, database_kind: &str) -> bool {
         match self {
             Self::Image => database_kind == "IMAGE",
-            Self::Pdf => database_kind == "PDF",
-            Self::File => matches!(database_kind, "TEXT" | "BINARY"),
+            Self::File => database_kind == "FILE",
         }
     }
 
     pub(super) fn display_role(self) -> &'static str {
         match self {
             Self::Image => "INLINE",
-            Self::Pdf | Self::File => "ATTACHMENT",
+            Self::File => "ATTACHMENT",
         }
     }
 
     pub(super) fn block_type(self) -> &'static str {
         match self {
             Self::Image => "koshImage",
-            Self::Pdf => "koshPdf",
             Self::File => "koshFileAttachment",
         }
     }
@@ -224,13 +220,9 @@ fn validate_blocks(
 }
 
 fn attachment_kind(block_type: &str) -> Option<AttachmentBlockKind> {
-    [
-        AttachmentBlockKind::Image,
-        AttachmentBlockKind::Pdf,
-        AttachmentBlockKind::File,
-    ]
-    .into_iter()
-    .find(|kind| kind.block_type() == block_type)
+    [AttachmentBlockKind::Image, AttachmentBlockKind::File]
+        .into_iter()
+        .find(|kind| kind.block_type() == block_type)
 }
 
 fn invalid<T>(message: &str) -> Result<T> {

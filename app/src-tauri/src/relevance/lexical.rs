@@ -302,8 +302,6 @@ pub(crate) fn fixture_evidence_kind(passage: &EvaluationPassage) -> SearchEviden
     match passage.locator {
         EvaluationLocator::MarkdownBlocks { .. } => SearchEvidenceKind::Author,
         EvaluationLocator::OcrRegion { .. } => SearchEvidenceKind::Ocr,
-        EvaluationLocator::PdfPage { .. } => SearchEvidenceKind::Pdf,
-        EvaluationLocator::TextLines { .. } => SearchEvidenceKind::Text,
     }
 }
 
@@ -347,13 +345,6 @@ pub(crate) fn hydrate_fixture_hits(
     Ok(
         diversify_ranked(candidates, limit, |candidate| SearchDiversityKey {
             attachment_id: candidate.passage.evidence_attachment_id.clone(),
-            page: match &candidate.passage.locator {
-                EvaluationLocator::PdfPage { page } => Some(*page),
-                EvaluationLocator::OcrRegion { page, .. } => *page,
-                EvaluationLocator::MarkdownBlocks { .. } | EvaluationLocator::TextLines { .. } => {
-                    None
-                }
-            },
         })
         .into_iter()
         .map(|candidate| RetrievalHit {
@@ -689,10 +680,10 @@ mod tests {
         assert_eq!(hits[0].passage_id, "passage-authored-vector-clock");
         assert!(hits
             .iter()
-            .any(|hit| hit.passage_id == "passage-pdf-conference-clock"));
+            .any(|hit| hit.passage_id == "passage-authored-conference-clock"));
         assert!(
             hits.iter()
-                .filter(|hit| hit.passage_id.starts_with("passage-pdf-distributed-"))
+                .filter(|hit| hit.passage_id.starts_with("passage-authored-distributed-"))
                 .count()
                 <= 2
         );

@@ -602,7 +602,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           )}
         <KoshBlockNoteEditor
           ariaLabel="Note"
-          attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
           disabled={lifecyclePreparing || deleting}
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(documentJson, bodyMarkdown) => {
@@ -629,7 +628,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
             updatePendingState();
           }}
           openAttachmentExternal={(attachmentId) => backend.openAttachmentExternal(attachmentId)}
-          openPdfExternal={(attachmentId) => backend.openPdfExternal(attachmentId)}
           pasteImage={async () => {
             const captureId = await backend.captureClipboardImage();
             return withMediaReservation((draftId) =>
@@ -648,13 +646,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
             if (!selectionId) return null;
             return withMediaReservation((draftId) =>
               backend.ingestSelectedImage(selectionId, draftId),
-            );
-          }}
-          pickPdf={async () => {
-            const selectionId = await backend.selectPdf();
-            if (!selectionId) return null;
-            return withMediaReservation((draftId) =>
-              backend.ingestSelectedPdf(selectionId, draftId),
             );
           }}
           placeholder={KOSH_NOTE_PLACEHOLDER}

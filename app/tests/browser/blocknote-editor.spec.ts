@@ -31,7 +31,6 @@ const expectedSchema = {
     "codeBlock",
     "displayMath",
     "koshImage",
-    "koshPdf",
     "koshFileAttachment",
   ],
   inlineContent: ["text", "link", "inlineMath"],
@@ -90,7 +89,6 @@ test("the editor exposes only Kosh's restricted BlockNote schema", async ({ page
     "Display math",
     "Inline math",
     "Image",
-    "PDF",
     "File",
   ]);
   await slashMenu.getByRole("option", { name: "Display math" }).click();
@@ -105,7 +103,7 @@ test("slash menu rows keep one height while filtering", async ({ page }) => {
   await page.keyboard.type("/");
 
   const options = page.getByRole("listbox").getByRole("option");
-  await expect(options).toHaveCount(12);
+  await expect(options).toHaveCount(11);
   const fullMenuHeights = await options.evaluateAll((rows) =>
     rows.map((row) => row.getBoundingClientRect().height),
   );

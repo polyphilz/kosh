@@ -34,16 +34,8 @@ pub enum CitationLocator {
         start_line: Option<u32>,
         end_line: Option<u32>,
     },
-    PdfPage {
-        page: u32,
-    },
     OcrRegion {
-        page: Option<u32>,
         region: serde_json::Value,
-    },
-    TextLines {
-        start_line: u32,
-        end_line: u32,
     },
 }
 
@@ -527,36 +519,14 @@ fn load_attachment_sources(connection: &Connection, passage_id: &str) -> Result<
 
 fn attachment_locator(passage: &StoredPassage) -> Result<CitationLocator> {
     match passage.locator_kind.as_str() {
-        "PDF_PAGE" => {
-            #[derive(Deserialize)]
-            struct Locator {
-                page: u32,
-            }
-            let locator: Locator = parse_locator(passage)?;
-            Ok(CitationLocator::PdfPage { page: locator.page })
-        }
         "OCR_REGION" => {
             #[derive(Deserialize)]
             struct Locator {
-                page: Option<u32>,
                 region: serde_json::Value,
             }
             let locator: Locator = parse_locator(passage)?;
             Ok(CitationLocator::OcrRegion {
-                page: locator.page,
                 region: locator.region,
-            })
-        }
-        "TEXT_LINES" => {
-            #[derive(Deserialize)]
-            struct Locator {
-                start: u32,
-                end: u32,
-            }
-            let locator: Locator = parse_locator(passage)?;
-            Ok(CitationLocator::TextLines {
-                start_line: locator.start,
-                end_line: locator.end,
             })
         }
         kind => invalid_passage(

@@ -71,7 +71,6 @@ export const supportedHarnessBlockTypes = Object.freeze([
   "codeBlock",
   "displayMath",
   "koshImage",
-  "koshPdf",
   "koshFileAttachment",
 ]);
 export const supportedHarnessInlineTypes = supportedKoshInlineTypes;

@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "fixtureId": "kosh-relevance-v1",
-  "fixtureDigest": "9ccdc4bc50d389ca368ac9ed925e700e3fb9fca9a5d39eae48a686eca781bfb8",
+  "fixtureDigest": "4360bf6331b16bee2c7a8cb93d243d771d07390eb916467e443b639f7c42d97d",
   "retriever": "kosh-hybrid-jina-v1",
   "resultLimit": 10,
   "passed": true,
   "summary": {
     "queryCount": 25,
     "passedQueryCount": 25,
-    "recallAt5": 0.9466666666666668,
+    "recallAt5": 0.9866666666666667,
     "recallAt10": 1.0,
-    "meanReciprocalRank": 0.9657142857142857,
-    "ndcgAt10": 0.9691372334976143,
+    "meanReciprocalRank": 0.97,
+    "ndcgAt10": 0.9735885380909582,
     "citationLocatorAccuracy": 1.0,
     "exactPhraseSuccess": 1.0,
     "forbiddenHitsAt10": 0
@@ -37,6 +37,17 @@
       "ndcgAt10": 1.0,
       "citationLocatorAccuracy": 1.0,
       "exactPhraseSuccess": 1.0,
+      "forbiddenHitsAt10": 0
+    },
+    "FILE_NAME": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "citationLocatorAccuracy": 1.0,
+      "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
     "FORMULA": {
@@ -83,24 +94,13 @@
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
-    "PDF": {
-      "queryCount": 3,
-      "passedQueryCount": 3,
-      "recallAt5": 0.6666666666666666,
-      "recallAt10": 1.0,
-      "meanReciprocalRank": 0.7142857142857143,
-      "ndcgAt10": 0.7777777777777778,
-      "citationLocatorAccuracy": 1.0,
-      "exactPhraseSuccess": null,
-      "forbiddenHitsAt10": 0
-    },
     "MEDIA_VOLUME": {
       "queryCount": 1,
       "passedQueryCount": 1,
       "recallAt5": 0.6666666666666666,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
-      "ndcgAt10": 0.9122552762002856,
+      "ndcgAt10": 0.9261946662938199,
       "citationLocatorAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
@@ -117,12 +117,12 @@
       "forbiddenHitsAt10": 0
     },
     "PROSE": {
-      "queryCount": 2,
-      "passedQueryCount": 2,
+      "queryCount": 4,
+      "passedQueryCount": 4,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
-      "ndcgAt10": 0.9914211139533698,
+      "ndcgAt10": 0.9957105569766849,
       "citationLocatorAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
@@ -139,23 +139,12 @@
       "forbiddenHitsAt10": 0
     },
     "SYNONYM": {
-      "queryCount": 3,
-      "passedQueryCount": 3,
+      "queryCount": 4,
+      "passedQueryCount": 4,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
-      "meanReciprocalRank": 1.0,
-      "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
-      "exactPhraseSuccess": null,
-      "forbiddenHitsAt10": 0
-    },
-    "TEXT_ATTACHMENT": {
-      "queryCount": 1,
-      "passedQueryCount": 1,
-      "recallAt5": 1.0,
-      "recallAt10": 1.0,
-      "meanReciprocalRank": 1.0,
-      "ndcgAt10": 1.0,
+      "meanReciprocalRank": 0.8125,
+      "ndcgAt10": 0.8576691395183482,
       "citationLocatorAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
@@ -341,7 +330,6 @@
           "score": 0.030819672131147544,
           "locator": {
             "kind": "OCR_REGION",
-            "page": null,
             "region": {
               "x": 84,
               "y": 122,
@@ -356,10 +344,10 @@
       ]
     },
     {
-      "queryId": "query-pdf-attention",
+      "queryId": "query-transformer-attention",
       "text": "attention heads representation subspaces page 42",
       "searchMode": "DEFAULT",
-      "category": "PDF",
+      "category": "PROSE",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
@@ -372,14 +360,21 @@
       },
       "hits": [
         {
-          "passageId": "passage-pdf-transformer",
-          "score": 0.03221311475409836,
+          "passageId": "passage-authored-transformer",
+          "score": 0.03360655737704918,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 42
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 96,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         }
       ]
@@ -571,7 +566,7 @@
       "queryId": "query-model-filename",
       "text": "jina-embeddings-v5-small.onnx tokenizer digest",
       "searchMode": "EXACT",
-      "category": "EXACT",
+      "category": "FILE_NAME",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
@@ -579,7 +574,7 @@
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
         "citationLocatorCorrect": true,
-        "exactPhraseSuccess": true,
+        "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
@@ -659,27 +654,6 @@
           ]
         },
         {
-          "passageId": "passage-source-rust",
-          "score": 0.03363031598954621,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
           "passageId": "passage-synonym-automobile",
           "score": 0.03358974358974359,
           "locator": {
@@ -699,8 +673,49 @@
           ]
         },
         {
+          "passageId": "passage-source-rust",
+          "score": 0.03345433255269321,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 1,
+            "endBlock": 1,
+            "sourceStartByte": 12,
+            "sourceEndByte": 94,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body",
+            "sourceLabel",
+            "sourceDomain"
+          ]
+        },
+        {
+          "passageId": "passage-authored-distributed-113",
+          "score": 0.032824160447761194,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 92,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body",
+            "attachmentName"
+          ]
+        },
+        {
           "passageId": "passage-heat-caloric",
-          "score": 0.03257175660160735,
+          "score": 0.0320958751393534,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -719,7 +734,7 @@
         },
         {
           "passageId": "passage-heat-modern",
-          "score": 0.03133359559402046,
+          "score": 0.03120870579090556,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 2,
@@ -739,8 +754,28 @@
           ]
         },
         {
+          "passageId": "passage-authored-distributed-112",
+          "score": 0.030881180223285485,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 91,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "headingContext",
+            "body",
+            "attachmentName"
+          ]
+        },
+        {
           "passageId": "passage-formula-fourier",
-          "score": 0.031030303030303026,
+          "score": 0.03045098039215686,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -759,44 +794,13 @@
         },
         {
           "passageId": "passage-misspelling-concurrency",
-          "score": 0.029494069681245367,
+          "score": 0.029348820193890617,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
             "endBlock": 1,
             "sourceStartByte": 12,
             "sourceEndByte": 113,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-pdf-distributed-113",
-          "score": 0.029363839285714285,
-          "locator": {
-            "kind": "PDF_PAGE",
-            "page": 113
-          },
-          "matchedFields": [
-            "attachmentName",
-            "extractedText"
-          ]
-        },
-        {
-          "passageId": "passage-formula-bayes",
-          "score": 0.02911764705882353,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 15,
-            "sourceEndByte": 59,
             "startChar": null,
             "endChar": null,
             "startLine": null,
@@ -1013,10 +1017,10 @@
       ]
     },
     {
-      "queryId": "query-text-attachment-lines",
+      "queryId": "query-authored-release-log",
       "text": "cobalt_index release-notes.log",
       "searchMode": "DEFAULT",
-      "category": "TEXT_ATTACHMENT",
+      "category": "EXACT",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
@@ -1024,27 +1028,33 @@
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
         "citationLocatorCorrect": true,
-        "exactPhraseSuccess": null,
+        "exactPhraseSuccess": true,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-text-release-log",
-          "score": 0.03290983606557377,
+          "passageId": "passage-authored-release-log",
+          "score": 0.03360655737704918,
           "locator": {
-            "kind": "TEXT_LINES",
-            "startLine": 18,
-            "endLine": 20
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 75,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "attachmentName",
-            "extractedText"
+            "body",
+            "attachmentName"
           ]
         }
       ]
     },
     {
-      "queryId": "query-authored-over-pdf-volume",
+      "queryId": "query-authored-over-volume",
       "text": "vector clock reconciliation causal order",
       "searchMode": "DEFAULT",
       "category": "MEDIA_VOLUME",
@@ -1053,7 +1063,7 @@
         "recallAt5": 0.6666666666666666,
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
-        "ndcgAt10": 0.9122552762002856,
+        "ndcgAt10": 0.9261946662938199,
         "citationLocatorCorrect": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
@@ -1079,78 +1089,120 @@
           ]
         },
         {
-          "passageId": "passage-pdf-distributed-112",
-          "score": 0.03149769585253456,
+          "passageId": "passage-authored-conference-clock",
+          "score": 0.03306451612903226,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 112
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 111,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         },
         {
-          "passageId": "passage-pdf-conference-clock",
-          "score": 0.03143753200204813,
+          "passageId": "passage-authored-distributed-112",
+          "score": 0.03253968253968254,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 9
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 91,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         },
         {
-          "passageId": "passage-pdf-distributed-115",
-          "score": 0.030703125,
+          "passageId": "passage-authored-distributed-114",
+          "score": 0.03182692307692308,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 115
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 100,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         },
         {
-          "passageId": "passage-pdf-distributed-114",
-          "score": 0.03023076923076923,
+          "passageId": "passage-authored-distributed-115",
+          "score": 0.03179086538461539,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 114
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 96,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         },
         {
-          "passageId": "passage-pdf-distributed-110",
-          "score": 0.029599728629579374,
+          "passageId": "passage-authored-distributed-110",
+          "score": 0.030868385345997285,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 110
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 114,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         },
         {
-          "passageId": "passage-pdf-distributed-111",
-          "score": 0.029546585255540478,
+          "passageId": "passage-authored-distributed-111",
+          "score": 0.030834464043419267,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 111
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 98,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         }
       ]
     },
     {
-      "queryId": "query-pdf-fencing-page",
+      "queryId": "query-lease-fencing",
       "text": "lease fencing token epoch 47",
       "searchMode": "DEFAULT",
-      "category": "PDF",
+      "category": "PROSE",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
@@ -1163,14 +1215,21 @@
       },
       "hits": [
         {
-          "passageId": "passage-pdf-distributed-113",
-          "score": 0.03221311475409836,
+          "passageId": "passage-authored-distributed-113",
+          "score": 0.03360655737704918,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 113
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 92,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         }
       ]
@@ -1233,7 +1292,6 @@
           "score": 0.030819672131147544,
           "locator": {
             "kind": "OCR_REGION",
-            "page": null,
             "region": {
               "x": 84,
               "y": 122,
@@ -1251,13 +1309,13 @@
       "queryId": "query-stale-writer",
       "text": "how do I stop an old lease holder from writing",
       "searchMode": "DEFAULT",
-      "category": "PDF",
+      "category": "SYNONYM",
       "passed": true,
       "metrics": {
-        "recallAt5": 0.0,
+        "recallAt5": 1.0,
         "recallAt10": 1.0,
-        "reciprocalRank": 0.14285714285714285,
-        "ndcgAt10": 0.33333333333333337,
+        "reciprocalRank": 0.25,
+        "ndcgAt10": 0.43067655807339306,
         "citationLocatorCorrect": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
@@ -1323,6 +1381,25 @@
           ]
         },
         {
+          "passageId": "passage-authored-distributed-113",
+          "score": 0.03259773013871375,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 92,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body",
+            "attachmentName"
+          ]
+        },
+        {
           "passageId": "passage-source-rust",
           "score": 0.032208911307271965,
           "locator": {
@@ -1345,7 +1422,7 @@
         },
         {
           "passageId": "passage-misspelling-concurrency",
-          "score": 0.03208955223880597,
+          "score": 0.03184811237928007,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1364,7 +1441,7 @@
         },
         {
           "passageId": "passage-unicode-cafe",
-          "score": 0.03103896103896104,
+          "score": 0.030735930735930735,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1382,20 +1459,8 @@
           ]
         },
         {
-          "passageId": "passage-pdf-distributed-113",
-          "score": 0.030525554484088717,
-          "locator": {
-            "kind": "PDF_PAGE",
-            "page": 113
-          },
-          "matchedFields": [
-            "attachmentName",
-            "extractedText"
-          ]
-        },
-        {
           "passageId": "passage-formula-fourier",
-          "score": 0.029696969696969694,
+          "score": 0.029402985074626863,
           "locator": {
             "kind": "MARKDOWN_BLOCKS",
             "startBlock": 1,
@@ -1413,27 +1478,40 @@
           ]
         },
         {
-          "passageId": "passage-text-release-log",
-          "score": 0.028157971014492758,
+          "passageId": "passage-authored-release-log",
+          "score": 0.028724637681159418,
           "locator": {
-            "kind": "TEXT_LINES",
-            "startLine": 18,
-            "endLine": 20
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 75,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "attachmentName",
-            "extractedText"
+            "body",
+            "attachmentName"
           ]
         },
         {
-          "passageId": "passage-pdf-conference-clock",
-          "score": 0.026587301587301587,
+          "passageId": "passage-authored-conference-clock",
+          "score": 0.027767857142857143,
           "locator": {
-            "kind": "PDF_PAGE",
-            "page": 9
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 111,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
           },
           "matchedFields": [
-            "extractedText"
+            "body"
           ]
         }
       ]
@@ -1510,6 +1588,24 @@
           ]
         },
         {
+          "passageId": "passage-authored-conference-clock",
+          "score": 0.03038095238095238,
+          "locator": {
+            "kind": "MARKDOWN_BLOCKS",
+            "startBlock": 0,
+            "endBlock": 0,
+            "sourceStartByte": 0,
+            "sourceEndByte": 111,
+            "startChar": null,
+            "endChar": null,
+            "startLine": null,
+            "endLine": null
+          },
+          "matchedFields": [
+            "body"
+          ]
+        },
+        {
           "passageId": "passage-source-sqlite",
           "score": 0.030252274607113317,
           "locator": {
@@ -1526,17 +1622,6 @@
           "matchedFields": [
             "body",
             "sourceLabel"
-          ]
-        },
-        {
-          "passageId": "passage-pdf-conference-clock",
-          "score": 0.02898268398268398,
-          "locator": {
-            "kind": "PDF_PAGE",
-            "page": 9
-          },
-          "matchedFields": [
-            "extractedText"
           ]
         }
       ]

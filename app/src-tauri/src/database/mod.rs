@@ -60,10 +60,9 @@ pub(crate) use backup_state::{
 pub use error::{DatabaseError, Result};
 pub use maintenance::MaintenanceDatabaseSnapshot;
 pub use media::{
-    AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, AttachmentRecord,
-    GenericAttachmentRecord, GenericAttachmentStatusRecord, ImageOcrDiagnostics, ImageOcrRecovery,
+    AttachmentIngestInput, AttachmentKind, AttachmentRecord, ImageOcrDiagnostics, ImageOcrRecovery,
     ImageOcrStatus, ImageRecord, ImageStatusRecord, MediaCleanupResult, MediaIntegrityReport,
-    MediaLimits, MediaMaintenanceReport, PdfRecord,
+    MediaLimits, MediaMaintenanceReport,
 };
 pub(crate) use offsite_checkpoint::{
     CheckpointMediaReference, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
@@ -574,22 +573,8 @@ fn writer_loop(
             WriterMessage::IngestAttachment { write, reply } => {
                 let _ = reply.send(media::ingest_attachment(&mut main, &mut media, write));
             }
-            WriterMessage::IngestGenericAttachment { write, reply } => {
-                let _ = reply.send(media::ingest_generic_attachment(
-                    &mut main, &mut media, write,
-                ));
-            }
-            WriterMessage::LoadGenericAttachmentStatus {
-                attachment_id,
-                reply,
-            } => {
-                let _ = reply.send(media::load_generic_attachment_status(&main, &attachment_id));
-            }
             WriterMessage::IngestImage { write, reply } => {
                 let _ = reply.send(media::ingest_image(&mut main, &mut media, write));
-            }
-            WriterMessage::IngestPdf { write, reply } => {
-                let _ = reply.send(media::ingest_pdf(&mut main, &mut media, write));
             }
             WriterMessage::LoadImageStatus {
                 attachment_id,
