@@ -389,6 +389,64 @@ fn image_ingestion_preserves_originals_deduplicates_previews_and_serves_only_pre
 }
 
 #[test]
+fn file_search_indexes_only_the_attachment_filename() {
+    let library = TestLibrary::new();
+    let archive = library.ingest(
+        (0x900, 0x901, 0x902),
+        "chapter-archive.bin",
+        "application/octet-stream",
+        b"secret binary contents",
+        11,
+        MediaLimits::default(),
+    );
+    let body = format!("Chapter notes.\n\n{{{{kosh:attachment:{}}}}}", archive.id);
+    library.save_capture_with_sources(&body, Vec::new(), 12);
+    library.checkpoint_capture(12, 13, id(0x905), Vec::new());
+
+    let client = library.database.client();
+    let filename_results = client
+        .search_passages(SearchPassagesInput {
+            query: "chapter-archive.bin".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search file filename");
+    assert_eq!(filename_results.len(), 1);
+    assert!(filename_results[0]
+        .matched_fields
+        .contains(&SearchField::AttachmentName));
+    assert!(client
+        .search_passages(SearchPassagesInput {
+            query: "secret binary contents".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("file bytes are not searchable")
+        .is_empty());
+    let main = library.database.open_main_read_only().expect("main reader");
+    let file_block: (String, String) = main
+        .query_row(
+            "SELECT document.attachment_names, document.extracted_text
+             FROM block_search_document AS document
+             JOIN tidbit_revision_attachment AS membership
+               ON membership.tidbit_revision_id = document.tidbit_revision_id
+              AND membership.block_id = document.block_id
+             WHERE membership.attachment_id = ?1",
+            params![archive.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("file block search document");
+    assert_eq!(file_block, ("chapter-archive.bin".into(), String::new()));
+    assert_eq!(
+        client
+            .load_media_payload(archive.id, 14, None, 64)
+            .expect("original file remains available")
+            .bytes,
+        b"secret binary contents"
+    );
+}
+
+#[test]
 fn image_ingestion_rolls_back_base_attachment_when_image_setup_fails() {
     let library = TestLibrary::new();
     library.ingest_image(
@@ -482,16 +540,43 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
     client
         .complete_image_ocr(
             job,
-            Ok(vec![ImageOcrRegion {
-                text: "Event sourcing preserves exact image evidence".into(),
-                x: 0.125,
-                y: 0.25,
-                width: 0.5,
-                height: 0.375,
-            }]),
+            Ok(vec![
+                ImageOcrRegion {
+                    text: "Event sourcing preserves exact image evidence".into(),
+                    x: 0.125,
+                    y: 0.25,
+                    width: 0.5,
+                    height: 0.375,
+                },
+                ImageOcrRegion {
+                    text: "Second OCR region remains ordered".into(),
+                    x: 0.25,
+                    y: 0.125,
+                    width: 0.375,
+                    height: 0.25,
+                },
+            ]),
             15,
         )
         .expect("complete OCR");
+
+    let main = library.database.open_main_read_only().expect("main reader");
+    let indexed_ocr: String = main
+        .query_row(
+            "SELECT document.extracted_text
+             FROM block_search_document AS document
+             JOIN tidbit_revision_attachment AS membership
+               ON membership.tidbit_revision_id = document.tidbit_revision_id
+              AND membership.block_id = document.block_id
+             WHERE membership.attachment_id = ?1",
+            params![image.attachment.id],
+            |row| row.get(0),
+        )
+        .expect("image block OCR document");
+    assert_eq!(
+        indexed_ocr,
+        "Event sourcing preserves exact image evidence\nSecond OCR region remains ordered"
+    );
 
     let loaded = client
         .load_tidbit(tidbit.id.clone())

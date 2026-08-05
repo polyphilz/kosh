@@ -1,5 +1,6 @@
 mod backup_media;
 mod backup_state;
+mod block_search;
 pub(crate) mod commands;
 pub(crate) mod connection;
 pub(crate) mod document;
@@ -24,6 +25,8 @@ mod writer;
 mod backup_media_tests;
 #[cfg(test)]
 mod backup_state_tests;
+#[cfg(test)]
+mod block_search_tests;
 #[cfg(test)]
 mod embedding_index_tests;
 #[cfg(test)]

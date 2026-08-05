@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
+    block_search,
     connection::{self, DatabaseKind},
     embedding_index,
     error::{DatabaseError, Result},
@@ -17,6 +18,10 @@ const MAIN_TABLES: &[&str] = &[
     "attachment_image",
     "attachment_passage_revision",
     "attachment_segment",
+    "block_fts_short",
+    "block_fts_trigram",
+    "block_fts_word",
+    "block_search_document",
     "draft",
     "draft_media_lease",
     "draft_source",
@@ -73,7 +78,10 @@ pub fn validate_migrated_pair(
         main,
         DatabaseKind::Main,
         MAIN_TABLES.iter().copied().filter(|table| {
-            !table.starts_with("passage_fts_") && *table != embedding_index::JINA_V1_VEC_TABLE
+            !table.ends_with("_fts_short")
+                && !table.ends_with("_fts_trigram")
+                && !table.ends_with("_fts_word")
+                && *table != embedding_index::JINA_V1_VEC_TABLE
         }),
     )?;
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
@@ -397,6 +405,12 @@ fn recover_interrupted_derived_work(connection: &mut Connection) -> Result<()> {
 }
 
 pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
+    let passage_ready = reconcile_passage_fts(connection)?;
+    let block_ready = reconcile_block_fts(connection)?;
+    Ok(passage_ready && block_ready)
+}
+
+fn reconcile_passage_fts(connection: &mut Connection) -> Result<bool> {
     const INDEXES: &[&str] = &[
         "passage_fts_word",
         "passage_fts_trigram",
@@ -467,6 +481,65 @@ pub(super) fn reconcile_fts(connection: &mut Connection) -> Result<bool> {
     Ok(failed.is_empty())
 }
 
+fn reconcile_block_fts(connection: &mut Connection) -> Result<bool> {
+    const INDEXES: &[&str] = &["block_fts_word", "block_fts_trigram", "block_fts_short"];
+    let existing_version = connection
+        .query_row(
+            "SELECT version FROM index_state WHERE name = 'BLOCK_FTS'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let force_rebuild = existing_version.as_deref() != Some(block_search::FTS_VERSION);
+    connection.execute(
+        "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
+         VALUES('BLOCK_FTS', ?1, 'RUNNING', NULL, 0, NULL)
+         ON CONFLICT(name) DO UPDATE SET
+            status = 'RUNNING', cursor = NULL, updated_at = 0, error = NULL",
+        params![existing_version
+            .as_deref()
+            .unwrap_or(block_search::FTS_VERSION)],
+    )?;
+    let transaction =
+        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut failed = Vec::new();
+    for index in INDEXES {
+        let integrity = format!("INSERT INTO {index}({index}, rank) VALUES('integrity-check', 0)");
+        let needs_rebuild = force_rebuild || transaction.execute(&integrity, []).is_err();
+        if needs_rebuild
+            && (rebuild_normalized_block_fts(&transaction, index).is_err()
+                || transaction.execute(&integrity, []).is_err())
+        {
+            failed.push(*index);
+        }
+    }
+    let (status, error) = if failed.is_empty() {
+        ("IDLE", None)
+    } else {
+        (
+            "DIRTY",
+            Some(format!("could not rebuild {}", failed.join(", "))),
+        )
+    };
+    let stored_version = if failed.is_empty() {
+        block_search::FTS_VERSION
+    } else {
+        existing_version
+            .as_deref()
+            .unwrap_or(block_search::FTS_VERSION)
+    };
+    transaction.execute(
+        "INSERT INTO index_state(name, version, status, cursor, updated_at, error)
+         VALUES('BLOCK_FTS', ?1, ?2, NULL, 0, ?3)
+         ON CONFLICT(name) DO UPDATE SET
+            version = excluded.version, status = excluded.status, cursor = NULL,
+            updated_at = excluded.updated_at, error = excluded.error",
+        params![stored_version, status, error],
+    )?;
+    transaction.commit()?;
+    Ok(failed.is_empty())
+}
+
 fn rebuild_normalized_fts(
     transaction: &rusqlite::Transaction<'_>,
     index: &str,
@@ -495,6 +568,38 @@ fn rebuild_normalized_fts(
                 {projection}(attachment_names),
                 {projection}(extracted_text)
              FROM passage_search_document
+             ORDER BY rowid"
+        ),
+        [],
+    )?;
+    Ok(())
+}
+
+fn rebuild_normalized_block_fts(
+    transaction: &rusqlite::Transaction<'_>,
+    index: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        &format!("INSERT INTO {index}({index}) VALUES('delete-all')"),
+        [],
+    )?;
+    let projection = if index == "block_fts_short" {
+        "kosh_search_short_grams"
+    } else {
+        "kosh_search_normalize"
+    };
+    transaction.execute(
+        &format!(
+            "INSERT INTO {index}(
+                rowid, heading_context, body, attachment_names, extracted_text
+             )
+             SELECT
+                rowid,
+                {projection}(heading_context),
+                {projection}(body),
+                {projection}(attachment_names),
+                {projection}(extracted_text)
+             FROM block_search_document
              ORDER BY rowid"
         ),
         [],

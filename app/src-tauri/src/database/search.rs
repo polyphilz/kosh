@@ -1182,6 +1182,7 @@ pub(super) fn replace_attachment_documents_in_transaction(
          ORDER BY passage.ordinal",
         params![attachment_id],
     )?;
+    super::block_search::refresh_attachment_owners(transaction, attachment_id)?;
     Ok(())
 }
 
@@ -1300,7 +1301,8 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
          ORDER BY attachment.id, passage.ordinal",
         [],
     )?;
-    mark_fts_current(transaction)
+    mark_fts_current(transaction)?;
+    super::block_search::rebuild_documents(transaction)
 }
 
 fn mark_fts_current(transaction: &Transaction<'_>) -> Result<()> {

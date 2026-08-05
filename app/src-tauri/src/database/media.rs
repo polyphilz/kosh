@@ -1400,6 +1400,7 @@ pub(crate) fn complete_image_ocr(
                  WHERE id = ?2",
                 params![completed_at_ms, &job.attachment_id],
             )?;
+            search::replace_attachment_documents_in_transaction(&transaction, &job.attachment_id)?;
         }
         Err(error) => {
             let error = truncate_ocr_error(&error);

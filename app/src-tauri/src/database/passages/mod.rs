@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{search, tidbits, DatabaseError, Result, TidbitSource};
+use super::{block_search, search, tidbits, DatabaseError, Result, TidbitSource};
 use builder::{build_markdown_passages, MarkdownLocator, CONSTRUCTION_VERSION};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -221,6 +221,7 @@ fn replace_active_author_passages_inner(
         params![tidbit_id, tidbit_revision_id, CONSTRUCTION_VERSION],
     )?;
     search::replace_tidbit_documents(transaction, tidbit_id)?;
+    block_search::replace_tidbit_documents(transaction, tidbit_id)?;
     Ok(inserted)
 }
 
@@ -269,6 +270,7 @@ pub(super) fn deactivate_tidbit(transaction: &Transaction<'_>, tidbit_id: &str) 
         params![tidbit_id],
     )?;
     search::replace_tidbit_documents(transaction, tidbit_id)?;
+    block_search::replace_tidbit_documents(transaction, tidbit_id)?;
     Ok(())
 }
 

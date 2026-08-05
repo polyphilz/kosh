@@ -986,7 +986,7 @@ fn verify_restored_library(
         sources: query_count(&main, "SELECT count(*) FROM source"),
         attachments: query_count(&main, "SELECT count(*) FROM attachment"),
         media_blobs: query_count(&media, "SELECT count(*) FROM media_blob"),
-        search_documents: query_count(&main, "SELECT count(*) FROM passage_search_document"),
+        search_documents: query_count(&main, "SELECT count(*) FROM block_search_document"),
         exact_result_count: u64::try_from(after.len()).expect("exact result count"),
         resolved_source_url: after[0]
             .citation

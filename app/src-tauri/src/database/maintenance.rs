@@ -82,7 +82,7 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
         revisions: count(connection, "tidbit_revision")?,
         authored_passages: count_where(connection, "passage", "owner_kind = 'AUTHOR'")?,
         attachment_passages: count_where(connection, "passage", "owner_kind = 'ATTACHMENT'")?,
-        search_documents: count(connection, "passage_search_document")?,
+        search_documents: count(connection, "block_search_document")?,
         attachments,
         attachment_bytes,
         image_ocr: queue_counts(connection, "image_ocr_queue", "ocr")?,
@@ -94,7 +94,7 @@ pub(super) fn rebuild_search(connection: &mut Connection) -> Result<u64> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     search::rebuild_documents(&transaction)?;
     let documents =
-        transaction.query_row("SELECT count(*) FROM passage_search_document", [], |row| {
+        transaction.query_row("SELECT count(*) FROM block_search_document", [], |row| {
             nonnegative(row.get(0)?)
         })?;
     transaction.commit()?;
