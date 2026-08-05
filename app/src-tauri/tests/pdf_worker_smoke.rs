@@ -6,27 +6,6 @@ use std::{
 };
 
 #[test]
-fn isolated_pdf_worker_extracts_a_bounded_response() {
-    let response = run_worker(
-        &["--kosh-pdf-extraction-worker", "1"],
-        &single_page_pdf("Hi"),
-    );
-    assert_eq!(response["operation"], "EXTRACTION");
-    let pages = response["result"]["Ok"]
-        .as_array()
-        .unwrap_or_else(|| panic!("worker returned an extraction error: {response}"));
-    let page = &pages[0];
-    assert_eq!(page["pageNumber"], 1);
-    assert!(
-        page["result"]["Ok"][1]
-            .as_str()
-            .expect("page text")
-            .contains("Hi"),
-        "short native text must survive the isolated extraction path"
-    );
-}
-
-#[test]
 fn isolated_pdf_worker_inspects_untrusted_input() {
     let response = run_worker(&["--kosh-pdf-inspection-worker"], &single_page_pdf("Hi"));
     assert_eq!(response["operation"], "INSPECTION");
@@ -40,7 +19,7 @@ fn run_worker(arguments: &[&str], pdf: &[u8]) -> serde_json::Value {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn PDF extraction worker");
+        .expect("spawn PDF inspection worker");
     child
         .stdin
         .take()

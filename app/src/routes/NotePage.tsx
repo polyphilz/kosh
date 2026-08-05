@@ -636,7 +636,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
               backend.ingestClipboardImage(captureId, draftId),
             );
           }}
-          pdfStatus={(attachmentId) => backend.pdfStatus(attachmentId)}
           pickAttachment={async () => {
             const selectionId = await backend.selectAttachment();
             if (!selectionId) return null;
@@ -664,7 +663,6 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
             backend.revealAttachmentInFinder(attachmentId)
           }
           retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}
-          retryPdfExtraction={(attachmentId) => backend.retryPdfExtraction(attachmentId)}
           selectionRail
           value={editorInitialValue}
           variant="page"

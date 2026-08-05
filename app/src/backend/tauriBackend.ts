@@ -21,7 +21,6 @@ import type {
   MaintenanceOutcome,
   PassageEmbeddingIndexStatus,
   PdfRecord,
-  PdfStatusRecord,
   RuntimeProbe,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
@@ -133,10 +132,6 @@ export const tauriBackend: Backend = {
     invoke<void>(TauriCommand.SetFileDropConsumerActive, { active }),
   discardFileDropSelections: (selectionIds: string[]) =>
     invoke<void>(TauriCommand.DiscardFileDropSelections, { selectionIds }),
-  pdfStatus: (attachmentId: string) =>
-    invoke<PdfStatusRecord>(TauriCommand.PdfStatus, { attachmentId }),
-  retryPdfExtraction: (attachmentId: string) =>
-    invoke<PdfStatusRecord>(TauriCommand.RetryPdfExtraction, { attachmentId }),
   openPdfExternal: (attachmentId: string) =>
     invoke<void>(TauriCommand.OpenPdfExternal, { attachmentId }),
 };

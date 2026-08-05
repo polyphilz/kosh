@@ -94,8 +94,6 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.revealAttachmentInFinder("file-attachment-1");
     await tauriBackend.setFileDropConsumerActive(true);
     await tauriBackend.discardFileDropSelections(["pdf-selection-2"]);
-    await tauriBackend.pdfStatus("pdf-attachment-1");
-    await tauriBackend.retryPdfExtraction("pdf-attachment-1");
     await tauriBackend.openPdfExternal("pdf-attachment-1");
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
@@ -131,8 +129,6 @@ describe("tauriBackend tidbit gateway", () => {
       ["reveal_attachment_in_finder", { attachmentId: "file-attachment-1" }],
       ["set_file_drop_consumer_active", { active: true }],
       ["discard_file_drop_selections", { selectionIds: ["pdf-selection-2"] }],
-      ["pdf_status", { attachmentId: "pdf-attachment-1" }],
-      ["retry_pdf_extraction", { attachmentId: "pdf-attachment-1" }],
       ["open_pdf_external", { attachmentId: "pdf-attachment-1" }],
     ]);
   });

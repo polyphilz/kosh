@@ -80,7 +80,6 @@ export interface MaintenanceDiagnostics {
     attachments: number;
     attachmentBytes: number;
     imageOcr: MaintenanceQueueCounts;
-    pdfExtraction: MaintenanceQueueCounts;
     indexes: MaintenanceIndexDiagnostic[];
   };
   storage: {
@@ -578,8 +577,6 @@ export interface ImageOcrDiagnostics {
   lastError: string | null;
 }
 
-export type PdfExtractionStatus = "PENDING" | "RUNNING" | "RETRY_WAIT" | "READY" | "FAILED";
-
 export interface PdfRecord {
   id: string;
   ingestLeaseId: string;
@@ -588,19 +585,6 @@ export interface PdfRecord {
   byteLength: number;
   kind: "PDF";
   pageCount: number;
-  extractionStatus: PdfExtractionStatus;
-  extractionError: string | null;
-}
-
-export interface PdfStatusRecord {
-  attachmentId: string;
-  displayFilename: string;
-  pageCount: number;
-  extractedPageCount: number;
-  unavailablePageCount: number;
-  extractionStatus: PdfExtractionStatus;
-  extractionError: string | null;
-  nextAttemptAtMs: number | null;
 }
 
 export type AttachmentExtractionStatus = "READY" | "FAILED" | "NOT_APPLICABLE";
@@ -707,7 +691,5 @@ export interface Backend {
   revealAttachmentInFinder(attachmentId: string): Promise<void>;
   setFileDropConsumerActive(active: boolean): Promise<void>;
   discardFileDropSelections(selectionIds: string[]): Promise<void>;
-  pdfStatus(attachmentId: string): Promise<PdfStatusRecord>;
-  retryPdfExtraction(attachmentId: string): Promise<PdfStatusRecord>;
   openPdfExternal(attachmentId: string): Promise<void>;
 }

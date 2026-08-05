@@ -13,19 +13,16 @@ use tempfile::TempDir;
 use super::{
     media::{
         media_blob_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
-        split_pdf_page_passages, validate_filename, AttachmentDisplayRole, CanonicalImage,
-        ImageOcrRegion, ImageOcrStatus, IngestAttachmentMetadata, IngestAttachmentWrite,
-        IngestGenericAttachmentWrite, IngestImageWrite, IngestPdfWrite,
-        MediaBlobReclamationPreflight, MediaByteRange, MediaRangeRequest, PdfExtractionStatus,
-        PdfPageExtraction, PdfPageSource, StagedAttachment, TextFileSegment,
-        MEDIA_RECONCILE_BATCH_SIZE, PDF_PASSAGE_MAX_CHARS, PDF_PASSAGE_OVERLAP_CHARS,
-        PDF_RECOVERY_BATCH_SIZE,
+        validate_filename, AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
+        IngestAttachmentMetadata, IngestAttachmentWrite, IngestGenericAttachmentWrite,
+        IngestImageWrite, IngestPdfWrite, MediaBlobReclamationPreflight, MediaByteRange,
+        MediaRangeRequest, StagedAttachment, TextFileSegment, MEDIA_RECONCILE_BATCH_SIZE,
     },
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     AttachmentExtractionStatus, AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput,
     CitationLocator, Database, DatabaseClient, DatabaseError, DatabasePaths,
     DiscardWorkingCopyInput, LexicalSearchMode, MediaLimits, MediaMaintenanceReport,
-    SaveWorkingCopyInput, SearchPassagesInput, SourceDraft, Tidbit,
+    SaveWorkingCopyInput, SearchField, SearchPassagesInput, SourceDraft, Tidbit,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -239,7 +236,6 @@ impl TestLibrary {
                     now_ms,
                     limits,
                 }),
-                extraction_id: id(suffixes.3),
                 page_count,
             })
             .expect("ingest PDF")
@@ -570,345 +566,44 @@ fn image_ingestion_preserves_originals_deduplicates_previews_and_serves_only_pre
 }
 
 #[test]
-fn pdf_extraction_indexes_only_page_evidence_with_exact_page_citations() {
+fn pdf_search_indexes_only_the_attachment_filename() {
     let library = TestLibrary::new();
     let pdf = library.ingest_pdf(
         (0x900, 0x901, 0x902, 0x903),
-        b"%PDF-1.7 stable fixture bytes",
+        b"%PDF-1.7 secret page contents",
         3,
         11,
     );
-    assert_eq!(pdf.extraction_status, PdfExtractionStatus::Pending);
     let body = format!("Chapter notes.\n\n{{{{kosh:pdf:{}}}}}", pdf.attachment.id);
-    library.save_capture_with_sources(
-        &body,
-        vec![SourceDraft {
-            label: Some("Course reader".into()),
-            url: Some("https://example.com/reader".into()),
-        }],
-        12,
-    );
-    let created = library.checkpoint_capture(12, 13, id(0x905), vec![id(0x906)]);
+    library.save_capture_with_sources(&body, Vec::new(), 12);
+    library.checkpoint_capture(12, 13, id(0x905), Vec::new());
 
     let client = library.database.client();
-    let job = client
-        .claim_next_pdf_extraction(14)
-        .expect("claim PDF extraction")
-        .expect("queued PDF extraction");
-    assert_eq!(job.pdf_bytes, b"%PDF-1.7 stable fixture bytes");
-    client
-        .complete_pdf_extraction(
-            job,
-            Ok(vec![
-                PdfPageExtraction {
-                    page_number: 1,
-                    result: Ok((
-                        PdfPageSource::NativeText,
-                        format!(
-                            "first_page_exact_evidence. {}",
-                            "bounded citation context. ".repeat(100)
-                        ),
-                    )),
-                },
-                PdfPageExtraction {
-                    page_number: 2,
-                    result: Ok((PdfPageSource::Ocr, "scanned_page_exact_evidence".into())),
-                },
-                PdfPageExtraction {
-                    page_number: 3,
-                    result: Err("page rendering failed".into()),
-                },
-            ]),
-            15,
-        )
-        .expect("complete mixed PDF extraction");
-
-    let status = client
-        .load_pdf_status(pdf.attachment.id.clone())
-        .expect("PDF status");
-    assert_eq!(status.extraction_status, PdfExtractionStatus::Ready);
-    assert_eq!(status.extracted_page_count, 2);
-    assert_eq!(status.unavailable_page_count, 1);
-    for (query, expected_page) in [
-        ("first_page_exact_evidence", 1),
-        ("scanned_page_exact_evidence", 2),
-    ] {
-        let results = client
-            .search_passages(SearchPassagesInput {
-                query: query.into(),
-                mode: LexicalSearchMode::Exact,
-                limit: 10,
-            })
-            .expect("search PDF page evidence");
-        assert_eq!(results.len(), 1);
-        assert!(
-            results[0].citation.excerpt.chars().count() <= PDF_PASSAGE_MAX_CHARS,
-            "PDF result excerpts stay citation-sized"
-        );
-        assert_eq!(
-            results[0].citation.locator,
-            CitationLocator::PdfPage {
-                page: expected_page
-            }
-        );
-        assert_eq!(
-            results[0]
-                .citation
-                .attachment
-                .as_ref()
-                .expect("PDF citation attachment")
-                .id,
-            pdf.attachment.id
-        );
-        assert_eq!(results[0].citation.sources.len(), 1);
-        assert_eq!(
-            results[0].citation.sources[0].url.as_deref(),
-            Some("https://example.com/reader")
-        );
-    }
+    let filename_results = client
+        .search_passages(SearchPassagesInput {
+            query: "chapter.pdf".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search PDF filename");
+    assert_eq!(filename_results.len(), 1);
+    assert!(filename_results[0]
+        .matched_fields
+        .contains(&SearchField::AttachmentName));
     assert!(client
         .search_passages(SearchPassagesInput {
-            query: "page rendering failed".into(),
+            query: "secret page contents".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
-        .expect("unavailable page error is not evidence")
+        .expect("PDF bytes are not searchable")
         .is_empty());
-
-    client
-        .save_working_copy_for_test(
-            created.id.clone(),
-            Some(created.current_revision_id),
-            1,
-            format!(
-                "Revised chapter notes.\n\n{{{{kosh:pdf:{}}}}}",
-                pdf.attachment.id
-            ),
-            vec![SourceDraft {
-                label: Some("Unrelated later source".into()),
-                url: Some("https://example.com/later".into()),
-            }],
-            16,
-        )
-        .expect("save PDF-backed edit");
-    client
-        .checkpoint_working_copy_for_test(created.id, 1, 17, id(0x907), vec![id(0x908)])
-        .expect("checkpoint PDF-backed edit");
-    let result = client
-        .search_passages(SearchPassagesInput {
-            query: "first_page_exact_evidence".into(),
-            mode: LexicalSearchMode::Exact,
-            limit: 10,
-        })
-        .expect("search PDF evidence after source edit");
-    assert_eq!(
-        result[0].citation.sources[0].url.as_deref(),
-        Some("https://example.com/reader"),
-        "attachment citations stay bound to the revision that established their provenance"
-    );
-}
-
-#[test]
-fn pdf_page_passages_are_bounded_and_overlap() {
-    let text = (0..300)
-        .map(|index| format!("Sentence {index} carries useful PDF evidence."))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let passages = split_pdf_page_passages(&text);
-    assert!(passages.len() > 1);
-    assert!(passages
-        .iter()
-        .all(|passage| passage.chars().count() <= PDF_PASSAGE_MAX_CHARS));
-    for pair in passages.windows(2) {
-        let tail = pair[0]
-            .chars()
-            .rev()
-            .take(PDF_PASSAGE_OVERLAP_CHARS)
-            .collect::<Vec<_>>();
-        assert!(
-            tail.into_iter()
-                .rev()
-                .collect::<String>()
-                .split_whitespace()
-                .any(|word| pair[1].contains(word)),
-            "neighboring PDF passages retain searchable overlap"
-        );
-    }
-}
-
-#[test]
-fn pdf_recovery_rebuilds_stale_extractor_provenance() {
-    let library = TestLibrary::new();
-    let pdf = library.ingest_pdf(
-        (0x906, 0x907, 0x908, 0x909),
-        b"%PDF-1.7 versioned fixture bytes",
-        1,
-        11,
-    );
-    let writer = super::connection::open_writer(
-        &library.paths.main,
-        super::connection::DatabaseKind::Main,
-        super::connection::FileState::Existing,
-    )
-    .expect("open extractor configuration writer");
-    writer
-        .execute(
-            "UPDATE attachment_extractor_config
-             SET version = '2', updated_at = 12
-             WHERE extractor = 'pdf-text'",
-            [],
-        )
-        .expect("advance PDF extractor version");
-    drop(writer);
-
-    let client = library.database.client();
-    assert_eq!(
-        client
-            .recover_interrupted_pdf_extraction(12, 13)
-            .expect("reconcile stale PDF extraction"),
-        1
-    );
-    let status = client
-        .load_pdf_status(pdf.attachment.id)
-        .expect("replacement PDF status");
-    assert_eq!(status.extraction_status, PdfExtractionStatus::Pending);
-    let job = client
-        .claim_next_pdf_extraction(13)
-        .expect("claim replacement extraction")
-        .expect("replacement PDF job");
-    assert_eq!(job.extractor_version, "2");
-    assert_eq!(job.attempt_count, 1);
-}
-
-#[test]
-fn pdf_recovery_exposes_full_batches_until_the_stale_backlog_is_queued() {
-    let library = TestLibrary::new();
-    let limits = MediaLimits {
-        max_attachments_per_draft: 128,
-        ..MediaLimits::default()
-    };
-    for index in 0..(PDF_RECOVERY_BATCH_SIZE + 1) {
-        let base = 0xa000 + (index as u64 * 4);
-        library.ingest_pdf_with_limits(
-            (base, base + 1, base + 2, base + 3),
-            b"%PDF-1.7 recovery batch fixture",
-            1,
-            11,
-            limits,
-        );
-    }
-    let writer = super::connection::open_writer(
-        &library.paths.main,
-        super::connection::DatabaseKind::Main,
-        super::connection::FileState::Existing,
-    )
-    .expect("open extractor configuration writer");
-    writer
-        .execute(
-            "UPDATE attachment_extractor_config
-             SET version = '2', updated_at = 12
-             WHERE extractor = 'pdf-text'",
-            [],
-        )
-        .expect("advance PDF extractor version");
-    drop(writer);
-
-    let client = library.database.client();
-    assert_eq!(
-        client
-            .recover_interrupted_pdf_extraction(12, 13)
-            .expect("queue first PDF recovery batch"),
-        PDF_RECOVERY_BATCH_SIZE as u64
-    );
-    assert_eq!(
-        client
-            .recover_interrupted_pdf_extraction(12, 13)
-            .expect("queue remaining PDF recovery"),
-        1
-    );
-    assert_eq!(
-        client
-            .recover_interrupted_pdf_extraction(12, 13)
-            .expect("finish PDF recovery"),
-        0
-    );
-}
-
-#[test]
-fn duplicate_pdfs_share_canonical_bytes_but_keep_independent_provenance() {
-    let library = TestLibrary::new();
-    let bytes = b"%PDF-1.7 duplicate canonical fixture";
-    let first = library.ingest_pdf((0x90a, 0x90b, 0x90c, 0x90d), bytes, 1, 11);
-    let second = library.ingest_pdf((0x90e, 0x90f, 0x910, 0x911), bytes, 1, 12);
-
-    assert_ne!(first.attachment.id, second.attachment.id);
-    assert_eq!(blob_count(&library.database), 1);
-    let main = library.database.open_main_read_only().expect("main reader");
-    assert_eq!(
-        main.query_row(
-            "SELECT count(*)
-             FROM attachment_extraction
-             WHERE extractor = 'pdf-text'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .expect("independent PDF extractions"),
-        2
-    );
-}
-
-#[test]
-fn unextractable_pdf_remains_an_attachment_without_text_evidence() {
-    let library = TestLibrary::new();
-    let bytes = b"%PDF-1.7 attachment-only fixture";
-    let pdf = library.ingest_pdf((0x912, 0x913, 0x914, 0x915), bytes, 1, 11);
-    let client = library.database.client();
-    let job = client
-        .claim_next_pdf_extraction(12)
-        .expect("claim attachment-only PDF")
-        .expect("attachment-only job");
-    client
-        .complete_pdf_extraction(
-            job,
-            Ok(vec![PdfPageExtraction {
-                page_number: 1,
-                result: Err("no readable page text".into()),
-            }]),
-            13,
-        )
-        .expect("record unavailable PDF page");
-
-    let status = client
-        .load_pdf_status(pdf.attachment.id.clone())
-        .expect("attachment-only PDF status");
-    assert_eq!(status.extraction_status, PdfExtractionStatus::Ready);
-    assert_eq!(status.extracted_page_count, 0);
-    assert_eq!(status.unavailable_page_count, 1);
-    assert_eq!(
-        library
-            .database
-            .open_main_read_only()
-            .expect("main reader")
-            .query_row(
-                "SELECT count(*)
-                 FROM passage
-                 JOIN attachment_segment AS segment
-                   ON segment.id = passage.attachment_segment_id
-                 JOIN attachment_extraction AS extraction
-                   ON extraction.id = segment.extraction_id
-                 WHERE extraction.attachment_id = ?1",
-                params![pdf.attachment.id],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("attachment-only passage count"),
-        0
-    );
     assert_eq!(
         client
             .load_media_payload(pdf.attachment.id, 14, None, 64)
             .expect("original PDF remains available")
             .bytes,
-        bytes
+        b"%PDF-1.7 secret page contents"
     );
 }
 

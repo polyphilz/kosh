@@ -42,8 +42,6 @@ const MAIN_TABLES: &[&str] = &[
     "passage_fts_trigram",
     "passage_fts_word",
     "passage_search_document",
-    "pdf_extraction_queue",
-    "pdf_page_extraction",
     "image_ocr_queue",
     "shortcut_settings",
     "source",

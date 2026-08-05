@@ -32,8 +32,7 @@ use super::{
         ImageOcrDiagnostics, ImageOcrJob, ImageOcrRecovery, ImageOcrRegion, ImageRecord,
         ImageStatusRecord, IngestAttachmentWrite, IngestGenericAttachmentWrite, IngestImageWrite,
         IngestPdfWrite, MediaIntegrityReport, MediaIntegrityScan, MediaLimits,
-        MediaMaintenanceReport, MediaMaintenanceScan, MediaPayload, MediaRangeRequest,
-        PdfExtractionJob, PdfPageExtraction, PdfRecord, PdfStatusRecord,
+        MediaMaintenanceReport, MediaMaintenanceScan, MediaPayload, MediaRangeRequest, PdfRecord,
     },
     migrations::MigrationHeads,
     offsite_checkpoint::{
@@ -282,30 +281,6 @@ pub(super) enum WriterMessage {
     IngestPdf {
         write: IngestPdfWrite,
         reply: SyncSender<Result<PdfRecord>>,
-    },
-    LoadPdfStatus {
-        attachment_id: String,
-        reply: SyncSender<Result<PdfStatusRecord>>,
-    },
-    ClaimNextPdfExtraction {
-        now_ms: i64,
-        reply: SyncSender<Result<Option<PdfExtractionJob>>>,
-    },
-    CompletePdfExtraction {
-        job: PdfExtractionJob,
-        result: std::result::Result<Vec<PdfPageExtraction>, String>,
-        completed_at_ms: i64,
-        reply: SyncSender<Result<()>>,
-    },
-    RetryPdfExtraction {
-        attachment_id: String,
-        now_ms: i64,
-        reply: SyncSender<Result<PdfStatusRecord>>,
-    },
-    RecoverInterruptedPdfExtraction {
-        stale_started_at_or_before: i64,
-        now_ms: i64,
-        reply: SyncSender<Result<u64>>,
     },
     LoadImageStatus {
         attachment_id: String,
@@ -987,88 +962,6 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::IngestPdf { write, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn load_pdf_status(&self, attachment_id: String) -> Result<PdfStatusRecord> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::LoadPdfStatus {
-                attachment_id,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn claim_next_pdf_extraction(
-        &self,
-        now_ms: i64,
-    ) -> Result<Option<PdfExtractionJob>> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::ClaimNextPdfExtraction { now_ms, reply })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn complete_pdf_extraction(
-        &self,
-        job: PdfExtractionJob,
-        result: std::result::Result<Vec<PdfPageExtraction>, String>,
-        completed_at_ms: i64,
-    ) -> Result<()> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::CompletePdfExtraction {
-                job,
-                result,
-                completed_at_ms,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn retry_pdf_extraction(
-        &self,
-        attachment_id: String,
-        now_ms: i64,
-    ) -> Result<PdfStatusRecord> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::RetryPdfExtraction {
-                attachment_id,
-                now_ms,
-                reply,
-            })
-            .map_err(|_| DatabaseError::WriterUnavailable)?;
-        receiver
-            .recv()
-            .map_err(|_| DatabaseError::WriterUnavailable)?
-    }
-
-    pub(crate) fn recover_interrupted_pdf_extraction(
-        &self,
-        stale_started_at_or_before: i64,
-        now_ms: i64,
-    ) -> Result<u64> {
-        let (reply, receiver) = mpsc::sync_channel(1);
-        self.sender
-            .send(WriterMessage::RecoverInterruptedPdfExtraction {
-                stale_started_at_or_before,
-                now_ms,
-                reply,
-            })
             .map_err(|_| DatabaseError::WriterUnavailable)?;
         receiver
             .recv()

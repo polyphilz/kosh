@@ -33,7 +33,7 @@ export interface BlockNoteHarnessBridge {
   snapshot(): BlockNoteHarnessSnapshot;
 }
 
-export type BlockNoteHarnessMediaKind = "image" | "pdf";
+export type BlockNoteHarnessMediaKind = "image";
 
 export interface BlockNoteHarnessMediaHarness {
   prepareRetry(kind: BlockNoteHarnessMediaKind): void;
@@ -213,8 +213,6 @@ export function mediaFixtureRecords(): SelectedAttachmentRecord[] {
         byteLength: 4_096,
         kind: "PDF",
         pageCount: 12,
-        extractionStatus: "READY",
-        extractionError: null,
       },
     },
     {

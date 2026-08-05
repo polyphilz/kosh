@@ -99,7 +99,7 @@ pnpm release:acceptance launch clean-YYYYMMDD
 pnpm release:acceptance check-journeys clean-YYYYMMDD
 ```
 
-The durable check requires URL, code, math, image/OCR, PDF extraction,
+The durable check requires URL, code, math, image/OCR, PDF attachment,
 searchable extracted text, text and opaque-binary attachments, and semantic
 embedding evidence.
 

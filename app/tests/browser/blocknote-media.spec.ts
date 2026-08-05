@@ -274,7 +274,7 @@ test("overlapping deferred media restores one paragraph or preserves committed m
   await expect.poll(() => editorMarkdown(page)).toContain("}}\n\n&#x20;after");
 });
 
-test("image and PDF retries restart status polling", async ({ page }) => {
+test("image retries restart status polling", async ({ page }) => {
   await openHarness(page);
 
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.installRetryMediaFixture("image"));
@@ -288,18 +288,6 @@ test("image and PDF retries restart status polling", async ({ page }) => {
   await expect
     .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("image")))
     .toBeGreaterThan(imageCallsBeforeRetry);
-
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.installRetryMediaFixture("pdf"));
-  const pdfRetry = page.getByRole("button", { name: "Retry extraction" });
-  await expect(pdfRetry).toBeVisible();
-  const pdfCallsBeforeRetry = await page.evaluate(() =>
-    window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("pdf"),
-  );
-  await pdfRetry.click();
-  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("12 pages · 12 searchable");
-  await expect
-    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("pdf")))
-    .toBeGreaterThan(pdfCallsBeforeRetry);
 });
 
 test("the restricted slash menu inserts media through the local controller", async ({ page }) => {

@@ -370,7 +370,6 @@ const QuickAddSession = forwardRef<
             backend.ingestClipboardImage(captureId, draftId),
           );
         }}
-        pdfStatus={(attachmentId) => backend.pdfStatus(attachmentId)}
         pickAttachment={async () => {
           clearMediaError();
           const selectionId = await withFileDialog(() => backend.selectAttachment());
@@ -397,7 +396,6 @@ const QuickAddSession = forwardRef<
         ref={editorRef}
         revealAttachmentInFinder={(attachmentId) => backend.revealAttachmentInFinder(attachmentId)}
         retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}
-        retryPdfExtraction={(attachmentId) => backend.retryPdfExtraction(attachmentId)}
         value={snapshot.documentJson}
         variant="page"
       />

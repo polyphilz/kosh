@@ -37,7 +37,6 @@ import type {
   ImageRecord,
   ImageStatusRecord,
   PdfRecord,
-  PdfStatusRecord,
   SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
@@ -94,14 +93,12 @@ export interface KoshBlockNoteEditorProps {
   openAttachmentExternal?: (attachmentId: string) => Promise<void>;
   openPdfExternal?: (attachmentId: string) => Promise<void>;
   pasteImage?: () => Promise<ImageRecord>;
-  pdfStatus?: (attachmentId: string) => Promise<PdfStatusRecord>;
   pickAttachment?: () => Promise<SelectedAttachmentRecord | null>;
   pickImage?: () => Promise<ImageRecord | null>;
   pickPdf?: () => Promise<PdfRecord | null>;
   placeholder?: string;
   revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
-  retryPdfExtraction?: (attachmentId: string) => Promise<PdfStatusRecord>;
   selectionRail?: boolean;
   variant?: "default" | "page";
   value: string;
@@ -135,13 +132,11 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       openAttachmentExternal: Boolean(properties.openAttachmentExternal),
       openPdfExternal: Boolean(properties.openPdfExternal),
       pasteImage: Boolean(properties.pasteImage),
-      pdfStatus: Boolean(properties.pdfStatus),
       pickAttachment: Boolean(properties.pickAttachment),
       pickImage: Boolean(properties.pickImage),
       pickPdf: Boolean(properties.pickPdf),
       revealAttachmentInFinder: Boolean(properties.revealAttachmentInFinder),
       retryImageOcr: Boolean(properties.retryImageOcr),
-      retryPdfExtraction: Boolean(properties.retryPdfExtraction),
     }).current;
     const editor = useCreateBlockNote({
       schema: koshBlockNoteSchema,
@@ -202,17 +197,11 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
         openPdfExternal: capabilities.openPdfExternal
           ? (attachmentId) => propertiesRef.current.openPdfExternal!(attachmentId)
           : undefined,
-        pdfStatus: capabilities.pdfStatus
-          ? (attachmentId) => propertiesRef.current.pdfStatus!(attachmentId)
-          : undefined,
         revealAttachmentInFinder: capabilities.revealAttachmentInFinder
           ? (attachmentId) => propertiesRef.current.revealAttachmentInFinder!(attachmentId)
           : undefined,
         retryImageOcr: capabilities.retryImageOcr
           ? (attachmentId) => propertiesRef.current.retryImageOcr!(attachmentId)
-          : undefined,
-        retryPdfExtraction: capabilities.retryPdfExtraction
-          ? (attachmentId) => propertiesRef.current.retryPdfExtraction!(attachmentId)
           : undefined,
       }),
       [capabilities, mediaController],

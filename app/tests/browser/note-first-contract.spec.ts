@@ -49,18 +49,6 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
       byteLength: 2_048,
       kind: "PDF",
       pageCount: 3,
-      extractionStatus: "READY",
-      extractionError: null,
-    });
-    backend.pdfStatus = async (attachmentId) => ({
-      attachmentId,
-      displayFilename: "vector-chapter.pdf",
-      pageCount: 3,
-      extractedPageCount: 3,
-      unavailablePageCount: 0,
-      extractionStatus: "READY",
-      extractionError: null,
-      nextAttemptAtMs: null,
     });
 
     backend.selectAttachment = async () => "note-file-selection";

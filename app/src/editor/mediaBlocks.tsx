@@ -11,7 +11,6 @@ import {
 import type {
   GenericAttachmentStatusRecord,
   ImageStatusRecord,
-  PdfStatusRecord,
   SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { attachmentMediaUrl } from "../media/gateway";
@@ -19,7 +18,6 @@ import { useKoshEditorDisabled } from "./interactionState";
 import { clampImageWidth, initialImageWidth } from "./mediaSizing";
 
 const ACTIVE_IMAGE_STATUSES = new Set(["PENDING", "RUNNING", "RETRY_WAIT"]);
-const ACTIVE_PDF_STATUSES = new Set(["PENDING", "RUNNING", "RETRY_WAIT"]);
 const STATUS_POLL_MS = 1_500;
 const STATUS_POLL_MAX_MS = 5 * 60_000;
 
@@ -30,10 +28,8 @@ export interface KoshMediaActions {
   onError?: (error: unknown) => void;
   openAttachmentExternal?: (attachmentId: string) => Promise<void>;
   openPdfExternal?: (attachmentId: string) => Promise<void>;
-  pdfStatus?: (attachmentId: string) => Promise<PdfStatusRecord>;
   revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
-  retryPdfExtraction?: (attachmentId: string) => Promise<PdfStatusRecord>;
 }
 
 const KoshMediaActionsContext = createContext<KoshMediaActions>({});
@@ -103,15 +99,7 @@ const pdfConfig = {
   propSchema: {
     attachmentId: { default: "" },
     displayFilename: { default: "PDF attachment" },
-    extractedPageCount: { default: 0 },
-    extractionError: { default: "" },
-    extractionStatus: {
-      default: "PENDING",
-      values: ["PENDING", "RUNNING", "RETRY_WAIT", "READY", "FAILED"] as const,
-    },
-    nextAttemptAtMs: { default: 0 },
     pageCount: { default: 0 },
-    unavailablePageCount: { default: 0 },
   },
   content: "none",
 } as const;
@@ -185,12 +173,7 @@ export function selectedAttachmentToMediaBlock(
         props: {
           attachmentId: record.id,
           displayFilename: record.displayFilename,
-          extractedPageCount: 0,
-          extractionError: record.extractionError ?? "",
-          extractionStatus: record.extractionStatus,
-          nextAttemptAtMs: 0,
           pageCount: record.pageCount,
-          unavailablePageCount: 0,
         },
       };
     }
@@ -369,85 +352,20 @@ function KoshImageBlock({ block, editor }: ImageRenderProps) {
 
 function KoshPdfBlock({ block, editor }: PdfRenderProps) {
   const actions = useContext(KoshMediaActionsContext);
-  const disabled = useKoshEditorDisabled();
-  const [pollRevision, setPollRevision] = useState(0);
-  const [status, setStatus] = useState<PdfStatusRecord | null>(null);
   const attachmentId = block.props.attachmentId;
-
-  useEffect(() => {
-    if (!actions.pdfStatus || !attachmentId) return;
-    let active = true;
-    let timer: number | undefined;
-    const load = () => {
-      void actions.pdfStatus!(attachmentId)
-        .then((record) => {
-          if (!active || record.attachmentId !== attachmentId) return;
-          setStatus(record);
-          if (ACTIVE_PDF_STATUSES.has(record.extractionStatus)) {
-            timer = window.setTimeout(load, statusPollDelay(record.nextAttemptAtMs));
-          }
-        })
-        .catch((error: unknown) => actions.onError?.(error));
-    };
-    load();
-    return () => {
-      active = false;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [actions, attachmentId, pollRevision]);
-
-  useEffect(() => {
-    if (
-      disabled ||
-      !status?.displayFilename ||
-      status.displayFilename === block.props.displayFilename
-    ) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      if (!editor.isEditable) return;
-      editor.transact((transaction) => {
-        editor.updateBlock(block, { props: { displayFilename: status.displayFilename } });
-        transaction.setMeta("addToHistory", false);
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [block, disabled, editor, status?.displayFilename]);
-
-  const extractionStatus = status?.extractionStatus ?? block.props.extractionStatus;
-  const extractionError = status?.extractionError ?? block.props.extractionError;
   return (
     <section className="kosh-blocknote-file" contentEditable={false} data-kosh-pdf="true">
       <span aria-hidden className="kosh-blocknote-file__icon">
         PDF
       </span>
       <div className="kosh-blocknote-file__details">
-        <strong>{status?.displayFilename ?? block.props.displayFilename}</strong>
-        <span title={extractionError}>
-          {pdfStatusText(
-            extractionStatus,
-            extractionError,
-            status?.pageCount ?? block.props.pageCount,
-            status?.extractedPageCount ?? block.props.extractedPageCount,
-            status?.unavailablePageCount ?? block.props.unavailablePageCount,
-          )}
-        </span>
+        <strong>{block.props.displayFilename}</strong>
+        <span>{`${block.props.pageCount} page${block.props.pageCount === 1 ? "" : "s"}`}</span>
       </div>
       <MediaButtons
         editor={editor}
         onOpen={actions.openPdfExternal ? () => actions.openPdfExternal!(attachmentId) : undefined}
         onRemove={() => editor.removeBlocks([block])}
-        onRetry={
-          extractionStatus === "FAILED" && actions.retryPdfExtraction
-            ? () =>
-                actions.retryPdfExtraction!(attachmentId).then((record) => {
-                  setStatus(record);
-                  if (ACTIVE_PDF_STATUSES.has(record.extractionStatus)) {
-                    setPollRevision((revision) => revision + 1);
-                  }
-                })
-            : undefined
-        }
       />
     </section>
   );
@@ -608,29 +526,6 @@ function imageStatusText(status: string, error: string): string {
       return error || "Text recognition failed";
     default:
       return "Text recognition queued";
-  }
-}
-
-function pdfStatusText(
-  status: string,
-  error: string,
-  pageCount: number,
-  extracted: number,
-  unavailable: number,
-): string {
-  switch (status) {
-    case "READY":
-      return `${pageCount} page${pageCount === 1 ? "" : "s"} · ${extracted} searchable${
-        unavailable ? ` · ${unavailable} unavailable` : ""
-      }`;
-    case "RUNNING":
-      return `Extracting ${pageCount || ""} pages…`;
-    case "RETRY_WAIT":
-      return "Extraction will retry";
-    case "FAILED":
-      return error || "Extraction failed";
-    default:
-      return `Queued for extraction${pageCount ? ` · ${pageCount} pages` : ""}`;
   }
 }
 

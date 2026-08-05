@@ -86,8 +86,6 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         attachments::discard_file_drop_selections,
         pdf::select_pdf,
         pdf::ingest_selected_pdf,
-        pdf::pdf_status,
-        pdf::retry_pdf_extraction,
         pdf::open_pdf_external,
         database::commands::load_tidbit,
         database::commands::delete_tidbit,
@@ -165,8 +163,6 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         attachments::discard_file_drop_selections,
         pdf::select_pdf,
         pdf::ingest_selected_pdf,
-        pdf::pdf_status,
-        pdf::retry_pdf_extraction,
         pdf::open_pdf_external,
         database::commands::load_tidbit,
         database::commands::delete_tidbit,
@@ -256,11 +252,10 @@ pub use database::{
     Database, DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput,
     GenericAttachmentRecord, GenericAttachmentStatusRecord, ImageOcrDiagnostics, ImageOcrRecovery,
     ImageOcrStatus, ImageRecord, ImageStatusRecord, LexicalSearchMode, MediaCleanupResult,
-    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport, PassageSearchResult,
-    PdfExtractionStatus, PdfRecord, PdfStatusRecord, RestoreTidbitInput, SearchExecutionMode,
-    SearchField, SearchHighlight, SearchPassagesInput, SearchPassagesResponse,
-    SemanticSearchReadiness, SetAutomaticUpdateChecksInput, SetShortcutSettingsInput,
-    ShortcutSettings, SourceDraft, Tidbit, TidbitDraft, TidbitSource,
+    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport, PassageSearchResult, PdfRecord,
+    RestoreTidbitInput, SearchExecutionMode, SearchField, SearchHighlight, SearchPassagesInput,
+    SearchPassagesResponse, SemanticSearchReadiness, SetAutomaticUpdateChecksInput,
+    SetShortcutSettingsInput, ShortcutSettings, SourceDraft, Tidbit, TidbitDraft, TidbitSource,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
 pub use embedding_runtime::{

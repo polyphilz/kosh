@@ -184,26 +184,19 @@ pub(crate) async fn retry_failed_extractions(
     let outcome = run_blocking(move || {
         let _guard = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let report = client.retry_failed_extractions(now_ms)?;
-        let changed = report
-            .image_ocr_queued
-            .saturating_add(report.pdf_extraction_queued);
-        log::info!(
-            "maintenance queued {} OCR and {} PDF retries",
-            report.image_ocr_queued,
-            report.pdf_extraction_queued
-        );
+        let changed = report.image_ocr_queued;
+        log::info!("maintenance queued {changed} OCR retries");
         Ok(MaintenanceOutcome {
             operation: "RETRY_EXTRACTIONS",
             changed_items: changed,
             reclaimed_bytes: 0,
             safety_snapshot_id: None,
             message: if changed == 0 {
-                "No current failed OCR or PDF extractions needed a retry.".into()
+                "No current failed OCR extractions needed a retry.".into()
             } else {
                 format!(
-                    "Queued {} image OCR and {} PDF extraction {}.",
+                    "Queued {} image OCR {}.",
                     report.image_ocr_queued,
-                    report.pdf_extraction_queued,
                     if changed == 1 { "retry" } else { "retries" }
                 )
             },
@@ -212,7 +205,6 @@ pub(crate) async fn retry_failed_extractions(
     })
     .await?;
     state.wake_image_ocr();
-    state.wake_pdf_extraction();
     Ok(outcome)
 }
 

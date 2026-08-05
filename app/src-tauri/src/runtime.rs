@@ -56,7 +56,6 @@ pub(crate) struct RuntimeState {
     ids: Arc<dyn IdGenerator>,
     media_limits: MediaLimits,
     image_ocr: crate::media::ImageOcrCoordinator,
-    pdf_extraction: crate::pdf::PdfExtractionCoordinator,
     pending_clipboard_images: Mutex<HashMap<String, PendingClipboardImage>>,
     pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
     pending_file_selections: Mutex<HashMap<String, PendingFileSelection>>,
@@ -95,16 +94,6 @@ fn start_optional_image_ocr(client: DatabaseClient) -> crate::media::ImageOcrCoo
         Err(error) => {
             log::warn!("image OCR is unavailable; Kosh will continue without it: {error}");
             crate::media::ImageOcrCoordinator::disabled()
-        }
-    }
-}
-
-fn start_optional_pdf_extraction(client: DatabaseClient) -> crate::pdf::PdfExtractionCoordinator {
-    match crate::pdf::PdfExtractionCoordinator::start(client) {
-        Ok(coordinator) => coordinator,
-        Err(error) => {
-            log::warn!("PDF extraction is unavailable; Kosh will continue without it: {error}");
-            crate::pdf::PdfExtractionCoordinator::disabled()
         }
     }
 }
@@ -151,7 +140,6 @@ impl RuntimeState {
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
         let image_ocr = start_optional_image_ocr(database.client());
-        let pdf_extraction = start_optional_pdf_extraction(database.client());
         let media_backup = start_optional_media_backup(database.client(), database.paths().clone());
         let checkpoint_backup = crate::backup::checkpoint::CheckpointBackupCoordinator::start(
             database.client(),
@@ -172,7 +160,6 @@ impl RuntimeState {
             ids: Arc::new(UuidV7Generator),
             media_limits,
             image_ocr,
-            pdf_extraction,
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
@@ -222,7 +209,6 @@ impl RuntimeState {
             ids,
             media_limits: MediaLimits::default(),
             image_ocr: crate::media::ImageOcrCoordinator::disabled(),
-            pdf_extraction: crate::pdf::PdfExtractionCoordinator::disabled(),
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
@@ -342,10 +328,6 @@ impl RuntimeState {
 
     pub(crate) fn wake_image_ocr(&self) {
         self.image_ocr.wake();
-    }
-
-    pub(crate) fn wake_pdf_extraction(&self) {
-        self.pdf_extraction.wake();
     }
 
     pub(crate) fn wake_media_backup(&self) {

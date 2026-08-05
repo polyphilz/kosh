@@ -390,8 +390,6 @@ describe("production BlockNote editor", () => {
           record: {
             byteLength: 128,
             displayFilename: "matrix-notes.pdf",
-            extractionError: null,
-            extractionStatus: "READY",
             id: "019f547b-6200-7000-8000-000000000302",
             ingestLeaseId: "private-pdf-lease",
             kind: "PDF",

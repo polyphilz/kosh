@@ -92,7 +92,7 @@ describe("settings diagnostics and maintenance", () => {
     );
     await waitFor(() => expect(retry).toHaveBeenCalledTimes(2));
     expect(
-      await screen.findByText("No current failed OCR or PDF extractions needed a retry."),
+      await screen.findByText("No current failed OCR extractions needed a retry."),
     ).toBeInTheDocument();
   });
 

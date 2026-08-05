@@ -320,18 +320,6 @@ function checkJourneys(values) {
       ),
     ],
     [
-      "a completed PDF extraction",
-      currentAttachmentCount(
-        `JOIN attachment_extraction AS extraction
-           ON extraction.attachment_id = attachment.id
-          AND extraction.content_hash = attachment.sha256
-         JOIN attachment_extractor_config AS config
-           ON config.extractor = extraction.extractor
-          AND config.version = extraction.extractor_version`,
-        "attachment.kind = 'PDF' AND extraction.extractor = 'pdf-text' AND extraction.status = 'READY'",
-      ),
-    ],
-    [
       "searchable extracted attachment text",
       `SELECT count(*)
        FROM tidbit

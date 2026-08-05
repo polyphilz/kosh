@@ -1124,140 +1124,6 @@ BEFORE UPDATE ON attachment_pdf
 BEGIN
     SELECT RAISE(ABORT, 'canonical PDF metadata is immutable');
 END;
-CREATE TABLE pdf_extraction_queue (
-    extraction_id TEXT PRIMARY KEY,
-    state TEXT NOT NULL
-        CHECK (state IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'READY', 'FAILED')),
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    next_attempt_at INTEGER CHECK (next_attempt_at IS NULL OR next_attempt_at >= 0),
-    started_at INTEGER CHECK (started_at IS NULL OR started_at >= 0),
-    last_error TEXT,
-    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
-    FOREIGN KEY (extraction_id) REFERENCES attachment_extraction(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
-    CHECK (
-        (
-            state = 'PENDING'
-            AND attempt_count = 0
-            AND next_attempt_at IS NOT NULL
-            AND started_at IS NULL
-            AND last_error IS NULL
-        )
-        OR (
-            state = 'RUNNING'
-            AND attempt_count > 0
-            AND next_attempt_at IS NULL
-            AND started_at IS NOT NULL
-        )
-        OR (
-            state = 'RETRY_WAIT'
-            AND attempt_count > 0
-            AND next_attempt_at IS NOT NULL
-            AND started_at IS NULL
-            AND last_error IS NOT NULL
-        )
-        OR (
-            state = 'READY'
-            AND next_attempt_at IS NULL
-            AND started_at IS NULL
-            AND last_error IS NULL
-        )
-        OR (
-            state = 'FAILED'
-            AND attempt_count > 0
-            AND next_attempt_at IS NULL
-            AND started_at IS NULL
-            AND last_error IS NOT NULL
-        )
-    )
-) STRICT, WITHOUT ROWID;
-CREATE INDEX pdf_extraction_queue_eligible_idx
-    ON pdf_extraction_queue(next_attempt_at, extraction_id)
-    WHERE state IN ('PENDING', 'RETRY_WAIT');
-CREATE INDEX pdf_extraction_queue_running_idx
-    ON pdf_extraction_queue(started_at, extraction_id)
-    WHERE state = 'RUNNING';
-CREATE TRIGGER pdf_extraction_queue_validate_insert
-BEFORE INSERT ON pdf_extraction_queue
-BEGIN
-    SELECT RAISE(ABORT, 'PDF queue entries require current PDF extraction provenance')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM attachment_extraction AS extraction
-        JOIN attachment_extractor_config AS config
-          ON config.extractor = extraction.extractor
-         AND config.version = extraction.extractor_version
-        JOIN attachment
-          ON attachment.id = extraction.attachment_id
-         AND attachment.sha256 = extraction.content_hash
-         AND attachment.kind = 'PDF'
-         AND attachment.deleted_at IS NULL
-        JOIN attachment_pdf AS pdf
-          ON pdf.attachment_id = attachment.id
-        WHERE extraction.id = new.extraction_id
-          AND extraction.extractor = 'pdf-text'
-    );
-END;
-CREATE TRIGGER pdf_extraction_queue_identity_prevent_update
-BEFORE UPDATE OF extraction_id ON pdf_extraction_queue
-BEGIN
-    SELECT RAISE(ABORT, 'PDF extraction queue identity is immutable');
-END;
-CREATE TABLE pdf_page_extraction (
-    extraction_id TEXT NOT NULL,
-    page_number INTEGER NOT NULL CHECK (page_number > 0),
-    source TEXT NOT NULL CHECK (source IN ('NATIVE_TEXT', 'OCR', 'UNAVAILABLE')),
-    segment_id TEXT,
-    error TEXT,
-    PRIMARY KEY (extraction_id, page_number),
-    FOREIGN KEY (extraction_id) REFERENCES attachment_extraction(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (segment_id) REFERENCES attachment_segment(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
-    CHECK (
-        (source IN ('NATIVE_TEXT', 'OCR') AND segment_id IS NOT NULL AND error IS NULL)
-        OR (source = 'UNAVAILABLE' AND segment_id IS NULL AND error IS NOT NULL)
-    )
-) STRICT, WITHOUT ROWID;
-CREATE TRIGGER pdf_page_extraction_validate_insert
-BEFORE INSERT ON pdf_page_extraction
-BEGIN
-    SELECT RAISE(ABORT, 'PDF page extraction does not match its immutable provenance')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM attachment_extraction AS extraction
-        JOIN attachment_pdf AS pdf
-          ON pdf.attachment_id = extraction.attachment_id
-        WHERE extraction.id = new.extraction_id
-          AND extraction.extractor = 'pdf-text'
-          AND extraction.status = 'READY'
-          AND new.page_number <= pdf.page_count
-          AND (
-              (
-                  new.source IN ('NATIVE_TEXT', 'OCR')
-                  AND EXISTS (
-                      SELECT 1
-                      FROM attachment_segment AS segment
-                      WHERE segment.id = new.segment_id
-                        AND segment.extraction_id = new.extraction_id
-                        AND segment.locator_kind = 'PDF_PAGE'
-                        AND segment.page_number = new.page_number
-                  )
-              )
-              OR new.source = 'UNAVAILABLE'
-          )
-    );
-END;
-CREATE TRIGGER pdf_page_extraction_prevent_update
-BEFORE UPDATE ON pdf_page_extraction
-BEGIN
-    SELECT RAISE(ABORT, 'PDF page extraction outcomes are immutable');
-END;
-CREATE TRIGGER pdf_page_extraction_prevent_delete
-BEFORE DELETE ON pdf_page_extraction
-BEGIN
-    SELECT RAISE(ABORT, 'PDF page extraction outcomes are retained');
-END;
 CREATE TABLE attachment_passage_revision (
     passage_id TEXT PRIMARY KEY,
     tidbit_revision_id TEXT NOT NULL,
@@ -2032,12 +1898,6 @@ CREATE TRIGGER offsite_clock_passage_embedding_settings_delete AFTER DELETE ON p
 CREATE TRIGGER offsite_clock_passage_search_document_insert AFTER INSERT ON passage_search_document BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_search_document_update AFTER UPDATE ON passage_search_document BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_search_document_delete AFTER DELETE ON passage_search_document BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_pdf_extraction_queue_insert AFTER INSERT ON pdf_extraction_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_pdf_extraction_queue_update AFTER UPDATE ON pdf_extraction_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_pdf_extraction_queue_delete AFTER DELETE ON pdf_extraction_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_pdf_page_extraction_insert AFTER INSERT ON pdf_page_extraction BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_pdf_page_extraction_update AFTER UPDATE ON pdf_page_extraction BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_pdf_page_extraction_delete AFTER DELETE ON pdf_page_extraction BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_shortcut_settings_insert AFTER INSERT ON shortcut_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_shortcut_settings_update AFTER UPDATE ON shortcut_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_shortcut_settings_delete AFTER DELETE ON shortcut_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
@@ -2148,7 +2008,7 @@ CREATE TRIGGER source_prevent_delete BEFORE DELETE ON source BEGIN SELECT RAISE(
 CREATE TRIGGER passage_prevent_delete BEFORE DELETE ON passage BEGIN SELECT RAISE(ABORT, 'passages are retained'); END;
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('PASSAGE_FTS', 'lexical-v4', 'IDLE', NULL, 0, NULL);
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('PASSAGE_EMBEDDING', 'jina_v1', 'DIRTY', NULL, 0, NULL);
-INSERT INTO attachment_extractor_config(extractor, version, passage_construction_version, updated_at) VALUES('ocr', '1', 'ocr-region-v1', 0), ('pdf-text', '1', 'pdf-page-v1', 0), ('text', '1', 'text-lines-v1', 0);
+INSERT INTO attachment_extractor_config(extractor, version, passage_construction_version, updated_at) VALUES('ocr', '1', 'ocr-region-v1', 0), ('text', '1', 'text-lines-v1', 0);
 INSERT INTO passage_embedding_settings(singleton_id, active_embedding_index_id, updated_at) VALUES(1, NULL, 0);
 INSERT INTO shortcut_settings(singleton_id, revision, automatic_update_checks_enabled) VALUES(1, 1, 1);
 INSERT INTO keyboard_binding(command, accelerator) VALUES('MAIN_WINDOW', 'control+alt+super+KeyO'), ('QUICK_ADD', 'control+alt+super+KeyK');

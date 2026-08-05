@@ -19,7 +19,6 @@ import type {
   MaintenanceOutcome,
   PassageEmbeddingIndexStatus,
   PdfRecord,
-  PdfStatusRecord,
   RuntimeProbe,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
@@ -439,13 +438,6 @@ export class FakeBackend implements Backend {
           ready: 0,
           failed: 0,
         },
-        pdfExtraction: {
-          pending: 0,
-          running: 0,
-          retryWait: 0,
-          ready: 0,
-          failed: 0,
-        },
         indexes: [
           { name: "PASSAGE_FTS", version: "lexical-v4", status: "IDLE", error: null },
           {
@@ -525,7 +517,7 @@ export class FakeBackend implements Backend {
     return this.maintenanceOutcome(
       "RETRY_EXTRACTIONS",
       0,
-      "No current failed OCR or PDF extractions needed a retry.",
+      "No current failed OCR extractions needed a retry.",
     );
   }
 
@@ -626,14 +618,6 @@ export class FakeBackend implements Backend {
   async setFileDropConsumerActive(_active: boolean): Promise<void> {}
 
   async discardFileDropSelections(_selectionIds: string[]): Promise<void> {}
-
-  async pdfStatus(attachmentId: string): Promise<PdfStatusRecord> {
-    throw new Error(`PDF ${attachmentId} was not found`);
-  }
-
-  async retryPdfExtraction(attachmentId: string): Promise<PdfStatusRecord> {
-    throw new Error(`PDF ${attachmentId} was not found`);
-  }
 
   async openPdfExternal(_attachmentId: string): Promise<void> {
     throw new Error("Opening PDFs externally is unavailable in the browser fixture");
