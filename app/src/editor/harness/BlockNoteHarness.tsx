@@ -195,7 +195,6 @@ function createHarnessMediaHarness(): HarnessMediaHarness {
         unavailablePageCount: 0,
       };
     },
-    pickReplacement: async () => records[0]!,
     revealAttachmentInFinder: async () => undefined,
     retryImageOcr: async (attachmentId) => {
       phases.image = "PENDING";

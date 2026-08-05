@@ -30,7 +30,6 @@ export interface KoshMediaActions {
   onError?: (error: unknown) => void;
   openAttachmentExternal?: (attachmentId: string) => Promise<void>;
   openPdfExternal?: (attachmentId: string) => Promise<void>;
-  pickReplacement?: () => Promise<SelectedAttachmentRecord | null>;
   pdfStatus?: (attachmentId: string) => Promise<PdfStatusRecord>;
   revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
@@ -459,7 +458,6 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
   const disabled = useKoshEditorDisabled();
   const locked = disabled || !editor.isEditable;
   const [status, setStatus] = useState<GenericAttachmentStatusRecord | null>(null);
-  const [replacing, setReplacing] = useState(false);
   const attachmentId = block.props.attachmentId;
   useEffect(() => {
     if (!actions.attachmentStatus || !attachmentId) return;
@@ -495,22 +493,6 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
   }, [block, disabled, editor, status?.displayFilename]);
 
   const filename = status?.displayFilename ?? block.props.displayFilename;
-  const replace = actions.pickReplacement
-    ? async () => {
-        if (replacing || locked) return;
-        setReplacing(true);
-        try {
-          const replacement = await actions.pickReplacement!();
-          if (replacement) {
-            editor.replaceBlocks([block], [selectedAttachmentToMediaBlock(replacement) as never]);
-          }
-        } catch (error) {
-          actions.onError?.(error);
-        } finally {
-          setReplacing(false);
-        }
-      }
-    : undefined;
   return (
     <section className="kosh-blocknote-file" contentEditable={false} data-kosh-file="true">
       <span aria-hidden className="kosh-blocknote-file__icon">
@@ -536,13 +518,11 @@ function KoshFileBlock({ block, editor }: FileRenderProps) {
             : undefined
         }
         onRemove={() => editor.removeBlocks([block])}
-        onReplace={replace}
         onReveal={
           actions.revealAttachmentInFinder
             ? () => actions.revealAttachmentInFinder!(attachmentId)
             : undefined
         }
-        replacing={replacing}
       />
       <label className="kosh-blocknote-file__caption">
         <span>Caption</span>
@@ -565,18 +545,14 @@ function MediaButtons({
   editor,
   onOpen,
   onRemove,
-  onReplace,
   onRetry,
   onReveal,
-  replacing = false,
 }: {
   editor: { readonly isEditable: boolean };
   onOpen?: () => Promise<void>;
   onRemove: () => void;
-  onReplace?: () => Promise<void>;
   onRetry?: () => Promise<unknown>;
   onReveal?: () => Promise<void>;
-  replacing?: boolean;
 }) {
   const actions = useContext(KoshMediaActionsContext);
   const locked = useKoshEditorDisabled() || !editor.isEditable;
@@ -597,11 +573,6 @@ function MediaButtons({
       {onRetry && (
         <button disabled={locked} onClick={() => invoke(onRetry)} type="button">
           Retry extraction
-        </button>
-      )}
-      {onReplace && (
-        <button disabled={locked || replacing} onClick={() => invoke(onReplace)} type="button">
-          Replace
         </button>
       )}
       <button disabled={locked} onClick={onRemove} type="button">

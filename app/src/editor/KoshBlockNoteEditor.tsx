@@ -205,9 +205,6 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
         pdfStatus: capabilities.pdfStatus
           ? (attachmentId) => propertiesRef.current.pdfStatus!(attachmentId)
           : undefined,
-        pickReplacement: capabilities.pickAttachment
-          ? () => mediaController.track(() => propertiesRef.current.pickAttachment!())
-          : undefined,
         revealAttachmentInFinder: capabilities.revealAttachmentInFinder
           ? (attachmentId) => propertiesRef.current.revealAttachmentInFinder!(attachmentId)
           : undefined,

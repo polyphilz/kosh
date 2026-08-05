@@ -13,6 +13,7 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
   await expect(image).toBeVisible();
   await expect(page.locator("[data-kosh-pdf='true']")).toContainText("chapter.pdf");
   await expect(page.locator("[data-kosh-file='true']")).toContainText("appendix.txt");
+  await expect(page.getByRole("button", { name: "Replace" })).toHaveCount(0);
   await page.locator("[data-kosh-pdf='true']").getByRole("button", { name: "Open" }).click();
   await page.locator("[data-kosh-file='true']").getByRole("button", { name: "Reveal" }).click();
 
@@ -59,14 +60,6 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
   await page.locator(".bn-inline-content").last().click();
   await page.keyboard.press("ControlOrMeta+z");
   await expect(page.locator("[data-kosh-pdf='true']")).toHaveCount(1);
-
-  const file = page.locator("[data-kosh-file='true']");
-  await file.getByRole("button", { name: "Replace" }).click();
-  await expect(file).toHaveCount(0);
-  await expect(page.locator("[data-kosh-image='true']")).toHaveCount(2);
-  await page.locator(".bn-inline-content").last().click();
-  await page.keyboard.press("ControlOrMeta+z");
-  await expect(page.locator("[data-kosh-file='true']")).toHaveCount(1);
 
   const markdown = await editorMarkdown(page);
   expect(markdown).toContain(
