@@ -29,6 +29,9 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
     let original = client
         .create_tidbit_with_ids(
             TidbitDraft {
+                document_json: super::document::single_paragraph(
+                    "Original exact citation evidence.",
+                ),
                 body_markdown: "Original exact citation evidence.".into(),
                 sources: Vec::new(),
             },

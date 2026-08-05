@@ -45,6 +45,7 @@ import type {
   RestoreCheckpointInput,
 } from "./contracts";
 import { DEFAULT_KEYBOARD_BINDINGS } from "./contracts";
+import { createKoshDocumentFromMarkdown } from "../editor/document";
 import { hasMeaningfulAuthoredContent } from "../notes/content";
 
 interface FakeCitationSnapshot {
@@ -53,6 +54,7 @@ interface FakeCitationSnapshot {
 
 export interface FakeNoteInput {
   bodyMarkdown: string;
+  documentJson?: string;
   sources: SourceDraft[];
 }
 
@@ -141,8 +143,12 @@ export class FakeBackend implements Backend {
   constructor(probe: RuntimeProbe = browserRuntimeProbe, tidbits: TidbitRecord[] = []) {
     this.probe = probe;
     for (const tidbit of tidbits) {
-      this.tidbits.set(tidbit.id, cloneTidbit(tidbit));
-      this.registerCitation(tidbit);
+      const normalized = {
+        ...tidbit,
+        documentJson: tidbit.documentJson ?? createKoshDocumentFromMarkdown(tidbit.bodyMarkdown),
+      };
+      this.tidbits.set(normalized.id, cloneTidbit(normalized));
+      this.registerCitation(normalized);
       this.sequence = Math.max(
         this.sequence,
         generatedIdSequence(tidbit.id),
@@ -645,6 +651,7 @@ export class FakeBackend implements Backend {
       updatedAtMs: this.probe.nowMs + sequence,
       deletedAtMs: null,
       displayTitle: deriveDisplayTitle(bodyMarkdown),
+      documentJson: input.documentJson ?? createKoshDocumentFromMarkdown(bodyMarkdown),
       bodyMarkdown,
       sources,
     };
@@ -714,6 +721,7 @@ export class FakeBackend implements Backend {
       revisionNumber: current.revisionNumber + 1,
       updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
       displayTitle: deriveDisplayTitle(bodyMarkdown),
+      documentJson: input.documentJson ?? createKoshDocumentFromMarkdown(bodyMarkdown),
       bodyMarkdown,
       sources: this.prepareSources(input.sources),
     };
@@ -899,6 +907,10 @@ export class FakeBackend implements Backend {
     input: SaveWorkingCopyInput,
     allowEmptyEphemeral: boolean,
   ): WorkingCopySaveResult {
+    input = {
+      ...input,
+      documentJson: input.documentJson ?? createKoshDocumentFromMarkdown(input.bodyMarkdown),
+    };
     validateEditGeneration(input.editGeneration, "editGeneration");
     const currentNote = this.tidbits.get(input.noteId);
     if (input.baseRevisionId === null) {
@@ -1022,6 +1034,7 @@ export class FakeBackend implements Backend {
           revisionNumber: current.revisionNumber + 1,
           updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
           displayTitle: deriveDisplayTitle(workingCopy.bodyMarkdown),
+          documentJson: workingCopy.documentJson,
           bodyMarkdown: workingCopy.bodyMarkdown,
           sources,
         }
@@ -1033,6 +1046,7 @@ export class FakeBackend implements Backend {
           updatedAtMs: this.probe.nowMs + sequence,
           deletedAtMs: null,
           displayTitle: deriveDisplayTitle(workingCopy.bodyMarkdown),
+          documentJson: workingCopy.documentJson,
           bodyMarkdown: workingCopy.bodyMarkdown,
           sources,
         };
@@ -1204,6 +1218,7 @@ function cloneWorkingCopy(workingCopy: WorkingCopyRecord): WorkingCopyRecord {
 function sameWorkingCopy(workingCopy: WorkingCopyRecord, input: SaveWorkingCopyInput): boolean {
   return (
     workingCopy.baseRevisionId === input.baseRevisionId &&
+    workingCopy.documentJson === input.documentJson &&
     workingCopy.bodyMarkdown === input.bodyMarkdown &&
     JSON.stringify(workingCopy.sources) === JSON.stringify(input.sources)
   );

@@ -47,6 +47,56 @@ test("cold launch opens an untouched ephemeral note and checkpoints the first ed
   );
 });
 
+test("autosave and reopen preserve canonical BlockNote block IDs", async ({ page }) => {
+  await page.goto("/#/");
+  const editor = page.getByRole("textbox", { name: "Note" });
+
+  await editor.fill("First stable block");
+  await editor.press("Enter");
+  await editor.type("Second stable block");
+  await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
+
+  const blocks = editor.locator(":scope > .bn-block-group > .bn-block-outer");
+  await expect(blocks).toHaveCount(2);
+  const idsBeforeReopen = await blocks.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-id")),
+  );
+  expect(idsBeforeReopen).toEqual([expect.any(String), expect.any(String)]);
+  expect(new Set(idsBeforeReopen).size).toBe(2);
+
+  const noteId = new URL(page.url()).hash.split("/").at(-1);
+  if (!noteId) throw new Error("the durable note route has no note id");
+  await expect
+    .poll(async () =>
+      page.evaluate(async (id) => {
+        const backend = window.__KOSH_FAKE_BACKEND__;
+        if (!backend) throw new Error("fake backend is unavailable");
+        return (await backend.loadTidbit(id)).documentJson;
+      }, noteId),
+    )
+    .toContain(idsBeforeReopen[0]);
+  const savedDocument = await page.evaluate(async (id) => {
+    const backend = window.__KOSH_FAKE_BACKEND__;
+    if (!backend) throw new Error("fake backend is unavailable");
+    return (await backend.loadTidbit(id)).documentJson;
+  }, noteId);
+  expect(savedDocument).toContain(idsBeforeReopen[1]);
+
+  await page.evaluate(() => {
+    window.location.hash = "/settings";
+  });
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.evaluate((id) => {
+    window.location.hash = `/notes/${id}`;
+  }, noteId);
+  await expect(editor).toContainText("Second stable block");
+
+  const idsAfterReopen = await blocks.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-id")),
+  );
+  expect(idsAfterReopen).toEqual(idsBeforeReopen);
+});
+
 test("deleting the first edit before checkpoint keeps the note ephemeral and empty", async ({
   page,
 }) => {

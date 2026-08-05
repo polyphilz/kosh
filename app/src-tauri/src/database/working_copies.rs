@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Serialize};
 
 use super::{
-    media, passages,
+    document, media, passages,
     tidbits::{self, PreparedRevision},
     DatabaseError, Result, SourceDraft, Tidbit,
 };
@@ -14,6 +14,7 @@ pub struct SaveWorkingCopyInput {
     pub note_id: String,
     pub base_revision_id: Option<String>,
     pub edit_generation: i64,
+    pub document_json: String,
     pub body_markdown: String,
     #[serde(default)]
     pub sources: Vec<SourceDraft>,
@@ -43,6 +44,7 @@ pub struct WorkingCopy {
     pub media_reservation: bool,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    pub document_json: String,
     pub body_markdown: String,
     pub sources: Vec<SourceDraft>,
 }
@@ -167,12 +169,14 @@ pub(super) fn save(
         transaction.execute(
             "UPDATE draft
              SET updated_at = ?1,
-                 body_markdown = ?2,
-                 edit_generation = ?3,
-                 media_reservation = ?4
-             WHERE id = ?5",
+                 document_json = ?2,
+                 body_markdown = ?3,
+                 edit_generation = ?4,
+                 media_reservation = ?5
+             WHERE id = ?6",
             params![
                 updated_at_ms,
+                &write.input.document_json,
                 &write.input.body_markdown,
                 write.input.edit_generation,
                 write.allow_empty_ephemeral,
@@ -189,14 +193,16 @@ pub(super) fn save(
                 media_reservation,
                 created_at,
                 updated_at,
+                document_json,
                 body_markdown
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6)",
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
             params![
                 &write.input.note_id,
                 &write.input.base_revision_id,
                 write.input.edit_generation,
                 write.allow_empty_ephemeral,
                 write.now_ms,
+                &write.input.document_json,
                 &write.input.body_markdown,
             ],
         )?;
@@ -328,6 +334,7 @@ pub(super) fn checkpoint(
         ));
     }
     let prepared = tidbits::prepare_revision_with_empty(
+        working_copy.document_json.clone(),
         working_copy.body_markdown.clone(),
         working_copy.sources.clone(),
         allow_empty_body,
@@ -484,6 +491,7 @@ fn validate_save_input(input: &SaveWorkingCopyInput) -> Result<()> {
     if let Some(base_revision_id) = input.base_revision_id.as_deref() {
         tidbits::validate_uuid_v7(base_revision_id, "baseRevisionId")?;
     }
+    document::validate(&input.document_json)?;
     Ok(())
 }
 
@@ -552,6 +560,7 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
                 draft.media_reservation,
                 draft.created_at,
                 draft.updated_at,
+                draft.document_json,
                 draft.body_markdown
              FROM draft
              WHERE draft.id = ?1",
@@ -565,7 +574,8 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
                     media_reservation: row.get(4)?,
                     created_at_ms: row.get(5)?,
                     updated_at_ms: row.get(6)?,
-                    body_markdown: row.get(7)?,
+                    document_json: row.get(7)?,
+                    body_markdown: row.get(8)?,
                     sources: Vec::new(),
                 })
             },
@@ -593,6 +603,7 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
 
 fn same_authored_state(existing: &WorkingCopy, input: &SaveWorkingCopyInput) -> bool {
     existing.base_revision_id == input.base_revision_id
+        && existing.document_json == input.document_json
         && existing.body_markdown == input.body_markdown
         && existing.sources == input.sources
 }
@@ -701,6 +712,7 @@ mod tests {
                         note_id: NOTE_ID.into(),
                         base_revision_id,
                         edit_generation: generation,
+                        document_json: super::document::single_paragraph(body),
                         body_markdown: body.into(),
                         sources,
                     },
@@ -856,6 +868,7 @@ mod tests {
                     note_id: NOTE_ID.into(),
                     base_revision_id: None,
                     edit_generation: 1,
+                    document_json: super::document::single_paragraph(""),
                     body_markdown: String::new(),
                     sources: Vec::new(),
                 },
@@ -942,6 +955,7 @@ mod tests {
                     note_id: NOTE_ID.into(),
                     base_revision_id: None,
                     edit_generation: 1,
+                    document_json: super::document::single_paragraph(""),
                     body_markdown: String::new(),
                     sources: Vec::new(),
                 },
@@ -1013,6 +1027,7 @@ mod tests {
                     note_id: NOTE_ID.into(),
                     base_revision_id: None,
                     edit_generation: 2,
+                    document_json: super::document::single_paragraph("different bytes"),
                     body_markdown: "different bytes".into(),
                     sources: Vec::new(),
                 },
@@ -1129,6 +1144,9 @@ mod tests {
                     note_id: NOTE_ID.into(),
                     base_revision_id: None,
                     edit_generation: 7,
+                    document_json: super::document::single_paragraph(
+                        "recoverable saffron observation",
+                    ),
                     body_markdown: "recoverable saffron observation".into(),
                     sources: Vec::new(),
                 },
@@ -1147,6 +1165,8 @@ mod tests {
             .expect("list recovered copies");
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].edit_generation, 7);
+        assert!(recovered[0].document_json.contains("native-fixture-block"));
+        let recovered_document = recovered[0].document_json.clone();
         let before_checkpoint = reopened
             .client()
             .search_passages_with_semantics(
@@ -1172,6 +1192,14 @@ mod tests {
                 source_ids: Vec::new(),
             })
             .expect("checkpoint recovered copy");
+        assert_eq!(
+            reopened
+                .client()
+                .load_tidbit(NOTE_ID.into())
+                .expect("load checkpointed note")
+                .document_json,
+            recovered_document
+        );
         let response = reopened
             .client()
             .search_passages_with_semantics(
@@ -1203,6 +1231,7 @@ mod tests {
             .client()
             .create_tidbit(CreateTidbitWrite {
                 input: TidbitDraft {
+                    document_json: super::document::single_paragraph("existing body"),
                     body_markdown: "existing body".into(),
                     sources: Vec::new(),
                 },
@@ -1220,6 +1249,7 @@ mod tests {
                     note_id: NOTE_ID.into(),
                     base_revision_id: Some(REVISION_ID_2.into()),
                     edit_generation: 1,
+                    document_json: super::document::single_paragraph("unsafe overwrite"),
                     body_markdown: "unsafe overwrite".into(),
                     sources: Vec::new(),
                 },

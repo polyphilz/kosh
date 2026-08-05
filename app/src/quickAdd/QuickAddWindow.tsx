@@ -338,7 +338,11 @@ const QuickAddSession = forwardRef<
         disabled={finishing || mediaPending}
         onDelete={() => undefined}
         onSourcesChange={(sources) =>
-          coordinator.update(coordinator.getSnapshot().bodyMarkdown, sources)
+          coordinator.update(
+            coordinator.getSnapshot().bodyMarkdown,
+            sources,
+            coordinator.getSnapshot().documentJson,
+          )
         }
         sources={snapshot.sources}
       />
@@ -347,7 +351,9 @@ const QuickAddSession = forwardRef<
         attachmentStatus={(attachmentId) => backend.attachmentStatus(attachmentId)}
         disabled={finishing}
         imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
-        onChange={(bodyMarkdown) => coordinator.update(bodyMarkdown)}
+        onChange={(documentJson, bodyMarkdown) =>
+          coordinator.update(bodyMarkdown, undefined, documentJson)
+        }
         onImageError={(reason) =>
           reportMediaError(`Could not add attachment: ${errorMessage(reason)}`)
         }
@@ -392,7 +398,7 @@ const QuickAddSession = forwardRef<
         revealAttachmentInFinder={(attachmentId) => backend.revealAttachmentInFinder(attachmentId)}
         retryImageOcr={(attachmentId) => backend.retryImageOcr(attachmentId)}
         retryPdfExtraction={(attachmentId) => backend.retryPdfExtraction(attachmentId)}
-        value={snapshot.bodyMarkdown}
+        value={snapshot.documentJson}
         variant="page"
       />
       {error && (

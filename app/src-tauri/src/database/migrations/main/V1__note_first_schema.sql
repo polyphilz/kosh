@@ -38,6 +38,14 @@ CREATE TABLE tidbit_revision (
     tidbit_id TEXT NOT NULL,
     revision_number INTEGER NOT NULL CHECK (revision_number > 0),
     created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    document_json TEXT NOT NULL
+        CHECK (
+            json_valid(document_json)
+            AND json_type(document_json) = 'object'
+            AND json_extract(document_json, '$.schemaVersion') = 1
+            AND json_type(document_json, '$.blocks') = 'array'
+            AND json_array_length(document_json, '$.blocks') > 0
+        ),
     body_markdown TEXT NOT NULL,
     content_hash BLOB NOT NULL CHECK (length(content_hash) = 32),
     UNIQUE (tidbit_id, revision_number),
@@ -308,6 +316,14 @@ CREATE TABLE draft (
         CHECK (media_reservation IN (0, 1)),
     created_at INTEGER NOT NULL CHECK (created_at >= 0),
     updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
+    document_json TEXT NOT NULL
+        CHECK (
+            json_valid(document_json)
+            AND json_type(document_json) = 'object'
+            AND json_extract(document_json, '$.schemaVersion') = 1
+            AND json_type(document_json, '$.blocks') = 'array'
+            AND json_array_length(document_json, '$.blocks') > 0
+        ),
     body_markdown TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (id, base_revision_id) REFERENCES tidbit_revision(tidbit_id, id)
         ON UPDATE RESTRICT ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED

@@ -14,6 +14,7 @@ import type {
   TestBackupConnectionInput,
 } from "../../src/backend/contracts";
 import { tauriBackend } from "../../src/backend/tauriBackend";
+import { createKoshDocumentFromMarkdown } from "../../src/editor/document";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -30,6 +31,7 @@ describe("tauriBackend tidbit gateway", () => {
       noteId: "tidbit-1",
       baseRevisionId: null,
       editGeneration: 1,
+      documentJson: createKoshDocumentFromMarkdown("A shower thought"),
       bodyMarkdown: "A shower thought",
       sources: [{ label: "Notebook", url: null }],
     };

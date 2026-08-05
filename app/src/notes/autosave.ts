@@ -8,6 +8,12 @@ import type {
   WorkingCopyRecord,
   WorkingCopySaveResult,
 } from "../backend/contracts";
+import {
+  createDurableKoshDocument,
+  createEmptyKoshDocument,
+  createKoshDocumentFromMarkdown,
+  createKoshDocumentFromPlainText,
+} from "../editor/document";
 
 export const WORKING_COPY_DEBOUNCE_MS = 350;
 export const CHECKPOINT_IDLE_MS = 2_000;
@@ -29,6 +35,7 @@ export interface NoteAutosaveSnapshot {
   editGeneration: number;
   durableGeneration: number;
   checkpointedGeneration: number;
+  documentJson: string;
   bodyMarkdown: string;
   sources: SourceDraft[];
   phase: NoteSavePhase;
@@ -84,7 +91,7 @@ export class NoteAutosaveCoordinator {
       Partial<
         Pick<
           NoteAutosaveSnapshot,
-          "editGeneration" | "durableGeneration" | "checkpointedGeneration"
+          "documentJson" | "editGeneration" | "durableGeneration" | "checkpointedGeneration"
         >
       >,
     options: NoteAutosaveOptions = {},
@@ -106,6 +113,7 @@ export class NoteAutosaveCoordinator {
       editGeneration,
       durableGeneration,
       checkpointedGeneration,
+      documentJson: initial.documentJson ?? createKoshDocumentFromMarkdown(initial.bodyMarkdown),
       bodyMarkdown: initial.bodyMarkdown,
       sources: cloneSources(initial.sources),
       phase: phaseForInitialState(initial.baseRevisionId, editGeneration),
@@ -123,6 +131,7 @@ export class NoteAutosaveCoordinator {
       {
         noteId: options.noteId ?? createUuidV7(),
         baseRevisionId: null,
+        documentJson: createEmptyKoshDocument(),
         bodyMarkdown: "",
         sources: [],
       },
@@ -143,6 +152,7 @@ export class NoteAutosaveCoordinator {
         baseRevisionId: workingCopy.baseRevisionId,
         editGeneration: workingCopy.editGeneration,
         durableGeneration: workingCopy.editGeneration,
+        documentJson: workingCopy.documentJson,
         bodyMarkdown: workingCopy.bodyMarkdown,
         sources: workingCopy.sources,
       },
@@ -161,14 +171,23 @@ export class NoteAutosaveCoordinator {
     return () => this.listeners.delete(listener);
   };
 
-  update(bodyMarkdown: string, sources: SourceDraft[] = this.state.sources): void {
+  update(
+    bodyMarkdown: string,
+    sources: SourceDraft[] = this.state.sources,
+    documentJson = createKoshDocumentFromPlainText(bodyMarkdown),
+  ): void {
     if (this.disposed) throw new Error("the note autosave coordinator is disposed");
-    if (bodyMarkdown === this.state.bodyMarkdown && sourcesEqual(sources, this.state.sources)) {
+    if (
+      documentJson === this.state.documentJson &&
+      bodyMarkdown === this.state.bodyMarkdown &&
+      sourcesEqual(sources, this.state.sources)
+    ) {
       return;
     }
     const editGeneration = nextGeneration(this.state.editGeneration);
     this.publish({
       ...this.state,
+      documentJson,
       bodyMarkdown,
       sources: cloneSources(sources),
       editGeneration,
@@ -217,6 +236,7 @@ export class NoteAutosaveCoordinator {
           noteId: target.noteId,
           baseRevisionId: target.baseRevisionId,
           editGeneration: target.editGeneration,
+          documentJson: target.documentJson,
           bodyMarkdown: target.bodyMarkdown,
           sources: cloneSources(target.sources),
         });
@@ -404,6 +424,7 @@ export class NoteAutosaveCoordinator {
         noteId: target.noteId,
         baseRevisionId: target.baseRevisionId,
         editGeneration: target.editGeneration,
+        documentJson: target.documentJson,
         bodyMarkdown: target.bodyMarkdown,
         sources: cloneSources(target.sources),
       });
@@ -511,6 +532,7 @@ interface AuthoredSnapshot {
   noteId: string;
   baseRevisionId: string | null;
   editGeneration: number;
+  documentJson: string;
   bodyMarkdown: string;
   sources: SourceDraft[];
 }
@@ -520,6 +542,7 @@ function authoredSnapshot(state: NoteAutosaveSnapshot): AuthoredSnapshot {
     noteId: state.noteId,
     baseRevisionId: state.baseRevisionId,
     editGeneration: state.editGeneration,
+    documentJson: createDurableKoshDocument(state.documentJson),
     bodyMarkdown: state.bodyMarkdown,
     sources: cloneSources(state.sources),
   };

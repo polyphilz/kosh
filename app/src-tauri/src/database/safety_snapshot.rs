@@ -765,6 +765,9 @@ mod tests {
         let tidbit = client
             .create_tidbit_with_ids(
                 TidbitDraft {
+                    document_json: crate::database::document::single_paragraph(
+                        "Exact safety snapshot evidence.",
+                    ),
                     body_markdown: "Exact safety snapshot evidence.".into(),
                     sources: vec![SourceDraft {
                         label: Some("Snapshot source".into()),

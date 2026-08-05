@@ -54,6 +54,7 @@ import {
   KoshGutterSelectionExtension,
   setGutterBlockSelection,
 } from "./gutterSelection";
+import { parseKoshDocument, serializeKoshDocument } from "./document";
 import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
@@ -86,7 +87,7 @@ export interface KoshBlockNoteEditorProps {
   attachmentStatus?: (attachmentId: string) => Promise<GenericAttachmentStatusRecord>;
   disabled?: boolean;
   imageStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
-  onChange: (value: string) => void;
+  onChange: (documentJson: string, bodyMarkdown: string) => void;
   onFindStateChange?: () => void;
   onImageError?: (error: unknown) => void;
   onPendingImagesChange?: (pending: boolean) => void;
@@ -144,7 +145,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     }).current;
     const editor = useCreateBlockNote({
       schema: koshBlockNoteSchema,
-      initialContent: markdownToKoshBlocks(initialValue),
+      initialContent: parseKoshDocument(initialValue),
       placeholders: { default: initialPlaceholder },
       tabBehavior: "prefer-indent",
       extensions: [KoshFindInNoteExtension, KoshGutterSelectionExtension, KoshSearchFocusExtension],
@@ -158,6 +159,9 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
         },
       },
     });
+    if (lastEmittedValue.current === initialValue) {
+      lastEmittedValue.current = serializeKoshDocument(editor.document);
+    }
     const mediaController = useMemo(
       () =>
         createBlockNoteMediaController(editor, {
@@ -220,10 +224,10 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       () => restrictedSlashItems(editor, mediaController, propertiesRef, capabilities),
       [capabilities, editor, mediaController],
     );
-    const emitUserChange = useCallback((markdown: string) => {
-      if (markdown === lastEmittedValue.current) return;
-      lastEmittedValue.current = markdown;
-      propertiesRef.current.onChange(markdown);
+    const emitUserChange = useCallback((documentJson: string, bodyMarkdown: string) => {
+      if (documentJson === lastEmittedValue.current) return;
+      lastEmittedValue.current = documentJson;
+      propertiesRef.current.onChange(documentJson, bodyMarkdown);
     }, []);
     const settleLiteralSlash = useCallback(() => {
       const commandWasSelected = slashCommandSelected.current;
@@ -233,7 +237,7 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       if (commandWasSelected) return;
       const markdown = koshBlocksToMarkdown(editor.document);
       if (markdown.trim() !== "/") return;
-      emitUserChange(markdown);
+      emitUserChange(serializeKoshDocument(editor.document), markdown);
     }, [editor, emitUserChange]);
 
     useEffect(() => {
@@ -250,12 +254,12 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     useEffect(() => {
       const nextValue = pendingExternalValue.current;
       if (nextValue === undefined) return;
-      const current = koshBlocksToMarkdown(editor.document);
+      const current = serializeKoshDocument(editor.document);
       if (current !== nextValue) {
         replacingValue.current = true;
         try {
           editor.transact((transaction) => {
-            editor.replaceBlocks(editor.document, markdownToKoshBlocks(nextValue));
+            editor.replaceBlocks(editor.document, parseKoshDocument(nextValue));
             transaction.setMeta("addToHistory", false);
           });
           editor.replaceExtension("history", HistoryExtension());
@@ -321,12 +325,15 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
                   propertiesRef.current.onFindStateChange?.();
                   if (replacingValue.current || pendingExternalValue.current !== undefined) return;
                   const markdown = koshBlocksToMarkdown(editor.document);
-                  if (markdown.trim() === "/" && !propertiesRef.current.value.trim()) {
+                  const previousMarkdown = koshBlocksToMarkdown(
+                    parseKoshDocument(propertiesRef.current.value),
+                  );
+                  if (markdown.trim() === "/" && !previousMarkdown.trim()) {
                     literalSlashPending.current = true;
                     return;
                   }
                   literalSlashPending.current = false;
-                  emitUserChange(markdown);
+                  emitUserChange(serializeKoshDocument(editor.document), markdown);
                 }}
                 slashMenu={false}
                 sideMenu={false}

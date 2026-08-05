@@ -40,6 +40,9 @@ fn mixed_local_workload_survives_contention_integrity_scan_and_restart() {
                 client
                     .create_tidbit_with_ids(
                         TidbitDraft {
+                            document_json: super::document::single_paragraph(&format!(
+                                "Concurrent stress evidence {ordinal:03}.\n\n```text\nworker={capture_thread}\n```"
+                            )),
                             body_markdown: format!(
                                 "Concurrent stress evidence {ordinal:03}.\n\n```text\nworker={capture_thread}\n```"
                             ),
