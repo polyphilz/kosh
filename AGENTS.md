@@ -4,18 +4,17 @@
 
 - Kosh is a macOS-first, local-first Tauri application.
 - Kosh is a titleless, note-first capture tool: cold launch, typing, durable
-  autosave, hybrid search, and exact block navigation are its critical path.
+  autosave, hybrid search, and exact passage navigation are its critical path.
 - Capture and lexical search must remain usable when the embedding model or
   remote backup is unavailable.
-- Search operates on stable, nonempty note blocks. A result must resolve to a
-  current block owned by exactly one note; image blocks include current OCR
-  evidence, while other files contribute only their display filenames.
+- Search results operate on citation-sized passages. A trusted citation must
+  resolve to the exact stored revision or image OCR evidence supplied for that
+  result. Other files contribute only their display filenames to search.
 - Research is a retired product surface. The redesign is a hard cutover with
   no deployed profiles to migrate, so do not retain its schema, rows, runtime
   adapters, fixtures, or migrations for compatibility.
-- Kosh retains only current note state; media blobs remain immutable.
-  Background OCR and embedding work must be content-hash checked before stale
-  results can install.
+- Tidbit revisions and media blobs are immutable. Background OCR and embedding
+  work must be content-hash checked before stale results can install.
 - R2 is single-writer backup/recovery, not multi-device synchronization.
 
 ## Repository workflow
@@ -65,12 +64,12 @@ contract.
 
 ## Code Review Rules
 
-### Search-target integrity
+### Citation integrity
 
-- Flag any path that lets search display or navigate to a block not resolved
-  from Kosh-owned current note data.
-- Missing or stale block IDs must silently fall back to the owning note and
-  must never retarget a different block.
+- Flag any path that lets search or agent output display a citation whose
+  target was not resolved from Kosh-owned passage and provenance data.
+- Historical citations must remain attached to the revision that was actually
+  used; edits must not silently retarget them.
 
 ### Durable background work
 
