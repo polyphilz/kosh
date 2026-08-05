@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    EvaluationLocator, EvaluationOwnerKind, EvaluationPassage, RelevanceError, RetrievalHit,
-    RetrievalRequest, Retriever, RuntimeMetadata, ScaleCorpus, SearchMode,
+    EvaluationBlock, RelevanceError, RetrievalHit, RetrievalRequest, Retriever, RuntimeMetadata,
+    ScaleCorpus, SearchMode,
 };
 
 pub const LEXICAL_PERFORMANCE_SCHEMA_VERSION: u32 = 4;
@@ -37,7 +37,7 @@ pub struct LexicalPerformanceReport {
     pub generator_version: String,
     pub seed: String,
     pub tidbit_count: u32,
-    pub passage_count: u32,
+    pub block_count: u32,
     pub query_count: u32,
     pub result_limit: u32,
     pub indexing_duration_ms: f64,
@@ -57,7 +57,7 @@ impl Retriever for LexicalFixtureRetriever {
     fn retrieve(
         &mut self,
         request: &RetrievalRequest,
-        corpus: &[EvaluationPassage],
+        corpus: &[EvaluationBlock],
         limit: usize,
     ) -> std::result::Result<Vec<RetrievalHit>, String> {
         let mode = match request.search_mode {
@@ -75,12 +75,12 @@ impl Retriever for LexicalFixtureRetriever {
         let documents = candidates
             .into_iter()
             .map(|(index, (word_rank, trigram_rank, short_rank))| {
-                let passage = &corpus[index];
+                let block = &corpus[index];
                 LexicalDocument {
-                    passage_id: passage.id.clone(),
+                    block_id: block.id.clone(),
                     updated_at_ms: 0,
-                    evidence_kind: fixture_evidence_kind(passage),
-                    fields: fixture_fields(passage),
+                    evidence_kind: fixture_evidence_kind(block),
+                    fields: fixture_fields(block),
                     word_rank,
                     trigram_rank,
                     short_rank,
@@ -91,13 +91,12 @@ impl Retriever for LexicalFixtureRetriever {
             rank_lexical_documents(&query, documents, lexical_candidate_limit),
             corpus,
             limit,
-            false,
         )
     }
 }
 
 pub(crate) fn fixture_candidate_ranks(
-    corpus: &[EvaluationPassage],
+    corpus: &[EvaluationBlock],
     query: &crate::database::relevance_search::ParsedLexicalQuery,
     result_limit: usize,
 ) -> std::result::Result<FixtureCandidates, String> {
@@ -121,9 +120,9 @@ pub(crate) fn fixture_candidate_ranks(
              );",
         )
         .map_err(|error| error.to_string())?;
-    for (index, passage) in corpus.iter().enumerate() {
+    for (index, block) in corpus.iter().enumerate() {
         let rowid = i64::try_from(index + 1).map_err(|error| error.to_string())?;
-        let fields = fixture_fields(passage);
+        let fields = fixture_fields(block);
         let values = params![
             rowid,
             normalize_for_search(&fields[&SearchField::HeadingContext]),
@@ -243,115 +242,64 @@ fn install_fixture_ranks(
     Ok(())
 }
 
-pub(crate) fn fixture_fields(passage: &EvaluationPassage) -> BTreeMap<SearchField, String> {
-    let authored = passage.owner_kind == EvaluationOwnerKind::Author;
+pub(crate) fn fixture_fields(block: &EvaluationBlock) -> BTreeMap<SearchField, String> {
     [
         (
             SearchField::HeadingContext,
-            passage.heading_context.join("\n"),
+            block.heading_context.join("\n"),
         ),
-        (
-            SearchField::Body,
-            if authored {
-                passage.content.clone()
-            } else {
-                String::new()
-            },
-        ),
-        (
-            SearchField::SourceLabel,
-            passage
-                .sources
-                .iter()
-                .map(|source| source.label.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        (
-            SearchField::SourceDomain,
-            passage
-                .sources
-                .iter()
-                .map(|source| source.domain.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
+        (SearchField::Body, block.body.clone()),
+        (SearchField::SourceLabel, String::new()),
+        (SearchField::SourceDomain, String::new()),
         (
             SearchField::AttachmentName,
-            passage
-                .attachments
-                .iter()
-                .map(|attachment| attachment.filename.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
+            block.attachment_names.join("\n"),
         ),
-        (
-            SearchField::ExtractedText,
-            if authored {
-                String::new()
-            } else {
-                passage.content.clone()
-            },
-        ),
+        (SearchField::ExtractedText, block.extracted_text.clone()),
     ]
     .into_iter()
     .collect()
 }
 
-pub(crate) fn fixture_evidence_kind(passage: &EvaluationPassage) -> SearchEvidenceKind {
-    match passage.locator {
-        EvaluationLocator::MarkdownBlocks { .. } => SearchEvidenceKind::Author,
-        EvaluationLocator::OcrRegion { .. } => SearchEvidenceKind::Ocr,
+pub(crate) fn fixture_evidence_kind(block: &EvaluationBlock) -> SearchEvidenceKind {
+    match block.block_type.as_str() {
+        "image" => SearchEvidenceKind::Ocr,
+        _ => SearchEvidenceKind::Author,
     }
 }
 
 pub(crate) fn hydrate_fixture_hits(
     ranked: Vec<RankedLexicalDocument>,
-    corpus: &[EvaluationPassage],
+    corpus: &[EvaluationBlock],
     limit: usize,
-    collapse_tidbits: bool,
 ) -> std::result::Result<Vec<RetrievalHit>, String> {
     struct FixtureCandidate<'a> {
         ranked: RankedLexicalDocument,
-        passage: &'a EvaluationPassage,
+        block: &'a EvaluationBlock,
     }
 
-    let passages = corpus
+    let blocks = corpus
         .iter()
-        .map(|passage| (passage.id.as_str(), passage))
+        .map(|block| (block.id.as_str(), block))
         .collect::<BTreeMap<_, _>>();
-    let mut seen_tidbit_locators = BTreeMap::<&str, Vec<&EvaluationLocator>>::new();
     let mut candidates = Vec::with_capacity(ranked.len().min(limit.saturating_mul(4)));
     for ranked in ranked {
-        let passage = passages
-            .get(ranked.passage_id.as_str())
+        let block = blocks
+            .get(ranked.block_id.as_str())
             .copied()
-            .ok_or_else(|| format!("ranked unknown passage {}", ranked.passage_id))?;
-        if collapse_tidbits {
-            if let Some(tidbit_id) = passage.tidbit_id.as_deref() {
-                let locators = seen_tidbit_locators.entry(tidbit_id).or_default();
-                let overlaps = locators
-                    .iter()
-                    .any(|locator| evaluation_locators_overlap(locator, &passage.locator));
-                locators.push(&passage.locator);
-                if overlaps {
-                    continue;
-                }
-            }
-        }
-        candidates.push(FixtureCandidate { ranked, passage });
+            .ok_or_else(|| format!("ranked unknown block {}", ranked.block_id))?;
+        candidates.push(FixtureCandidate { ranked, block });
     }
 
     Ok(
         diversify_ranked(candidates, limit, |candidate| SearchDiversityKey {
-            attachment_id: candidate.passage.evidence_attachment_id.clone(),
+            attachment_id: candidate.block.attachment_names.first().cloned(),
             page: None,
         })
         .into_iter()
         .map(|candidate| RetrievalHit {
-            passage_id: candidate.ranked.passage_id,
+            block_id: candidate.ranked.block_id,
             score: candidate.ranked.score,
-            locator: candidate.passage.locator.clone(),
             matched_fields: candidate
                 .ranked
                 .matched_fields
@@ -361,77 +309,6 @@ pub(crate) fn hydrate_fixture_hits(
         })
         .collect(),
     )
-}
-
-fn evaluation_locators_overlap(left: &EvaluationLocator, right: &EvaluationLocator) -> bool {
-    let (
-        EvaluationLocator::MarkdownBlocks {
-            start_block: left_start_block,
-            end_block: left_end_block,
-            source_start_byte: left_start_byte,
-            source_end_byte: left_end_byte,
-            start_char: left_start_char,
-            end_char: left_end_char,
-            start_line: left_start_line,
-            end_line: left_end_line,
-        },
-        EvaluationLocator::MarkdownBlocks {
-            start_block: right_start_block,
-            end_block: right_end_block,
-            source_start_byte: right_start_byte,
-            source_end_byte: right_end_byte,
-            start_char: right_start_char,
-            end_char: right_end_char,
-            start_line: right_start_line,
-            end_line: right_end_line,
-        },
-    ) = (left, right)
-    else {
-        return false;
-    };
-    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
-        left_start_byte,
-        left_end_byte,
-        right_start_byte,
-        right_end_byte,
-    ) {
-        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
-    }
-    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
-        left_start_char,
-        left_end_char,
-        right_start_char,
-        right_end_char,
-    ) {
-        return half_open_ranges_overlap(*left_start, *left_end, *right_start, *right_end);
-    }
-    if let (Some(left_start), Some(left_end), Some(right_start), Some(right_end)) = (
-        left_start_line,
-        left_end_line,
-        right_start_line,
-        right_end_line,
-    ) {
-        return ranges_overlap(*left_start, *left_end, *right_start, *right_end);
-    }
-    ranges_overlap(
-        *left_start_block,
-        *left_end_block,
-        *right_start_block,
-        *right_end_block,
-    )
-}
-
-fn ranges_overlap<T: Ord>(left_start: T, left_end: T, right_start: T, right_end: T) -> bool {
-    left_start <= right_end && right_start <= left_end
-}
-
-fn half_open_ranges_overlap<T: Ord>(
-    left_start: T,
-    left_end: T,
-    right_start: T,
-    right_end: T,
-) -> bool {
-    left_start < right_end && right_start < left_end
 }
 
 pub fn benchmark_scale_lexical(
@@ -479,7 +356,7 @@ pub fn benchmark_scale_lexical(
                 input,
                 now_ms,
                 tidbit.id.clone(),
-                tidbit.revision_id.clone(),
+                tidbit.content_version_id.clone(),
                 source_ids,
             )
             .map_err(|error| benchmark_error("index production tidbit", error))?;
@@ -490,7 +367,7 @@ pub fn benchmark_scale_lexical(
         .flat_map(|tidbit| {
             tidbit.attachments.iter().map(|attachment| {
                 Ok(LexicalBenchmarkAttachmentWrite {
-                    revision_id: tidbit.revision_id.clone(),
+                    content_version_id: tidbit.content_version_id.clone(),
                     attachment_id: attachment.id.clone(),
                     created_at_ms: i64::try_from(tidbit.created_at_ms)
                         .map_err(|error| benchmark_error("convert attachment timestamp", error))?,
@@ -506,7 +383,7 @@ pub fn benchmark_scale_lexical(
         .install_lexical_benchmark_attachments(attachment_writes)
         .map_err(|error| benchmark_error("index production attachment metadata", error))?;
     let indexing_duration_ms = indexing_started.elapsed().as_secs_f64() * 1_000.0;
-    let passage_count = u32::try_from(
+    let block_count = u32::try_from(
         database
             .open_main_read_only()
             .and_then(|connection| {
@@ -520,9 +397,9 @@ pub fn benchmark_scale_lexical(
                     )
                     .map_err(Into::into)
             })
-            .map_err(|error| benchmark_error("count production passages", error))?,
+            .map_err(|error| benchmark_error("count production blocks", error))?,
     )
-    .map_err(|error| benchmark_error("convert production passage count", error))?;
+    .map_err(|error| benchmark_error("convert production block count", error))?;
 
     const BROAD_QUERIES: [&str; 8] = [
         "retrieval",
@@ -569,7 +446,7 @@ pub fn benchmark_scale_lexical(
         generator_version: corpus.generator_version.clone(),
         seed: corpus.seed.clone(),
         tidbit_count: corpus.stats.tidbit_count,
-        passage_count,
+        block_count,
         query_count: u32::try_from(query_count).expect("validated query count"),
         result_limit: BENCHMARK_RESULT_LIMIT,
         indexing_duration_ms,
@@ -635,7 +512,7 @@ mod tests {
     };
 
     #[test]
-    fn lexical_fixture_baseline_has_trusted_citations_and_core_query_coverage() {
+    fn lexical_fixture_baseline_has_expected_blocks_and_core_query_coverage() {
         let fixture: RelevanceFixture =
             serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
                 .expect("checked-in fixture");
@@ -643,7 +520,7 @@ mod tests {
             .expect("lexical fixture report");
 
         assert_eq!(
-            report.summary.citation_locator_accuracy,
+            report.summary.expected_block_accuracy,
             report.summary.recall_at_10
         );
         assert_eq!(report.summary.exact_phrase_success, Some(1.0));
@@ -663,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn lexical_fixture_diversifies_beyond_the_display_limit() {
+    fn lexical_fixture_ranks_authored_text_above_filename_volume() {
         let fixture: RelevanceFixture =
             serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
                 .expect("checked-in fixture");
@@ -678,16 +555,10 @@ mod tests {
             )
             .expect("diverse lexical hits");
 
-        assert_eq!(hits[0].passage_id, "passage-authored-vector-clock");
+        assert_eq!(hits[0].block_id, "block-authored-vector-clock");
         assert!(hits
             .iter()
-            .any(|hit| hit.passage_id == "passage-authored-conference-clock"));
-        assert!(
-            hits.iter()
-                .filter(|hit| hit.passage_id.starts_with("passage-authored-distributed-"))
-                .count()
-                <= 2
-        );
+            .all(|hit| !hit.block_id.starts_with("block-file-")));
     }
 
     #[test]
@@ -701,7 +572,7 @@ mod tests {
 
         assert_eq!(report.tidbit_count, 256);
         assert_eq!(report.source_revision, env!("KOSH_BUILD_GIT_SHA"));
-        assert!(report.passage_count >= report.tidbit_count);
+        assert!(report.block_count >= report.tidbit_count);
         assert_eq!(report.query_count, 20);
         assert!(report.indexing_duration_ms >= 0.0);
         assert!(report.query_p50_ms >= 0.0);

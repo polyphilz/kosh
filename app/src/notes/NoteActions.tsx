@@ -188,7 +188,7 @@ export function NoteActions({
         open={deleteOpen}
         title="Delete this note?"
       >
-        <p className="note-delete-copy">Its revisions and attachments remain recoverable.</p>
+        <p className="note-delete-copy">Its current content and attachments remain recoverable.</p>
         {deleteError && <p className="note-delete-error">{deleteError}</p>}
       </Dialog>
     </div>

@@ -17,20 +17,20 @@ CREATE TABLE tidbit (
     created_at INTEGER NOT NULL CHECK (created_at >= 0),
     updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
     deleted_at INTEGER CHECK (deleted_at IS NULL OR deleted_at >= created_at),
-    current_revision_id TEXT NOT NULL UNIQUE
+    content_version_id TEXT NOT NULL UNIQUE
         CHECK (
-            length(current_revision_id) = 36
-            AND lower(current_revision_id) = current_revision_id
-            AND substr(current_revision_id, 9, 1) = '-'
-            AND substr(current_revision_id, 14, 1) = '-'
-            AND substr(current_revision_id, 15, 1) = '7'
-            AND substr(current_revision_id, 19, 1) = '-'
-            AND substr(current_revision_id, 20, 1) GLOB '[89ab]'
-            AND substr(current_revision_id, 24, 1) = '-'
-            AND length(replace(current_revision_id, '-', '')) = 32
-            AND replace(current_revision_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+            length(content_version_id) = 36
+            AND lower(content_version_id) = content_version_id
+            AND substr(content_version_id, 9, 1) = '-'
+            AND substr(content_version_id, 14, 1) = '-'
+            AND substr(content_version_id, 15, 1) = '7'
+            AND substr(content_version_id, 19, 1) = '-'
+            AND substr(content_version_id, 20, 1) GLOB '[89ab]'
+            AND substr(content_version_id, 24, 1) = '-'
+            AND length(replace(content_version_id, '-', '')) = 32
+            AND replace(content_version_id, '-', '') NOT GLOB '*[^0-9a-f]*'
         ),
-    revision_number INTEGER NOT NULL CHECK (revision_number > 0),
+    version_number INTEGER NOT NULL CHECK (version_number > 0),
     document_json TEXT NOT NULL
         CHECK (
             json_valid(document_json)
@@ -197,7 +197,7 @@ CREATE TABLE draft (
             AND length(replace(id, '-', '')) = 32
             AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*'
         ),
-    base_revision_id TEXT,
+    base_content_version_id TEXT,
     edit_generation INTEGER NOT NULL
         CHECK (edit_generation > 0 AND edit_generation <= 9007199254740991),
     media_reservation INTEGER NOT NULL DEFAULT 0
@@ -213,7 +213,7 @@ CREATE TABLE draft (
             AND json_array_length(document_json, '$.blocks') > 0
         ),
     body_markdown TEXT NOT NULL DEFAULT '',
-    CHECK (base_revision_id IS NULL OR length(base_revision_id) = 36)
+    CHECK (base_content_version_id IS NULL OR length(base_content_version_id) = 36)
 ) STRICT;
 CREATE TABLE draft_media_lease (
     draft_id TEXT NOT NULL,
@@ -337,7 +337,6 @@ END;
 CREATE TRIGGER block_search_document_prevent_update
 BEFORE UPDATE ON block_search_document
 WHEN old.tidbit_id IS NOT new.tidbit_id
-  OR old.tidbit_revision_id IS NOT new.tidbit_revision_id
   OR old.block_id IS NOT new.block_id
   OR old.block_ordinal IS NOT new.block_ordinal
   OR old.block_type IS NOT new.block_type
@@ -522,7 +521,7 @@ BEGIN
                     SELECT group_concat(ordered_evidence.content, char(10))
                     FROM (
                         SELECT segment.content
-                        FROM tidbit_revision_attachment AS membership
+                        FROM tidbit_attachment AS membership
                         JOIN attachment
                           ON attachment.id = membership.attachment_id
                          AND attachment.deleted_at IS NULL
@@ -535,8 +534,7 @@ BEGIN
                          AND config.version = extraction.extractor_version
                         JOIN attachment_segment AS segment
                           ON segment.extraction_id = extraction.id
-                        WHERE membership.tidbit_revision_id =
-                                  block_search_document.tidbit_revision_id
+                        WHERE membership.tidbit_id = block_search_document.tidbit_id
                           AND membership.block_id = block_search_document.block_id
                           AND extraction.extractor = new.extractor
                           AND segment.locator_kind = 'OCR_REGION'
@@ -549,10 +547,10 @@ BEGIN
     )
     WHERE EXISTS (
         SELECT 1
-        FROM tidbit_revision_attachment AS membership
+        FROM tidbit_attachment AS membership
         JOIN attachment_extraction AS extraction
           ON extraction.attachment_id = membership.attachment_id
-        WHERE membership.tidbit_revision_id = block_search_document.tidbit_revision_id
+        WHERE membership.tidbit_id = block_search_document.tidbit_id
           AND membership.block_id = block_search_document.block_id
           AND extraction.extractor = new.extractor
     );

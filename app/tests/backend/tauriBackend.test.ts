@@ -29,7 +29,7 @@ describe("tauriBackend tidbit gateway", () => {
     vi.mocked(invoke).mockResolvedValue({});
     const workingCopy: SaveWorkingCopyInput = {
       noteId: "tidbit-1",
-      baseRevisionId: null,
+      baseContentVersionId: null,
       editGeneration: 1,
       documentJson: createKoshDocumentFromMarkdown("A shower thought"),
       bodyMarkdown: "A shower thought",
@@ -42,7 +42,7 @@ describe("tauriBackend tidbit gateway", () => {
     const discard: DiscardWorkingCopyInput = { ...checkpoint };
     const deletion: DeleteTidbitInput = {
       id: "tidbit-1",
-      expectedRevisionId: "revision-2",
+      expectedContentVersionId: "content-version-2",
     };
     const restoration: RestoreTidbitInput = { ...deletion };
     const search: SearchBlocksInput = {

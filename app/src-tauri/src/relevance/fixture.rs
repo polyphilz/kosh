@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use super::{RelevanceError, Result};
 
-pub const FIXTURE_SCHEMA_VERSION: u32 = 2;
+pub const FIXTURE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -13,78 +13,23 @@ pub struct RelevanceFixture {
     pub schema_version: u32,
     pub fixture_id: String,
     pub description: String,
-    pub corpus: Vec<EvaluationPassage>,
+    pub corpus: Vec<EvaluationBlock>,
     pub queries: Vec<EvaluationQuery>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EvaluationPassage {
+pub struct EvaluationBlock {
     pub id: String,
-    pub owner_kind: EvaluationOwnerKind,
-    pub tidbit_id: Option<String>,
-    pub evidence_attachment_id: Option<String>,
+    pub note_id: String,
+    pub block_type: String,
     #[serde(default)]
     pub heading_context: Vec<String>,
-    pub content: String,
+    pub body: String,
     #[serde(default)]
-    pub sources: Vec<EvaluationSource>,
+    pub attachment_names: Vec<String>,
     #[serde(default)]
-    pub attachments: Vec<EvaluationAttachment>,
-    pub locator: EvaluationLocator,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum EvaluationOwnerKind {
-    Author,
-    Attachment,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EvaluationSource {
-    pub label: String,
-    pub domain: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EvaluationAttachment {
-    pub filename: String,
-    pub media_type: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "SCREAMING_SNAKE_CASE",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum EvaluationLocator {
-    MarkdownBlocks {
-        start_block: u32,
-        end_block: u32,
-        source_start_byte: Option<u64>,
-        source_end_byte: Option<u64>,
-        start_char: Option<u32>,
-        end_char: Option<u32>,
-        start_line: Option<u32>,
-        end_line: Option<u32>,
-    },
-    OcrRegion {
-        region: EvaluationRegion,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EvaluationRegion {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
+    pub extracted_text: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -92,15 +37,15 @@ pub struct EvaluationRegion {
 pub enum QueryCategory {
     CodeIdentifier,
     Exact,
-    FileName,
     Formula,
     Misspelling,
     NearDuplicate,
     Ocr,
-    MediaVolume,
+    AttachmentFilename,
+    Ranking,
     Phrase,
     Prose,
-    SourceDomain,
+    Link,
     Synonym,
     Unicode,
 }
@@ -131,21 +76,14 @@ pub struct EvaluationQuery {
     pub relevance: Vec<RelevanceJudgment>,
     #[serde(default)]
     pub must_not_rank: Vec<String>,
-    pub expected_citation: ExpectedCitation,
+    pub expected_block_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RelevanceJudgment {
-    pub passage_id: String,
+    pub block_id: String,
     pub grade: u8,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExpectedCitation {
-    pub passage_id: String,
-    pub locator: EvaluationLocator,
 }
 
 impl RelevanceFixture {
@@ -165,66 +103,28 @@ impl RelevanceFixture {
             return invalid("queries must not be empty");
         }
 
-        let mut passage_ids = HashSet::with_capacity(self.corpus.len());
-        let mut passages = HashMap::with_capacity(self.corpus.len());
-        for passage in &self.corpus {
-            require_nonempty("passage.id", &passage.id)?;
-            require_nonempty("passage.content", &passage.content)?;
-            if !passage_ids.insert(passage.id.as_str()) {
-                return invalid(format!("duplicate passage id {}", passage.id));
+        let mut block_ids = HashSet::with_capacity(self.corpus.len());
+        let mut blocks = HashMap::with_capacity(self.corpus.len());
+        for block in &self.corpus {
+            require_nonempty("block.id", &block.id)?;
+            require_nonempty("block.noteId", &block.note_id)?;
+            require_nonempty("block.blockType", &block.block_type)?;
+            if block.body.trim().is_empty()
+                && block
+                    .attachment_names
+                    .iter()
+                    .all(|name| name.trim().is_empty())
+                && block.extracted_text.trim().is_empty()
+            {
+                return invalid(format!("block {} has no searchable content", block.id));
             }
-            passage.locator.validate(&passage.id)?;
-            match passage.owner_kind {
-                EvaluationOwnerKind::Author => {
-                    let Some(tidbit_id) = passage.tidbit_id.as_deref() else {
-                        return invalid(format!(
-                            "authored passage {} must name a tidbitId",
-                            passage.id
-                        ));
-                    };
-                    require_nonempty("passage.tidbitId", tidbit_id)?;
-                    if passage.evidence_attachment_id.is_some()
-                        || !matches!(passage.locator, EvaluationLocator::MarkdownBlocks { .. })
-                    {
-                        return invalid(format!(
-                            "authored passage {} has attachment provenance",
-                            passage.id
-                        ));
-                    }
-                }
-                EvaluationOwnerKind::Attachment => {
-                    if passage.tidbit_id.is_some()
-                        || matches!(passage.locator, EvaluationLocator::MarkdownBlocks { .. })
-                    {
-                        return invalid(format!(
-                            "attachment passage {} has authored provenance",
-                            passage.id
-                        ));
-                    }
-                    let Some(attachment_id) = passage.evidence_attachment_id.as_deref() else {
-                        return invalid(format!(
-                            "attachment passage {} must name an evidenceAttachmentId",
-                            passage.id
-                        ));
-                    };
-                    require_nonempty("passage.evidenceAttachmentId", attachment_id)?;
-                    if passage.attachments.len() != 1 {
-                        return invalid(format!(
-                            "attachment passage {} must describe exactly one attachment",
-                            passage.id
-                        ));
-                    }
-                }
+            if !block_ids.insert(block.id.as_str()) {
+                return invalid(format!("duplicate block id {}", block.id));
             }
-            for source in &passage.sources {
-                require_nonempty("source.label", &source.label)?;
-                require_nonempty("source.domain", &source.domain)?;
+            for filename in &block.attachment_names {
+                require_nonempty("block.attachmentNames", filename)?;
             }
-            for attachment in &passage.attachments {
-                require_nonempty("attachment.filename", &attachment.filename)?;
-                require_nonempty("attachment.mediaType", &attachment.media_type)?;
-            }
-            passages.insert(passage.id.as_str(), passage);
+            blocks.insert(block.id.as_str(), block);
         }
 
         let mut query_ids = HashSet::with_capacity(self.queries.len());
@@ -239,10 +139,10 @@ impl RelevanceFixture {
             }
             let mut judged = BTreeSet::new();
             for judgment in &query.relevance {
-                if !passages.contains_key(judgment.passage_id.as_str()) {
+                if !blocks.contains_key(judgment.block_id.as_str()) {
                     return invalid(format!(
-                        "query {} references unknown passage {}",
-                        query.id, judgment.passage_id
+                        "query {} references unknown block {}",
+                        query.id, judgment.block_id
                     ));
                 }
                 if !(1..=3).contains(&judgment.grade) {
@@ -251,48 +151,36 @@ impl RelevanceFixture {
                         query.id, judgment.grade
                     ));
                 }
-                if !judged.insert(judgment.passage_id.as_str()) {
+                if !judged.insert(judgment.block_id.as_str()) {
                     return invalid(format!(
-                        "query {} judges passage {} more than once",
-                        query.id, judgment.passage_id
+                        "query {} judges block {} more than once",
+                        query.id, judgment.block_id
                     ));
                 }
             }
             let mut forbidden = BTreeSet::new();
-            for passage_id in &query.must_not_rank {
-                if !passages.contains_key(passage_id.as_str()) {
+            for block_id in &query.must_not_rank {
+                if !blocks.contains_key(block_id.as_str()) {
                     return invalid(format!(
-                        "query {} forbids unknown passage {}",
-                        query.id, passage_id
+                        "query {} forbids unknown block {}",
+                        query.id, block_id
                     ));
                 }
-                if judged.contains(passage_id.as_str()) {
+                if judged.contains(block_id.as_str()) {
                     return invalid(format!(
-                        "query {} both judges and forbids passage {}",
-                        query.id, passage_id
+                        "query {} both judges and forbids block {}",
+                        query.id, block_id
                     ));
                 }
-                if !forbidden.insert(passage_id.as_str()) {
+                if !forbidden.insert(block_id.as_str()) {
                     return invalid(format!(
-                        "query {} forbids passage {} more than once",
-                        query.id, passage_id
+                        "query {} forbids block {} more than once",
+                        query.id, block_id
                     ));
                 }
             }
-            if !judged.contains(query.expected_citation.passage_id.as_str()) {
-                return invalid(format!(
-                    "query {} expects a citation to an unjudged passage",
-                    query.id
-                ));
-            }
-            let expected = passages
-                .get(query.expected_citation.passage_id.as_str())
-                .expect("expected citation passage validated above");
-            if expected.locator != query.expected_citation.locator {
-                return invalid(format!(
-                    "query {} expected citation locator differs from corpus provenance",
-                    query.id
-                ));
+            if !judged.contains(query.expected_block_id.as_str()) {
+                return invalid(format!("query {} expects an unjudged block", query.id));
             }
         }
         Ok(())
@@ -306,76 +194,6 @@ impl RelevanceFixture {
         })?;
         let digest = Sha256::digest(canonical);
         Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
-    }
-}
-
-impl EvaluationLocator {
-    fn validate(&self, passage_id: &str) -> Result<()> {
-        match self {
-            Self::MarkdownBlocks {
-                start_block,
-                end_block,
-                source_start_byte,
-                source_end_byte,
-                start_char,
-                end_char,
-                start_line,
-                end_line,
-            } => {
-                if end_block < start_block {
-                    return invalid(format!(
-                        "passage {passage_id} has a reversed Markdown block range"
-                    ));
-                }
-                validate_optional_range(
-                    passage_id,
-                    "source byte",
-                    *source_start_byte,
-                    *source_end_byte,
-                    false,
-                )?;
-                validate_optional_range(
-                    passage_id,
-                    "character",
-                    start_char.map(u64::from),
-                    end_char.map(u64::from),
-                    false,
-                )?;
-                validate_optional_range(
-                    passage_id,
-                    "line",
-                    start_line.map(u64::from),
-                    end_line.map(u64::from),
-                    true,
-                )?;
-            }
-            Self::OcrRegion { region } => {
-                if region.width == 0 || region.height == 0 {
-                    return invalid(format!("passage {passage_id} has an empty OCR region"));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-fn validate_optional_range(
-    passage_id: &str,
-    label: &str,
-    start: Option<u64>,
-    end: Option<u64>,
-    one_based: bool,
-) -> Result<()> {
-    match (start, end) {
-        (None, None) => Ok(()),
-        (Some(start), Some(end))
-            if end >= start && (!one_based || start > 0) && (one_based || end > start) =>
-        {
-            Ok(())
-        }
-        _ => invalid(format!(
-            "passage {passage_id} has an invalid optional {label} range"
-        )),
     }
 }
 
@@ -422,13 +240,13 @@ mod tests {
         }));
         for category in [
             QueryCategory::CodeIdentifier,
-            QueryCategory::FileName,
             QueryCategory::Formula,
             QueryCategory::Misspelling,
             QueryCategory::NearDuplicate,
             QueryCategory::Ocr,
-            QueryCategory::MediaVolume,
-            QueryCategory::SourceDomain,
+            QueryCategory::AttachmentFilename,
+            QueryCategory::Ranking,
+            QueryCategory::Link,
             QueryCategory::Synonym,
         ] {
             assert!(
@@ -442,31 +260,29 @@ mod tests {
     }
 
     #[test]
-    fn fixture_rejects_a_citation_locator_that_does_not_match_provenance() {
+    fn fixture_rejects_an_expected_block_that_is_not_relevant() {
         let mut fixture = checked_in_fixture();
-        fixture.queries[0].expected_citation.locator = fixture.corpus[1].locator.clone();
+        fixture.queries[0].expected_block_id = fixture.corpus[1].id.clone();
 
         assert!(fixture
             .validate()
-            .expect_err("mismatched citation must fail")
+            .expect_err("unjudged expected block must fail")
             .to_string()
-            .contains("differs from corpus provenance"));
+            .contains("expects an unjudged block"));
     }
 
     #[test]
-    fn fixture_rejects_owner_and_locator_provenance_mismatches() {
+    fn fixture_rejects_a_block_without_searchable_content() {
         let mut fixture = checked_in_fixture();
-        let attachment = fixture
-            .corpus
-            .iter_mut()
-            .find(|passage| passage.evidence_attachment_id.is_some())
-            .expect("attachment evidence");
-        attachment.tidbit_id = Some("fabricated-owner".into());
+        let block = &mut fixture.corpus[0];
+        block.body.clear();
+        block.attachment_names.clear();
+        block.extracted_text.clear();
 
         assert!(fixture
             .validate()
-            .expect_err("attachment evidence cannot masquerade as authored")
+            .expect_err("empty block must fail")
             .to_string()
-            .contains("has authored provenance"));
+            .contains("has no searchable content"));
     }
 }

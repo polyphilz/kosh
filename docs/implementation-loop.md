@@ -33,17 +33,17 @@ debug Tauri binary twice:
 
 1. against a unique empty data root, where it migrates both databases, creates
    a canary tidbit through the production writer, finds it through exact lexical
-   search, and resolves its source-bearing citation;
+   search, and resolves its source-bearing block link;
 2. against that same root, where the canary must already exist and resolve to
-   the identical tidbit revision and passage.
+   the identical note content version and block.
 
 Each launch also starts the exact-head Vite frontend and proves that the main
 and quick-add windows are constructed, both React roots render, both surfaces
 load from the gate-owned pinned IPv4 origin, both complete a distinct Tauri IPC
 probe against the expected data directory, and both independently execute exact
-search and citation resolution over Tauri IPC for the source-bearing canary.
-The receipt rejects a wrong execution mode, stale citation, changed passage or
-revision, missing source URL, or more than one match. Both database files must
+search and block resolution over Tauri IPC for the source-bearing canary.
+The receipt rejects a wrong execution mode, stale block link, changed block or
+content version, missing source URL, or more than one match. Both database files must
 also use WAL and foreign keys with every embedded migration applied. A blank,
 stale, disconnected, or error webview therefore cannot issue a passing
 receipt. The gate-owned profile is disposable and exists only for the duration
@@ -71,7 +71,7 @@ receipt. CI independently launches and restarts a fresh profile on macOS with
 5. a mergeable GitHub state.
 
 The server-side workflow timestamp prevents author-controlled Git timestamps
-or clean evidence from an older revision from authorizing a newer revision. A
+or clean evidence from an older commit from authorizing a newer commit. A
 PR-body reaction is informational only because GitHub does not bind it to a
 request or commit.
 `scripts/loop/merge.sh` runs the gate, binds the merge atomically to that head

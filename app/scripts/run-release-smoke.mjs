@@ -187,18 +187,12 @@ function verifyReceipt(receipt, expectation, captureExpected) {
       `${webview.surface} capture evidence`,
     );
     assertEqual(webview.canary.executionMode, "EXACT", `${webview.surface} search mode`);
-    assertEqual(webview.canary.citationState, "CURRENT", `${webview.surface} citation state`);
     assertEqual(webview.canary.resultCount, 1, `${webview.surface} canary result count`);
-    assertEqual(webview.canary.passageId, receipt.canary.passageId, `${webview.surface} passage`);
+    assertEqual(webview.canary.blockId, receipt.canary.blockId, `${webview.surface} block`);
     assertEqual(
-      webview.canary.resolvedPassageId,
-      receipt.canary.passageId,
-      `${webview.surface} resolved passage`,
-    );
-    assertEqual(
-      webview.canary.revisionId,
-      receipt.canary.revisionId,
-      `${webview.surface} revision`,
+      webview.canary.contentVersionId,
+      receipt.canary.contentVersionId,
+      `${webview.surface} content version`,
     );
     assertEqual(
       webview.canary.sourceUrl,

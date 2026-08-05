@@ -17,7 +17,7 @@ interface StartupCanaryEvidence {
   blockId: string;
   executionMode: "EXACT" | "HYBRID" | "LEXICAL_ONLY";
   noteId: string;
-  revisionId: string;
+  contentVersionId: string;
   resultCount: number;
   sourceUrl: string;
 }
@@ -97,14 +97,14 @@ async function proveCurrentBlockSearch(
     const result = matches[0]!;
     const note = await backend.loadTidbit(result.noteId);
     const sourceUrl = note.sources.find((source) => source.url !== null)?.url;
-    if (!sourceUrl || note.currentRevisionId.length === 0) {
+    if (!sourceUrl || note.contentVersionId.length === 0) {
       throw new Error("startup canary block lost its current note or source URL");
     }
     return {
       blockId: result.blockId,
       executionMode: response.executionMode,
       noteId: result.noteId,
-      revisionId: note.currentRevisionId,
+      contentVersionId: note.contentVersionId,
       resultCount: response.results.length,
       sourceUrl,
     };

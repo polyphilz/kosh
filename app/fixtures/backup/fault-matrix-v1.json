@@ -339,7 +339,7 @@
       "invariants": ["authored-bytes", "bounded-cleanup", "secret-isolation"]
     },
     {
-      "id": "reopen-search-and-citation-rebuild",
+      "id": "reopen-block-search-rebuild",
       "phase": "reopen",
       "failureClass": "stale-state",
       "test": "database::maintenance_tests::diagnostics_and_rebuilds_preserve_current_note_search",
@@ -372,7 +372,7 @@
       ]
     },
     {
-      "id": "reopen-historical-note-citation",
+      "id": "reopen-current-block-search",
       "phase": "reopen",
       "failureClass": "stale-state",
       "test": "backup::canary::canary_fixture_exposes_current_block_search_evidence",

@@ -16,16 +16,20 @@ import {
 import { createKoshDocumentFromMarkdown } from "../../src/editor/document";
 
 const NOTE_ID = "019f547b-6200-7000-8000-000000008001";
-const REVISION_1 = "019f547b-6200-7000-8000-000000008002";
-const REVISION_2 = "019f547b-6200-7000-8000-000000008003";
+const CONTENT_VERSION_1 = "019f547b-6200-7000-8000-000000008002";
+const CONTENT_VERSION_2 = "019f547b-6200-7000-8000-000000008003";
 
-function note(revisionId = REVISION_1, revisionNumber = 1, bodyMarkdown = "alpha"): TidbitRecord {
+function note(
+  contentVersionId = CONTENT_VERSION_1,
+  versionNumber = 1,
+  bodyMarkdown = "alpha",
+): TidbitRecord {
   return {
     id: NOTE_ID,
-    currentRevisionId: revisionId,
-    revisionNumber,
+    contentVersionId,
+    versionNumber,
     createdAtMs: 1,
-    updatedAtMs: revisionNumber,
+    updatedAtMs: versionNumber,
     deletedAtMs: null,
     displayTitle: bodyMarkdown || "Untitled note",
     documentJson: createKoshDocumentFromMarkdown(bodyMarkdown),
@@ -37,25 +41,25 @@ function note(revisionId = REVISION_1, revisionNumber = 1, bodyMarkdown = "alpha
 function saved(
   generation: number,
   bodyMarkdown: string,
-  baseRevisionId: string | null = null,
+  baseContentVersionId: string | null = null,
 ): WorkingCopySaveResult {
   return {
     status: "SAVED",
     acceptedEditGeneration: generation,
-    workingCopy: workingCopy(generation, bodyMarkdown, baseRevisionId),
+    workingCopy: workingCopy(generation, bodyMarkdown, baseContentVersionId),
   };
 }
 
 function workingCopy(
   generation: number,
   bodyMarkdown: string,
-  baseRevisionId: string | null = null,
+  baseContentVersionId: string | null = null,
   mediaReservation = false,
 ): WorkingCopyRecord {
   return {
     id: `draft-${generation}`,
     noteId: NOTE_ID,
-    baseRevisionId,
+    baseContentVersionId,
     editGeneration: generation,
     mediaReservation,
     documentJson: createKoshDocumentFromMarkdown(bodyMarkdown),
@@ -88,10 +92,10 @@ function gateway(): {
 } {
   return {
     saveWorkingCopy: vi.fn(async (input) =>
-      saved(input.editGeneration, input.bodyMarkdown, input.baseRevisionId),
+      saved(input.editGeneration, input.bodyMarkdown, input.baseContentVersionId),
     ),
     reserveWorkingCopyForMedia: vi.fn(async (input) =>
-      saved(input.editGeneration, input.bodyMarkdown, input.baseRevisionId),
+      saved(input.editGeneration, input.bodyMarkdown, input.baseContentVersionId),
     ),
     discardWorkingCopy: vi.fn(async () => true),
     checkpointWorkingCopy: vi.fn(async (input) => checkpointed(input.expectedEditGeneration)),
@@ -154,7 +158,7 @@ describe("note autosave coordinator", () => {
     expect(backend.saveWorkingCopy).toHaveBeenCalledWith(
       expect.objectContaining({
         noteId: NOTE_ID,
-        baseRevisionId: null,
+        baseContentVersionId: null,
         editGeneration: 2,
         bodyMarkdown: "alphabet",
         sources: [],
@@ -223,7 +227,7 @@ describe("note autosave coordinator", () => {
     });
   });
 
-  it("turns an idle durable copy into one titleless revision", async () => {
+  it("turns an idle durable copy into one titleless note state", async () => {
     const backend = gateway();
     const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
 
@@ -236,7 +240,7 @@ describe("note autosave coordinator", () => {
       expectedEditGeneration: 1,
     });
     expect(coordinator.getSnapshot()).toMatchObject({
-      baseRevisionId: REVISION_1,
+      baseContentVersionId: CONTENT_VERSION_1,
       phase: "CLEAN",
       checkpointedGeneration: 1,
     });
@@ -250,7 +254,7 @@ describe("note autosave coordinator", () => {
       coordinator.update(`before ${reason}`);
 
       await expect(coordinator.flush(reason)).resolves.toMatchObject({
-        currentRevisionId: REVISION_1,
+        contentVersionId: CONTENT_VERSION_1,
       });
 
       expect(backend.saveWorkingCopy).toHaveBeenCalledOnce();
@@ -276,7 +280,7 @@ describe("note autosave coordinator", () => {
     const firstCheckpoint = deferred<WorkingCopyCheckpointResult>();
     backend.checkpointWorkingCopy
       .mockImplementationOnce(() => firstCheckpoint.promise)
-      .mockResolvedValueOnce(checkpointed(2, note(REVISION_2, 2, "alpha beta")));
+      .mockResolvedValueOnce(checkpointed(2, note(CONTENT_VERSION_2, 2, "alpha beta")));
     const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: NOTE_ID });
     coordinator.update("alpha");
 
@@ -286,12 +290,12 @@ describe("note autosave coordinator", () => {
     expect(coordinator.getSnapshot().phase).toBe("DIRTY");
     firstCheckpoint.resolve(checkpointed(1));
 
-    await expect(flush).resolves.toMatchObject({ currentRevisionId: REVISION_2 });
+    await expect(flush).resolves.toMatchObject({ contentVersionId: CONTENT_VERSION_2 });
     expect(backend.saveWorkingCopy).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         noteId: NOTE_ID,
-        baseRevisionId: REVISION_1,
+        baseContentVersionId: CONTENT_VERSION_1,
         editGeneration: 2,
         bodyMarkdown: "alpha beta",
         sources: [],
@@ -302,7 +306,7 @@ describe("note autosave coordinator", () => {
       expectedEditGeneration: 2,
     });
     expect(coordinator.getSnapshot()).toMatchObject({
-      baseRevisionId: REVISION_2,
+      baseContentVersionId: CONTENT_VERSION_2,
       checkpointedGeneration: 2,
       phase: "CLEAN",
     });
@@ -317,7 +321,9 @@ describe("note autosave coordinator", () => {
     await expect(coordinator.persistWorkingCopy()).rejects.toThrow("disk full");
     expect(coordinator.getSnapshot()).toMatchObject({ phase: "ERROR", error: "disk full" });
 
-    await expect(coordinator.retry()).resolves.toMatchObject({ currentRevisionId: REVISION_1 });
+    await expect(coordinator.retry()).resolves.toMatchObject({
+      contentVersionId: CONTENT_VERSION_1,
+    });
     expect(coordinator.getSnapshot()).toMatchObject({ phase: "CLEAN", error: null });
   });
 
@@ -339,12 +345,12 @@ describe("note autosave coordinator", () => {
     const backend = gateway();
     const coordinator = NoteAutosaveCoordinator.recovered(
       backend,
-      workingCopy(7, "recoverable note", REVISION_1),
+      workingCopy(7, "recoverable note", CONTENT_VERSION_1),
     );
 
     expect(coordinator.getSnapshot()).toMatchObject({
       noteId: NOTE_ID,
-      baseRevisionId: REVISION_1,
+      baseContentVersionId: CONTENT_VERSION_1,
       editGeneration: 7,
       durableGeneration: 7,
       checkpointedGeneration: 0,
@@ -374,7 +380,7 @@ describe("note autosave coordinator", () => {
     const backend = gateway();
     const coordinator = NoteAutosaveCoordinator.recovered(
       backend,
-      workingCopy(7, "alpha", REVISION_1, true),
+      workingCopy(7, "alpha", CONTENT_VERSION_1, true),
     );
 
     await expect(coordinator.flush("QUIT")).resolves.toBeNull();

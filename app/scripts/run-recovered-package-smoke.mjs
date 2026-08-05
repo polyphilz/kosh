@@ -125,7 +125,7 @@ writeFileSync(
   )}\n`,
   { mode: 0o600 },
 );
-console.info("Hidden packaged recovery startup passed with tidbits, media, search, and citations.");
+console.info("Hidden packaged recovery startup passed with notes, media, and block search.");
 
 async function waitForReceipt(process, path, timeoutMs) {
   const deadline = Date.now() + timeoutMs;

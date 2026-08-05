@@ -372,7 +372,8 @@ function NoteEditorSession({ blockId, coordinator, mode, noteId }: NoteEditorSes
   }, [coordinator, flushForNavigation, noteId]);
 
   useEffect(() => {
-    if (mode !== "ephemeral" || snapshot.baseRevisionId === null || leavingNoteRef.current) return;
+    if (mode !== "ephemeral" || snapshot.baseContentVersionId === null || leavingNoteRef.current)
+      return;
     const durableRoute = `/notes/${noteId}`;
     if (findOpen) transferFindInNote(durableRoute, findState.query, findState.activeIndex);
     void navigate({
@@ -387,7 +388,7 @@ function NoteEditorSession({ blockId, coordinator, mode, noteId }: NoteEditorSes
     mode,
     navigate,
     noteId,
-    snapshot.baseRevisionId,
+    snapshot.baseContentVersionId,
   ]);
 
   useEffect(
@@ -480,9 +481,9 @@ function NoteEditorSession({ blockId, coordinator, mode, noteId }: NoteEditorSes
     setActionError(null);
     try {
       await flushForNavigation();
-      const expectedRevisionId = coordinator.getSnapshot().baseRevisionId;
-      if (!expectedRevisionId) throw new Error("This note has not been saved yet.");
-      const deleted = await backend.deleteTidbit({ id: noteId, expectedRevisionId });
+      const expectedContentVersionId = coordinator.getSnapshot().baseContentVersionId;
+      if (!expectedContentVersionId) throw new Error("This note has not been saved yet.");
+      const deleted = await backend.deleteTidbit({ id: noteId, expectedContentVersionId });
       announceDeletedNote(deleted);
       leavingNoteRef.current = true;
       await navigate({
@@ -512,9 +513,10 @@ function NoteEditorSession({ blockId, coordinator, mode, noteId }: NoteEditorSes
       )}
       <NoteActions
         canEditSources={
-          snapshot.baseRevisionId !== null || hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
+          snapshot.baseContentVersionId !== null ||
+          hasMeaningfulAuthoredContent(snapshot.bodyMarkdown)
         }
-        canDelete={snapshot.baseRevisionId !== null}
+        canDelete={snapshot.baseContentVersionId !== null}
         deleteError={actionError}
         deleting={deleting}
         disabled={mediaPending || lifecyclePreparing}
@@ -677,7 +679,7 @@ function coordinatorForDurableNote(
   if (workingCopy) return NoteAutosaveCoordinator.recovered(backend, workingCopy);
   return new NoteAutosaveCoordinator(backend, {
     noteId: note.id,
-    baseRevisionId: note.currentRevisionId,
+    baseContentVersionId: note.contentVersionId,
     documentJson: note.documentJson,
     bodyMarkdown: note.bodyMarkdown,
     sources: note.sources.map(({ label, url }) => ({ label, url })),
@@ -786,7 +788,7 @@ async function reconcileWorkingCopy(backend: Backend, workingCopy: WorkingCopyRe
   }
   const save = await backend.saveWorkingCopy({
     noteId: workingCopy.noteId,
-    baseRevisionId: workingCopy.baseRevisionId,
+    baseContentVersionId: workingCopy.baseContentVersionId,
     editGeneration: workingCopy.editGeneration + 1,
     documentJson: workingCopy.documentJson,
     bodyMarkdown: workingCopy.bodyMarkdown,

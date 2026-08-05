@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use kosh_lib::relevance::{
     benchmark_scale_lexical, enforce_quality_gate, generate_hybrid_vector_fixture,
     generate_scale_corpus, measure_scale_generation, read_json, run_relevance_suite,
-    write_pretty_json, write_text, CitationAudit, EmptyRetriever, HybridFixtureRetriever,
+    write_pretty_json, write_text, BlockAudit, EmptyRetriever, HybridFixtureRetriever,
     HybridVectorFixture, LexicalFixtureRetriever, RelevanceFixture, ScaleGenerationOptions,
 };
 use kosh_lib::EmbeddingRuntime;
@@ -15,7 +15,7 @@ const DEFAULT_EMPTY_PREFIX: &str = ".data/relevance/reports/empty-v1";
 const DEFAULT_LEXICAL_PREFIX: &str = ".data/relevance/reports/lexical-v1";
 const DEFAULT_HYBRID_VECTOR_FIXTURE: &str = "fixtures/relevance/jina-v1-vectors.json";
 const DEFAULT_HYBRID_PREFIX: &str = ".data/relevance/reports/hybrid-v1";
-const DEFAULT_CITATION_AUDIT: &str = "fixtures/relevance/citation-audit-v1.json";
+const DEFAULT_BLOCK_AUDIT: &str = "fixtures/relevance/block-audit-v1.json";
 const DEFAULT_QUALITY_GATE_OUTPUT: &str = ".data/relevance/reports/quality-gate-v1.json";
 const DEFAULT_SEMANTIC_DATA_ROOT: &str = ".data/relevance/semantic-runtime";
 const DEFAULT_RESOURCE_DIR: &str = "src-tauri/resources";
@@ -59,7 +59,7 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
             let fixture: RelevanceFixture = read_json(&path).map_err(|error| error.to_string())?;
             fixture.validate().map_err(|error| error.to_string())?;
             println!(
-                "valid fixture {}: {} passages, {} queries, digest {}",
+                "valid fixture {}: {} blocks, {} queries, digest {}",
                 fixture.fixture_id,
                 fixture.corpus.len(),
                 fixture.queries.len(),
@@ -145,8 +145,8 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
             let vectors = vectors?;
             write_pretty_json(&output, &vectors).map_err(|error| error.to_string())?;
             println!(
-                "wrote {} passage and {} query vectors to {}",
-                vectors.passage_embeddings.len(),
+                "wrote {} block and {} query vectors to {}",
+                vectors.block_embeddings.len(),
                 vectors.query_embeddings.len(),
                 output.display()
             );
@@ -193,11 +193,8 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
                     .get(2)
                     .map_or(DEFAULT_HYBRID_VECTOR_FIXTURE, String::as_str),
             );
-            let audit_path = PathBuf::from(
-                arguments
-                    .get(3)
-                    .map_or(DEFAULT_CITATION_AUDIT, String::as_str),
-            );
+            let audit_path =
+                PathBuf::from(arguments.get(3).map_or(DEFAULT_BLOCK_AUDIT, String::as_str));
             let output = PathBuf::from(
                 arguments
                     .get(4)
@@ -207,7 +204,7 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
                 read_json(&fixture_path).map_err(|error| error.to_string())?;
             let vectors: HybridVectorFixture =
                 read_json(&vector_path).map_err(|error| error.to_string())?;
-            let audit: CitationAudit = read_json(&audit_path).map_err(|error| error.to_string())?;
+            let audit: BlockAudit = read_json(&audit_path).map_err(|error| error.to_string())?;
             let lexical = run_relevance_suite(&fixture, &mut LexicalFixtureRetriever)
                 .map_err(|error| error.to_string())?;
             let mut hybrid_retriever = HybridFixtureRetriever::new(&fixture, vectors)
@@ -218,9 +215,9 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             write_pretty_json(&output, &report).map_err(|error| error.to_string())?;
             println!(
-                "search quality gate passed: {} queries, {} audited citations, hybrid Recall@10 {:.4}, MRR {:.4}, nDCG@10 {:.4}",
+                "search quality gate passed: {} queries, {} audited blocks, hybrid Recall@10 {:.4}, MRR {:.4}, nDCG@10 {:.4}",
                 report.hybrid.query_count,
-                report.citation_audit_count,
+                report.block_audit_count,
                 report.hybrid.recall_at_10,
                 report.hybrid.mean_reciprocal_rank,
                 report.hybrid.ndcg_at_10,
@@ -285,8 +282,8 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
                 benchmark_scale_lexical(&corpus, query_count).map_err(|error| error.to_string())?;
             write_pretty_json(&output, &report).map_err(|error| error.to_string())?;
             println!(
-                "indexed {} passages from {} tidbits in {:.2} ms; {} queries p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms",
-                report.passage_count,
+                "indexed {} blocks from {} tidbits in {:.2} ms; {} queries p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms",
+                report.block_count,
                 report.tidbit_count,
                 report.indexing_duration_ms,
                 report.query_count,
@@ -361,7 +358,7 @@ fn usage() -> String {
      kosh-relevance lexical-report [fixture] [output-prefix]\n  \
      kosh-relevance hybrid-vectors [fixture] [output] [data-root] [resource-dir]\n  \
      kosh-relevance hybrid-report [fixture] [vectors] [output-prefix]\n  \
-     kosh-relevance quality-gate [fixture] [vectors] [citation-audit] [output]\n  \
+     kosh-relevance quality-gate [fixture] [vectors] [block-audit] [output]\n  \
      kosh-relevance generate-scale [output] [count] [seed]\n  \
      kosh-relevance benchmark-lexical [output] [count] [queries] [seed]"
         .into()

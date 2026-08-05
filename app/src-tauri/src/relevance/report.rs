@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    EvaluationLocator, EvaluationPassage, EvaluationQuery, QueryCategory, RelevanceError,
-    RelevanceFixture, Result, SearchMode,
+    EvaluationBlock, EvaluationQuery, QueryCategory, RelevanceError, RelevanceFixture, Result,
+    SearchMode,
 };
 
 pub const REPORT_SCHEMA_VERSION: u32 = 1;
@@ -13,9 +13,8 @@ const REPORT_LIMIT: usize = 10;
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RetrievalHit {
-    pub passage_id: String,
+    pub block_id: String,
     pub score: f64,
-    pub locator: EvaluationLocator,
     #[serde(default)]
     pub matched_fields: Vec<String>,
 }
@@ -33,7 +32,7 @@ pub trait Retriever {
     fn retrieve(
         &mut self,
         request: &RetrievalRequest,
-        corpus: &[EvaluationPassage],
+        corpus: &[EvaluationBlock],
         limit: usize,
     ) -> std::result::Result<Vec<RetrievalHit>, String>;
 }
@@ -49,7 +48,7 @@ impl Retriever for EmptyRetriever {
     fn retrieve(
         &mut self,
         _request: &RetrievalRequest,
-        _corpus: &[EvaluationPassage],
+        _corpus: &[EvaluationBlock],
         _limit: usize,
     ) -> std::result::Result<Vec<RetrievalHit>, String> {
         Ok(Vec::new())
@@ -79,7 +78,7 @@ pub struct ReportSummary {
     pub recall_at_10: f64,
     pub mean_reciprocal_rank: f64,
     pub ndcg_at_10: f64,
-    pub citation_locator_accuracy: f64,
+    pub expected_block_accuracy: f64,
     pub exact_phrase_success: Option<f64>,
     pub forbidden_hits_at_10: u32,
 }
@@ -103,7 +102,7 @@ pub struct QueryMetrics {
     pub recall_at_10: f64,
     pub reciprocal_rank: f64,
     pub ndcg_at_10: f64,
-    pub citation_locator_correct: bool,
+    pub expected_block_found: bool,
     pub exact_phrase_success: Option<bool>,
     pub forbidden_hits_at_10: Vec<String>,
 }
@@ -113,10 +112,10 @@ pub fn run_relevance_suite(
     retriever: &mut impl Retriever,
 ) -> Result<RelevanceReport> {
     fixture.validate()?;
-    let known_passages = fixture
+    let known_blocks = fixture
         .corpus
         .iter()
-        .map(|passage| (passage.id.as_str(), passage))
+        .map(|block| (block.id.as_str(), block))
         .collect::<HashMap<_, _>>();
     let mut query_reports = Vec::with_capacity(fixture.queries.len());
 
@@ -131,11 +130,11 @@ pub fn run_relevance_suite(
                 query_id: query.id.clone(),
                 message,
             })?;
-        validate_hits(query, &raw_hits, &known_passages)?;
+        validate_hits(query, &raw_hits, &known_blocks)?;
         let hits = raw_hits.into_iter().take(REPORT_LIMIT).collect::<Vec<_>>();
         let metrics = calculate_query_metrics(query, &hits);
         let passed = metrics.recall_at_10 > 0.0
-            && metrics.citation_locator_correct
+            && metrics.expected_block_found
             && metrics.exact_phrase_success != Some(false)
             && metrics.forbidden_hits_at_10.is_empty();
         query_reports.push(QueryReport {
@@ -195,7 +194,7 @@ impl RelevanceReport {
              recall@10: {:.4}\n\
              MRR: {:.4}\n\
              nDCG@10: {:.4}\n\
-             citation locator accuracy: {:.4}\n\
+             expected block accuracy: {:.4}\n\
              exact/phrase success: {}\n\
              forbidden hits@10: {}\n",
             self.schema_version,
@@ -209,27 +208,24 @@ impl RelevanceReport {
             self.summary.recall_at_10,
             self.summary.mean_reciprocal_rank,
             self.summary.ndcg_at_10,
-            self.summary.citation_locator_accuracy,
+            self.summary.expected_block_accuracy,
             exact_phrase,
             self.summary.forbidden_hits_at_10,
         );
         output.push_str("\nquery results:\n");
         for query in &self.queries {
-            let first_hit = query
-                .hits
-                .first()
-                .map_or("-", |hit| hit.passage_id.as_str());
+            let first_hit = query.hits.first().map_or("-", |hit| hit.block_id.as_str());
             output.push_str(&format!(
-                "- [{}] {} ({:?}): recall@10={:.4}, rr={:.4}, citation={}, top={}\n",
+                "- [{}] {} ({:?}): recall@10={:.4}, rr={:.4}, target={}, top={}\n",
                 if query.passed { "PASS" } else { "FAIL" },
                 query.query_id,
                 query.category,
                 query.metrics.recall_at_10,
                 query.metrics.reciprocal_rank,
-                if query.metrics.citation_locator_correct {
-                    "valid"
+                if query.metrics.expected_block_found {
+                    "found"
                 } else {
-                    "missing/invalid"
+                    "missing"
                 },
                 first_hit,
             ));
@@ -241,35 +237,26 @@ impl RelevanceReport {
 fn validate_hits(
     query: &EvaluationQuery,
     hits: &[RetrievalHit],
-    known_passages: &HashMap<&str, &EvaluationPassage>,
+    known_blocks: &HashMap<&str, &EvaluationBlock>,
 ) -> Result<()> {
     let mut seen = HashSet::with_capacity(hits.len());
     for hit in hits {
         if !hit.score.is_finite() {
             return Err(RelevanceError::Retrieval {
                 query_id: query.id.clone(),
-                message: format!("passage {} has a non-finite score", hit.passage_id),
+                message: format!("block {} has a non-finite score", hit.block_id),
             });
         }
-        let Some(passage) = known_passages.get(hit.passage_id.as_str()) else {
+        if !known_blocks.contains_key(hit.block_id.as_str()) {
             return Err(RelevanceError::Retrieval {
                 query_id: query.id.clone(),
-                message: format!("unknown passage {}", hit.passage_id),
-            });
-        };
-        if hit.locator != passage.locator {
-            return Err(RelevanceError::Retrieval {
-                query_id: query.id.clone(),
-                message: format!(
-                    "passage {} locator does not match fixture provenance",
-                    hit.passage_id
-                ),
+                message: format!("unknown block {}", hit.block_id),
             });
         }
-        if !seen.insert(hit.passage_id.as_str()) {
+        if !seen.insert(hit.block_id.as_str()) {
             return Err(RelevanceError::Retrieval {
                 query_id: query.id.clone(),
-                message: format!("duplicate passage {}", hit.passage_id),
+                message: format!("duplicate block {}", hit.block_id),
             });
         }
     }
@@ -280,23 +267,23 @@ fn calculate_query_metrics(query: &EvaluationQuery, hits: &[RetrievalHit]) -> Qu
     let relevance = query
         .relevance
         .iter()
-        .map(|judgment| (judgment.passage_id.as_str(), judgment.grade))
+        .map(|judgment| (judgment.block_id.as_str(), judgment.grade))
         .collect::<HashMap<_, _>>();
     let recall_at_5 = recall_at(&relevance, hits, 5);
     let recall_at_10 = recall_at(&relevance, hits, 10);
     let reciprocal_rank = hits
         .iter()
-        .position(|hit| relevance.contains_key(hit.passage_id.as_str()))
+        .position(|hit| relevance.contains_key(hit.block_id.as_str()))
         .map_or(0.0, |index| 1.0 / (index + 1) as f64);
     let ndcg_at_10 = ndcg_at(&relevance, hits, 10);
-    let citation_locator_correct = hits.iter().take(10).any(|hit| {
-        hit.passage_id == query.expected_citation.passage_id
-            && hit.locator == query.expected_citation.locator
-    });
+    let expected_block_found = hits
+        .iter()
+        .take(10)
+        .any(|hit| hit.block_id == query.expected_block_id);
     let exact_phrase_success =
         matches!(query.category, QueryCategory::Exact | QueryCategory::Phrase).then(|| {
             hits.first()
-                .is_some_and(|hit| relevance.contains_key(hit.passage_id.as_str()))
+                .is_some_and(|hit| relevance.contains_key(hit.block_id.as_str()))
         });
     let forbidden = query
         .must_not_rank
@@ -306,8 +293,8 @@ fn calculate_query_metrics(query: &EvaluationQuery, hits: &[RetrievalHit]) -> Qu
     let forbidden_hits_at_10 = hits
         .iter()
         .take(10)
-        .filter(|hit| forbidden.contains(hit.passage_id.as_str()))
-        .map(|hit| hit.passage_id.clone())
+        .filter(|hit| forbidden.contains(hit.block_id.as_str()))
+        .map(|hit| hit.block_id.clone())
         .collect();
 
     QueryMetrics {
@@ -315,7 +302,7 @@ fn calculate_query_metrics(query: &EvaluationQuery, hits: &[RetrievalHit]) -> Qu
         recall_at_10,
         reciprocal_rank,
         ndcg_at_10,
-        citation_locator_correct,
+        expected_block_found,
         exact_phrase_success,
         forbidden_hits_at_10,
     }
@@ -324,7 +311,7 @@ fn calculate_query_metrics(query: &EvaluationQuery, hits: &[RetrievalHit]) -> Qu
 fn recall_at(relevance: &HashMap<&str, u8>, hits: &[RetrievalHit], limit: usize) -> f64 {
     hits.iter()
         .take(limit)
-        .filter(|hit| relevance.contains_key(hit.passage_id.as_str()))
+        .filter(|hit| relevance.contains_key(hit.block_id.as_str()))
         .count() as f64
         / relevance.len() as f64
 }
@@ -335,7 +322,7 @@ fn ndcg_at(relevance: &HashMap<&str, u8>, hits: &[RetrievalHit], limit: usize) -
         .take(limit)
         .enumerate()
         .map(|(index, hit)| {
-            let grade = relevance.get(hit.passage_id.as_str()).copied().unwrap_or(0);
+            let grade = relevance.get(hit.block_id.as_str()).copied().unwrap_or(0);
             discounted_gain(grade, index)
         })
         .sum::<f64>();
@@ -384,10 +371,10 @@ fn summarize<'a>(queries: impl Iterator<Item = &'a QueryReport>) -> ReportSummar
             count,
         ),
         ndcg_at_10: average(queries.iter().map(|query| query.metrics.ndcg_at_10), count),
-        citation_locator_accuracy: average(
+        expected_block_accuracy: average(
             queries
                 .iter()
-                .map(|query| f64::from(query.metrics.citation_locator_correct)),
+                .map(|query| f64::from(query.metrics.expected_block_found)),
             count,
         ),
         exact_phrase_success: (!exact_phrase.is_empty()).then(|| {
@@ -414,7 +401,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{run_relevance_suite, EmptyRetriever, RetrievalHit, RetrievalRequest, Retriever};
-    use crate::relevance::{EvaluationPassage, RelevanceFixture, REPORT_SCHEMA_VERSION};
+    use crate::relevance::{EvaluationBlock, RelevanceFixture, REPORT_SCHEMA_VERSION};
 
     fn fixture() -> RelevanceFixture {
         serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
@@ -427,10 +414,10 @@ mod tests {
 
     impl FixtureLookupRetriever {
         fn from_fixture(fixture: &RelevanceFixture) -> Self {
-            let passages = fixture
+            let blocks = fixture
                 .corpus
                 .iter()
-                .map(|passage| (passage.id.as_str(), passage))
+                .map(|block| (block.id.as_str(), block))
                 .collect::<HashMap<_, _>>();
             let hits_by_text = fixture
                 .queries
@@ -442,13 +429,12 @@ mod tests {
                         .into_iter()
                         .enumerate()
                         .map(|(index, judgment)| {
-                            let passage = passages
-                                .get(judgment.passage_id.as_str())
-                                .expect("judged passage");
+                            let block = blocks
+                                .get(judgment.block_id.as_str())
+                                .expect("judged block");
                             RetrievalHit {
-                                passage_id: passage.id.clone(),
+                                block_id: block.id.clone(),
                                 score: 1.0 / (index + 1) as f64,
-                                locator: passage.locator.clone(),
                                 matched_fields: vec!["test".into()],
                             }
                         })
@@ -468,7 +454,7 @@ mod tests {
         fn retrieve(
             &mut self,
             request: &RetrievalRequest,
-            _corpus: &[EvaluationPassage],
+            _corpus: &[EvaluationBlock],
             _limit: usize,
         ) -> std::result::Result<Vec<RetrievalHit>, String> {
             self.hits_by_text
@@ -478,48 +464,30 @@ mod tests {
         }
     }
 
-    struct MixedFabricatedLocatorRetriever;
+    struct UnknownBlockRetriever;
 
-    impl Retriever for MixedFabricatedLocatorRetriever {
+    impl Retriever for UnknownBlockRetriever {
         fn name(&self) -> &str {
-            "mixed-fabricated-locator-test"
+            "unknown-block-test"
         }
 
         fn retrieve(
             &mut self,
             _request: &RetrievalRequest,
-            corpus: &[EvaluationPassage],
+            _corpus: &[EvaluationBlock],
             _limit: usize,
         ) -> std::result::Result<Vec<RetrievalHit>, String> {
-            let expected = &corpus[0];
-            let other = &corpus[1];
-            Ok(vec![
-                RetrievalHit {
-                    passage_id: expected.id.clone(),
-                    score: 1.0,
-                    locator: expected.locator.clone(),
-                    matched_fields: vec!["trusted".into()],
-                },
-                RetrievalHit {
-                    passage_id: other.id.clone(),
-                    score: 0.5,
-                    locator: crate::relevance::EvaluationLocator::OcrRegion {
-                        region: crate::relevance::EvaluationRegion {
-                            x: 0,
-                            y: 0,
-                            width: 1,
-                            height: 1,
-                        },
-                    },
-                    matched_fields: vec!["fabricated".into()],
-                },
-            ])
+            Ok(vec![RetrievalHit {
+                block_id: "missing-block".into(),
+                score: 1.0,
+                matched_fields: vec!["fabricated".into()],
+            }])
         }
     }
 
     struct DemotedPhraseRetriever {
-        relevant_passage_id: String,
-        irrelevant_passage_id: String,
+        relevant_block_id: String,
+        irrelevant_block_id: String,
     }
 
     impl Retriever for DemotedPhraseRetriever {
@@ -530,24 +498,23 @@ mod tests {
         fn retrieve(
             &mut self,
             _request: &RetrievalRequest,
-            corpus: &[EvaluationPassage],
+            corpus: &[EvaluationBlock],
             _limit: usize,
         ) -> std::result::Result<Vec<RetrievalHit>, String> {
-            let hit_for = |passage_id: &str, score| {
-                let passage = corpus
+            let hit_for = |block_id: &str, score| {
+                let block = corpus
                     .iter()
-                    .find(|passage| passage.id == passage_id)
-                    .expect("configured test passage");
+                    .find(|block| block.id == block_id)
+                    .expect("configured test block");
                 RetrievalHit {
-                    passage_id: passage.id.clone(),
+                    block_id: block.id.clone(),
                     score,
-                    locator: passage.locator.clone(),
                     matched_fields: vec!["test".into()],
                 }
             };
             Ok(vec![
-                hit_for(&self.irrelevant_passage_id, 1.0),
-                hit_for(&self.relevant_passage_id, 0.5),
+                hit_for(&self.irrelevant_block_id, 1.0),
+                hit_for(&self.relevant_block_id, 0.5),
             ])
         }
     }
@@ -562,7 +529,7 @@ mod tests {
         assert_eq!(report.summary.passed_query_count, 0);
         assert_eq!(report.summary.recall_at_10, 0.0);
         assert_eq!(report.summary.ndcg_at_10.to_bits(), 0.0_f64.to_bits());
-        assert_eq!(report.summary.citation_locator_accuracy, 0.0);
+        assert_eq!(report.summary.expected_block_accuracy, 0.0);
         assert!(report.to_text().contains("status: FAIL"));
         let round_trip = serde_json::from_str(
             &serde_json::to_string_pretty(&report).expect("serialize relevance report"),
@@ -572,18 +539,17 @@ mod tests {
     }
 
     #[test]
-    fn expected_citation_results_calculate_perfect_metrics() {
+    fn expected_block_id_results_calculate_perfect_metrics() {
         let fixture = fixture();
         let mut retriever = FixtureLookupRetriever::from_fixture(&fixture);
-        let report =
-            run_relevance_suite(&fixture, &mut retriever).expect("expected citation report");
+        let report = run_relevance_suite(&fixture, &mut retriever).expect("expected block report");
 
         assert!(report.passed);
         assert_eq!(report.summary.recall_at_5, 1.0);
         assert_eq!(report.summary.recall_at_10, 1.0);
         assert_eq!(report.summary.mean_reciprocal_rank, 1.0);
         assert_eq!(report.summary.ndcg_at_10, 1.0);
-        assert_eq!(report.summary.citation_locator_accuracy, 1.0);
+        assert_eq!(report.summary.expected_block_accuracy, 1.0);
         assert_eq!(report.summary.forbidden_hits_at_10, 0);
     }
 
@@ -592,24 +558,22 @@ mod tests {
         let mut fixture = fixture();
         fixture.queries.truncate(1);
         let query = fixture.queries.first().expect("phrase query");
-        let relevant_passage_id = query
+        let relevant_block_id = query
             .relevance
             .first()
-            .expect("relevant passage")
-            .passage_id
+            .expect("relevant block")
+            .block_id
             .clone();
-        let irrelevant_passage_id = fixture
+        let irrelevant_block_id = fixture
             .corpus
             .iter()
-            .find(|passage| {
-                passage.id != relevant_passage_id && !query.must_not_rank.contains(&passage.id)
-            })
-            .expect("safe irrelevant passage")
+            .find(|block| block.id != relevant_block_id && !query.must_not_rank.contains(&block.id))
+            .expect("safe irrelevant block")
             .id
             .clone();
         let mut retriever = DemotedPhraseRetriever {
-            relevant_passage_id,
-            irrelevant_passage_id,
+            relevant_block_id,
+            irrelevant_block_id,
         };
 
         let report =
@@ -619,18 +583,16 @@ mod tests {
         assert_eq!(report.summary.passed_query_count, 0);
         assert_eq!(report.queries[0].metrics.exact_phrase_success, Some(false));
         assert!(report.queries[0].metrics.recall_at_10 > 0.0);
-        assert!(report.queries[0].metrics.citation_locator_correct);
+        assert!(report.queries[0].metrics.expected_block_found);
         assert!(report.queries[0].metrics.forbidden_hits_at_10.is_empty());
     }
 
     #[test]
-    fn any_fabricated_hit_locator_is_rejected_before_scoring() {
+    fn any_unknown_block_is_rejected_before_scoring() {
         let fixture = fixture();
-        let error = run_relevance_suite(&fixture, &mut MixedFabricatedLocatorRetriever)
-            .expect_err("fabricated locator must abort the report");
+        let error = run_relevance_suite(&fixture, &mut UnknownBlockRetriever)
+            .expect_err("unknown block must abort the report");
 
-        assert!(error
-            .to_string()
-            .contains("locator does not match fixture provenance"));
+        assert!(error.to_string().contains("unknown block missing-block"));
     }
 }

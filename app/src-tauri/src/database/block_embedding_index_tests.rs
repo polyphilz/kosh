@@ -38,7 +38,7 @@ impl TestLibrary {
                 },
                 now_ms,
                 tidbit_id: Uuid::now_v7().to_string(),
-                revision_id: Uuid::now_v7().to_string(),
+                content_version_id: Uuid::now_v7().to_string(),
                 source_ids: Vec::new(),
             })
             .expect("create note")
@@ -164,7 +164,7 @@ fn edits_empty_blocks_and_deletion_reject_stale_results_and_remove_vectors() {
         .delete_tidbit(
             super::DeleteTidbitInput {
                 id: empty.id,
-                expected_revision_id: empty.current_revision_id,
+                expected_content_version_id: empty.content_version_id,
             },
             40,
         )
@@ -274,7 +274,7 @@ fn checkpoint(
         .save_working_copy(SaveWorkingCopyWrite {
             input: super::SaveWorkingCopyInput {
                 note_id: note.id.clone(),
-                base_revision_id: Some(note.current_revision_id.clone()),
+                base_content_version_id: Some(note.content_version_id.clone()),
                 edit_generation: generation,
                 document_json,
                 body_markdown: markdown.into(),
@@ -292,7 +292,7 @@ fn checkpoint(
                 expected_edit_generation: generation,
             },
             now_ms: now_ms + 1,
-            revision_id: Uuid::now_v7().to_string(),
+            content_version_id: Uuid::now_v7().to_string(),
             source_ids: Vec::new(),
         })
         .expect("checkpoint edit")

@@ -244,7 +244,7 @@ assert(
   !recoveredPackageSmoke.includes("tidbit_revision") &&
     !recoveredPackageSmoke.includes("passage") &&
     !recoveredPackageSmoke.includes("active_passage"),
-  "packaged recovery smoke retains archival note or passage machinery",
+  "packaged recovery smoke retains archival note or legacy locator machinery",
 );
 
 console.info(

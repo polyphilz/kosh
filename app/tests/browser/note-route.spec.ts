@@ -513,7 +513,7 @@ test("an interrupted new note finishes recovery before accepting input", async (
     if (!backend) throw new Error("fake backend is unavailable");
     await backend.saveWorkingCopy({
       noteId: recoveredNoteId,
-      baseRevisionId: null,
+      baseContentVersionId: null,
       editGeneration: 7,
       bodyMarkdown: "Recovered before the editor becomes interactive.",
       sources: [],
@@ -547,21 +547,21 @@ test("one stale working copy cannot block later recovery", async ({ page }) => {
     });
     await backend.saveWorkingCopy({
       noteId: recoverableNoteId,
-      baseRevisionId: null,
+      baseContentVersionId: null,
       editGeneration: 1,
       bodyMarkdown: "This trailing copy must still reconcile.",
       sources: [],
     });
     await backend.saveWorkingCopy({
       noteId: staleNote.id,
-      baseRevisionId: staleNote.currentRevisionId,
+      baseContentVersionId: staleNote.contentVersionId,
       editGeneration: 1,
       bodyMarkdown: "This copy will become stale.",
       sources: [],
     });
     await backend.replaceNoteForTest({
       id: staleNote.id,
-      expectedRevisionId: staleNote.currentRevisionId,
+      expectedContentVersionId: staleNote.contentVersionId,
       bodyMarkdown: "A newer route already changed this note.",
       sources: [],
     });
@@ -594,12 +594,12 @@ test("startup recovery discards an abandoned existing-note media reservation", a
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
     const note = await backend.seedNote({
-      bodyMarkdown: "Do not create a phantom revision for this note.",
+      bodyMarkdown: "Do not create a phantom note state for this note.",
       sources: [],
     });
     await backend.reserveWorkingCopyForMedia({
       noteId: note.id,
-      baseRevisionId: note.currentRevisionId,
+      baseContentVersionId: note.contentVersionId,
       editGeneration: 1,
       bodyMarkdown: note.bodyMarkdown,
       sources: [],
@@ -621,7 +621,7 @@ test("startup recovery discards an abandoned existing-note media reservation", a
     await page.evaluate(async (id) => {
       const backend = window.__KOSH_FAKE_BACKEND__;
       if (!backend) throw new Error("fake backend is unavailable");
-      return (await backend.loadTidbit(id)).revisionNumber;
+      return (await backend.loadTidbit(id)).versionNumber;
     }, noteId),
   ).toBe(1);
 });
@@ -638,14 +638,14 @@ test("delayed reconciliation never checkpoints the note opened during its scan",
       if (!backend) throw new Error("fake backend is unavailable");
       await backend.saveWorkingCopy({
         noteId: first,
-        baseRevisionId: null,
+        baseContentVersionId: null,
         editGeneration: 2,
         bodyMarkdown: "The initially open interrupted note.",
         sources: [],
       });
       await backend.saveWorkingCopy({
         noteId: opened,
-        baseRevisionId: null,
+        baseContentVersionId: null,
         editGeneration: 4,
         bodyMarkdown: "Open this while recovery scans.",
         sources: [],

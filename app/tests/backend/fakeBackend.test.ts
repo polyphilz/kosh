@@ -54,14 +54,14 @@ describe("FakeBackend tidbits", () => {
     });
     const edited = await backend.replaceNoteForTest({
       id: created.id,
-      expectedRevisionId: created.currentRevisionId,
+      expectedContentVersionId: created.contentVersionId,
       bodyMarkdown: "Updated body",
       sources: [],
     });
     await expect(
       backend.replaceNoteForTest({
         id: created.id,
-        expectedRevisionId: created.currentRevisionId,
+        expectedContentVersionId: created.contentVersionId,
         bodyMarkdown: "Lost update",
         sources: [],
       }),
@@ -72,7 +72,7 @@ describe("FakeBackend tidbits", () => {
     ).toHaveLength(1);
     const deleted = await backend.deleteTidbit({
       id: edited.id,
-      expectedRevisionId: edited.currentRevisionId,
+      expectedContentVersionId: edited.contentVersionId,
     });
     expect(deleted.deletedAtMs).not.toBeNull();
     expect(
@@ -102,7 +102,7 @@ describe("FakeBackend tidbits", () => {
     await expect(
       backend.replaceNoteForTest({
         id: created.id,
-        expectedRevisionId: created.currentRevisionId,
+        expectedContentVersionId: created.contentVersionId,
         bodyMarkdown: created.bodyMarkdown,
         sources: duplicateSources,
       }),
@@ -118,7 +118,7 @@ describe("FakeBackend tidbits", () => {
     const seeded = {
       ...seed,
       id: "fake-tidbit-2",
-      currentRevisionId: "fake-revision-7",
+      contentVersionId: "fake-content-version-7",
     };
     const backend = new FakeBackend(undefined, [seeded]);
 
@@ -149,7 +149,7 @@ describe("FakeBackend tidbits", () => {
 
     const edited = await backend.replaceNoteForTest({
       id: second.id,
-      expectedRevisionId: second.currentRevisionId,
+      expectedContentVersionId: second.contentVersionId,
       bodyMarkdown: "Retained during edit.",
       sources: [{ label: "Docs", url: "https://example.com/reference" }],
     });
@@ -171,7 +171,7 @@ describe("FakeBackend tidbits", () => {
 
     const edited = await backend.replaceNoteForTest({
       id: created.id,
-      expectedRevisionId: created.currentRevisionId,
+      expectedContentVersionId: created.contentVersionId,
       bodyMarkdown: "Replacement evidence.",
       sources: [{ label: "Replacement source", url: null }],
     });
@@ -186,7 +186,7 @@ describe("FakeBackend tidbits", () => {
 
     const deleted = await backend.deleteTidbit({
       id: edited.id,
-      expectedRevisionId: edited.currentRevisionId,
+      expectedContentVersionId: edited.contentVersionId,
     });
     await expect(
       backend.searchBlocks({ query: "Replacement", mode: "EXACT", limit: 10 }),
@@ -194,7 +194,7 @@ describe("FakeBackend tidbits", () => {
 
     await backend.restoreTidbit({
       id: deleted.id,
-      expectedRevisionId: deleted.currentRevisionId,
+      expectedContentVersionId: deleted.contentVersionId,
     });
     await expect(
       backend.searchBlocks({ query: "Replacement", mode: "EXACT", limit: 10 }),
@@ -254,7 +254,7 @@ describe("FakeBackend tidbits", () => {
 
     await backend.deleteTidbit({
       id: created.id,
-      expectedRevisionId: created.currentRevisionId,
+      expectedContentVersionId: created.contentVersionId,
     });
     await expect(
       backend.searchBlocks({ query: "cafe", mode: "DEFAULT", limit: 10 }),

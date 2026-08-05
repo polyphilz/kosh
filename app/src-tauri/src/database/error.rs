@@ -84,12 +84,12 @@ pub enum DatabaseError {
     NotFound { entity: &'static str, id: String },
 
     #[error(
-        "tidbit {id} changed before this operation: current revision is {actual_revision_id}, expected {expected_revision_id}"
+        "tidbit {id} changed before this operation: current content version is {actual_content_version_id}, expected {expected_content_version_id}"
     )]
     StaleTidbit {
         id: String,
-        expected_revision_id: String,
-        actual_revision_id: String,
+        expected_content_version_id: String,
+        actual_content_version_id: String,
     },
 
     #[error("tidbit {id} is deleted")]

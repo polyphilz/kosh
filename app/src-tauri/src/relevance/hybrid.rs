@@ -6,8 +6,8 @@ use crate::{
     database::{
         block_embedding_index,
         relevance_search::{
-            candidate_limit, fuse_ranked_passages, parse_lexical_query, rank_lexical_documents,
-            LexicalSearchMode, RankedSemanticPassage,
+            candidate_limit, fuse_ranked_blocks, parse_lexical_query, rank_lexical_documents,
+            LexicalSearchMode, RankedSemanticBlock,
         },
     },
     embedding, EmbeddingRuntime,
@@ -17,7 +17,7 @@ use super::{
     lexical::{
         fixture_candidate_ranks, fixture_evidence_kind, fixture_fields, hydrate_fixture_hits,
     },
-    EvaluationPassage, RelevanceError, RelevanceFixture, RetrievalHit, RetrievalRequest, Retriever,
+    EvaluationBlock, RelevanceError, RelevanceFixture, RetrievalHit, RetrievalRequest, Retriever,
     SearchMode,
 };
 
@@ -30,7 +30,7 @@ pub struct HybridVectorFixture {
     pub fixture_digest: String,
     pub embedding_index_id: String,
     pub model_file_sha256: String,
-    pub passage_embeddings: BTreeMap<String, Vec<f32>>,
+    pub block_embeddings: BTreeMap<String, Vec<f32>>,
     pub query_embeddings: BTreeMap<String, Vec<f32>>,
 }
 
@@ -40,16 +40,16 @@ pub fn generate_hybrid_vector_fixture(
 ) -> super::Result<HybridVectorFixture> {
     fixture.validate()?;
     let manifest = embedding::jina_v1_manifest();
-    let mut passage_embeddings = BTreeMap::new();
-    for passage in &fixture.corpus {
+    let mut block_embeddings = BTreeMap::new();
+    for block in &fixture.corpus {
         let embedding = runtime
-            .embed_document(&passage.content)
+            .embed_document(&fixture_embedding_input(block))
             .map_err(|error| RelevanceError::HybridVectors(error.public_message()))?;
-        if passage_embeddings
-            .insert(passage.id.clone(), embedding)
+        if block_embeddings
+            .insert(block.id.clone(), embedding)
             .is_some()
         {
-            return hybrid_error(format!("duplicate passage ID {}", passage.id));
+            return hybrid_error(format!("duplicate block ID {}", block.id));
         }
     }
     let mut query_embeddings = BTreeMap::new();
@@ -72,11 +72,24 @@ pub fn generate_hybrid_vector_fixture(
         fixture_digest: fixture.digest()?,
         embedding_index_id: manifest.id,
         model_file_sha256: manifest.model_file_sha256,
-        passage_embeddings,
+        block_embeddings,
         query_embeddings,
     };
     validate_hybrid_vector_fixture(fixture, &vectors)?;
     Ok(vectors)
+}
+
+fn fixture_embedding_input(block: &EvaluationBlock) -> String {
+    block
+        .heading_context
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(block.body.as_str()))
+        .chain(block.attachment_names.iter().map(String::as_str))
+        .chain(std::iter::once(block.extracted_text.as_str()))
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn validate_hybrid_vector_fixture(
@@ -98,18 +111,18 @@ pub fn validate_hybrid_vector_fixture(
     {
         return hybrid_error("hybrid vectors do not match the shipped embedding index".into());
     }
-    let expected_passages = fixture
+    let expected_blocks = fixture
         .corpus
         .iter()
-        .map(|passage| passage.id.as_str())
+        .map(|block| block.id.as_str())
         .collect::<BTreeSet<_>>();
-    let actual_passages = vectors
-        .passage_embeddings
+    let actual_blocks = vectors
+        .block_embeddings
         .keys()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    if actual_passages != expected_passages {
-        return hybrid_error("hybrid vectors do not cover the exact passage corpus".into());
+    if actual_blocks != expected_blocks {
+        return hybrid_error("hybrid vectors do not cover the exact block corpus".into());
     }
     let expected_queries = fixture
         .queries
@@ -128,7 +141,7 @@ pub fn validate_hybrid_vector_fixture(
         return hybrid_error("hybrid vectors do not cover the exact query corpus".into());
     }
     for (key, vector) in vectors
-        .passage_embeddings
+        .block_embeddings
         .iter()
         .chain(vectors.query_embeddings.iter())
     {
@@ -158,7 +171,7 @@ impl Retriever for HybridFixtureRetriever {
     fn retrieve(
         &mut self,
         request: &RetrievalRequest,
-        corpus: &[EvaluationPassage],
+        corpus: &[EvaluationBlock],
         limit: usize,
     ) -> std::result::Result<Vec<RetrievalHit>, String> {
         let mode = match request.search_mode {
@@ -175,12 +188,12 @@ impl Retriever for HybridFixtureRetriever {
         let lexical_documents = fixture_candidate_ranks(corpus, &query, limit)?
             .into_iter()
             .map(|(index, (word_rank, trigram_rank, short_rank))| {
-                let passage = &corpus[index];
+                let block = &corpus[index];
                 crate::database::relevance_search::LexicalDocument {
-                    passage_id: passage.id.clone(),
+                    block_id: block.id.clone(),
                     updated_at_ms: 0,
-                    evidence_kind: fixture_evidence_kind(passage),
-                    fields: fixture_fields(passage),
+                    evidence_kind: fixture_evidence_kind(block),
+                    fields: fixture_fields(block),
                     word_rank,
                     trigram_rank,
                     short_rank,
@@ -198,16 +211,16 @@ impl Retriever for HybridFixtureRetriever {
                 .ok_or_else(|| format!("missing query embedding for {}", request.text))?;
             let mut semantic = corpus
                 .iter()
-                .map(|passage| {
-                    let passage_embedding = self
+                .map(|block| {
+                    let block_embedding = self
                         .vectors
-                        .passage_embeddings
-                        .get(&passage.id)
-                        .ok_or_else(|| format!("missing passage embedding for {}", passage.id))?;
-                    let similarity = cosine_similarity(query_embedding, passage_embedding)?;
-                    let evidence_kind = fixture_evidence_kind(passage);
+                        .block_embeddings
+                        .get(&block.id)
+                        .ok_or_else(|| format!("missing block embedding for {}", block.id))?;
+                    let similarity = cosine_similarity(query_embedding, block_embedding)?;
+                    let evidence_kind = fixture_evidence_kind(block);
                     Ok((
-                        passage.id.clone(),
+                        block.id.clone(),
                         evidence_kind.adjusted_semantic_similarity(similarity),
                         evidence_kind,
                     ))
@@ -222,14 +235,14 @@ impl Retriever for HybridFixtureRetriever {
             let semantic = semantic
                 .into_iter()
                 .take(lexical_candidate_limit)
-                .map(|(passage_id, _, evidence_kind)| RankedSemanticPassage {
-                    passage_id,
+                .map(|(block_id, _, evidence_kind)| RankedSemanticBlock {
+                    block_id,
                     evidence_kind,
                 })
                 .collect();
-            fuse_ranked_passages(&query, lexical, semantic)
+            fuse_ranked_blocks(&query, lexical, semantic)
         };
-        hydrate_fixture_hits(ranked, corpus, limit, mode == LexicalSearchMode::Default)
+        hydrate_fixture_hits(ranked, corpus, limit)
     }
 }
 
@@ -260,7 +273,7 @@ mod tests {
     };
 
     #[test]
-    fn pinned_hybrid_vectors_improve_the_lexical_baseline_without_precision_regressions() {
+    fn pinned_hybrid_vectors_meet_block_retrieval_contracts() {
         let fixture: RelevanceFixture =
             serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
                 .expect("checked-in relevance fixture");
@@ -276,9 +289,10 @@ mod tests {
             .expect("lexical relevance report");
 
         assert!(hybrid.passed);
-        assert!(hybrid.summary.recall_at_10 >= lexical.summary.recall_at_10);
-        assert!(hybrid.summary.mean_reciprocal_rank >= lexical.summary.mean_reciprocal_rank);
-        assert!(hybrid.summary.ndcg_at_10 >= lexical.summary.ndcg_at_10);
+        assert_eq!(hybrid.summary.recall_at_10, 1.0);
+        assert_eq!(hybrid.summary.expected_block_accuracy, 1.0);
+        assert!(hybrid.summary.mean_reciprocal_rank >= 0.95);
+        assert!(hybrid.summary.ndcg_at_10 >= 0.95);
         assert_eq!(hybrid.summary.forbidden_hits_at_10, 0);
         for category in [QueryCategory::Exact, QueryCategory::CodeIdentifier] {
             assert_eq!(

@@ -2,7 +2,7 @@
 
 Kosh treats titleless autosave and lexical search as the availability floor.
 Optional embedding and extraction work may fail or be interrupted without
-making authored notes or exact citations unavailable.
+making authored notes or exact block links unavailable.
 
 ## Reproduce the hardening report
 
@@ -29,11 +29,11 @@ local aggregation, not a substitute for any required CI job.
 | Durable boundary | Forced/interrupted state exercised | Required recovery |
 | --- | --- | --- |
 | working copy and checkpoint | continuous typing, stale completion, navigation, failed quit, renderer interruption, restart | newest content remains recoverable; only exact generations checkpoint and a failed flush blocks quit |
-| authored revision and FTS projection | concurrent create/edit/search/rebuild, shutdown, reopen | authored body, revision, source URL, exact passage ID, and citation remain stable |
+| current note and FTS projection | concurrent create/edit/search/rebuild, shutdown, reopen | authored body, content version, source URL, exact block ID, and block link remain stable |
 | draft and attachment staging | interrupted reader, orphaned stage, committed/missing blob, concurrent ingestion | partial bytes removed; committed references never reaped |
 | image OCR extraction | pending, running, retry-wait, ready, failed, stale extractor, retired attachment | bounded batch requeue or terminal failure; stale output never becomes current |
 | embedding index | dirty, running, partial vectors, model/version change | incomplete vectors requeued; index activates only when complete |
-| migration and media reclamation | pending migration or irreversible eligible-media cleanup | verified main/media snapshot pair exists before mutation and reopens with integrity and citation provenance |
+| migration and media reclamation | pending migration or irreversible eligible-media cleanup | verified main/media snapshot pair exists before mutation and reopens with integrity and block ownership |
 
 Startup media recovery may renew or retire lifecycle metadata and rebuild reap
 candidates, but it never authorizes or deletes blob bytes. Reclamation occurs
@@ -62,7 +62,7 @@ note-route/editor suites.
   ordinary input retains the stricter frame budget. Already-running window
   reactivation is also measured visibly with a 150 ms p95 target because
   process restart is not an honest substitute.
-- Both real WKWebViews must render and return startup/search/citation IPC within
+- Both real WKWebViews must render and return startup/search/block link IPC within
   the 30-second native readiness ceiling on fresh and restarted profiles. This
   is a failure ceiling, not a desired launch time; the receipt retains exact
   commit and runtime evidence.

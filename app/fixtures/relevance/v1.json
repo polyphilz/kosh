@@ -1,600 +1,187 @@
 {
-  "schemaVersion": 2,
-  "fixtureId": "kosh-relevance-v1",
-  "description": "Synthetic citation-sized passages spanning lexical, semantic, attachment, and near-duplicate retrieval behavior.",
+  "schemaVersion": 3,
+  "fixtureId": "kosh-search-blocks-v1",
+  "description": "Synthetic current blocks spanning lexical, semantic, attachment, and near-duplicate retrieval behavior.",
   "corpus": [
     {
-      "id": "passage-heat-modern",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-heat-modern",
-      "evidenceAttachmentId": null,
+      "id": "block-heat-modern",
+      "noteId": "tidbit-heat-modern",
+      "blockType": "paragraph",
       "headingContext": ["Heat and temperature", "Thermodynamics", "Kinetic model"],
-      "content": "Heat is impatient motion transferred between systems. Temperature describes a distribution of particle energies rather than one particle.",
-      "sources": [
-        {
-          "label": "Thermodynamics lecture",
-          "domain": "notes.example.test"
-        }
-      ],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 2,
-        "endBlock": 2,
-        "sourceStartByte": 36,
-        "sourceEndByte": 174,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "Heat is impatient motion transferred between systems. Temperature describes a distribution of particle energies rather than one particle.\nhttps://notes.example.test",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-heat-caloric",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-heat-caloric",
-      "evidenceAttachmentId": null,
+      "id": "block-heat-caloric",
+      "noteId": "tidbit-heat-caloric",
+      "blockType": "paragraph",
       "headingContext": ["Obsolete caloric theory", "History of thermodynamics"],
-      "content": "The obsolete caloric theory treated heat as a weightless fluid that flowed from hot bodies into cold bodies.",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 29,
-        "sourceEndByte": 137,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "The obsolete caloric theory treated heat as a weightless fluid that flowed from hot bodies into cold bodies.",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-code-cache-key",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-code-cache-key",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Passage cache", "Rust", "Stable identifiers"],
-      "content": "fn passage_cache_key(revision: &str, ordinal: u32) -> String {\n    format!(\"{revision}:{ordinal}\")\n}",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 3,
-        "endBlock": 3,
-        "sourceStartByte": 54,
-        "sourceEndByte": 168,
-        "startChar": null,
-        "endChar": null,
-        "startLine": 1,
-        "endLine": 3
-      }
+      "id": "block-code-cache-key",
+      "noteId": "tidbit-code-cache-key",
+      "blockType": "codeBlock",
+      "headingContext": ["Block cache", "Rust", "Stable identifiers"],
+      "body": "fn block_cache_key(content_hash: &str, block_id: &str) -> String {\n    format!(\"{content_hash}:{block_id}\")\n}",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-formula-bayes",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-formula-bayes",
-      "evidenceAttachmentId": null,
+      "id": "block-formula-bayes",
+      "noteId": "tidbit-formula-bayes",
+      "blockType": "mathBlock",
       "headingContext": ["Bayes rule", "Probability"],
-      "content": "$$P(A|B) = \\frac{P(B|A)P(A)}{P(B)}$$",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 15,
-        "sourceEndByte": 59,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "$$P(A|B) = \\frac{P(B|A)P(A)}{P(B)}$$",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-source-sqlite",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-source-sqlite",
-      "evidenceAttachmentId": null,
+      "id": "block-source-sqlite",
+      "noteId": "tidbit-source-sqlite",
+      "blockType": "paragraph",
       "headingContext": ["FTS tokenizer reminder", "SQLite"],
-      "content": "FTS5 tokenizers decide how query terms and document text become searchable tokens.",
-      "sources": [
-        {
-          "label": "SQLite FTS5 documentation",
-          "domain": "sqlite.org"
-        }
-      ],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 10,
-        "sourceEndByte": 91,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "FTS5 tokenizers decide how query terms and document text become searchable tokens.\nhttps://sqlite.org",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-ocr-receipt",
-      "ownerKind": "ATTACHMENT",
-      "tidbitId": null,
-      "evidenceAttachmentId": "attachment-workshop-receipt",
+      "id": "block-ocr-receipt",
+      "noteId": "note-attachment-workshop-receipt",
+      "blockType": "image",
       "headingContext": [],
-      "content": "Invoice QZ-4817 — replacement bearings and ceramic lubricant — total 86.40.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "workshop-receipt.png",
-          "mediaType": "image/png"
-        }
-      ],
-      "locator": {
-        "kind": "OCR_REGION",
-        "region": {
-          "x": 84,
-          "y": 122,
-          "width": 1032,
-          "height": 214
-        }
-      }
+      "body": "",
+      "attachmentNames": ["workshop-receipt.png"],
+      "extractedText": "Invoice QZ-4817 — replacement bearings and ceramic lubricant — total 86.40."
     },
     {
-      "id": "passage-authored-transformer",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-transformer",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "Different attention heads can focus on distinct representation subspaces at different positions.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "transformer-notes.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 96,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "id": "block-file-transformer",
+      "noteId": "note-attachment-transformer-notes",
+      "blockType": "file",
+      "headingContext": [],
+      "body": "",
+      "attachmentNames": ["transformer-notes.txt"],
+      "extractedText": ""
     },
     {
-      "id": "passage-synonym-automobile",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-synonym-automobile",
-      "evidenceAttachmentId": null,
+      "id": "block-synonym-automobile",
+      "noteId": "tidbit-synonym-automobile",
+      "blockType": "paragraph",
       "headingContext": ["Automobile maintenance", "Seasonal checklist"],
-      "content": "An automobile upkeep schedule should include tire pressure, brake fluid, coolant, and battery inspection.",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 23,
-        "sourceEndByte": 126,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "An automobile upkeep schedule should include tire pressure, brake fluid, coolant, and battery inspection.",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-misspelling-concurrency",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-misspelling-concurrency",
-      "evidenceAttachmentId": null,
+      "id": "block-misspelling-concurrency",
+      "noteId": "tidbit-misspelling-concurrency",
+      "blockType": "paragraph",
       "headingContext": ["Concurrency limit", "Workers"],
-      "content": "A semaphore bounds concurrency by requiring each worker to hold a permit while expensive work is active.",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 12,
-        "sourceEndByte": 113,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "A semaphore bounds concurrency by requiring each worker to hold a permit while expensive work is active.",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-filename-model",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-filename-model",
-      "evidenceAttachmentId": null,
+      "id": "block-filename-model",
+      "noteId": "tidbit-filename-model",
+      "blockType": "paragraph",
       "headingContext": ["Embedding artifact", "Local models"],
-      "content": "The checked model manifest records its SHA-256 digest, dimensions, and tokenizer revision.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "jina-embeddings-v5-small.onnx",
-          "mediaType": "application/octet-stream"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 16,
-        "sourceEndByte": 105,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "The checked model manifest records its SHA-256 digest, dimensions, and tokenizer revision.",
+      "attachmentNames": ["jina-embeddings-v5-small.onnx"],
+      "extractedText": ""
     },
     {
-      "id": "passage-unicode-cafe",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-unicode-cafe",
-      "evidenceAttachmentId": null,
+      "id": "block-unicode-cafe",
+      "noteId": "tidbit-unicode-cafe",
+      "blockType": "codeBlock",
       "headingContext": ["Résumé review", "Writing"],
-      "content": "A naïve résumé draft mentioned the café project but omitted measurable outcomes.",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 11,
-        "sourceEndByte": 91,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "A naïve résumé draft mentioned the café project but omitted measurable outcomes.",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-code-resolve-citation",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-code-resolve-citation",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Trusted citation boundary", "TypeScript"],
-      "content": "const resolveCitationTarget = (passageId: string) => backend.resolveCitation(passageId);",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 2,
-        "endBlock": 2,
-        "sourceStartByte": 32,
-        "sourceEndByte": 121,
-        "startChar": null,
-        "endChar": null,
-        "startLine": 1,
-        "endLine": 1
-      }
+      "id": "block-code-open-link",
+      "noteId": "note-code-open-link",
+      "blockType": "codeBlock",
+      "headingContext": ["Stable block links", "TypeScript"],
+      "body": "const openBlockLink = (blockId: string) => navigate(`?blockId=${blockId}`);",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-formula-fourier",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-formula-fourier",
-      "evidenceAttachmentId": null,
+      "id": "block-formula-fourier",
+      "noteId": "tidbit-formula-fourier",
+      "blockType": "mathBlock",
       "headingContext": ["Fourier transform", "Signals"],
-      "content": "$$F(\\omega)=\\int_{-\\infty}^{\\infty} f(t)e^{-i\\omega t}\\,dt$$",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 10,
-        "sourceEndByte": 72,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "$$F(\\omega)=\\int_{-\\infty}^{\\infty} f(t)e^{-i\\omega t}\\,dt$$",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-prose-gardening",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-prose-gardening",
-      "evidenceAttachmentId": null,
+      "id": "block-prose-gardening",
+      "noteId": "tidbit-prose-gardening",
+      "blockType": "paragraph",
       "headingContext": ["Basil watering", "Herb garden"],
-      "content": "Check the top centimeter of soil before watering basil; drooping at noon can be temporary heat stress.",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 14,
-        "sourceEndByte": 114,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "Check the top centimeter of soil before watering basil; drooping at noon can be temporary heat stress.",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-phrase-dough",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-phrase-dough",
-      "evidenceAttachmentId": null,
+      "id": "block-phrase-dough",
+      "noteId": "tidbit-phrase-dough",
+      "blockType": "paragraph",
       "headingContext": ["Bread experiment", "Autolyse"],
-      "content": "Resting dough before kneading lets flour hydrate and makes the dough easier to stretch.",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 10,
-        "sourceEndByte": 94,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "Resting dough before kneading lets flour hydrate and makes the dough easier to stretch.",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-source-rust",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-source-rust",
-      "evidenceAttachmentId": null,
+      "id": "block-source-rust",
+      "noteId": "tidbit-source-rust",
+      "blockType": "paragraph",
       "headingContext": ["Rust iterator note", "Ownership"],
-      "content": "Iterator adaptors are lazy and do nothing until a consuming adaptor requests values.",
-      "sources": [
-        {
-          "label": "Rust standard library",
-          "domain": "doc.rust-lang.org"
-        }
-      ],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 1,
-        "endBlock": 1,
-        "sourceStartByte": 12,
-        "sourceEndByte": 94,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "Iterator adaptors are lazy and do nothing until a consuming adaptor requests values.\nhttps://doc.rust-lang.org",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-authored-release-log",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-release-log",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "The cobalt_index rebuild completed successfully after the schema promotion.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "release-notes.log",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 75,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "id": "block-file-release-log",
+      "noteId": "note-attachment-release-log",
+      "blockType": "file",
+      "headingContext": [],
+      "body": "",
+      "attachmentNames": ["release-notes.log"],
+      "extractedText": ""
     },
     {
-      "id": "passage-authored-vector-clock",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-authored-vector-clock",
-      "evidenceAttachmentId": null,
+      "id": "block-authored-vector-clock",
+      "noteId": "tidbit-authored-vector-clock",
+      "blockType": "paragraph",
       "headingContext": ["Vector clock takeaway", "Distributed systems", "Practical rule"],
-      "content": "My takeaway: vector clock reconciliation preserves causal order. Start with this authored checklist before consulting archival appendices.",
-      "sources": [],
-      "attachments": [],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 2,
-        "endBlock": 2,
-        "sourceStartByte": 31,
-        "sourceEndByte": 164,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "body": "My takeaway: vector clock reconciliation preserves causal order. Start with this authored checklist before consulting archival appendices.",
+      "attachmentNames": [],
+      "extractedText": ""
     },
     {
-      "id": "passage-authored-distributed-110",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-distributed-110",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "Vector clock reconciliation preserves causal order across replicas while concurrent writes remain distinguishable.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "distributed-systems-reader.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 114,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "id": "block-file-distributed-reader",
+      "noteId": "note-attachment-distributed-reader",
+      "blockType": "file",
+      "headingContext": [],
+      "body": "",
+      "attachmentNames": ["distributed-systems-reader.txt"],
+      "extractedText": ""
     },
     {
-      "id": "passage-authored-distributed-111",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-distributed-111",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "Vector clock reconciliation can expose causal order before replicas exchange every archived write.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "distributed-systems-reader.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 98,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
-    },
-    {
-      "id": "passage-authored-distributed-112",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-distributed-112",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "A vector clock records causal order by incrementing replica counters during reconciliation.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "distributed-systems-reader.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 91,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
-    },
-    {
-      "id": "passage-authored-distributed-113",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-distributed-113",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "Lease fencing uses token epoch 47 so a superseded writer cannot commit after reconciliation.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "distributed-systems-reader.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 92,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
-    },
-    {
-      "id": "passage-authored-distributed-114",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-distributed-114",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "Archived examples compare vector clock reconciliation with wall-clock ordering and causal broadcast.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "distributed-systems-reader.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 100,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
-    },
-    {
-      "id": "passage-authored-distributed-115",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-distributed-115",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "Exercises ask whether vector clock reconciliation preserves causal order under delayed delivery.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "distributed-systems-reader.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 96,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
-    },
-    {
-      "id": "passage-authored-conference-clock",
-      "ownerKind": "AUTHOR",
-      "tidbitId": "tidbit-conference-clock",
-      "evidenceAttachmentId": null,
-      "headingContext": ["Authored notes"],
-      "content": "Conference notes summarize how vector clock reconciliation identifies causal order without synchronized clocks.",
-      "sources": [],
-      "attachments": [
-        {
-          "filename": "conference-notes.txt",
-          "mediaType": "text/plain"
-        }
-      ],
-      "locator": {
-        "kind": "MARKDOWN_BLOCKS",
-        "startBlock": 0,
-        "endBlock": 0,
-        "sourceStartByte": 0,
-        "sourceEndByte": 111,
-        "startChar": null,
-        "endChar": null,
-        "startLine": null,
-        "endLine": null
-      }
+      "id": "block-file-conference-clock",
+      "noteId": "note-attachment-conference-notes",
+      "blockType": "file",
+      "headingContext": [],
+      "body": "",
+      "attachmentNames": ["conference-notes.txt"],
+      "extractedText": ""
     }
   ],
   "queries": [
@@ -606,53 +193,27 @@
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-heat-modern",
+          "blockId": "block-heat-modern",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-heat-caloric"],
-      "expectedCitation": {
-        "passageId": "passage-heat-modern",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 2,
-          "endBlock": 2,
-          "sourceStartByte": 36,
-          "sourceEndByte": 174,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "mustNotRank": ["block-heat-caloric"],
+      "expectedBlockId": "block-heat-modern"
     },
     {
       "id": "query-cache-identifier",
-      "text": "passage_cache_key",
+      "text": "block_cache_key",
       "searchMode": "DEFAULT",
       "category": "CODE_IDENTIFIER",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-code-cache-key",
+          "blockId": "block-code-cache-key",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-code-cache-key",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 3,
-          "endBlock": 3,
-          "sourceStartByte": 54,
-          "sourceEndByte": 168,
-          "startChar": null,
-          "endChar": null,
-          "startLine": 1,
-          "endLine": 3
-        }
-      }
+      "expectedBlockId": "block-code-cache-key"
     },
     {
       "id": "query-bayes-formula",
@@ -662,53 +223,27 @@
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-formula-bayes",
+          "blockId": "block-formula-bayes",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-formula-fourier"],
-      "expectedCitation": {
-        "passageId": "passage-formula-bayes",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 15,
-          "sourceEndByte": 59,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "mustNotRank": ["block-formula-fourier"],
+      "expectedBlockId": "block-formula-bayes"
     },
     {
       "id": "query-sqlite-domain",
       "text": "sqlite.org FTS5 tokenizer",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "LINK",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-source-sqlite",
+          "blockId": "block-source-sqlite",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-source-rust"],
-      "expectedCitation": {
-        "passageId": "passage-source-sqlite",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 10,
-          "sourceEndByte": 91,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "mustNotRank": ["block-source-rust"],
+      "expectedBlockId": "block-source-sqlite"
     },
     {
       "id": "query-ocr-invoice",
@@ -718,51 +253,27 @@
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-ocr-receipt",
+          "blockId": "block-ocr-receipt",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-ocr-receipt",
-        "locator": {
-          "kind": "OCR_REGION",
-          "region": {
-            "x": 84,
-            "y": 122,
-            "width": 1032,
-            "height": 214
-          }
-        }
-      }
+      "expectedBlockId": "block-ocr-receipt"
     },
     {
-      "id": "query-transformer-attention",
-      "text": "attention heads representation subspaces page 42",
+      "id": "query-file-attention",
+      "text": "transformer-notes.txt",
       "searchMode": "DEFAULT",
-      "category": "PROSE",
-      "retrievalNeed": "BOTH",
+      "category": "ATTACHMENT_FILENAME",
+      "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-authored-transformer",
+          "blockId": "block-file-transformer",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-authored-transformer",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 0,
-          "endBlock": 0,
-          "sourceStartByte": 0,
-          "sourceEndByte": 96,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-file-transformer"
     },
     {
       "id": "query-car-upkeep",
@@ -772,25 +283,12 @@
       "retrievalNeed": "SEMANTIC",
       "relevance": [
         {
-          "passageId": "passage-synonym-automobile",
+          "blockId": "block-synonym-automobile",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-synonym-automobile",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 23,
-          "sourceEndByte": 126,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-synonym-automobile"
     },
     {
       "id": "query-concurrency-misspelling",
@@ -800,25 +298,12 @@
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-misspelling-concurrency",
+          "blockId": "block-misspelling-concurrency",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-misspelling-concurrency",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 12,
-          "sourceEndByte": 113,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-misspelling-concurrency"
     },
     {
       "id": "query-obsolete-caloric",
@@ -828,53 +313,27 @@
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-heat-caloric",
+          "blockId": "block-heat-caloric",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-heat-modern"],
-      "expectedCitation": {
-        "passageId": "passage-heat-caloric",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 29,
-          "sourceEndByte": 137,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "mustNotRank": ["block-heat-modern"],
+      "expectedBlockId": "block-heat-caloric"
     },
     {
-      "id": "query-resolve-citation-exact",
-      "text": "resolveCitationTarget",
+      "id": "query-block-link-exact",
+      "text": "openBlockLink",
       "searchMode": "EXACT",
       "category": "EXACT",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-code-resolve-citation",
+          "blockId": "block-code-open-link",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-code-resolve-citation",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 2,
-          "endBlock": 2,
-          "sourceStartByte": 32,
-          "sourceEndByte": 121,
-          "startChar": null,
-          "endChar": null,
-          "startLine": 1,
-          "endLine": 1
-        }
-      }
+      "expectedBlockId": "block-code-open-link"
     },
     {
       "id": "query-unicode-diacritics",
@@ -884,53 +343,27 @@
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-unicode-cafe",
+          "blockId": "block-unicode-cafe",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-unicode-cafe",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 11,
-          "sourceEndByte": 91,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-unicode-cafe"
     },
     {
       "id": "query-model-filename",
       "text": "jina-embeddings-v5-small.onnx tokenizer digest",
       "searchMode": "EXACT",
-      "category": "FILE_NAME",
+      "category": "EXACT",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-filename-model",
+          "blockId": "block-filename-model",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-filename-model",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 16,
-          "sourceEndByte": 105,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-filename-model"
     },
     {
       "id": "query-herb-hydration",
@@ -940,25 +373,12 @@
       "retrievalNeed": "SEMANTIC",
       "relevance": [
         {
-          "passageId": "passage-prose-gardening",
+          "blockId": "block-prose-gardening",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-prose-gardening",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 14,
-          "sourceEndByte": 114,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-prose-gardening"
     },
     {
       "id": "query-dough-phrase",
@@ -968,25 +388,12 @@
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-phrase-dough",
+          "blockId": "block-phrase-dough",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-phrase-dough",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 10,
-          "sourceEndByte": 94,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-phrase-dough"
     },
     {
       "id": "query-fourier-formula",
@@ -996,53 +403,27 @@
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-formula-fourier",
+          "blockId": "block-formula-fourier",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-formula-bayes"],
-      "expectedCitation": {
-        "passageId": "passage-formula-fourier",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 10,
-          "sourceEndByte": 72,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "mustNotRank": ["block-formula-bayes"],
+      "expectedBlockId": "block-formula-fourier"
     },
     {
       "id": "query-rust-domain",
       "text": "doc.rust-lang.org lazy iterator adaptor",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "LINK",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-source-rust",
+          "blockId": "block-source-rust",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-source-sqlite"],
-      "expectedCitation": {
-        "passageId": "passage-source-rust",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 12,
-          "sourceEndByte": 94,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "mustNotRank": ["block-source-sqlite"],
+      "expectedBlockId": "block-source-rust"
     },
     {
       "id": "query-heat-models",
@@ -1052,121 +433,61 @@
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-heat-modern",
+          "blockId": "block-heat-modern",
           "grade": 3
         },
         {
-          "passageId": "passage-heat-caloric",
+          "blockId": "block-heat-caloric",
           "grade": 1
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-heat-modern",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 2,
-          "endBlock": 2,
-          "sourceStartByte": 36,
-          "sourceEndByte": 174,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-heat-modern"
     },
     {
-      "id": "query-authored-release-log",
-      "text": "cobalt_index release-notes.log",
+      "id": "query-file-release-log",
+      "text": "release-notes.log",
       "searchMode": "DEFAULT",
-      "category": "EXACT",
+      "category": "ATTACHMENT_FILENAME",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-authored-release-log",
+          "blockId": "block-file-release-log",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-authored-release-log",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 0,
-          "endBlock": 0,
-          "sourceStartByte": 0,
-          "sourceEndByte": 75,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-file-release-log"
     },
     {
-      "id": "query-authored-over-volume",
+      "id": "query-authored-over-file-volume",
       "text": "vector clock reconciliation causal order",
       "searchMode": "DEFAULT",
-      "category": "MEDIA_VOLUME",
+      "category": "RANKING",
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-authored-vector-clock",
+          "blockId": "block-authored-vector-clock",
           "grade": 3
-        },
-        {
-          "passageId": "passage-authored-distributed-110",
-          "grade": 2
-        },
-        {
-          "passageId": "passage-authored-conference-clock",
-          "grade": 1
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-authored-vector-clock",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 2,
-          "endBlock": 2,
-          "sourceStartByte": 31,
-          "sourceEndByte": 164,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-authored-vector-clock"
     },
     {
-      "id": "query-lease-fencing",
-      "text": "lease fencing token epoch 47",
+      "id": "query-file-fencing-name",
+      "text": "distributed-systems-reader.txt",
       "searchMode": "DEFAULT",
-      "category": "PROSE",
-      "retrievalNeed": "BOTH",
+      "category": "ATTACHMENT_FILENAME",
+      "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-authored-distributed-113",
+          "blockId": "block-file-distributed-reader",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-authored-distributed-113",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 0,
-          "endBlock": 0,
-          "sourceStartByte": 0,
-          "sourceEndByte": 92,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-file-distributed-reader"
     },
     {
       "id": "query-particle-distribution",
@@ -1176,25 +497,12 @@
       "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-heat-modern",
+          "blockId": "block-heat-modern",
           "grade": 3
         }
       ],
-      "mustNotRank": ["passage-heat-caloric"],
-      "expectedCitation": {
-        "passageId": "passage-heat-modern",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 2,
-          "endBlock": 2,
-          "sourceStartByte": 36,
-          "sourceEndByte": 174,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "mustNotRank": ["block-heat-caloric"],
+      "expectedBlockId": "block-heat-modern"
     },
     {
       "id": "query-receipt-total",
@@ -1204,79 +512,42 @@
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-ocr-receipt",
+          "blockId": "block-ocr-receipt",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-ocr-receipt",
-        "locator": {
-          "kind": "OCR_REGION",
-          "region": {
-            "x": 84,
-            "y": 122,
-            "width": 1032,
-            "height": 214
-          }
-        }
-      }
+      "expectedBlockId": "block-ocr-receipt"
     },
     {
       "id": "query-stale-writer",
-      "text": "how do I stop an old lease holder from writing",
+      "text": "distributed systems reader txt",
       "searchMode": "DEFAULT",
-      "category": "SYNONYM",
-      "retrievalNeed": "SEMANTIC",
+      "category": "ATTACHMENT_FILENAME",
+      "retrievalNeed": "BOTH",
       "relevance": [
         {
-          "passageId": "passage-authored-distributed-113",
+          "blockId": "block-file-distributed-reader",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-authored-distributed-113",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 0,
-          "endBlock": 0,
-          "sourceStartByte": 0,
-          "sourceEndByte": 92,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-file-distributed-reader"
     },
     {
-      "id": "query-citation-function",
-      "text": "backend.resolveCitation passageId",
+      "id": "query-block-link-function",
+      "text": "openBlockLink blockId",
       "searchMode": "DEFAULT",
       "category": "CODE_IDENTIFIER",
       "retrievalNeed": "LEXICAL",
       "relevance": [
         {
-          "passageId": "passage-code-resolve-citation",
+          "blockId": "block-code-open-link",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-code-resolve-citation",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 2,
-          "endBlock": 2,
-          "sourceStartByte": 32,
-          "sourceEndByte": 121,
-          "startChar": null,
-          "endChar": null,
-          "startLine": 1,
-          "endLine": 1
-        }
-      }
+      "expectedBlockId": "block-code-open-link"
     },
     {
       "id": "query-expensive-worker-limit",
@@ -1286,25 +557,12 @@
       "retrievalNeed": "SEMANTIC",
       "relevance": [
         {
-          "passageId": "passage-misspelling-concurrency",
+          "blockId": "block-misspelling-concurrency",
           "grade": 3
         }
       ],
       "mustNotRank": [],
-      "expectedCitation": {
-        "passageId": "passage-misspelling-concurrency",
-        "locator": {
-          "kind": "MARKDOWN_BLOCKS",
-          "startBlock": 1,
-          "endBlock": 1,
-          "sourceStartByte": 12,
-          "sourceEndByte": 113,
-          "startChar": null,
-          "endChar": null,
-          "startLine": null,
-          "endLine": null
-        }
-      }
+      "expectedBlockId": "block-misspelling-concurrency"
     }
   ]
 }

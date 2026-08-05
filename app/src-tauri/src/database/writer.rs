@@ -69,7 +69,7 @@ pub struct DatabaseDiagnostics {
 }
 
 pub(crate) struct LexicalBenchmarkAttachmentWrite {
-    pub revision_id: String,
+    pub content_version_id: String,
     pub attachment_id: String,
     pub created_at_ms: i64,
     pub display_filename: String,
@@ -1268,14 +1268,14 @@ impl DatabaseClient {
         input: super::TidbitDraft,
         now_ms: i64,
         tidbit_id: String,
-        revision_id: String,
+        content_version_id: String,
         source_ids: Vec<String>,
     ) -> Result<Tidbit> {
         self.create_tidbit(CreateTidbitWrite {
             input,
             now_ms,
             tidbit_id,
-            revision_id,
+            content_version_id,
             source_ids,
         })
     }
@@ -1460,7 +1460,7 @@ impl DatabaseClient {
     pub(crate) fn save_working_copy_for_test(
         &self,
         note_id: String,
-        base_revision_id: Option<String>,
+        base_content_version_id: Option<String>,
         edit_generation: i64,
         body_markdown: String,
         sources: Vec<super::SourceDraft>,
@@ -1470,7 +1470,7 @@ impl DatabaseClient {
             input: super::SaveWorkingCopyInput {
                 document_json: super::document::fixture_from_markdown(&body_markdown),
                 note_id,
-                base_revision_id,
+                base_content_version_id,
                 edit_generation,
                 body_markdown,
                 sources,
@@ -1489,7 +1489,7 @@ impl DatabaseClient {
         note_id: String,
         expected_edit_generation: i64,
         now_ms: i64,
-        revision_id: String,
+        content_version_id: String,
         source_ids: Vec<String>,
     ) -> Result<WorkingCopyCheckpointResult> {
         self.checkpoint_working_copy(CheckpointWorkingCopyWrite {
@@ -1498,7 +1498,7 @@ impl DatabaseClient {
                 expected_edit_generation,
             },
             now_ms,
-            revision_id,
+            content_version_id,
             source_ids,
         })
     }
@@ -1566,8 +1566,8 @@ pub(super) fn install_lexical_benchmark_attachments(
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for write in writes {
         let owner_note_id = transaction.query_row(
-            "SELECT id FROM tidbit WHERE current_revision_id = ?1",
-            params![&write.revision_id],
+            "SELECT id FROM tidbit WHERE content_version_id = ?1",
+            params![&write.content_version_id],
             |row| row.get::<_, String>(0),
         )?;
         let owner_block_id = format!("benchmark-attachment-{}", write.attachment_id);
@@ -1616,36 +1616,34 @@ pub(super) fn install_lexical_benchmark_attachments(
             block_search::search_content_hash(block_type, "", "", &write.display_filename, "");
         let indexed = transaction.execute(
             "INSERT INTO block_search_document(
-                tidbit_id, tidbit_revision_id, block_id, block_ordinal, block_type,
+                tidbit_id, block_id, block_ordinal, block_type,
                 heading_context, body, attachment_names, extracted_text,
                 content_hash, updated_at
              )
              SELECT
-                tidbit.id, revision.id, ?1,
+                tidbit.id, ?1,
                 coalesce((
                     SELECT max(existing.block_ordinal) + 1
                     FROM block_search_document AS existing
                     WHERE existing.tidbit_id = tidbit.id
                 ), 0),
                 ?2, '', '', ?3, '', ?4, tidbit.updated_at
-             FROM tidbit_revision AS revision
-             JOIN tidbit ON tidbit.id = revision.tidbit_id
-             WHERE revision.id = ?5
-               AND tidbit.current_revision_id = revision.id
+             FROM tidbit
+             WHERE tidbit.content_version_id = ?5
                AND tidbit.deleted_at IS NULL",
             params![
                 &owner_block_id,
                 block_type,
                 &write.display_filename,
                 search_hash,
-                &write.revision_id,
+                &write.content_version_id,
             ],
         )?;
         if indexed != 1 {
             return Err(DatabaseError::Validation {
                 kind: "main",
                 reason: format!(
-                    "benchmark attachment {} has no active owning revision",
+                    "benchmark attachment {} has no active owning note version",
                     write.attachment_id
                 ),
             });

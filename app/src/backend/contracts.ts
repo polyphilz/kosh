@@ -337,12 +337,12 @@ export interface SourceDraft {
 
 export interface DeleteTidbitInput {
   id: string;
-  expectedRevisionId: string;
+  expectedContentVersionId: string;
 }
 
 export interface RestoreTidbitInput {
   id: string;
-  expectedRevisionId: string;
+  expectedContentVersionId: string;
 }
 
 export type LexicalSearchMode = "DEFAULT" | "EXACT";
@@ -434,7 +434,7 @@ export const DEFAULT_KEYBOARD_BINDINGS: readonly KeyboardBinding[] = [
 
 export interface SaveWorkingCopyInput {
   noteId: string;
-  baseRevisionId: string | null;
+  baseContentVersionId: string | null;
   editGeneration: number;
   documentJson: string;
   bodyMarkdown: string;
@@ -538,8 +538,8 @@ export interface TidbitSource {
 
 export interface TidbitRecord {
   id: string;
-  currentRevisionId: string;
-  revisionNumber: number;
+  contentVersionId: string;
+  versionNumber: number;
   createdAtMs: number;
   updatedAtMs: number;
   deletedAtMs: number | null;

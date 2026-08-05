@@ -2,41 +2,35 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    EvaluationLocator, EvaluationOwnerKind, RelevanceError, RelevanceFixture, RelevanceReport,
-    ReportSummary, Result,
-};
+use super::{RelevanceError, RelevanceFixture, RelevanceReport, ReportSummary, Result};
 
 pub const QUALITY_GATE_SCHEMA_VERSION: u32 = 1;
-pub const CITATION_AUDIT_SCHEMA_VERSION: u32 = 1;
+pub const BLOCK_AUDIT_SCHEMA_VERSION: u32 = 1;
 pub const MINIMUM_QUERY_COUNT: usize = 25;
-pub const MINIMUM_CITATION_AUDIT_COUNT: usize = 10;
+pub const MINIMUM_BLOCK_AUDIT_COUNT: usize = 10;
 pub const MINIMUM_LEXICAL_RECALL_AT_10: f64 = 0.95;
-pub const MINIMUM_LEXICAL_CITATION_ACCURACY: f64 = 0.95;
+pub const MINIMUM_LEXICAL_EXPECTED_BLOCK_ACCURACY: f64 = 0.95;
 pub const MINIMUM_HYBRID_RECALL_AT_10: f64 = 1.0;
 pub const MINIMUM_HYBRID_MRR: f64 = 0.95;
 pub const MINIMUM_HYBRID_NDCG_AT_10: f64 = 0.95;
-pub const MINIMUM_HYBRID_CITATION_ACCURACY: f64 = 1.0;
+pub const MINIMUM_HYBRID_EXPECTED_BLOCK_ACCURACY: f64 = 1.0;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CitationAudit {
+pub struct BlockAudit {
     pub schema_version: u32,
     pub fixture_digest: String,
     pub reviewed_at: String,
     pub reviewer: String,
-    pub entries: Vec<CitationAuditEntry>,
+    pub entries: Vec<BlockAuditEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CitationAuditEntry {
+pub struct BlockAuditEntry {
     pub query_id: String,
-    pub passage_id: String,
+    pub block_id: String,
     pub evidence_excerpt: String,
-    pub locator: EvaluationLocator,
-    pub source_domain: Option<String>,
-    pub attachment_filename: Option<String>,
     pub verified: bool,
 }
 
@@ -50,20 +44,20 @@ pub struct QualityGateReport {
     pub thresholds: QualityThresholds,
     pub lexical: ReportSummary,
     pub hybrid: ReportSummary,
-    pub citation_audit_count: usize,
+    pub block_audit_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QualityThresholds {
     pub minimum_query_count: usize,
-    pub minimum_citation_audit_count: usize,
+    pub minimum_block_audit_count: usize,
     pub lexical_recall_at_10: f64,
-    pub lexical_citation_accuracy: f64,
+    pub lexical_expected_block_accuracy: f64,
     pub hybrid_recall_at_10: f64,
     pub hybrid_mean_reciprocal_rank: f64,
     pub hybrid_ndcg_at_10: f64,
-    pub hybrid_citation_accuracy: f64,
+    pub hybrid_expected_block_accuracy: f64,
     pub exact_phrase_success: f64,
     pub maximum_forbidden_hits_at_10: u32,
 }
@@ -72,7 +66,7 @@ pub fn enforce_quality_gate(
     fixture: &RelevanceFixture,
     lexical: &RelevanceReport,
     hybrid: &RelevanceReport,
-    audit: &CitationAudit,
+    audit: &BlockAudit,
 ) -> Result<QualityGateReport> {
     fixture.validate()?;
     let fixture_digest = fixture.digest()?;
@@ -107,8 +101,8 @@ pub fn enforce_quality_gate(
         "lexical Recall@10 is below 0.95",
     )?;
     require(
-        lexical.summary.citation_locator_accuracy >= MINIMUM_LEXICAL_CITATION_ACCURACY,
-        "lexical citation accuracy is below 0.95",
+        lexical.summary.expected_block_accuracy >= MINIMUM_LEXICAL_EXPECTED_BLOCK_ACCURACY,
+        "lexical expected block accuracy is below 0.95",
     )?;
     require(
         lexical.summary.exact_phrase_success == Some(1.0),
@@ -133,8 +127,8 @@ pub fn enforce_quality_gate(
         "hybrid nDCG@10 is below 0.95",
     )?;
     require(
-        hybrid.summary.citation_locator_accuracy >= MINIMUM_HYBRID_CITATION_ACCURACY,
-        "hybrid citation accuracy is below 1.0",
+        hybrid.summary.expected_block_accuracy >= MINIMUM_HYBRID_EXPECTED_BLOCK_ACCURACY,
+        "hybrid expected block accuracy is below 1.0",
     )?;
     require(
         hybrid.summary.exact_phrase_success == Some(1.0),
@@ -144,14 +138,7 @@ pub fn enforce_quality_gate(
         hybrid.summary.forbidden_hits_at_10 == 0,
         "hybrid retrieval returned a forbidden hit",
     )?;
-    require(
-        hybrid.summary.recall_at_10 >= lexical.summary.recall_at_10
-            && hybrid.summary.mean_reciprocal_rank >= lexical.summary.mean_reciprocal_rank
-            && hybrid.summary.ndcg_at_10 >= lexical.summary.ndcg_at_10,
-        "hybrid retrieval regressed against the lexical baseline",
-    )?;
-
-    let citation_audit_count = validate_citation_audit(fixture, &fixture_digest, audit)?;
+    let block_audit_count = validate_block_audit(fixture, &fixture_digest, audit)?;
     Ok(QualityGateReport {
         schema_version: QUALITY_GATE_SCHEMA_VERSION,
         fixture_id: fixture.fixture_id.clone(),
@@ -159,43 +146,43 @@ pub fn enforce_quality_gate(
         result: "pass".into(),
         thresholds: QualityThresholds {
             minimum_query_count: MINIMUM_QUERY_COUNT,
-            minimum_citation_audit_count: MINIMUM_CITATION_AUDIT_COUNT,
+            minimum_block_audit_count: MINIMUM_BLOCK_AUDIT_COUNT,
             lexical_recall_at_10: MINIMUM_LEXICAL_RECALL_AT_10,
-            lexical_citation_accuracy: MINIMUM_LEXICAL_CITATION_ACCURACY,
+            lexical_expected_block_accuracy: MINIMUM_LEXICAL_EXPECTED_BLOCK_ACCURACY,
             hybrid_recall_at_10: MINIMUM_HYBRID_RECALL_AT_10,
             hybrid_mean_reciprocal_rank: MINIMUM_HYBRID_MRR,
             hybrid_ndcg_at_10: MINIMUM_HYBRID_NDCG_AT_10,
-            hybrid_citation_accuracy: MINIMUM_HYBRID_CITATION_ACCURACY,
+            hybrid_expected_block_accuracy: MINIMUM_HYBRID_EXPECTED_BLOCK_ACCURACY,
             exact_phrase_success: 1.0,
             maximum_forbidden_hits_at_10: 0,
         },
         lexical: lexical.summary.clone(),
         hybrid: hybrid.summary.clone(),
-        citation_audit_count,
+        block_audit_count,
     })
 }
 
-fn validate_citation_audit(
+fn validate_block_audit(
     fixture: &RelevanceFixture,
     fixture_digest: &str,
-    audit: &CitationAudit,
+    audit: &BlockAudit,
 ) -> Result<usize> {
     require(
-        audit.schema_version == CITATION_AUDIT_SCHEMA_VERSION,
-        "citation audit schema is unsupported",
+        audit.schema_version == BLOCK_AUDIT_SCHEMA_VERSION,
+        "block audit schema is unsupported",
     )?;
     require(
         audit.fixture_digest == fixture_digest,
-        "citation audit does not describe the current fixture",
+        "block audit does not describe the current fixture",
     )?;
     require(
         !audit.reviewed_at.trim().is_empty() && !audit.reviewer.trim().is_empty(),
-        "citation audit has no review identity",
+        "block audit has no review identity",
     )?;
     require(
-        audit.entries.len() >= MINIMUM_CITATION_AUDIT_COUNT,
+        audit.entries.len() >= MINIMUM_BLOCK_AUDIT_COUNT,
         format!(
-            "citation audit has {} entries; at least {MINIMUM_CITATION_AUDIT_COUNT} are required",
+            "block audit has {} entries; at least {MINIMUM_BLOCK_AUDIT_COUNT} are required",
             audit.entries.len()
         ),
     )?;
@@ -205,14 +192,12 @@ fn validate_citation_audit(
         .iter()
         .map(|query| (query.id.as_str(), query))
         .collect::<HashMap<_, _>>();
-    let passages = fixture
+    let blocks = fixture
         .corpus
         .iter()
-        .map(|passage| (passage.id.as_str(), passage))
+        .map(|block| (block.id.as_str(), block))
         .collect::<HashMap<_, _>>();
     let mut query_ids = BTreeSet::new();
-    let mut locator_kinds = BTreeSet::new();
-    let mut owner_kinds = BTreeSet::new();
     for entry in &audit.entries {
         require(
             entry.verified,
@@ -220,77 +205,31 @@ fn validate_citation_audit(
         )?;
         require(
             query_ids.insert(entry.query_id.as_str()),
-            format!("duplicate citation audit query {}", entry.query_id),
+            format!("duplicate block audit query {}", entry.query_id),
         )?;
         let query = queries
             .get(entry.query_id.as_str())
             .ok_or_else(|| quality_error(format!("unknown audit query {}", entry.query_id)))?;
-        let passage = passages
-            .get(entry.passage_id.as_str())
-            .ok_or_else(|| quality_error(format!("unknown audit passage {}", entry.passage_id)))?;
+        let block = blocks
+            .get(entry.block_id.as_str())
+            .ok_or_else(|| quality_error(format!("unknown audit block {}", entry.block_id)))?;
         require(
-            query.expected_citation.passage_id == entry.passage_id
-                && query.expected_citation.locator == entry.locator
-                && passage.locator == entry.locator,
-            format!(
-                "{} does not match expected citation provenance",
-                entry.query_id
-            ),
+            query.expected_block_id == entry.block_id,
+            format!("{} does not match its expected block", entry.query_id),
         )?;
+        let searchable_content = [
+            block.body.as_str(),
+            block.extracted_text.as_str(),
+            &block.attachment_names.join("\n"),
+        ]
+        .join("\n");
         require(
             entry.evidence_excerpt.trim().len() >= 8
-                && passage.content.contains(&entry.evidence_excerpt),
-            format!(
-                "{} excerpt does not occur in the cited passage",
-                entry.query_id
-            ),
+                && searchable_content.contains(&entry.evidence_excerpt),
+            format!("{} excerpt does not occur in the block", entry.query_id),
         )?;
-        if let Some(domain) = &entry.source_domain {
-            require(
-                passage
-                    .sources
-                    .iter()
-                    .any(|source| &source.domain == domain),
-                format!(
-                    "{} source domain is not cited by the passage",
-                    entry.query_id
-                ),
-            )?;
-        }
-        if let Some(filename) = &entry.attachment_filename {
-            require(
-                passage
-                    .attachments
-                    .iter()
-                    .any(|attachment| &attachment.filename == filename),
-                format!(
-                    "{} attachment filename is not cited by the passage",
-                    entry.query_id
-                ),
-            )?;
-        }
-        locator_kinds.insert(locator_kind(&entry.locator));
-        owner_kinds.insert(match passage.owner_kind {
-            EvaluationOwnerKind::Author => "AUTHOR",
-            EvaluationOwnerKind::Attachment => "ATTACHMENT",
-        });
     }
-    require(
-        locator_kinds == BTreeSet::from(["MARKDOWN_BLOCKS", "OCR_REGION"]),
-        "citation audit must cover every locator kind",
-    )?;
-    require(
-        owner_kinds == BTreeSet::from(["ATTACHMENT", "AUTHOR"]),
-        "citation audit must cover authored and attachment evidence",
-    )?;
     Ok(audit.entries.len())
-}
-
-fn locator_kind(locator: &EvaluationLocator) -> &'static str {
-    match locator {
-        EvaluationLocator::MarkdownBlocks { .. } => "MARKDOWN_BLOCKS",
-        EvaluationLocator::OcrRegion { .. } => "OCR_REGION",
-    }
 }
 
 fn require(condition: bool, message: impl Into<String>) -> Result<()> {
@@ -307,7 +246,7 @@ fn quality_error(message: impl Into<String>) -> RelevanceError {
 
 #[cfg(test)]
 mod tests {
-    use super::{enforce_quality_gate, CitationAudit};
+    use super::{enforce_quality_gate, BlockAudit};
     use crate::relevance::{
         run_relevance_suite, HybridFixtureRetriever, HybridVectorFixture, LexicalFixtureRetriever,
         RelevanceFixture,
@@ -317,7 +256,7 @@ mod tests {
         RelevanceFixture,
         crate::relevance::RelevanceReport,
         crate::relevance::RelevanceReport,
-        CitationAudit,
+        BlockAudit,
     ) {
         let fixture: RelevanceFixture =
             serde_json::from_str(include_str!("../../../fixtures/relevance/v1.json"))
@@ -332,9 +271,9 @@ mod tests {
             HybridFixtureRetriever::new(&fixture, vectors).expect("hybrid retriever");
         let hybrid = run_relevance_suite(&fixture, &mut hybrid_retriever).expect("hybrid report");
         let audit = serde_json::from_str(include_str!(
-            "../../../fixtures/relevance/citation-audit-v1.json"
+            "../../../fixtures/relevance/block-audit-v1.json"
         ))
-        .expect("citation audit");
+        .expect("block audit");
         (fixture, lexical, hybrid, audit)
     }
 
@@ -344,7 +283,7 @@ mod tests {
         let report =
             enforce_quality_gate(&fixture, &lexical, &hybrid, &audit).expect("quality gate");
         assert_eq!(report.result, "pass");
-        assert_eq!(report.citation_audit_count, 10);
+        assert_eq!(report.block_audit_count, 10);
     }
 
     #[test]

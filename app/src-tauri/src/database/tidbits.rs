@@ -31,14 +31,14 @@ pub struct TidbitDraft {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteTidbitInput {
     pub id: String,
-    pub expected_revision_id: String,
+    pub expected_content_version_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RestoreTidbitInput {
     pub id: String,
-    pub expected_revision_id: String,
+    pub expected_content_version_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -53,8 +53,8 @@ pub struct TidbitSource {
 #[serde(rename_all = "camelCase")]
 pub struct Tidbit {
     pub id: String,
-    pub current_revision_id: String,
-    pub revision_number: i64,
+    pub content_version_id: String,
+    pub version_number: i64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub deleted_at_ms: Option<i64>,
@@ -71,7 +71,7 @@ pub(super) struct PreparedSource {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct PreparedRevision {
+pub(super) struct PreparedNoteContent {
     pub(super) document_json: String,
     pub(super) document: document::DocumentAnalysis,
     pub(super) body_markdown: String,
@@ -83,7 +83,7 @@ pub(crate) struct CreateTidbitWrite {
     pub input: TidbitDraft,
     pub now_ms: i64,
     pub tidbit_id: String,
-    pub revision_id: String,
+    pub content_version_id: String,
     pub source_ids: Vec<String>,
 }
 
@@ -93,8 +93,8 @@ pub(super) fn create_tidbit(
 ) -> Result<Tidbit> {
     validate_timestamp(write.now_ms, "nowMs")?;
     validate_uuid_v7(&write.tidbit_id, "tidbitId")?;
-    validate_uuid_v7(&write.revision_id, "revisionId")?;
-    let prepared = prepare_revision(
+    validate_uuid_v7(&write.content_version_id, "contentVersionId")?;
+    let prepared = prepare_note_content(
         write.input.document_json,
         write.input.body_markdown,
         write.input.sources,
@@ -104,13 +104,13 @@ pub(super) fn create_tidbit(
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute(
         "INSERT INTO tidbit(
-            id, created_at, updated_at, current_revision_id, revision_number,
+            id, created_at, updated_at, content_version_id, version_number,
             document_json, body_markdown, content_hash
          ) VALUES(?1, ?2, ?2, ?3, 1, ?4, ?5, ?6)",
         params![
             write.tidbit_id,
             write.now_ms,
-            write.revision_id,
+            write.content_version_id,
             prepared.document_json,
             prepared.body_markdown,
             prepared.content_hash,
@@ -149,18 +149,21 @@ pub(super) fn delete_tidbit(
 ) -> Result<Tidbit> {
     validate_timestamp(now_ms, "nowMs")?;
     validate_uuid_v7(&input.id, "id")?;
-    validate_uuid_v7(&input.expected_revision_id, "expectedRevisionId")?;
+    validate_uuid_v7(
+        &input.expected_content_version_id,
+        "expectedContentVersionId",
+    )?;
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let current = load_current_revision(&transaction, &input.id)?;
+    let current = load_current_note_state(&transaction, &input.id)?;
     if current.deleted_at_ms.is_some() {
         return Err(DatabaseError::TidbitDeleted { id: input.id });
     }
-    if current.revision_id != input.expected_revision_id {
+    if current.content_version_id != input.expected_content_version_id {
         return Err(DatabaseError::StaleTidbit {
             id: input.id,
-            expected_revision_id: input.expected_revision_id,
-            actual_revision_id: current.revision_id,
+            expected_content_version_id: input.expected_content_version_id,
+            actual_content_version_id: current.content_version_id,
         });
     }
     let deleted_at_ms = next_timestamp(current.updated_at_ms, now_ms)?;
@@ -168,15 +171,15 @@ pub(super) fn delete_tidbit(
         "UPDATE tidbit
          SET deleted_at = ?1, updated_at = ?1
          WHERE id = ?2
-           AND current_revision_id = ?3
+           AND content_version_id = ?3
            AND deleted_at IS NULL",
-        params![deleted_at_ms, input.id, input.expected_revision_id],
+        params![deleted_at_ms, input.id, input.expected_content_version_id],
     )?;
     if changed != 1 {
         return Err(DatabaseError::StaleTidbit {
             id: input.id,
-            expected_revision_id: input.expected_revision_id,
-            actual_revision_id: current.revision_id,
+            expected_content_version_id: input.expected_content_version_id,
+            actual_content_version_id: current.content_version_id,
         });
     }
     block_search::clear_tidbit_documents(&transaction, &input.id)?;
@@ -192,21 +195,24 @@ pub(super) fn restore_tidbit(
 ) -> Result<Tidbit> {
     validate_timestamp(now_ms, "nowMs")?;
     validate_uuid_v7(&input.id, "id")?;
-    validate_uuid_v7(&input.expected_revision_id, "expectedRevisionId")?;
+    validate_uuid_v7(
+        &input.expected_content_version_id,
+        "expectedContentVersionId",
+    )?;
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let current = load_current_revision(&transaction, &input.id)?;
+    let current = load_current_note_state(&transaction, &input.id)?;
     if current.deleted_at_ms.is_none() {
         return Err(DatabaseError::InvalidInput(format!(
             "tidbit {} is not deleted",
             input.id
         )));
     }
-    if current.revision_id != input.expected_revision_id {
+    if current.content_version_id != input.expected_content_version_id {
         return Err(DatabaseError::StaleTidbit {
             id: input.id,
-            expected_revision_id: input.expected_revision_id,
-            actual_revision_id: current.revision_id,
+            expected_content_version_id: input.expected_content_version_id,
+            actual_content_version_id: current.content_version_id,
         });
     }
     let updated_at_ms = next_timestamp(current.updated_at_ms, now_ms)?;
@@ -214,15 +220,15 @@ pub(super) fn restore_tidbit(
         "UPDATE tidbit
          SET deleted_at = NULL, updated_at = ?1
          WHERE id = ?2
-           AND current_revision_id = ?3
+           AND content_version_id = ?3
            AND deleted_at IS NOT NULL",
-        params![updated_at_ms, input.id, input.expected_revision_id],
+        params![updated_at_ms, input.id, input.expected_content_version_id],
     )?;
     if changed != 1 {
         return Err(DatabaseError::StaleTidbit {
             id: input.id,
-            expected_revision_id: input.expected_revision_id,
-            actual_revision_id: current.revision_id,
+            expected_content_version_id: input.expected_content_version_id,
+            actual_content_version_id: current.content_version_id,
         });
     }
     block_search::replace_tidbit_documents(&transaction, &input.id)?;
@@ -236,7 +242,7 @@ pub(crate) fn load_tidbit(connection: &Connection, id: &str) -> Result<Tidbit> {
     let mut tidbit = connection
         .query_row(
             "SELECT
-                id, current_revision_id, revision_number, created_at, updated_at,
+                id, content_version_id, version_number, created_at, updated_at,
                 deleted_at, document_json, body_markdown
              FROM tidbit
              WHERE id = ?1",
@@ -267,20 +273,20 @@ pub(super) fn load_source_url(connection: &Connection, source_id: &str) -> Resul
         })
 }
 
-fn prepare_revision(
+fn prepare_note_content(
     document_json: String,
     body_markdown: String,
     sources: Vec<SourceDraft>,
-) -> Result<PreparedRevision> {
-    prepare_revision_with_empty(document_json, body_markdown, sources, false)
+) -> Result<PreparedNoteContent> {
+    prepare_note_content_with_empty(document_json, body_markdown, sources, false)
 }
 
-pub(super) fn prepare_revision_with_empty(
+pub(super) fn prepare_note_content_with_empty(
     document_json: String,
     body_markdown: String,
     sources: Vec<SourceDraft>,
     allow_empty_body: bool,
-) -> Result<PreparedRevision> {
+) -> Result<PreparedNoteContent> {
     let document = document::analyze(&document_json)?;
     if !allow_empty_body && body_markdown.trim().is_empty() {
         return Err(DatabaseError::InvalidInput(
@@ -299,8 +305,8 @@ pub(super) fn prepare_revision_with_empty(
             ));
         }
     }
-    let content_hash = revision_content_hash(&document_json, &body_markdown, &sources);
-    Ok(PreparedRevision {
+    let content_hash = note_content_hash(&document_json, &body_markdown, &sources);
+    Ok(PreparedNoteContent {
         document_json,
         document,
         body_markdown,
@@ -365,7 +371,7 @@ pub(super) fn replace_sources(
     transaction: &Transaction<'_>,
     tidbit_id: &str,
     created_at_ms: i64,
-    revision: &PreparedRevision,
+    content: &PreparedNoteContent,
     source_ids: &[String],
 ) -> Result<()> {
     transaction.execute(
@@ -373,7 +379,7 @@ pub(super) fn replace_sources(
         params![tidbit_id],
     )?;
     for (sort_order, (source, proposed_id)) in
-        revision.sources.iter().zip(source_ids.iter()).enumerate()
+        content.sources.iter().zip(source_ids.iter()).enumerate()
     {
         let existing_id = transaction
             .query_row(
@@ -440,8 +446,8 @@ fn tidbit_from_row(row: &Row<'_>) -> rusqlite::Result<Tidbit> {
     let body_markdown = row.get::<_, String>(7)?;
     Ok(Tidbit {
         id: row.get(0)?,
-        current_revision_id: row.get(1)?,
-        revision_number: row.get(2)?,
+        content_version_id: row.get(1)?,
+        version_number: row.get(2)?,
         created_at_ms: row.get(3)?,
         updated_at_ms: row.get(4)?,
         deleted_at_ms: row.get(5)?,
@@ -452,27 +458,27 @@ fn tidbit_from_row(row: &Row<'_>) -> rusqlite::Result<Tidbit> {
     })
 }
 
-pub(super) struct CurrentRevision {
-    pub(super) revision_id: String,
-    pub(super) revision_number: i64,
+pub(super) struct CurrentNoteState {
+    pub(super) content_version_id: String,
+    pub(super) version_number: i64,
     pub(super) updated_at_ms: i64,
     pub(super) deleted_at_ms: Option<i64>,
 }
 
-pub(super) fn load_current_revision(
+pub(super) fn load_current_note_state(
     transaction: &Transaction<'_>,
     id: &str,
-) -> Result<CurrentRevision> {
+) -> Result<CurrentNoteState> {
     transaction
         .query_row(
-            "SELECT current_revision_id, revision_number, updated_at, deleted_at
+            "SELECT content_version_id, version_number, updated_at, deleted_at
              FROM tidbit
              WHERE id = ?1",
             params![id],
             |row| {
-                Ok(CurrentRevision {
-                    revision_id: row.get(0)?,
-                    revision_number: row.get(1)?,
+                Ok(CurrentNoteState {
+                    content_version_id: row.get(0)?,
+                    version_number: row.get(1)?,
                     updated_at_ms: row.get(2)?,
                     deleted_at_ms: row.get(3)?,
                 })
@@ -517,13 +523,13 @@ pub(super) fn validate_uuid_v7(value: &str, field: &str) -> Result<()> {
     Ok(())
 }
 
-fn revision_content_hash(
+fn note_content_hash(
     document_json: &str,
     body_markdown: &str,
     sources: &[PreparedSource],
 ) -> Vec<u8> {
     let mut hasher = Sha256::new();
-    hasher.update(b"kosh:note-revision:v2\0");
+    hasher.update(b"kosh:note-content:v2\0");
     hash_text(&mut hasher, document_json);
     hash_text(&mut hasher, body_markdown);
     hasher.update((sources.len() as u64).to_be_bytes());

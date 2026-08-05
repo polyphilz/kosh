@@ -20,12 +20,12 @@ The native test suite proves:
   count, byte total, and hash-set digest;
 - the rebuilt pair must have current checksummed migration heads, application
   IDs, full SQLite integrity, foreign-key integrity, exact media relationships,
-  content bytes, search documents, and citation provenance;
+  content bytes, search documents, and block ownership;
 - the offline two-file installer accepts only a newly reserved directory,
   publishes both files through descriptor-bound operations, and writes a
   durable completion receipt for idempotent retry;
 - a complete clean-directory recovery reopens through normal `Database`
-  initialization and restores local search, a source-bearing note citation,
+  initialization and restores local search, a source-bearing note block link,
   and attachment bytes;
 - a drill reconstructs and validates the same pair in an owned temporary
   directory, removes it afterward, and leaves the live database bytes
@@ -62,6 +62,6 @@ KOSH_R2_CANARY_REQUIRE_PACKAGED=1 ../scripts/run-litestream-r2-canary.sh
 The canary uses a unique backup set, retries interrupted replication, drills
 the published point, executes the package's `recovery remote-restore` command
 into a brand-new isolated data directory, then starts the restored app with
-hidden windows. Its redacted receipt proves tidbits, immutable revisions,
-media bytes, rebuilt search, URL citations, historical note citations, and
+hidden windows. Its redacted receipt proves current notes, media bytes,
+rebuilt search, current block links, and
 zero remaining objects under the canary prefix.

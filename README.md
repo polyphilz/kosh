@@ -1,7 +1,7 @@
 # Kosh
 
-Kosh is a macOS-first, local-first note taker for capturing loose tidbits and
-finding the exact passage that matters.
+Kosh is a macOS-first, local-first note taker for jotting down loose knowledge
+and finding the exact block that matters.
 
 ## Using Kosh
 
@@ -19,9 +19,10 @@ math, images, and files.
 - `⌘Q` waits for the active note to become durable; a failed save cancels quit
   and leaves a visible retry state.
 
-Search results are passage-level citations. Opening one navigates to its note,
-focuses the matching block or attachment, and preserves the source URL when the
-note has one. Kosh stores no query or search-history feature.
+Search results are current note blocks. Opening one navigates to
+`/notes/:noteId?blockId=:blockId` and briefly highlights that whole block. A
+stale or wrong-note block ID is removed silently. Kosh stores no query, search,
+or note-revision history.
 
 ## Development
 
@@ -88,7 +89,7 @@ intentionally failing empty-retrieval baseline, record the current lexical
 baseline, and generate the deterministic 10,000-note performance workload
 under ignored `app/.data/relevance/`. The release-mode lexical benchmark uses a
 fresh WAL-backed Kosh database and the production write, FTS,
-authoritative hydration, ranking, and citation-resolution paths. It enforces a
+authoritative hydration, and ranking paths. It enforces a
 100 ms p95 interactive budget and writes machine/runtime metadata beside its
 ignored report.
 
@@ -105,18 +106,17 @@ See [docs/hardening.md](docs/hardening.md) for the complete performance,
 recovery, security, accessibility, and supported-input matrix, plus the
 reproducible hardening report command.
 
-## Search and citations
+## Search and block links
 
-The native backend projects current citation passages into separate word and
-trigram FTS5 indexes. Search covers heading context, passage body,
-source labels and URLs/domains, attachment filenames, and extracted text.
+The native backend projects each nonempty current block into separate word and
+trigram FTS5 indexes. Search covers heading context, authored block text,
+attachment filenames, image OCR, and extracted text-file content.
 Queries are parsed as literal data before FTS execution; quoted phrases and
 safe internal literal matching never forward raw user syntax into `MATCH`.
 
-Results carry Kosh-resolved citation snapshots, matched field names, and
-character-offset highlight spans. Edits, soft deletion, and restoration update
-the active search projection in the same database transaction while historical
-passages remain resolvable as citations.
+Results carry stable note and block IDs, matched field names, and
+character-offset highlight spans. Editing or deleting a block transactionally
+replaces or removes its search document and invalidates its old embedding.
 
 ## Local semantic runtime
 

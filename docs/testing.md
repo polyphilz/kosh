@@ -11,22 +11,22 @@ may claim only the boundary it actually crosses.
 | --- | --- | --- |
 | repository policy | `scripts/check-repository.sh` | shell syntax, secret and ignored-data hygiene, negative tests for merge/runtime/bundle guards |
 | frontend unit and type contracts | TypeScript, Oxlint, Oxfmt, Vitest | types, reducers, parsers, React state, typed Tauri protocol registry and Rust drift detection |
-| browser functional and accessibility | Chromium Playwright plus axe | ephemeral notes, autosave, note routes, hybrid search, exact citation focus, media, settings, focus and accessibility journeys |
+| browser functional and accessibility | Chromium Playwright plus axe | ephemeral notes, autosave, note routes, hybrid search, exact block focus, media, settings, focus and accessibility journeys |
 | browser hardening | pinned DPR-2 Chromium Playwright plus axe | every primary route in light/dark, keyboard order, 200% reflow, reduced motion, high-DPI semantics |
-| WebKit editor and keyboard contracts | WebKit Playwright | BlockNote input, composition, autosave, route, search selection and citation-focus behavior in Tauri's browser engine family |
+| WebKit editor and keyboard contracts | WebKit Playwright | BlockNote input, composition, autosave, route, search selection and block-focus behavior in Tauri's browser engine family |
 | pinned visual contracts | single-worker Chromium Playwright | light/dark note, search overlay, source actions and settings pixels at fixed viewports |
 | production bundle isolation | `pnpm check:bundle` | no fake backend, fixtures, local data, model, database, test or environment material; explicit byte budgets |
-| search and citation quality | `pnpm relevance:gate` and the 10k benchmark | pinned lexical/hybrid metrics, manual provenance sample, forbidden hits and interactive lexical latency |
-| native unit and integration contracts | Rust tests and strict Clippy | migrations, writer serialization, files, workers, processes, search, citation and Tauri mock IPC |
+| search and block quality | `pnpm relevance:gate` and the 10k benchmark | pinned lexical/hybrid metrics, manual block sample, forbidden hits and interactive lexical latency |
+| native unit and integration contracts | Rust tests and strict Clippy | migrations, writer serialization, files, workers, processes, block search and Tauri mock IPC |
 | Litestream transaction protocol | `scripts/verify-litestream-ci-protocol.sh` | official native artifact pin, private control socket, exact writer fence, pre/post-compaction full-integrity restore, L0-expiry requirement and graceful no-orphan shutdown |
 | R2 state, Keychain and object-store boundary | Rust fake tests plus the opt-in live probe in `app/tests/native/offsite-backup-foundation.md` | non-secret revisioned persistence, redacted versioned Keychain payloads, Cloudflare-only endpoints, fixed-prefix confinement, bounded conditional object operations and cleanup-after-failure |
 | durable off-site media reconciliation | Rust queue/worker tests in `app/tests/native/offsite-backup-media.md` | transactional source/preview seeding, guarded leases, off-writer bounded reads, create-only upload verification, offline/restart replay and writer independence |
 | supervised Litestream runtime | Rust supervisor/process tests in `app/tests/native/offsite-backup-litestream-runtime.md` | disabled inertness, private config/socket/PID ownership, bounded status, crash backoff, configuration reload, graceful final sync and local database independence |
 | complete off-site recovery matrix | `pnpm backup:verify-fault-matrix` plus Rust recovery tests | 57 named failures across snapshot, configuration, media, replication, checkpoint, discovery, restore, install and reopen; exact mapping to executable tests and non-destructive invariants |
-| packaged real-R2 recovery | scheduled/manual `Packaged real-R2 recovery canary` workflow and `scripts/run-litestream-r2-canary.sh` | unique-prefix interrupted replication, manifest-last publication, drill, packaged clean-directory exact-TXID/media restore, normal hidden startup, search rebuild, authored/historical citations and verified remote cleanup |
-| native startup, restart, search and citation | `scripts/loop/runtime-gate.sh --ci` | real macOS Tauri process, both WKWebViews, fresh/restart persistence and actual runtime/search/citation IPC |
-| universal release structure and smoke | `pnpm release:build:app && pnpm release:smoke` | icons/metadata/CSP/capabilities/entitlements, dual-architecture app and sidecar, signatures/resources, executable-to-source commit binding, packaged React/note/search/citation IPC, fresh restart identity and no-model fallback |
-| packaged release journeys | `app/tests/native/release-acceptance.md` | titleless autosave/quit, BlockNote and shortcuts, media extraction, hybrid retrieval, grounded citations, restart, forced-termination recovery and exact-candidate performance |
+| packaged real-R2 recovery | scheduled/manual `Packaged real-R2 recovery canary` workflow and `scripts/run-litestream-r2-canary.sh` | unique-prefix interrupted replication, manifest-last publication, drill, packaged clean-directory exact-TXID/media restore, normal hidden startup, block-search rebuild and verified remote cleanup |
+| native startup, restart and block search | `scripts/loop/runtime-gate.sh --ci` | real macOS Tauri process, both WKWebViews, fresh/restart persistence and actual runtime/block-search IPC |
+| universal release structure and smoke | `pnpm release:build:app && pnpm release:smoke` | icons/metadata/CSP/capabilities/entitlements, dual-architecture app and sidecar, signatures/resources, executable-to-source commit binding, packaged React/note/block-search IPC, fresh restart identity and no-model fallback |
+| packaged release journeys | `app/tests/native/release-acceptance.md` | titleless autosave/quit, BlockNote and shortcuts, media extraction, hybrid retrieval, current block links, restart, forced-termination recovery and exact-candidate performance |
 
 The branch loop's native receipt must name the exact committed HEAD before a
 PR can be merged.
@@ -48,10 +48,10 @@ PR can be merged.
   `.kosh-loop`; it refuses unknown or symlinked profile paths and never resets a
   user's database.
 
-## Fresh-schema, performance, and citation evidence
+## Fresh-schema, performance, and block link evidence
 
 The release migration gate creates the consolidated main/media V1 schemas and
-asserts their exact heads, titleless revision shape, current working-copy
+asserts their exact heads, titleless current-note shape, current working-copy
 columns, provenance delete guards, and absence of Research, purge, legacy
 draft-context, and query-history tables. Pre-redesign development profiles are
 unsupported and are never silently reset or migrated.
@@ -59,13 +59,13 @@ unsupported and are never silently reset or migrated.
 The relevance suite has at least 25 realistic queries and checked model vectors.
 The release gate requires:
 
-- lexical Recall@10 and citation-locator accuracy at least 0.95;
+- lexical Recall@10 and expected-block accuracy at least 0.95;
 - lexical exact/phrase success 1.0 and zero forbidden hits;
-- hybrid Recall@10 and citation-locator accuracy 1.0;
+- hybrid Recall@10 and expected-block accuracy 1.0;
 - hybrid MRR and nDCG@10 at least 0.95;
 - no hybrid regression against the lexical baseline;
-- ten manually inspected citations spanning authored Markdown blocks and image
-  OCR regions;
+- ten manually inspected expected blocks spanning authored text, attachment
+  filenames, and image OCR;
 - 10,000-note lexical query p95 at or below 100 ms.
 
 `scripts/check-bundle.sh` separately caps the uncompressed web bundle at

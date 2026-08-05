@@ -1,16 +1,15 @@
 # Relevance fixtures
 
-`v1.json` is the checked-in search-quality corpus using fixture schema v2.
-Every passage declares whether it is authored or image-OCR evidence. Attachment
-evidence carries a stable image identity plus its OCR-region locator; ordinary
-files contribute their filename only to authored-note search documents. Each
-query names graded relevant passage IDs, passages that must not rank, the
-retrieval mode it is meant to exercise, and the exact citation locator expected
-from a result. Only `text` and `searchMode` cross into a retriever. Categories,
-expected passages, exclusions, and citation locators remain private to the
-scorer so the system under test cannot read its answer key.
+`v1.json` is the checked-in search-quality corpus using fixture schema v3.
+Every item is one stable current block owned by exactly one note. A block may
+contribute authored text, attachment filenames, or image OCR. Files contribute
+only their filename.
 
-Run the fixture validator and intentionally empty baseline from `app/`:
+Each query declares graded block IDs, forbidden results, its retrieval need,
+and one expected block. Only the query text and mode cross into a retriever;
+the answer key remains private to the scorer.
+
+Run the deterministic suite from `app/`:
 
 ```bash
 pnpm relevance:validate
@@ -20,38 +19,14 @@ pnpm relevance:hybrid
 pnpm relevance:gate
 ```
 
-The empty runner writes diffable JSON and text reports under the ignored
-`app/.data/relevance/` directory. It succeeds as a command while the report
-itself has `passed: false`, which lets future retrieval implementations reuse
-the same report contract.
+The checked-in lexical and hybrid reports cover 25 queries. Both require full
+Recall@10, exact expected-block resolution, exact/phrase success, and zero
+forbidden hits. Hybrid MRR and nDCG@10 must remain at least 0.95. The manual
+`block-audit-v1.json` sample verifies that ten expected blocks contain the
+recorded searchable evidence.
 
-`relevance:lexical` writes a local copy of the report and should match the
-checked-in `reports/lexical-v1.{json,txt}` baseline. The filename-aware baseline
-passes all 25 queries, has Recall@10 1.0, MRR 0.9413, nDCG@10 0.9518,
-citation-locator accuracy 1.0, exact and phrase success 1.0, and zero forbidden
-hits. Authored text, image OCR, and filename queries all pass, while authored
-evidence ranks first in the near-duplicate volume stress query.
-
-`relevance:hybrid` validates `jina-v1-vectors.json` against both the relevance
-fixture digest and the shipped Jina v1 model hash, then writes a local report
-that should match `reports/hybrid-v1.{json,txt}`. The vectors were generated
-from the pinned model through Kosh's verified llama.cpp runtime; tests only read
-the checked-in vectors and never download or start a model. The filename-aware
-hybrid report passes all 25 queries with Recall@10 and citation-locator accuracy
-of 1.0, MRR 0.9700, nDCG@10 0.9736, exact/phrase success of 1.0, and zero
-forbidden hits. Exact and code-identifier category metrics match the lexical
-baseline.
-
-`relevance:gate` is the release authority. It regenerates both reports in
-memory, requires at least 25 queries, enforces explicit lexical and hybrid
-metric floors, rejects precision regressions, and validates the ten-entry
-manual citation sample in `citation-audit-v1.json`. The audit covers authored
-Markdown blocks and image OCR regions. Its ignored JSON receipt can be retained
-by CI without treating wall-clock observations as deterministic quality
-evidence.
-
-Maintainers with the pinned model and sidecar can regenerate the vector fixture
-before intentionally updating the reports:
+Tests read `jina-v1-vectors.json` without downloading or starting a model.
+Maintainers with the pinned model and sidecar can intentionally regenerate it:
 
 ```bash
 KOSH_EMBEDDING_MODEL_PATH=/path/to/v5-nano-retrieval-Q8_0.gguf \
@@ -60,20 +35,6 @@ cargo test --manifest-path src-tauri/Cargo.toml --test kosh-relevance -- \
   --kosh-relevance-cli hybrid-vectors
 ```
 
-The generator rejects missing corpus/query coverage, non-normalized vectors,
-fixture drift, and model-contract drift.
-
-Generate the deterministic 10,000-tidbit workload and a separate runtime
-metadata report with:
-
-```bash
-pnpm relevance:scale
-pnpm relevance:lexical-scale
-```
-
-Set `KOSH_REFERENCE_HARDWARE` to a short machine label when producing a
-reference performance report. Wall-clock measurements are observational until
-a baseline is explicitly adopted; they are not brittle unit-test assertions.
-The lexical benchmark measures 200 warmed queries over the 10,000-tidbit index
-in release mode and fails its command when p95 exceeds the 100 ms interactive
-budget.
+`pnpm relevance:scale` and `pnpm relevance:lexical-scale` exercise the
+deterministic 10,000-note workload. The release-mode lexical benchmark runs 200
+warmed production queries and enforces a 100 ms p95 interactive budget.
