@@ -85,7 +85,7 @@ struct CanaryReport {
 #[serde(rename_all = "camelCase")]
 struct RestoredEvidence {
     active_tidbits: u64,
-    revisions: u64,
+    current_notes: u64,
     sources: u64,
     attachments: u64,
     media_blobs: u64,
@@ -972,7 +972,7 @@ fn verify_restored_library(root: &Path, note_id: &str, block_id: &str) -> Restor
             &main,
             "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL",
         ),
-        revisions: query_count(&main, "SELECT count(*) FROM tidbit_revision"),
+        current_notes: query_count(&main, "SELECT count(*) FROM tidbit"),
         sources: query_count(&main, "SELECT count(*) FROM source"),
         attachments: query_count(&main, "SELECT count(*) FROM attachment"),
         media_blobs: query_count(&media, "SELECT count(*) FROM media_blob"),
@@ -982,7 +982,7 @@ fn verify_restored_library(root: &Path, note_id: &str, block_id: &str) -> Restor
         interrupted_replication_working_copies: interrupted_replication_working_copy_count(&main),
     };
     assert!(evidence.active_tidbits >= 2);
-    assert!(evidence.revisions >= 3);
+    assert!(evidence.current_notes >= 2);
     assert!(evidence.sources >= 3);
     assert!(evidence.attachments >= 1);
     assert!(evidence.media_blobs >= 1);

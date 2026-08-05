@@ -824,7 +824,7 @@ pub(crate) fn load_media_payload(
                 coalesce(image.preview_byte_length, attachment.byte_length),
                 EXISTS (
                     SELECT 1
-                    FROM tidbit_revision_attachment AS membership
+                    FROM tidbit_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
                 )
              FROM attachment
@@ -835,7 +835,7 @@ pub(crate) fn load_media_payload(
                AND (
                     EXISTS (
                         SELECT 1
-                        FROM tidbit_revision_attachment AS membership
+                        FROM tidbit_attachment AS membership
                         WHERE membership.attachment_id = attachment.id
                     )
                     OR EXISTS (
@@ -2108,7 +2108,7 @@ fn load_integrity_attachment_batch(
             image.preview_sha256,
             attachment.deleted_at,
             EXISTS(
-                SELECT 1 FROM tidbit_revision_attachment AS membership
+                SELECT 1 FROM tidbit_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
             ),
             (
@@ -2472,8 +2472,11 @@ pub(super) fn sync_draft_media_leases(
             .query_row(
                 "SELECT 1
                  FROM draft
-                 JOIN tidbit_revision_attachment AS membership
-                   ON membership.tidbit_revision_id = draft.base_revision_id
+                 JOIN tidbit
+                   ON tidbit.id = draft.id
+                  AND tidbit.current_revision_id = draft.base_revision_id
+                 JOIN tidbit_attachment AS membership
+                   ON membership.tidbit_id = tidbit.id
                  JOIN attachment
                    ON attachment.id = membership.attachment_id
                  WHERE draft.id = ?1
@@ -2543,28 +2546,30 @@ pub(crate) fn abandon_draft_media_leases(
     Ok(())
 }
 
-pub(super) fn link_revision_attachments(
+pub(super) fn replace_note_attachments(
     transaction: &Transaction<'_>,
-    revision_id: &str,
-    current_revision_id: Option<&str>,
-    draft_id: &str,
+    note_id: &str,
+    expected_current_revision_id: Option<&str>,
     references: &[document::DocumentAttachment],
     body_markdown: &str,
     now_ms: i64,
 ) -> Result<()> {
     validate_document_attachment_projection(references, body_markdown)?;
-    for (sort_order, reference) in references.iter().enumerate() {
-        let already_linked = current_revision_id
-            .map(|current_revision_id| {
+    for reference in references {
+        let already_linked = expected_current_revision_id
+            .map(|expected_current_revision_id| {
                 transaction
                     .query_row(
                         "SELECT 1
-                         FROM tidbit_revision_attachment
-                         WHERE tidbit_revision_id = ?1
-                           AND attachment_id = ?2
-                           AND block_id = ?3",
+                         FROM tidbit_attachment
+                         JOIN tidbit ON tidbit.id = tidbit_attachment.tidbit_id
+                         WHERE tidbit_attachment.tidbit_id = ?1
+                           AND tidbit.current_revision_id = ?2
+                           AND tidbit_attachment.attachment_id = ?3
+                           AND tidbit_attachment.block_id = ?4",
                         params![
-                            current_revision_id,
+                            note_id,
+                            expected_current_revision_id,
                             &reference.attachment_id,
                             &reference.block_id
                         ],
@@ -2588,7 +2593,7 @@ pub(super) fn link_revision_attachments(
                    AND lease.state = 'COMMITTED'
                    AND lease.expires_at > ?2
                    AND draft_lease.draft_id = ?3",
-                params![&reference.attachment_id, now_ms, draft_id],
+                params![&reference.attachment_id, now_ms, note_id],
                 |_| Ok(()),
             )
             .optional()?
@@ -2607,7 +2612,7 @@ pub(super) fn link_revision_attachments(
                    AND owner_note_id = ?2
                    AND owner_block_id = ?3
                    AND deleted_at IS NULL",
-                params![&reference.attachment_id, draft_id, &reference.block_id],
+                params![&reference.attachment_id, note_id, &reference.block_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -2623,12 +2628,19 @@ pub(super) fn link_revision_attachments(
                 reference.attachment_id
             )));
         }
+    }
+
+    transaction.execute(
+        "DELETE FROM tidbit_attachment WHERE tidbit_id = ?1",
+        params![note_id],
+    )?;
+    for (sort_order, reference) in references.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO tidbit_revision_attachment(
-                tidbit_revision_id, attachment_id, block_id, sort_order, display_role
+            "INSERT INTO tidbit_attachment(
+                tidbit_id, attachment_id, block_id, sort_order, display_role
              ) VALUES(?1, ?2, ?3, ?4, ?5)",
             params![
-                revision_id,
+                note_id,
                 &reference.attachment_id,
                 &reference.block_id,
                 i64::try_from(sort_order)
@@ -2811,7 +2823,7 @@ pub(crate) fn attachment_reclamation_is_eligible(main: &Connection, now_ms: i64)
             WHERE attachment.deleted_at IS NULL
               AND NOT EXISTS (
                    SELECT 1
-                   FROM tidbit_revision_attachment AS membership
+                   FROM tidbit_attachment AS membership
                    WHERE membership.attachment_id = attachment.id
               )
               AND NOT EXISTS (
@@ -2876,7 +2888,7 @@ pub(crate) fn media_blob_reclamation_preflight(
                        attachment.deleted_at IS NULL
                        OR EXISTS (
                            SELECT 1
-                           FROM tidbit_revision_attachment AS membership
+                           FROM tidbit_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                        )
                   )
@@ -2889,7 +2901,7 @@ pub(crate) fn media_blob_reclamation_preflight(
                        attachment.deleted_at IS NULL
                        OR EXISTS (
                            SELECT 1
-                           FROM tidbit_revision_attachment AS membership
+                           FROM tidbit_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                        )
                   )
@@ -3026,7 +3038,7 @@ fn reconcile_and_reap_from(
                 attachment_id IS NULL
                 OR (
                     NOT EXISTS (
-                        SELECT 1 FROM tidbit_revision_attachment AS membership
+                        SELECT 1 FROM tidbit_attachment AS membership
                         WHERE membership.attachment_id = media_ingest_lease.attachment_id
                     )
                 )
@@ -3039,7 +3051,7 @@ fn reconcile_and_reap_from(
              updated_at = max(updated_at, ?1)
          WHERE deleted_at IS NULL
            AND NOT EXISTS (
-                SELECT 1 FROM tidbit_revision_attachment AS membership
+                SELECT 1 FROM tidbit_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
            )
            AND NOT EXISTS (
@@ -3119,7 +3131,7 @@ fn reconcile_and_reap_from(
             FROM attachment
             WHERE attachment.deleted_at IS NULL
                OR EXISTS (
-                    SELECT 1 FROM tidbit_revision_attachment AS membership
+                    SELECT 1 FROM tidbit_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
                )
             UNION
@@ -3128,7 +3140,7 @@ fn reconcile_and_reap_from(
             JOIN attachment ON attachment.id = image.attachment_id
             WHERE attachment.deleted_at IS NULL
                OR EXISTS (
-                    SELECT 1 FROM tidbit_revision_attachment AS membership
+                    SELECT 1 FROM tidbit_attachment AS membership
                     WHERE membership.attachment_id = attachment.id
                )
          )",
@@ -3192,7 +3204,7 @@ fn reconcile_and_reap_from(
                   AND (
                        attachment.deleted_at IS NULL
                        OR EXISTS (
-                           SELECT 1 FROM tidbit_revision_attachment AS membership
+                           SELECT 1 FROM tidbit_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                        )
                   )
@@ -3204,7 +3216,7 @@ fn reconcile_and_reap_from(
                   AND (
                        attachment.deleted_at IS NULL
                        OR EXISTS (
-                           SELECT 1 FROM tidbit_revision_attachment AS membership
+                           SELECT 1 FROM tidbit_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                        )
                   )
@@ -3310,7 +3322,7 @@ fn reconcile_blob_candidate_batch(
                            deleted_at IS NULL
                            OR EXISTS (
                                SELECT 1
-                               FROM tidbit_revision_attachment AS membership
+                               FROM tidbit_attachment AS membership
                                WHERE membership.attachment_id = attachment.id
                            )
                       )
@@ -3323,7 +3335,7 @@ fn reconcile_blob_candidate_batch(
                            attachment.deleted_at IS NULL
                            OR EXISTS (
                                SELECT 1
-                               FROM tidbit_revision_attachment AS membership
+                               FROM tidbit_attachment AS membership
                                WHERE membership.attachment_id = attachment.id
                            )
                       )

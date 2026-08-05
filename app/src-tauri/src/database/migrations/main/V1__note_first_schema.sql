@@ -17,27 +17,20 @@ CREATE TABLE tidbit (
     created_at INTEGER NOT NULL CHECK (created_at >= 0),
     updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
     deleted_at INTEGER CHECK (deleted_at IS NULL OR deleted_at >= created_at),
-    current_revision_id TEXT NOT NULL,
-    FOREIGN KEY (id, current_revision_id) REFERENCES tidbit_revision(tidbit_id, id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE tidbit_revision (
-    id TEXT PRIMARY KEY
+    current_revision_id TEXT NOT NULL UNIQUE
         CHECK (
-            length(id) = 36
-            AND lower(id) = id
-            AND substr(id, 9, 1) = '-'
-            AND substr(id, 14, 1) = '-'
-            AND substr(id, 15, 1) = '7'
-            AND substr(id, 19, 1) = '-'
-            AND substr(id, 20, 1) GLOB '[89ab]'
-            AND substr(id, 24, 1) = '-'
-            AND length(replace(id, '-', '')) = 32
-            AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*'
+            length(current_revision_id) = 36
+            AND lower(current_revision_id) = current_revision_id
+            AND substr(current_revision_id, 9, 1) = '-'
+            AND substr(current_revision_id, 14, 1) = '-'
+            AND substr(current_revision_id, 15, 1) = '7'
+            AND substr(current_revision_id, 19, 1) = '-'
+            AND substr(current_revision_id, 20, 1) GLOB '[89ab]'
+            AND substr(current_revision_id, 24, 1) = '-'
+            AND length(replace(current_revision_id, '-', '')) = 32
+            AND replace(current_revision_id, '-', '') NOT GLOB '*[^0-9a-f]*'
         ),
-    tidbit_id TEXT NOT NULL,
     revision_number INTEGER NOT NULL CHECK (revision_number > 0),
-    created_at INTEGER NOT NULL CHECK (created_at >= 0),
     document_json TEXT NOT NULL
         CHECK (
             json_valid(document_json)
@@ -45,13 +38,9 @@ CREATE TABLE tidbit_revision (
             AND json_extract(document_json, '$.schemaVersion') = 1
             AND json_type(document_json, '$.blocks') = 'array'
             AND json_array_length(document_json, '$.blocks') > 0
-        ),
+    ),
     body_markdown TEXT NOT NULL,
-    content_hash BLOB NOT NULL CHECK (length(content_hash) = 32),
-    UNIQUE (tidbit_id, revision_number),
-    UNIQUE (tidbit_id, id),
-    FOREIGN KEY (tidbit_id) REFERENCES tidbit(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+    content_hash BLOB NOT NULL CHECK (length(content_hash) = 32)
 ) STRICT;
 CREATE INDEX tidbit_active_updated_idx
     ON tidbit(updated_at DESC, id)
@@ -82,28 +71,28 @@ CREATE TABLE source (
     ),
     CHECK (label IS NOT NULL OR normalized_url IS NOT NULL)
 ) STRICT;
-CREATE TABLE tidbit_revision_source (
-    tidbit_revision_id TEXT NOT NULL,
+CREATE TABLE tidbit_source (
+    tidbit_id TEXT NOT NULL,
     source_id TEXT NOT NULL,
     sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
-    PRIMARY KEY (tidbit_revision_id, source_id),
-    UNIQUE (tidbit_revision_id, sort_order),
-    FOREIGN KEY (tidbit_revision_id) REFERENCES tidbit_revision(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    PRIMARY KEY (tidbit_id, source_id),
+    UNIQUE (tidbit_id, sort_order),
+    FOREIGN KEY (tidbit_id) REFERENCES tidbit(id)
+        ON UPDATE RESTRICT ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
     FOREIGN KEY (source_id) REFERENCES source(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE tidbit_revision_attachment (
-    tidbit_revision_id TEXT NOT NULL,
+CREATE TABLE tidbit_attachment (
+    tidbit_id TEXT NOT NULL,
     attachment_id TEXT NOT NULL,
     block_id TEXT NOT NULL CHECK (length(block_id) BETWEEN 1 AND 256),
     sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
     display_role TEXT NOT NULL CHECK (display_role IN ('INLINE', 'ATTACHMENT')),
-    PRIMARY KEY (tidbit_revision_id, attachment_id),
-    UNIQUE (tidbit_revision_id, block_id),
-    UNIQUE (tidbit_revision_id, sort_order),
-    FOREIGN KEY (tidbit_revision_id) REFERENCES tidbit_revision(id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    PRIMARY KEY (tidbit_id, attachment_id),
+    UNIQUE (tidbit_id, block_id),
+    UNIQUE (tidbit_id, sort_order),
+    FOREIGN KEY (tidbit_id) REFERENCES tidbit(id)
+        ON UPDATE RESTRICT ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
     FOREIGN KEY (attachment_id) REFERENCES attachment(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 ) STRICT, WITHOUT ROWID;
@@ -224,8 +213,7 @@ CREATE TABLE draft (
             AND json_array_length(document_json, '$.blocks') > 0
         ),
     body_markdown TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY (id, base_revision_id) REFERENCES tidbit_revision(tidbit_id, id)
-        ON UPDATE RESTRICT ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+    CHECK (base_revision_id IS NULL OR length(base_revision_id) = 36)
 ) STRICT;
 CREATE TABLE draft_media_lease (
     draft_id TEXT NOT NULL,
@@ -244,35 +232,20 @@ CREATE TABLE index_state (
     updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
     error TEXT
 ) STRICT;
-CREATE TRIGGER tidbit_revision_prevent_update
-BEFORE UPDATE ON tidbit_revision
-BEGIN
-    SELECT RAISE(ABORT, 'tidbit revisions are immutable');
-END;
 CREATE TRIGGER source_prevent_update
 BEFORE UPDATE ON source
 BEGIN
     SELECT RAISE(ABORT, 'sources are immutable');
 END;
-CREATE TRIGGER tidbit_revision_source_prevent_update
-BEFORE UPDATE ON tidbit_revision_source
+CREATE TRIGGER tidbit_source_prevent_update
+BEFORE UPDATE ON tidbit_source
 BEGIN
-    SELECT RAISE(ABORT, 'revision source links are immutable');
+    SELECT RAISE(ABORT, 'note source links are replaced, never updated');
 END;
-CREATE TRIGGER tidbit_revision_source_prevent_delete
-BEFORE DELETE ON tidbit_revision_source
+CREATE TRIGGER tidbit_attachment_prevent_update
+BEFORE UPDATE ON tidbit_attachment
 BEGIN
-    SELECT RAISE(ABORT, 'revision source links are retained');
-END;
-CREATE TRIGGER tidbit_revision_attachment_prevent_update
-BEFORE UPDATE ON tidbit_revision_attachment
-BEGIN
-    SELECT RAISE(ABORT, 'revision attachment links are immutable');
-END;
-CREATE TRIGGER tidbit_revision_attachment_prevent_delete
-BEFORE DELETE ON tidbit_revision_attachment
-BEGIN
-    SELECT RAISE(ABORT, 'revision attachment links are retained');
+    SELECT RAISE(ABORT, 'note attachment links are replaced, never updated');
 END;
 CREATE TRIGGER attachment_extraction_identity_prevent_update
 BEFORE UPDATE OF attachment_id, extractor, extractor_version, content_hash, created_at
@@ -334,7 +307,6 @@ END;
 CREATE TABLE block_search_document (
     rowid INTEGER PRIMARY KEY,
     tidbit_id TEXT NOT NULL,
-    tidbit_revision_id TEXT NOT NULL,
     block_id TEXT NOT NULL CHECK (length(block_id) BETWEEN 1 AND 256),
     block_ordinal INTEGER NOT NULL CHECK (block_ordinal >= 0),
     block_type TEXT NOT NULL CHECK (length(block_type) > 0),
@@ -347,21 +319,18 @@ CREATE TABLE block_search_document (
     UNIQUE (tidbit_id, block_id),
     FOREIGN KEY (tidbit_id) REFERENCES tidbit(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (tidbit_id, tidbit_revision_id) REFERENCES tidbit_revision(tidbit_id, id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
     CHECK (length(trim(body || attachment_names || extracted_text)) > 0)
 ) STRICT;
-CREATE INDEX block_search_document_revision_idx
-    ON block_search_document(tidbit_revision_id, block_ordinal);
+CREATE INDEX block_search_document_note_idx
+    ON block_search_document(tidbit_id, block_ordinal);
 CREATE TRIGGER block_search_document_validate_current_insert
 BEFORE INSERT ON block_search_document
 BEGIN
-    SELECT RAISE(ABORT, 'block search documents must belong to the current note revision')
+    SELECT RAISE(ABORT, 'block search documents must belong to a current note')
     WHERE NOT EXISTS (
         SELECT 1
         FROM tidbit
         WHERE tidbit.id = new.tidbit_id
-          AND tidbit.current_revision_id = new.tidbit_revision_id
           AND tidbit.deleted_at IS NULL
     );
 END;
@@ -781,16 +750,16 @@ WHEN old.owner_note_id IS NOT NULL OR old.owner_block_id IS NOT NULL
 BEGIN
     SELECT RAISE(ABORT, 'attachment block ownership is immutable');
 END;
-CREATE TRIGGER tidbit_revision_attachment_owner_validate
-BEFORE INSERT ON tidbit_revision_attachment
+CREATE TRIGGER tidbit_attachment_owner_validate
+BEFORE INSERT ON tidbit_attachment
 BEGIN
-    SELECT RAISE(ABORT, 'revision attachment does not match its note block owner')
+    SELECT RAISE(ABORT, 'attachment does not match its note block owner')
     WHERE NOT EXISTS (
         SELECT 1
-        FROM tidbit_revision AS revision
+        FROM tidbit
         JOIN attachment ON attachment.id = new.attachment_id
-        WHERE revision.id = new.tidbit_revision_id
-          AND attachment.owner_note_id = revision.tidbit_id
+        WHERE tidbit.id = new.tidbit_id
+          AND attachment.owner_note_id = tidbit.id
           AND attachment.owner_block_id = new.block_id
           AND attachment.deleted_at IS NULL
     );
@@ -1170,8 +1139,8 @@ BEGIN
     WHERE singleton_id = 1
       AND enabled = 1;
 END;
-CREATE TRIGGER offsite_media_upload_revision_membership_after_insert
-AFTER INSERT ON tidbit_revision_attachment
+CREATE TRIGGER offsite_media_upload_note_attachment_after_insert
+AFTER INSERT ON tidbit_attachment
 BEGIN
     INSERT OR IGNORE INTO offsite_media_upload(
         backup_set_id,
@@ -1401,15 +1370,12 @@ CREATE TRIGGER offsite_clock_source_delete AFTER DELETE ON source BEGIN UPDATE o
 CREATE TRIGGER offsite_clock_tidbit_insert AFTER INSERT ON tidbit BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_tidbit_update AFTER UPDATE ON tidbit BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_tidbit_delete AFTER DELETE ON tidbit BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_insert AFTER INSERT ON tidbit_revision BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_update AFTER UPDATE ON tidbit_revision BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_delete AFTER DELETE ON tidbit_revision BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_attachment_insert AFTER INSERT ON tidbit_revision_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_attachment_update AFTER UPDATE ON tidbit_revision_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_attachment_delete AFTER DELETE ON tidbit_revision_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_source_insert AFTER INSERT ON tidbit_revision_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_source_update AFTER UPDATE ON tidbit_revision_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_tidbit_revision_source_delete AFTER DELETE ON tidbit_revision_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_tidbit_attachment_insert AFTER INSERT ON tidbit_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_tidbit_attachment_update AFTER UPDATE ON tidbit_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_tidbit_attachment_delete AFTER DELETE ON tidbit_attachment BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_tidbit_source_insert AFTER INSERT ON tidbit_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_tidbit_source_update AFTER UPDATE ON tidbit_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_tidbit_source_delete AFTER DELETE ON tidbit_source BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TABLE offsite_backup_checkpoint_media (
     checkpoint_id TEXT NOT NULL
         REFERENCES offsite_backup_checkpoint(checkpoint_id)
@@ -1497,8 +1463,6 @@ CREATE TABLE offsite_backup_takeover_intent (
     updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
     CHECK (previous_replica_epoch_id <> next_replica_epoch_id)
 ) STRICT;
-CREATE TRIGGER tidbit_revision_prevent_delete BEFORE DELETE ON tidbit_revision BEGIN SELECT RAISE(ABORT, 'tidbit revisions are retained'); END;
-CREATE TRIGGER source_prevent_delete BEFORE DELETE ON source BEGIN SELECT RAISE(ABORT, 'sources are retained'); END;
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('BLOCK_FTS', 'block-lexical-v1', 'IDLE', NULL, 0, NULL);
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('BLOCK_EMBEDDING', 'jina_v1', 'DIRTY', NULL, 0, NULL);
 INSERT INTO attachment_extractor_config(extractor, version, updated_at) VALUES('ocr', '1', 0);

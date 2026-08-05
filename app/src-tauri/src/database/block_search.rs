@@ -40,23 +40,14 @@ fn replace_tidbit_documents_with_policy(
     clear_tidbit_documents(transaction, tidbit_id)?;
     let current = transaction
         .query_row(
-            "SELECT revision.id, revision.document_json, tidbit.updated_at
+            "SELECT tidbit.document_json, tidbit.updated_at
              FROM tidbit
-             JOIN tidbit_revision AS revision
-               ON revision.id = tidbit.current_revision_id
-              AND revision.tidbit_id = tidbit.id
              WHERE tidbit.id = ?1 AND tidbit.deleted_at IS NULL",
             params![tidbit_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()?;
-    let Some((revision_id, document_json, updated_at)) = current else {
+    let Some((document_json, updated_at)) = current else {
         return Ok(());
     };
     for block in document::extract_searchable_blocks(&document_json)? {
@@ -64,7 +55,6 @@ fn replace_tidbit_documents_with_policy(
             Some(attachment_id) => match load_attachment_evidence(
                 transaction,
                 tidbit_id,
-                &revision_id,
                 &block.block_id,
                 attachment_id,
             )? {
@@ -117,13 +107,12 @@ fn replace_tidbit_documents_with_policy(
         );
         transaction.execute(
             "INSERT INTO block_search_document(
-                tidbit_id, tidbit_revision_id, block_id, block_ordinal, block_type,
+                tidbit_id, block_id, block_ordinal, block_type,
                 heading_context, body, attachment_names, extracted_text,
                 content_hash, updated_at
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 tidbit_id,
-                revision_id,
                 block.block_id,
                 i64::try_from(block.ordinal).map_err(|_| DatabaseError::Validation {
                     kind: "main",
@@ -150,8 +139,8 @@ pub(super) fn refresh_attachment_owners(
         let mut statement = transaction.prepare(
             "SELECT tidbit.id
              FROM tidbit
-             JOIN tidbit_revision_attachment AS membership
-               ON membership.tidbit_revision_id = tidbit.current_revision_id
+             JOIN tidbit_attachment AS membership
+               ON membership.tidbit_id = tidbit.id
              WHERE membership.attachment_id = ?1
                AND tidbit.deleted_at IS NULL
              ORDER BY tidbit.id",
@@ -190,7 +179,6 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
 fn load_attachment_evidence(
     transaction: &Transaction<'_>,
     tidbit_id: &str,
-    revision_id: &str,
     block_id: &str,
     attachment_id: &str,
 ) -> Result<Option<AttachmentEvidence>> {
@@ -215,20 +203,19 @@ fn load_attachment_evidence(
                         ORDER BY segment.ordinal
                     ) AS ordered_evidence
                 ), '')
-             FROM tidbit_revision_attachment AS membership
+             FROM tidbit_attachment AS membership
              JOIN attachment ON attachment.id = membership.attachment_id
-             WHERE membership.tidbit_revision_id = ?1
+             WHERE membership.tidbit_id = ?1
                AND membership.attachment_id = ?2
                AND membership.block_id = ?3
                AND attachment.deleted_at IS NULL
                AND EXISTS(
                    SELECT 1
                    FROM tidbit
-                   WHERE tidbit.id = ?4
-                     AND tidbit.current_revision_id = membership.tidbit_revision_id
+                   WHERE tidbit.id = membership.tidbit_id
                      AND tidbit.deleted_at IS NULL
                )",
-            params![revision_id, attachment_id, block_id, tidbit_id],
+            params![tidbit_id, attachment_id, block_id],
             |row| {
                 Ok(AttachmentEvidence {
                     display_filename: row.get(0)?,

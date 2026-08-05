@@ -747,7 +747,7 @@ fn load_referenced_media_page(
                 FROM attachment
                 WHERE attachment.deleted_at IS NULL
                    OR EXISTS (
-                        SELECT 1 FROM tidbit_revision_attachment
+                        SELECT 1 FROM tidbit_attachment
                         WHERE attachment_id = attachment.id
                    )
                 UNION ALL
@@ -756,7 +756,7 @@ fn load_referenced_media_page(
                 JOIN attachment ON attachment.id = image.attachment_id
                 WHERE attachment.deleted_at IS NULL
                    OR EXISTS (
-                        SELECT 1 FROM tidbit_revision_attachment
+                        SELECT 1 FROM tidbit_attachment
                         WHERE attachment_id = attachment.id
                    )
              )
@@ -1998,7 +1998,7 @@ mod tests {
                 byte_length INTEGER NOT NULL,
                 deleted_at INTEGER
              );
-             CREATE TABLE tidbit_revision_attachment(attachment_id TEXT NOT NULL);
+             CREATE TABLE tidbit_attachment(attachment_id TEXT NOT NULL);
              CREATE TABLE attachment_image(
                 attachment_id TEXT NOT NULL,
                 preview_sha256 BLOB NOT NULL,

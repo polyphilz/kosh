@@ -357,16 +357,13 @@ fn load_documents(connection: &Connection, rowids: Vec<i64>) -> Result<Vec<Searc
     let rowids_json = serde_json::to_string(&rowids)?;
     let mut statement = connection.prepare(
         "SELECT document.rowid, document.tidbit_id, document.block_id, document.block_type,
-                document.block_ordinal, revision.body_markdown, document.heading_context,
+                document.block_ordinal, tidbit.body_markdown, document.heading_context,
                 document.body, document.attachment_names, document.extracted_text,
                 document.updated_at
          FROM json_each(?1) AS candidate
          JOIN block_search_document AS document ON document.rowid = candidate.value
          JOIN tidbit ON tidbit.id = document.tidbit_id
-                    AND tidbit.current_revision_id = document.tidbit_revision_id
-                    AND tidbit.deleted_at IS NULL
-         JOIN tidbit_revision AS revision ON revision.id = tidbit.current_revision_id
-                                        AND revision.tidbit_id = tidbit.id",
+                    AND tidbit.deleted_at IS NULL",
     )?;
     let rows = statement.query_map(params![rowids_json], |row| {
         let ordinal = row.get::<_, i64>(4)?;

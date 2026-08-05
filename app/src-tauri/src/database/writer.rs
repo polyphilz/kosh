@@ -1566,7 +1566,7 @@ pub(super) fn install_lexical_benchmark_attachments(
     let transaction = main.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for write in writes {
         let owner_note_id = transaction.query_row(
-            "SELECT tidbit_id FROM tidbit_revision WHERE id = ?1",
+            "SELECT id FROM tidbit WHERE current_revision_id = ?1",
             params![&write.revision_id],
             |row| row.get::<_, String>(0),
         )?;
@@ -1602,10 +1602,10 @@ pub(super) fn install_lexical_benchmark_attachments(
             ],
         )?;
         transaction.execute(
-            "INSERT INTO tidbit_revision_attachment(
-                tidbit_revision_id, attachment_id, block_id, sort_order, display_role
+            "INSERT INTO tidbit_attachment(
+                tidbit_id, attachment_id, block_id, sort_order, display_role
              ) VALUES(?1, ?2, ?3, 0, 'ATTACHMENT')",
-            params![&write.revision_id, &write.attachment_id, &owner_block_id],
+            params![&owner_note_id, &write.attachment_id, &owner_block_id],
         )?;
         let block_type = if kind == "IMAGE" {
             "koshImage"

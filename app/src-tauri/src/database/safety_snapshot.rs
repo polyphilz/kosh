@@ -231,10 +231,10 @@ fn validate_attachment_blob_relationship(
         return Ok(());
     }
     let mut retained = vec!["attachment.deleted_at IS NULL"];
-    if table_exists(main, "tidbit_revision_attachment")? {
+    if table_exists(main, "tidbit_attachment")? {
         retained.push(
             "EXISTS (
-                SELECT 1 FROM tidbit_revision_attachment AS membership
+                SELECT 1 FROM tidbit_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
             )",
         );

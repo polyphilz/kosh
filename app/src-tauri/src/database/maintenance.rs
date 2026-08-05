@@ -27,7 +27,7 @@ pub struct IndexDiagnostic {
 pub struct MaintenanceDatabaseSnapshot {
     pub active_tidbits: u64,
     pub trashed_tidbits: u64,
-    pub revisions: u64,
+    pub current_notes: u64,
     pub searchable_blocks: u64,
     pub attachments: u64,
     pub attachment_bytes: u64,
@@ -77,7 +77,7 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
     Ok(MaintenanceDatabaseSnapshot {
         active_tidbits,
         trashed_tidbits,
-        revisions: count(connection, "tidbit_revision")?,
+        current_notes: count(connection, "tidbit")?,
         searchable_blocks: count(connection, "block_search_document")?,
         attachments,
         attachment_bytes,

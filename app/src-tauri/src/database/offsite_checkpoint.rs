@@ -443,7 +443,7 @@ fn capture_references(
                 FROM attachment
                 WHERE attachment.deleted_at IS NULL
                    OR EXISTS (
-                        SELECT 1 FROM tidbit_revision_attachment
+                        SELECT 1 FROM tidbit_attachment
                         WHERE attachment_id = attachment.id
                    )
                 UNION ALL
@@ -452,7 +452,7 @@ fn capture_references(
                 JOIN attachment ON attachment.id = image.attachment_id
                 WHERE attachment.deleted_at IS NULL
                    OR EXISTS (
-                        SELECT 1 FROM tidbit_revision_attachment
+                        SELECT 1 FROM tidbit_attachment
                         WHERE attachment_id = attachment.id
                    )
              )
@@ -481,7 +481,7 @@ fn capture_references(
             FROM attachment
             WHERE attachment.deleted_at IS NULL
                OR EXISTS (
-                    SELECT 1 FROM tidbit_revision_attachment
+                    SELECT 1 FROM tidbit_attachment
                     WHERE attachment_id = attachment.id
                )
             UNION ALL
@@ -490,7 +490,7 @@ fn capture_references(
             JOIN attachment ON attachment.id = image.attachment_id
             WHERE attachment.deleted_at IS NULL
                OR EXISTS (
-                    SELECT 1 FROM tidbit_revision_attachment
+                    SELECT 1 FROM tidbit_attachment
                     WHERE attachment_id = attachment.id
                )
          )

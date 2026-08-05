@@ -73,7 +73,7 @@ export interface MaintenanceDiagnostics {
   library: {
     activeTidbits: number;
     trashedTidbits: number;
-    revisions: number;
+    currentNotes: number;
     searchableBlocks: number;
     attachments: number;
     attachmentBytes: number;

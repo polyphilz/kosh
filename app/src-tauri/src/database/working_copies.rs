@@ -383,24 +383,30 @@ fn checkpoint_new(
         ));
     }
     transaction.execute(
-        "INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(?1, ?2, ?2, ?3)",
-        params![&working_copy.note_id, write.now_ms, &write.revision_id],
+        "INSERT INTO tidbit(
+            id, created_at, updated_at, current_revision_id, revision_number,
+            document_json, body_markdown, content_hash
+         ) VALUES(?1, ?2, ?2, ?3, 1, ?4, ?5, ?6)",
+        params![
+            &working_copy.note_id,
+            write.now_ms,
+            &write.revision_id,
+            &prepared.document_json,
+            &prepared.body_markdown,
+            &prepared.content_hash,
+        ],
     )?;
-    tidbits::insert_revision(
+    tidbits::replace_sources(
         transaction,
-        &write.revision_id,
         &working_copy.note_id,
-        1,
         write.now_ms,
         prepared,
         &write.source_ids,
     )?;
-    media::link_revision_attachments(
+    media::replace_note_attachments(
         transaction,
-        &write.revision_id,
+        &working_copy.note_id,
         None,
-        &working_copy.id,
         &prepared.attachments,
         &prepared.body_markdown,
         write.now_ms,
@@ -433,30 +439,36 @@ fn checkpoint_existing(
         .checked_add(1)
         .ok_or_else(|| DatabaseError::InvalidInput("revision number overflow".into()))?;
     let updated_at_ms = tidbits::next_timestamp(current.updated_at_ms, write.now_ms)?;
-    tidbits::insert_revision(
+    media::replace_note_attachments(
         transaction,
-        &write.revision_id,
         &working_copy.note_id,
-        revision_number,
-        updated_at_ms,
-        prepared,
-        &write.source_ids,
-    )?;
-    media::link_revision_attachments(
-        transaction,
-        &write.revision_id,
         Some(base_revision_id),
-        &working_copy.id,
         &prepared.attachments,
         &prepared.body_markdown,
         updated_at_ms,
     )?;
+    tidbits::replace_sources(
+        transaction,
+        &working_copy.note_id,
+        updated_at_ms,
+        prepared,
+        &write.source_ids,
+    )?;
     let changed = transaction.execute(
         "UPDATE tidbit
-         SET current_revision_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND current_revision_id = ?4 AND deleted_at IS NULL",
+         SET current_revision_id = ?1,
+             revision_number = ?2,
+             document_json = ?3,
+             body_markdown = ?4,
+             content_hash = ?5,
+             updated_at = ?6
+         WHERE id = ?7 AND current_revision_id = ?8 AND deleted_at IS NULL",
         params![
             &write.revision_id,
+            revision_number,
+            &prepared.document_json,
+            &prepared.body_markdown,
+            &prepared.content_hash,
             updated_at_ms,
             &working_copy.note_id,
             base_revision_id,
@@ -982,8 +994,8 @@ mod tests {
                 .open_main_read_only()
                 .expect("main reader")
                 .query_row(
-                    "SELECT count(*) FROM tidbit_revision_attachment WHERE tidbit_revision_id = ?1",
-                    params![REVISION_ID_1],
+                    "SELECT count(*) FROM tidbit_attachment WHERE tidbit_id = ?1",
+                    params![NOTE_ID],
                     |row| row.get::<_, i64>(0),
                 )
                 .expect("revision attachment count"),
@@ -1084,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn continuous_typing_creates_bounded_revisions_and_empty_edits_do_not_delete() {
+    fn continuous_typing_keeps_one_current_note_and_empty_edits_do_not_delete() {
         let library = TestLibrary::new();
         library.save(1, "a", None, DRAFT_ID_1);
         library.save(2, "ab", None, DRAFT_ID_2);
@@ -1116,6 +1128,23 @@ mod tests {
                 )
                 .expect("searchable block count"),
             0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM tidbit", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("current note row count"),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT body_markdown FROM tidbit WHERE id = ?1",
+                    params![NOTE_ID],
+                    |row| { row.get::<_, String>(0) }
+                )
+                .expect("current note body"),
+            ""
         );
     }
 

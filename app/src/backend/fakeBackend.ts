@@ -417,7 +417,7 @@ export class FakeBackend implements Backend {
       library: {
         activeTidbits,
         trashedTidbits,
-        revisions: this.tidbits.size,
+        currentNotes: this.tidbits.size,
         searchableBlocks: [...this.tidbits.values()]
           .filter((tidbit) => tidbit.deletedAtMs === null)
           .reduce((count, tidbit) => count + fakeSearchBlocks(tidbit).length, 0),

@@ -74,7 +74,7 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
 
     let before = client.maintenance_snapshot().expect("before snapshot");
     assert_eq!(before.active_tidbits, 1);
-    assert_eq!(before.revisions, 2);
+    assert_eq!(before.current_notes, 1);
     assert_eq!(before.searchable_blocks, 1);
 
     let rebuild_probe = connection::open_writer(
@@ -116,7 +116,7 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
     let after_search = client
         .maintenance_snapshot()
         .expect("after search snapshot");
-    assert_eq!(after_search.revisions, before.revisions);
+    assert_eq!(after_search.current_notes, before.current_notes);
     assert_eq!(after_search.searchable_blocks, before.searchable_blocks);
     assert!(client
         .search_blocks(SearchBlocksInput {
@@ -164,8 +164,8 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
         client
             .maintenance_snapshot()
             .expect("final snapshot")
-            .revisions,
-        before.revisions
+            .current_notes,
+        before.current_notes
     );
 }
 
