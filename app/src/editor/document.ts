@@ -11,7 +11,7 @@ const MAX_DOCUMENT_BLOCKS = 100_000;
 const MAX_BLOCK_ID_BYTES = 256;
 const MAX_BLOCK_DEPTH = 128;
 const SUPPORTED_BLOCK_TYPES = new Set<string>(supportedKoshBlockTypes);
-const ATTACHMENT_BLOCK_TYPES = new Set(["koshFileAttachment", "koshImage", "koshPdf"]);
+const ATTACHMENT_BLOCK_TYPES = new Set(["koshFileAttachment", "koshImage"]);
 const UUID_V7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export interface KoshDocumentV1 {

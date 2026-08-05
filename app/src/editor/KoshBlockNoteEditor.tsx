@@ -33,11 +33,8 @@ import {
 } from "react";
 import type {
   CitationResolution,
-  GenericAttachmentStatusRecord,
   ImageRecord,
   ImageStatusRecord,
-  PdfRecord,
-  PdfStatusRecord,
   SelectedAttachmentRecord,
 } from "../backend/contracts";
 import { useAppearance } from "../components/Appearance";
@@ -77,14 +74,12 @@ export interface KoshBlockNoteEditorHandle {
   isSuggestionMenuOpen: () => boolean;
   insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
-  insertPdfs: (pdfs: PdfRecord[]) => void;
   moveFindInNote: (direction: "next" | "previous") => FindInNoteResult;
   revalidateCitationFocus: (citation: CitationResolution) => boolean;
 }
 
 export interface KoshBlockNoteEditorProps {
   ariaLabel: string;
-  attachmentStatus?: (attachmentId: string) => Promise<GenericAttachmentStatusRecord>;
   disabled?: boolean;
   imageStatus?: (attachmentId: string) => Promise<ImageStatusRecord>;
   onChange: (documentJson: string, bodyMarkdown: string) => void;
@@ -92,16 +87,12 @@ export interface KoshBlockNoteEditorProps {
   onImageError?: (error: unknown) => void;
   onPendingImagesChange?: (pending: boolean) => void;
   openAttachmentExternal?: (attachmentId: string) => Promise<void>;
-  openPdfExternal?: (attachmentId: string) => Promise<void>;
   pasteImage?: () => Promise<ImageRecord>;
-  pdfStatus?: (attachmentId: string) => Promise<PdfStatusRecord>;
   pickAttachment?: () => Promise<SelectedAttachmentRecord | null>;
   pickImage?: () => Promise<ImageRecord | null>;
-  pickPdf?: () => Promise<PdfRecord | null>;
   placeholder?: string;
   revealAttachmentInFinder?: (attachmentId: string) => Promise<void>;
   retryImageOcr?: (attachmentId: string) => Promise<ImageStatusRecord>;
-  retryPdfExtraction?: (attachmentId: string) => Promise<PdfStatusRecord>;
   selectionRail?: boolean;
   variant?: "default" | "page";
   value: string;
@@ -130,18 +121,13 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
       }
     }
     const capabilities = useRef({
-      attachmentStatus: Boolean(properties.attachmentStatus),
       imageStatus: Boolean(properties.imageStatus),
       openAttachmentExternal: Boolean(properties.openAttachmentExternal),
-      openPdfExternal: Boolean(properties.openPdfExternal),
       pasteImage: Boolean(properties.pasteImage),
-      pdfStatus: Boolean(properties.pdfStatus),
       pickAttachment: Boolean(properties.pickAttachment),
       pickImage: Boolean(properties.pickImage),
-      pickPdf: Boolean(properties.pickPdf),
       revealAttachmentInFinder: Boolean(properties.revealAttachmentInFinder),
       retryImageOcr: Boolean(properties.retryImageOcr),
-      retryPdfExtraction: Boolean(properties.retryPdfExtraction),
     }).current;
     const editor = useCreateBlockNote({
       schema: koshBlockNoteSchema,
@@ -189,9 +175,6 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
     );
     const mediaActions = useMemo<KoshMediaActions>(
       () => ({
-        attachmentStatus: capabilities.attachmentStatus
-          ? (attachmentId) => propertiesRef.current.attachmentStatus!(attachmentId)
-          : undefined,
         imageStatus: capabilities.imageStatus
           ? (attachmentId) => propertiesRef.current.imageStatus!(attachmentId)
           : undefined,
@@ -199,20 +182,11 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
         openAttachmentExternal: capabilities.openAttachmentExternal
           ? (attachmentId) => propertiesRef.current.openAttachmentExternal!(attachmentId)
           : undefined,
-        openPdfExternal: capabilities.openPdfExternal
-          ? (attachmentId) => propertiesRef.current.openPdfExternal!(attachmentId)
-          : undefined,
-        pdfStatus: capabilities.pdfStatus
-          ? (attachmentId) => propertiesRef.current.pdfStatus!(attachmentId)
-          : undefined,
         revealAttachmentInFinder: capabilities.revealAttachmentInFinder
           ? (attachmentId) => propertiesRef.current.revealAttachmentInFinder!(attachmentId)
           : undefined,
         retryImageOcr: capabilities.retryImageOcr
           ? (attachmentId) => propertiesRef.current.retryImageOcr!(attachmentId)
-          : undefined,
-        retryPdfExtraction: capabilities.retryPdfExtraction
-          ? (attachmentId) => propertiesRef.current.retryPdfExtraction!(attachmentId)
           : undefined,
       }),
       [capabilities, mediaController],
@@ -280,8 +254,6 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
         insertAttachments: (attachments) => mediaController.insert(attachments),
         insertImages: (images) =>
           mediaController.insert(images.map((record) => ({ recordKind: "IMAGE", record }))),
-        insertPdfs: (pdfs) =>
-          mediaController.insert(pdfs.map((record) => ({ recordKind: "PDF", record }))),
         moveFindInNote: (direction) => moveEditorFind(editor, direction),
         revalidateCitationFocus: (citation) =>
           revalidateCitationFocus(editor, citation, searchFocusBlockIds),
@@ -808,7 +780,6 @@ function searchableBlockEvidenceText(block: {
       .join(" ");
   }
   if (block.type === "koshFileAttachment") return stringFromRecord(props, "caption");
-  if (block.type === "koshPdf") return "";
   return inlineEvidenceText(block.content);
 }
 
@@ -899,14 +870,6 @@ function restrictedSlashItems(
       mediaItem(editor, mediaController, "Image", ["picture"], async () => {
         const record = await properties.current.pickImage!();
         return record ? { recordKind: "IMAGE", record } : null;
-      }),
-    );
-  }
-  if (capabilities.pickPdf) {
-    items.push(
-      mediaItem(editor, mediaController, "PDF", ["document"], async () => {
-        const record = await properties.current.pickPdf!();
-        return record ? { recordKind: "PDF", record } : null;
       }),
     );
   }

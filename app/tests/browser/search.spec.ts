@@ -241,99 +241,106 @@ test("a result edited after retrieval opens honest historical evidence", async (
   expect(page.url()).not.toContain("cobalt");
 });
 
-test("attachment results retain their exact page evidence after opening the owning note", async ({
+test("file results use the attachment filename without indexing file contents", async ({
   page,
 }) => {
   await page.goto("/#/");
+  const attachmentId = "019f547b-6200-7000-8000-00000000d001";
   const note = await seedTidbit(page, {
-    bodyMarkdown: "# Vector chapter\n\n{{kosh:pdf:019f547b-6200-7000-8000-00000000d001}}",
-    sources: [],
-  });
-  await page.evaluate((seeded) => {
-    const backend = window.__KOSH_FAKE_BACKEND__;
-    if (!backend) throw new Error("fake backend is unavailable");
-    const passageId = "fake-pdf-passage:page-7";
-    const citation = {
-      passageId,
-      excerpt: "Page-seven matrix evidence remains exact.",
-      headingContext: ["Vector chapter"],
-      constructionVersion: "fake-pdf-pages-v1",
-      state: "CURRENT" as const,
-      locator: { kind: "PDF_PAGE" as const, page: 7 },
-      tidbit: null,
-      attachment: {
-        id: "019f547b-6200-7000-8000-00000000d001",
-        extractionId: "fake-pdf-extraction",
-        displayFilename: "vectors.pdf",
-        mediaType: "application/pdf",
-        deleted: false,
-      },
-      sources: [],
-    };
-    backend.pdfStatus = async (attachmentId) => ({
-      attachmentId,
-      displayFilename: "vectors.pdf",
-      pageCount: 9,
-      extractedPageCount: 9,
-      unavailablePageCount: 0,
-      extractionStatus: "READY",
-      extractionError: null,
-      nextAttemptAtMs: null,
-    });
-    backend.resolveCitation = async (requestedPassageId) => {
-      if (requestedPassageId !== passageId) throw new Error("unexpected passage");
-      return citation;
-    };
-    backend.searchPassages = async () => ({
-      executionMode: "LEXICAL_ONLY",
-      semanticReadiness: "WAITING_FOR_RUNTIME",
-      results: [
+    bodyMarkdown: `# Vector chapter\n\n{{kosh:attachment:${attachmentId}}}`,
+    documentJson: JSON.stringify({
+      schemaVersion: 1,
+      blocks: [
         {
-          passageId,
-          score: 10,
-          matchedFields: ["EXTRACTED_TEXT"],
-          highlights: [],
-          note: {
-            id: seeded.id,
-            revisionId: seeded.currentRevisionId,
-            revisionNumber: seeded.revisionNumber,
-            displayTitle: seeded.displayTitle,
-            deleted: false,
+          id: "019f547b-6200-7000-8000-00000000d101",
+          type: "heading",
+          props: { level: 1 },
+          content: [{ type: "text", text: "Vector chapter", styles: {} }],
+        },
+        {
+          id: "019f547b-6200-7000-8000-00000000d102",
+          type: "koshFileAttachment",
+          props: {
+            attachmentId,
+            byteLength: 2_048,
+            caption: "",
+            displayFilename: "vectors.csv",
+            mediaType: "text/csv",
           },
-          citation,
         },
       ],
-    });
-  }, note);
+    }),
+    sources: [],
+  });
+  await page.evaluate(
+    ({ note: seeded }) => {
+      const backend = window.__KOSH_FAKE_BACKEND__;
+      if (!backend) throw new Error("fake backend is unavailable");
+      const passageId = "fake-file-filename-passage";
+      const citation = {
+        passageId,
+        excerpt: "Vector chapter",
+        headingContext: ["Vector chapter"],
+        constructionVersion: "fake-file-filename-v1",
+        state: "CURRENT" as const,
+        locator: {
+          kind: "MARKDOWN_BLOCKS" as const,
+          startBlock: 0,
+          endBlock: 0,
+          sourceStartByte: 0,
+          sourceEndByte: 16,
+          startChar: 0,
+          endChar: 14,
+          startLine: 1,
+          endLine: 1,
+        },
+        tidbit: {
+          id: seeded.id,
+          revisionId: seeded.currentRevisionId,
+          revisionNumber: seeded.revisionNumber,
+          displayTitle: seeded.displayTitle,
+          deleted: false,
+        },
+        attachment: null,
+        sources: [],
+      };
+      backend.resolveCitation = async (requestedPassageId) => {
+        if (requestedPassageId !== passageId) throw new Error("unexpected passage");
+        return citation;
+      };
+      backend.searchPassages = async () => ({
+        executionMode: "LEXICAL_ONLY",
+        semanticReadiness: "WAITING_FOR_RUNTIME",
+        results: [
+          {
+            passageId,
+            score: 10,
+            matchedFields: ["ATTACHMENT_NAME"],
+            highlights: [],
+            note: {
+              id: seeded.id,
+              revisionId: seeded.currentRevisionId,
+              revisionNumber: seeded.revisionNumber,
+              displayTitle: seeded.displayTitle,
+              deleted: false,
+            },
+            citation,
+          },
+        ],
+      });
+    },
+    { note },
+  );
 
   await page.keyboard.press("Meta+k");
-  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
+  await page.getByRole("combobox", { name: "Search notes" }).fill("vectors.csv");
   await page.getByRole("option", { name: /Vector chapter/u }).click();
 
-  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
-  const location = page.getByRole("status", { name: "Search result location" });
-  await expect(location).toContainText("vectors.pdf");
-  await expect(location).toContainText("Vector chapter · page 7");
-  await expect(location).toContainText("Page-seven matrix evidence remains exact.");
-  await expect(location).toBeVisible();
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("Vector chapter");
+  await expect(page.getByRole("status", { name: "Search result location" })).toHaveCount(0);
   await page.waitForTimeout(1_500);
-  await expect(location).toBeVisible();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
-
-  await page.keyboard.press("Meta+k");
-  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
-  await page.getByRole("option", { name: /Vector chapter/u }).click();
-  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.pdf");
-
-  await page.getByRole("button", { name: "Dismiss search result location" }).click();
-  await expect(location).toBeHidden();
   await expect.poll(() => new URL(page.url()).searchParams.has("passage")).toBe(false);
-
-  await page.keyboard.press("Meta+k");
-  await page.getByRole("combobox", { name: "Search notes" }).fill("matrix evidence");
-  await page.getByRole("option", { name: /Vector chapter/u }).click();
-  await expect(location).toBeVisible();
-  await expect(location).toContainText("Page-seven matrix evidence remains exact.");
 });
 
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {

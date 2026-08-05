@@ -373,10 +373,6 @@ fn authored_media_token_text(token: &str) -> Option<String> {
         };
         return fields.next().is_none().then_some(caption);
     }
-    if let Some(id) = payload.strip_prefix("pdf:") {
-        canonical_uuid_v7(id)?;
-        return Some(String::new());
-    }
     let payload = payload.strip_prefix("image:")?;
     let mut fields = payload.split(';');
     canonical_uuid_v7(fields.next()?)?;

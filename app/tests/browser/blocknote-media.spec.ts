@@ -1,21 +1,21 @@
 import { expect, test, type Page } from "./fixtures";
 
-test("local image, PDF, and file blocks preserve only opaque Markdown references", async ({
-  page,
-}) => {
+test("local image and file blocks preserve only opaque Markdown references", async ({ page }) => {
   await openHarness(page);
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.insertMediaFixture());
   expect((await readHarnessSnapshot(page)).blocks.map((block) => block.type)).toEqual(
-    expect.arrayContaining(["koshImage", "koshPdf", "koshFileAttachment"]),
+    expect.arrayContaining(["koshImage", "koshFileAttachment"]),
   );
 
   const image = page.locator("[data-kosh-image='true']");
+  const archiveFile = page.locator("[data-kosh-file='true']").filter({ hasText: "chapter.zip" });
+  const textFile = page.locator("[data-kosh-file='true']").filter({ hasText: "appendix.txt" });
   await expect(image).toBeVisible();
-  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("chapter.pdf");
-  await expect(page.locator("[data-kosh-file='true']")).toContainText("appendix.txt");
+  await expect(archiveFile).toContainText("Filename searchable");
+  await expect(textFile).toContainText("Filename searchable");
   await expect(page.getByRole("button", { name: "Replace" })).toHaveCount(0);
-  await page.locator("[data-kosh-pdf='true']").getByRole("button", { name: "Open" }).click();
-  await page.locator("[data-kosh-file='true']").getByRole("button", { name: "Reveal" }).click();
+  await archiveFile.getByRole("button", { name: "Open" }).click();
+  await textFile.getByRole("button", { name: "Reveal" }).click();
 
   await image.getByLabel("Alt text").fill("Architecture diagram");
   await image.getByLabel("Caption").fill("Chapter overview");
@@ -44,36 +44,36 @@ test("local image, PDF, and file blocks preserve only opaque Markdown references
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.setEditable(true));
 
   const snapshot = await readHarnessSnapshot(page);
-  const pdfBlock = snapshot.blocks.find((block) => block.type === "koshPdf")!;
-  await page.locator(`.bn-block-outer[data-id="${pdfBlock.id}"]`).hover();
+  const archiveFileBlock = snapshot.blocks.find(
+    (block) => block.type === "koshFileAttachment" && block.props.displayFilename === "chapter.zip",
+  )!;
+  await page.locator(`.bn-block-outer[data-id="${archiveFileBlock.id}"]`).hover();
   await page.getByRole("button", { name: "Drag to move" }).click();
   await page.getByRole("menuitem", { name: "Move block up" }).click();
   await expect
     .poll(async () => {
       const blocks = (await readHarnessSnapshot(page)).blocks;
-      return blocks.findIndex((block) => block.id === pdfBlock.id);
+      return blocks.findIndex((block) => block.id === archiveFileBlock.id);
     })
-    .toBe(snapshot.blocks.findIndex((block) => block.id === pdfBlock.id) - 1);
-  const pdf = page.locator("[data-kosh-pdf='true']");
-  await pdf.getByRole("button", { name: "Remove" }).click();
-  await expect(pdf).toHaveCount(0);
+    .toBe(snapshot.blocks.findIndex((block) => block.id === archiveFileBlock.id) - 1);
+  await archiveFile.getByRole("button", { name: "Remove" }).click();
+  await expect(archiveFile).toHaveCount(0);
   await page.locator(".bn-inline-content").last().click();
   await page.keyboard.press("ControlOrMeta+z");
-  await expect(page.locator("[data-kosh-pdf='true']")).toHaveCount(1);
+  await expect(archiveFile).toHaveCount(1);
 
   const markdown = await editorMarkdown(page);
   expect(markdown).toContain(
     "{{kosh:image:019f547b-6200-7000-8000-000000000101;width=" +
       `${resizedWidth}%;alt=Architecture%20diagram;caption=Chapter%20overview}}`,
   );
-  expect(markdown).toContain("{{kosh:pdf:019f547b-6200-7000-8000-000000000102}}");
+  expect(markdown).toContain("{{kosh:attachment:019f547b-6200-7000-8000-000000000102}}");
   expect(markdown).toContain("{{kosh:attachment:019f547b-6200-7000-8000-000000000103}}");
   expect(markdown).not.toMatch(/(?:blob:|data:|file:|\/Users\/)/u);
 
   await page.evaluate((value) => window.__KOSH_BLOCKNOTE_HARNESS__!.loadMarkdown(value), markdown);
   await expect(page.locator("[data-kosh-image='true']")).toHaveCount(1);
-  await expect(page.locator("[data-kosh-pdf='true']")).toHaveCount(1);
-  await expect(page.locator("[data-kosh-file='true']")).toHaveCount(1);
+  await expect(page.locator("[data-kosh-file='true']")).toHaveCount(2);
   await expect.poll(() => editorMarkdown(page)).toBe(markdown);
 });
 
@@ -102,8 +102,7 @@ test("paste, native-drop insertion, cancellation, and failure retain authored co
       );
   });
   await expect(page.locator("[data-kosh-image='true']")).toHaveCount(2);
-  await expect(page.locator("[data-kosh-pdf='true']")).toHaveCount(1);
-  await expect(page.locator("[data-kosh-file='true']")).toHaveCount(1);
+  await expect(page.locator("[data-kosh-file='true']")).toHaveCount(2);
 
   for (const outcome of ["cancel", "failure"] as const) {
     const requestId = await page.evaluate(() =>
@@ -274,7 +273,7 @@ test("overlapping deferred media restores one paragraph or preserves committed m
   await expect.poll(() => editorMarkdown(page)).toContain("}}\n\n&#x20;after");
 });
 
-test("image and PDF retries restart status polling", async ({ page }) => {
+test("image retries restart status polling", async ({ page }) => {
   await openHarness(page);
 
   await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.installRetryMediaFixture("image"));
@@ -288,18 +287,6 @@ test("image and PDF retries restart status polling", async ({ page }) => {
   await expect
     .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("image")))
     .toBeGreaterThan(imageCallsBeforeRetry);
-
-  await page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.installRetryMediaFixture("pdf"));
-  const pdfRetry = page.getByRole("button", { name: "Retry extraction" });
-  await expect(pdfRetry).toBeVisible();
-  const pdfCallsBeforeRetry = await page.evaluate(() =>
-    window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("pdf"),
-  );
-  await pdfRetry.click();
-  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("12 pages · 12 searchable");
-  await expect
-    .poll(() => page.evaluate(() => window.__KOSH_BLOCKNOTE_HARNESS__!.mediaStatusCalls("pdf")))
-    .toBeGreaterThan(pdfCallsBeforeRetry);
 });
 
 test("the restricted slash menu inserts media through the local controller", async ({ page }) => {

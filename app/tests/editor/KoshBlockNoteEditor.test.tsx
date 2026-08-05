@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, forwardRef, useState, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -154,16 +154,13 @@ describe("production BlockNote editor", () => {
       </AppearanceProvider>,
     );
     const attachment: SelectedAttachmentRecord = {
-      recordKind: "GENERIC",
+      recordKind: "FILE",
       record: {
         byteLength: 12,
         displayFilename: "memory.txt",
-        extractedLineCount: 1,
-        extractionError: null,
-        extractionStatus: "READY",
         id: "019f547b-6200-7000-8000-000000000301",
         ingestLeaseId: "private-lease",
-        kind: "TEXT",
+        kind: "FILE",
         mediaType: "text/plain",
       },
     };
@@ -386,38 +383,34 @@ describe("production BlockNote editor", () => {
     act(() =>
       ref.current?.insertAttachments([
         {
-          recordKind: "PDF",
+          recordKind: "FILE",
           record: {
             byteLength: 128,
-            displayFilename: "matrix-notes.pdf",
-            extractionError: null,
-            extractionStatus: "READY",
+            displayFilename: "matrix-notes.csv",
             id: "019f547b-6200-7000-8000-000000000302",
-            ingestLeaseId: "private-pdf-lease",
-            kind: "PDF",
-            mediaType: "application/pdf",
-            pageCount: 4,
+            ingestLeaseId: "private-csv-lease",
+            kind: "FILE",
+            mediaType: "text/csv",
           },
         },
         {
-          recordKind: "GENERIC",
+          recordKind: "FILE",
           record: {
             byteLength: 12,
             displayFilename: "memory.txt",
-            extractedLineCount: 1,
-            extractionError: null,
-            extractionStatus: "READY",
             id: "019f547b-6200-7000-8000-000000000303",
             ingestLeaseId: "private-file-lease",
-            kind: "TEXT",
+            kind: "FILE",
             mediaType: "text/plain",
           },
         },
       ]),
     );
-    await screen.findByText("matrix-notes.pdf");
-    await screen.findByText("memory.txt");
-    fireEvent.change(screen.getByLabelText("Attachment caption"), {
+    await screen.findByText("matrix-notes.csv");
+    const memoryFilename = await screen.findByText("memory.txt");
+    const memoryFile = memoryFilename.closest("[data-kosh-file='true']");
+    if (!memoryFile) throw new Error("memory file block is unavailable");
+    fireEvent.change(within(memoryFile).getByLabelText("Attachment caption"), {
       target: { value: "Memory appendix" },
     });
 
@@ -426,7 +419,7 @@ describe("production BlockNote editor", () => {
       count: 1,
     });
     expect(ref.current?.findInNote("Chapter overview")).toEqual({ activeIndex: 0, count: 1 });
-    expect(ref.current?.findInNote("matrix-notes.pdf")).toEqual({ activeIndex: 0, count: 1 });
+    expect(ref.current?.findInNote("matrix-notes.csv")).toEqual({ activeIndex: 0, count: 1 });
     expect(ref.current?.findInNote("memory.txt")).toEqual({ activeIndex: 0, count: 1 });
     expect(ref.current?.findInNote("Memory appendix")).toEqual({ activeIndex: 0, count: 1 });
   });

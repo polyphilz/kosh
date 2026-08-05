@@ -56,7 +56,6 @@ pub(crate) struct RuntimeState {
     ids: Arc<dyn IdGenerator>,
     media_limits: MediaLimits,
     image_ocr: crate::media::ImageOcrCoordinator,
-    pdf_extraction: crate::pdf::PdfExtractionCoordinator,
     pending_clipboard_images: Mutex<HashMap<String, PendingClipboardImage>>,
     pending_image_drops: Mutex<HashMap<String, PendingImageDrop>>,
     pending_file_selections: Mutex<HashMap<String, PendingFileSelection>>,
@@ -95,16 +94,6 @@ fn start_optional_image_ocr(client: DatabaseClient) -> crate::media::ImageOcrCoo
         Err(error) => {
             log::warn!("image OCR is unavailable; Kosh will continue without it: {error}");
             crate::media::ImageOcrCoordinator::disabled()
-        }
-    }
-}
-
-fn start_optional_pdf_extraction(client: DatabaseClient) -> crate::pdf::PdfExtractionCoordinator {
-    match crate::pdf::PdfExtractionCoordinator::start(client) {
-        Ok(coordinator) => coordinator,
-        Err(error) => {
-            log::warn!("PDF extraction is unavailable; Kosh will continue without it: {error}");
-            crate::pdf::PdfExtractionCoordinator::disabled()
         }
     }
 }
@@ -151,7 +140,6 @@ impl RuntimeState {
         let passage_embedding_indexer =
             PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
         let image_ocr = start_optional_image_ocr(database.client());
-        let pdf_extraction = start_optional_pdf_extraction(database.client());
         let media_backup = start_optional_media_backup(database.client(), database.paths().clone());
         let checkpoint_backup = crate::backup::checkpoint::CheckpointBackupCoordinator::start(
             database.client(),
@@ -172,7 +160,6 @@ impl RuntimeState {
             ids: Arc::new(UuidV7Generator),
             media_limits,
             image_ocr,
-            pdf_extraction,
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
@@ -184,9 +171,6 @@ impl RuntimeState {
             crate::media::recover_staging_directory(&state.media_staging_directory())
         {
             log::warn!("startup media staging recovery could not complete: {error}");
-        }
-        if let Err(error) = crate::pdf::recover_pdf_open_directory(&state.pdf_open_directory()) {
-            log::warn!("startup PDF materialization recovery could not complete: {error}");
         }
         if let Err(error) = crate::attachments::recover_attachment_open_directory(
             &state.attachment_open_directory(),
@@ -222,7 +206,6 @@ impl RuntimeState {
             ids,
             media_limits: MediaLimits::default(),
             image_ocr: crate::media::ImageOcrCoordinator::disabled(),
-            pdf_extraction: crate::pdf::PdfExtractionCoordinator::disabled(),
             pending_clipboard_images: Mutex::new(HashMap::new()),
             pending_image_drops: Mutex::new(HashMap::new()),
             pending_file_selections: Mutex::new(HashMap::new()),
@@ -344,16 +327,8 @@ impl RuntimeState {
         self.image_ocr.wake();
     }
 
-    pub(crate) fn wake_pdf_extraction(&self) {
-        self.pdf_extraction.wake();
-    }
-
     pub(crate) fn wake_media_backup(&self) {
         self.media_backup.wake();
-    }
-
-    pub(crate) fn pdf_open_directory(&self) -> PathBuf {
-        self.data_dir.join("pdf-open")
     }
 
     pub(crate) fn attachment_open_directory(&self) -> PathBuf {
@@ -873,11 +848,11 @@ mod tests {
     #[test]
     fn file_drop_capabilities_require_and_follow_an_active_consumer() {
         let directory = tempfile::tempdir().expect("temporary file drop directory");
-        let picker_pdf = directory.path().join("picker.pdf");
-        let dropped_pdf = directory.path().join("dropped.txt");
+        let picker_file = directory.path().join("picker.bin");
+        let dropped_file = directory.path().join("dropped.txt");
         let quick_drop = directory.path().join("quick.txt");
-        std::fs::write(&picker_pdf, b"%PDF-picker").expect("picker file fixture");
-        std::fs::write(&dropped_pdf, b"dropped text").expect("dropped file fixture");
+        std::fs::write(&picker_file, b"picker bytes").expect("picker file fixture");
+        std::fs::write(&dropped_file, b"dropped text").expect("dropped file fixture");
         std::fs::write(&quick_drop, b"quick text").expect("quick drop fixture");
         let picker_id = "019f547b-6200-7000-8000-000000000993".to_owned();
         let dropped_id = "019f547b-6200-7000-8000-000000000994".to_owned();
@@ -893,19 +868,19 @@ mod tests {
         );
 
         assert!(matches!(
-            state.register_dropped_file_selection("main", dropped_pdf.clone()),
+            state.register_dropped_file_selection("main", dropped_file.clone()),
             Err(crate::database::DatabaseError::InvalidInput(_))
         ));
         assert_eq!(
             state
-                .register_file_selection(picker_pdf.clone())
+                .register_file_selection(picker_file.clone())
                 .expect("picker selection"),
             picker_id
         );
         state.set_file_drop_consumer_active("main", true);
         assert_eq!(
             state
-                .register_dropped_file_selection("main", dropped_pdf)
+                .register_dropped_file_selection("main", dropped_file)
                 .expect("dropped selection"),
             dropped_id
         );
@@ -922,7 +897,7 @@ mod tests {
             state
                 .take_file_selection("main", &picker_id)
                 .expect("picker survives"),
-            picker_pdf
+            picker_file
         );
         assert!(matches!(
             state.take_file_selection("main", &dropped_id),

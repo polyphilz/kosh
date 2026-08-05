@@ -313,46 +313,19 @@ function checkJourneys(values) {
       ),
     ],
     [
-      "a PDF attachment",
+      "a text file attachment",
       currentAttachmentCount(
-        "JOIN attachment_pdf AS pdf ON pdf.attachment_id = attachment.id",
-        "attachment.kind = 'PDF'",
+        "",
+        "attachment.kind = 'FILE' AND attachment.media_type LIKE 'text/%'",
       ),
     ],
     [
-      "a completed PDF extraction",
+      "an opaque file attachment",
       currentAttachmentCount(
-        `JOIN attachment_extraction AS extraction
-           ON extraction.attachment_id = attachment.id
-          AND extraction.content_hash = attachment.sha256
-         JOIN attachment_extractor_config AS config
-           ON config.extractor = extraction.extractor
-          AND config.version = extraction.extractor_version`,
-        "attachment.kind = 'PDF' AND extraction.extractor = 'pdf-text' AND extraction.status = 'READY'",
+        "",
+        "attachment.kind = 'FILE' AND attachment.media_type = 'application/octet-stream'",
       ),
     ],
-    [
-      "searchable extracted attachment text",
-      `SELECT count(*)
-       FROM tidbit
-       JOIN tidbit_revision_attachment AS membership
-         ON membership.tidbit_revision_id = tidbit.current_revision_id
-       JOIN attachment ON attachment.id = membership.attachment_id
-       JOIN attachment_extraction AS extraction
-         ON extraction.attachment_id = attachment.id
-        AND extraction.content_hash = attachment.sha256
-       JOIN attachment_extractor_config AS config
-         ON config.extractor = extraction.extractor
-        AND config.version = extraction.extractor_version
-       JOIN attachment_segment AS segment ON segment.extraction_id = extraction.id
-       JOIN passage ON passage.attachment_segment_id = segment.id
-       JOIN passage_search_document AS document ON document.passage_id = passage.id
-       WHERE tidbit.deleted_at IS NULL
-         AND attachment.deleted_at IS NULL
-         AND length(document.extracted_text) > 0`,
-    ],
-    ["a text attachment", currentAttachmentCount("", "attachment.kind = 'TEXT'")],
-    ["an opaque attachment", currentAttachmentCount("", "attachment.kind = 'BINARY'")],
     [
       "a semantic passage embedding",
       `SELECT count(*)
@@ -389,8 +362,32 @@ function checkJourneys(values) {
       `packaged journey evidence is missing ${label}`,
     );
   }
+  assertEqual(
+    numberSql(
+      profile.main,
+      `SELECT count(*)
+       FROM tidbit
+       JOIN tidbit_revision_attachment AS membership
+         ON membership.tidbit_revision_id = tidbit.current_revision_id
+       JOIN attachment ON attachment.id = membership.attachment_id
+       WHERE tidbit.deleted_at IS NULL
+         AND attachment.deleted_at IS NULL
+         AND attachment.kind = 'FILE'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM passage_search_document AS document
+           WHERE document.tidbit_id = tidbit.id
+             AND instr(
+               char(10) || document.attachment_names || char(10),
+               char(10) || attachment.display_filename || char(10)
+             ) > 0
+         )`,
+    ),
+    0,
+    "current file attachments missing from the filename search projection",
+  );
   console.info(
-    "Packaged journey acceptance passed: titleless rich notes, source citations, image OCR, PDF/text extraction, opaque files, search, and semantic indexing are durable.",
+    "Packaged journey acceptance passed: titleless rich notes, source citations, image OCR, filename-only files, search, and semantic indexing are durable.",
   );
 }
 

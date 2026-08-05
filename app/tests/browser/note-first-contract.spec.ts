@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
-test("note-first capture preserves image, PDF, file, source, and citation surfaces", async ({
+test("note-first capture preserves image, file, source, and citation surfaces", async ({
   page,
 }) => {
   await page.route("kosh-media://**", async (route) => {
@@ -40,53 +40,17 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
       nextAttemptAtMs: null,
     });
 
-    backend.selectPdf = async () => "note-pdf-selection";
-    backend.ingestSelectedPdf = async () => ({
-      id: "019f547b-6200-7000-8000-00000000c011",
-      ingestLeaseId: "019f547b-6200-7000-8000-00000000c012",
-      displayFilename: "vector-chapter.pdf",
-      mediaType: "application/pdf",
-      byteLength: 2_048,
-      kind: "PDF",
-      pageCount: 3,
-      extractionStatus: "READY",
-      extractionError: null,
-    });
-    backend.pdfStatus = async (attachmentId) => ({
-      attachmentId,
-      displayFilename: "vector-chapter.pdf",
-      pageCount: 3,
-      extractedPageCount: 3,
-      unavailablePageCount: 0,
-      extractionStatus: "READY",
-      extractionError: null,
-      nextAttemptAtMs: null,
-    });
-
     backend.selectAttachment = async () => "note-file-selection";
     backend.ingestSelectedAttachment = async () => ({
-      recordKind: "GENERIC",
+      recordKind: "FILE",
       record: {
         id: "019f547b-6200-7000-8000-00000000c021",
         ingestLeaseId: "019f547b-6200-7000-8000-00000000c022",
         displayFilename: "vector-scraps.md",
         mediaType: "text/markdown",
         byteLength: 512,
-        kind: "TEXT",
-        extractionStatus: "READY",
-        extractionError: null,
-        extractedLineCount: 8,
+        kind: "FILE",
       },
-    });
-    backend.attachmentStatus = async (attachmentId) => ({
-      attachmentId,
-      displayFilename: "vector-scraps.md",
-      mediaType: "text/markdown",
-      byteLength: 512,
-      kind: "TEXT",
-      extractionStatus: "READY",
-      extractionError: null,
-      extractedLineCount: 8,
     });
   });
 
@@ -95,8 +59,6 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
   await chooseSlashItem(page, "Image");
   await expect(page.locator("[data-kosh-image='true']")).toBeVisible();
   await page.getByRole("textbox", { name: "Alt text" }).fill("Vector board");
-  await chooseSlashItem(page, "PDF");
-  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("vector-chapter.pdf");
   await chooseSlashItem(page, "File");
   await expect(page.locator("[data-kosh-file='true']")).toContainText("vector-scraps.md");
   await editor.focus();
@@ -113,7 +75,6 @@ test("note-first capture preserves image, PDF, file, source, and citation surfac
   await expect(page).toHaveURL(/\/#\/notes\/[0-9a-f-]{36}$/u, { timeout: 5_000 });
   await expect(page.getByRole("button", { name: "Sources 1" })).toBeVisible();
   await expect(page.getByRole("img", { name: "Vector board" })).toBeVisible();
-  await expect(page.locator("[data-kosh-pdf='true']")).toContainText("vector-chapter.pdf");
   await expect(page.locator("[data-kosh-file='true']")).toContainText("vector-scraps.md");
 
   await page.getByRole("button", { name: "Search", exact: true }).click();

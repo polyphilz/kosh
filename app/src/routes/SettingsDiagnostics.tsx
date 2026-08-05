@@ -51,7 +51,7 @@ const actionCopy: Record<
   RETRY_EXTRACTIONS: {
     title: "Retry failed extraction?",
     description:
-      "Only current failed image OCR and PDF jobs will return to their local queues. Successful extraction evidence is untouched.",
+      "Only current failed image OCR jobs will return to the local queue. Successful OCR evidence is untouched.",
     confirm: "Retry failed jobs",
     running: "Queueing failed extraction…",
   },
@@ -197,8 +197,7 @@ export function SettingsDiagnostics() {
     "FAILED",
     "UNAVAILABLE",
   ].includes(semantic.phase);
-  const failedExtractionCount =
-    diagnostics.library.imageOcr.failed + diagnostics.library.pdfExtraction.failed;
+  const failedExtractionCount = diagnostics.library.imageOcr.failed;
   const semanticSearch = semanticSearchHealth(semantic, embeddings);
   const unhealthyIndexes = diagnostics.library.indexes.filter(
     (index) => index.status === "FAILED" || index.error,
@@ -278,7 +277,7 @@ export function SettingsDiagnostics() {
             value={formatBytes(diagnostics.storage.totalBytes)}
           />
           <DiagnosticItem
-            detail={`OCR ${queueSummary(diagnostics.library.imageOcr)} · PDF ${queueSummary(diagnostics.library.pdfExtraction)}`}
+            detail={`OCR ${queueSummary(diagnostics.library.imageOcr)}`}
             label="Extraction queues"
             value={failedExtractionCount === 0 ? "Healthy" : `${failedExtractionCount} failed`}
             warning={failedExtractionCount > 0}
@@ -337,7 +336,7 @@ export function SettingsDiagnostics() {
           />
           <MaintenanceRow
             action="Retry failed extraction"
-            description="Retry only current failed OCR and PDF extraction jobs."
+            description="Retry only current failed OCR jobs."
             disabled={disabled}
             onClick={() => setConfirmation("RETRY_EXTRACTIONS")}
           />

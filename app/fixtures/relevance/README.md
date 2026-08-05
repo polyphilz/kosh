@@ -1,14 +1,14 @@
 # Relevance fixtures
 
 `v1.json` is the checked-in search-quality corpus using fixture schema v2.
-Every passage declares whether it is authored or attachment-owned, and
-attachment evidence carries a stable attachment identity plus its PDF page,
-OCR region, or text-line locator. Each query names graded relevant passage IDs,
-passages that must not rank, the retrieval mode it is meant to exercise, and
-the exact citation locator expected from a result. Only `text` and `searchMode`
-cross into a retriever. Categories, expected passages, exclusions, and
-citation locators remain private to the scorer so the system under test cannot
-read its answer key.
+Every passage declares whether it is authored or image-OCR evidence. Attachment
+evidence carries a stable image identity plus its OCR-region locator; ordinary
+files contribute their filename only to authored-note search documents. Each
+query names graded relevant passage IDs, passages that must not rank, the
+retrieval mode it is meant to exercise, and the exact citation locator expected
+from a result. Only `text` and `searchMode` cross into a retriever. Categories,
+expected passages, exclusions, and citation locators remain private to the
+scorer so the system under test cannot read its answer key.
 
 Run the fixture validator and intentionally empty baseline from `app/`:
 
@@ -26,20 +26,19 @@ itself has `passed: false`, which lets future retrieval implementations reuse
 the same report contract.
 
 `relevance:lexical` writes a local copy of the report and should match the
-checked-in `reports/lexical-v1.{json,txt}` baseline. The media-aware baseline
-passes 24 of 25 queries, has Recall@10 0.96, MRR 0.8950, nDCG@10 0.9056,
-citation-locator accuracy 0.96, exact and phrase success 1.0, and zero forbidden
-hits. OCR, PDF-page, and text-line queries pass, while the authored passage
-ranks first in a PDF-volume stress query. The remaining miss is the misspelled
-concurrency query marked for combined lexical and semantic retrieval.
+checked-in `reports/lexical-v1.{json,txt}` baseline. The filename-aware baseline
+passes all 25 queries, has Recall@10 1.0, MRR 0.9413, nDCG@10 0.9518,
+citation-locator accuracy 1.0, exact and phrase success 1.0, and zero forbidden
+hits. Authored text, image OCR, and filename queries all pass, while authored
+evidence ranks first in the near-duplicate volume stress query.
 
 `relevance:hybrid` validates `jina-v1-vectors.json` against both the relevance
 fixture digest and the shipped Jina v1 model hash, then writes a local report
 that should match `reports/hybrid-v1.{json,txt}`. The vectors were generated
 from the pinned model through Kosh's verified llama.cpp runtime; tests only read
-the checked-in vectors and never download or start a model. The media-aware
+the checked-in vectors and never download or start a model. The filename-aware
 hybrid report passes all 25 queries with Recall@10 and citation-locator accuracy
-of 1.0, MRR 0.9657, nDCG@10 0.9691, exact/phrase success of 1.0, and zero
+of 1.0, MRR 0.9700, nDCG@10 0.9736, exact/phrase success of 1.0, and zero
 forbidden hits. Exact and code-identifier category metrics match the lexical
 baseline.
 
@@ -47,9 +46,9 @@ baseline.
 memory, requires at least 25 queries, enforces explicit lexical and hybrid
 metric floors, rejects precision regressions, and validates the ten-entry
 manual citation sample in `citation-audit-v1.json`. The audit covers authored
-and attachment evidence plus Markdown block, PDF page, OCR region, and text-line
-locators. Its ignored JSON receipt can be retained by CI without treating
-wall-clock observations as deterministic quality evidence.
+Markdown blocks and image OCR regions. Its ignored JSON receipt can be retained
+by CI without treating wall-clock observations as deterministic quality
+evidence.
 
 Maintainers with the pinned model and sidecar can regenerate the vector fixture
 before intentionally updating the reports:

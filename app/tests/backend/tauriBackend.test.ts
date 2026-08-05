@@ -85,18 +85,12 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.imageStatus("attachment-1");
     await tauriBackend.retryImageOcr("attachment-1");
     await tauriBackend.imageOcrDiagnostics();
-    await tauriBackend.selectPdf();
-    await tauriBackend.ingestSelectedPdf("pdf-selection-1", "draft-1");
     await tauriBackend.selectAttachment();
     await tauriBackend.ingestSelectedAttachment("file-selection-1", "draft-1");
-    await tauriBackend.attachmentStatus("file-attachment-1");
     await tauriBackend.openAttachmentExternal("file-attachment-1");
     await tauriBackend.revealAttachmentInFinder("file-attachment-1");
     await tauriBackend.setFileDropConsumerActive(true);
-    await tauriBackend.discardFileDropSelections(["pdf-selection-2"]);
-    await tauriBackend.pdfStatus("pdf-attachment-1");
-    await tauriBackend.retryPdfExtraction("pdf-attachment-1");
-    await tauriBackend.openPdfExternal("pdf-attachment-1");
+    await tauriBackend.discardFileDropSelections(["file-selection-2"]);
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
       ["load_tidbit", { id: "tidbit-1" }],
@@ -122,18 +116,12 @@ describe("tauriBackend tidbit gateway", () => {
       ["image_status", { attachmentId: "attachment-1" }],
       ["retry_image_ocr", { attachmentId: "attachment-1" }],
       ["image_ocr_diagnostics"],
-      ["select_pdf"],
-      ["ingest_selected_pdf", { selectionId: "pdf-selection-1", draftId: "draft-1" }],
       ["select_attachment"],
       ["ingest_selected_attachment", { selectionId: "file-selection-1", draftId: "draft-1" }],
-      ["attachment_status", { attachmentId: "file-attachment-1" }],
       ["open_attachment_external", { attachmentId: "file-attachment-1" }],
       ["reveal_attachment_in_finder", { attachmentId: "file-attachment-1" }],
       ["set_file_drop_consumer_active", { active: true }],
-      ["discard_file_drop_selections", { selectionIds: ["pdf-selection-2"] }],
-      ["pdf_status", { attachmentId: "pdf-attachment-1" }],
-      ["retry_pdf_extraction", { attachmentId: "pdf-attachment-1" }],
-      ["open_pdf_external", { attachmentId: "pdf-attachment-1" }],
+      ["discard_file_drop_selections", { selectionIds: ["file-selection-2"] }],
     ]);
   });
 

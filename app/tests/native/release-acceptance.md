@@ -11,7 +11,8 @@ profile and never delete one.
 
 - A verified candidate from `pnpm release:build:app`.
 - No development, packaged, or installed Kosh process running.
-- A real image with readable text and a representative text/scanned PDF.
+- A real image with readable text, a UTF-8 text file, and an opaque binary
+  file.
 - Network only for the explicit semantic-model setup step.
 
 Use unique names in place of the examples.
@@ -82,26 +83,23 @@ pnpm release:acceptance launch clean-YYYYMMDD
 
 1. Paste and attach a real image, wait for OCR, search a distinctive OCR
    phrase, and open its region citation.
-2. Attach the PDF, wait for extraction, search a phrase from a known page, and
-   open its page citation. Exercise native-text and OCR pages when available.
-3. Attach one UTF-8 text file and one separate opaque binary file (for example,
-   a ZIP), then confirm both blocks survive edit, restart, and reveal/open
-   actions.
-4. Start semantic setup. While downloading/verifying, repeat note capture and
+2. Attach one UTF-8 text file and one separate opaque binary file (for example,
+   a ZIP). Confirm their filenames are searchable, their contents are not
+   searchable, and both blocks survive edit, restart, and reveal/open actions.
+3. Start semantic setup. While downloading/verifying, repeat note capture and
    lexical search to prove they remain available.
-5. After Ready, run a paraphrase with no exact overlap and confirm the expected
+4. After Ready, run a paraphrase with no exact overlap and confirm the expected
    hybrid result and citation.
-6. Restart once with the model unavailable/offline and confirm capture and
+5. Restart once with the model unavailable/offline and confirm capture and
    lexical search still work with an honest degraded semantic state.
-7. Quit with `Cmd+Q`.
+6. Quit with `Cmd+Q`.
 
 ```sh
 pnpm release:acceptance check-journeys clean-YYYYMMDD
 ```
 
-The durable check requires URL, code, math, image/OCR, PDF extraction,
-searchable extracted text, text and opaque-binary attachments, and semantic
-embedding evidence.
+The durable check requires URL, code, math, image/OCR, text and opaque-binary
+files, filename-only file search, and semantic embedding evidence.
 
 ## C. Restart
 
@@ -185,7 +183,6 @@ an isolated home.
 | Command-K hybrid search and URL citation   | pending |
 | Back/forward note navigation               | pending |
 | Image OCR search and region citation       | pending |
-| PDF search and page citation               | pending |
 | Arbitrary attachment lifecycle             | pending |
 | Semantic setup and degraded fallback       | pending |
 | Packaged real-R2 clean-directory recovery  | pending |

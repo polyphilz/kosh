@@ -9,7 +9,7 @@ Kosh opens directly into a focused blank note. The note remains ephemeral until
 you type or add media, then saves automatically; there is no title field or Save
 button. The editor supports paragraphs, H1-H3, nested ordered and unordered
 lists, bold, italic, strikethrough, inline and fenced code, inline and display
-math, images, PDFs, and files.
+math, images, and files.
 
 - `⌘N` starts another blank note.
 - `⌘K` opens hybrid search. Lexical results remain available when the optional
@@ -94,12 +94,12 @@ ignored report.
 
 ## Supported scale and limits
 
-Kosh's v1 target is a 10,000-note local library. The release-mode lexical
-gate must keep interactive query latency at or below 100 ms p95 on its
-deterministic 200-query workload. Each working copy supports up to 32 attachments;
-each direct attachment, source image, or PDF may be up to 32 MiB. PDFs may
-contain up to 2,000 pages, with OCR bounded to 128 image-only pages. Searchable
-text extraction reads at most 4 MiB and 5,000 passages per attachment.
+Kosh's v1 target is a 10,000-note local library. The release-mode lexical gate
+must keep interactive query latency at or below 100 ms p95 on its deterministic
+200-query workload. Each working copy supports up to 32 attachments, and each
+attachment may be up to 32 MiB. Image OCR is bounded to 4,096 regions, 16,384
+characters per region, and 1,000,000 characters total. Other files contribute
+only their display filenames to search.
 
 See [docs/hardening.md](docs/hardening.md) for the complete performance,
 recovery, security, accessibility, and supported-input matrix, plus the

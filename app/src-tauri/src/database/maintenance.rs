@@ -34,7 +34,6 @@ pub struct MaintenanceDatabaseSnapshot {
     pub attachments: u64,
     pub attachment_bytes: u64,
     pub image_ocr: QueueCounts,
-    pub pdf_extraction: QueueCounts,
     pub indexes: Vec<IndexDiagnostic>,
 }
 
@@ -42,7 +41,6 @@ pub struct MaintenanceDatabaseSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ExtractionRetryReport {
     pub image_ocr_queued: u64,
-    pub pdf_extraction_queued: u64,
 }
 
 pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSnapshot> {
@@ -88,7 +86,6 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
         attachments,
         attachment_bytes,
         image_ocr: queue_counts(connection, "image_ocr_queue", "ocr")?,
-        pdf_extraction: queue_counts(connection, "pdf_extraction_queue", "pdf-text")?,
         indexes,
     })
 }
@@ -164,13 +161,10 @@ pub(super) fn retry_failed_extractions(
     }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let image_ids = current_failed_extraction_ids(&transaction, "image_ocr_queue", "ocr")?;
-    let pdf_ids = current_failed_extraction_ids(&transaction, "pdf_extraction_queue", "pdf-text")?;
     reset_extractions(&transaction, "image_ocr_queue", &image_ids, now_ms)?;
-    reset_extractions(&transaction, "pdf_extraction_queue", &pdf_ids, now_ms)?;
     transaction.commit()?;
     Ok(ExtractionRetryReport {
         image_ocr_queued: image_ids.len() as u64,
-        pdf_extraction_queued: pdf_ids.len() as u64,
     })
 }
 

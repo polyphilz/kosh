@@ -1,8 +1,5 @@
 export function hasMeaningfulAuthoredContent(markdown: string): boolean {
-  const mediaAware = markdown.replace(
-    /\{\{kosh:(?:image|attachment|pdf):[^{}\r\n]+\}\}/gu,
-    "media",
-  );
+  const mediaAware = markdown.replace(/\{\{kosh:(?:image|attachment):[^{}\r\n]+\}\}/gu, "media");
   if (/<(?:[A-Za-z][A-Za-z\d+.-]*:[^<>\s]+|[^<>\s@]+@[^<>\s@]+)>/u.test(mediaAware)) {
     return true;
   }

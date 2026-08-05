@@ -503,7 +503,14 @@ mod tests {
                 RetrievalHit {
                     passage_id: other.id.clone(),
                     score: 0.5,
-                    locator: crate::relevance::EvaluationLocator::PdfPage { page: 999 },
+                    locator: crate::relevance::EvaluationLocator::OcrRegion {
+                        region: crate::relevance::EvaluationRegion {
+                            x: 0,
+                            y: 0,
+                            width: 1,
+                            height: 1,
+                        },
+                    },
                     matched_fields: vec!["fabricated".into()],
                 },
             ])

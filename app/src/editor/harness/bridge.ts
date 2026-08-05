@@ -33,7 +33,7 @@ export interface BlockNoteHarnessBridge {
   snapshot(): BlockNoteHarnessSnapshot;
 }
 
-export type BlockNoteHarnessMediaKind = "image" | "pdf";
+export type BlockNoteHarnessMediaKind = "image";
 
 export interface BlockNoteHarnessMediaHarness {
   prepareRetry(kind: BlockNoteHarnessMediaKind): void;
@@ -204,31 +204,25 @@ export function mediaFixtureRecords(): SelectedAttachmentRecord[] {
       },
     },
     {
-      recordKind: "PDF",
+      recordKind: "FILE",
       record: {
         id: "019f547b-6200-7000-8000-000000000102",
-        ingestLeaseId: "harness-pdf-lease",
-        displayFilename: "chapter.pdf",
-        mediaType: "application/pdf",
+        ingestLeaseId: "harness-file-lease-archive",
+        displayFilename: "chapter.zip",
+        mediaType: "application/zip",
         byteLength: 4_096,
-        kind: "PDF",
-        pageCount: 12,
-        extractionStatus: "READY",
-        extractionError: null,
+        kind: "FILE",
       },
     },
     {
-      recordKind: "GENERIC",
+      recordKind: "FILE",
       record: {
         id: "019f547b-6200-7000-8000-000000000103",
         ingestLeaseId: "harness-file-lease",
         displayFilename: "appendix.txt",
         mediaType: "text/plain",
         byteLength: 2_048,
-        kind: "TEXT",
-        extractionStatus: "READY",
-        extractionError: null,
-        extractedLineCount: 20,
+        kind: "FILE",
       },
     },
   ];

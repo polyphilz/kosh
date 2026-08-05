@@ -14,7 +14,6 @@ import {
   parseKoshMediaToken,
   serializeKoshAttachmentToken,
   serializeKoshImageToken,
-  serializeKoshPdfToken,
 } from "../markdown/mediaTokens";
 import { externalHttpUrl } from "../markdown/urlPolicy";
 import type { KoshBlockNoteBlock, KoshBlockNotePartialBlock } from "./schema";
@@ -306,11 +305,6 @@ function blockToMarkdown(block: AdapterBlock): Array<BlockContent | DefinitionCo
         ],
         block,
       );
-    case "koshPdf":
-      return withFlattenedChildren(
-        [mediaParagraph(serializeKoshPdfToken(stringProp(block.props?.attachmentId)))],
-        block,
-      );
     case "koshFileAttachment":
       return withFlattenedChildren(
         [
@@ -501,8 +495,6 @@ function mediaBlock(
           widthPercent: media.widthPercent,
         },
       };
-    case "pdf":
-      return { type: "koshPdf", props: { attachmentId: media.attachmentId } };
     case "attachment":
       return {
         type: "koshFileAttachment",

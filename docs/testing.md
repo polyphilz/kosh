@@ -64,8 +64,8 @@ The release gate requires:
 - hybrid Recall@10 and citation-locator accuracy 1.0;
 - hybrid MRR and nDCG@10 at least 0.95;
 - no hybrid regression against the lexical baseline;
-- ten manually inspected citations spanning authored and attachment evidence,
-  Markdown blocks, PDF pages, OCR regions and text lines;
+- ten manually inspected citations spanning authored Markdown blocks and image
+  OCR regions;
 - 10,000-note lexical query p95 at or below 100 ms.
 
 `scripts/check-bundle.sh` separately caps the uncompressed web bundle at

@@ -72,8 +72,6 @@ pub struct ScaleAttachment {
 pub enum AttachmentExtractionPlaceholder {
     None,
     Ocr,
-    PdfText,
-    Text,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -369,12 +367,8 @@ fn generated_attachments(seed: u64, index: usize) -> Vec<ScaleAttachment> {
     let choice = (index / 5) % 4;
     let (extension, media_type, extraction_placeholder) = match choice {
         0 => ("png", "image/png", AttachmentExtractionPlaceholder::Ocr),
-        1 => (
-            "pdf",
-            "application/pdf",
-            AttachmentExtractionPlaceholder::PdfText,
-        ),
-        2 => ("md", "text/markdown", AttachmentExtractionPlaceholder::Text),
+        1 => ("csv", "text/csv", AttachmentExtractionPlaceholder::None),
+        2 => ("md", "text/markdown", AttachmentExtractionPlaceholder::None),
         _ => (
             "zip",
             "application/zip",
@@ -498,12 +492,6 @@ mod tests {
             .tidbits
             .iter()
             .any(|tidbit| tidbit.length_class == ScaleLengthClass::VeryLong));
-        assert!(corpus
-            .tidbits
-            .iter()
-            .flat_map(|tidbit| &tidbit.attachments)
-            .any(|attachment| attachment.media_type == "application/pdf"));
-
         let tidbits_by_id = corpus
             .tidbits
             .iter()

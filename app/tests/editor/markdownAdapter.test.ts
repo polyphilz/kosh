@@ -68,7 +68,6 @@ describe("restricted BlockNote Markdown adapter", () => {
       "displayMath",
       "koshImage",
       "koshPendingMedia",
-      "koshPdf",
       "koshFileAttachment",
     ]);
     expect(Object.keys(koshBlockNoteSchema.blockSchema)).not.toEqual(
@@ -90,7 +89,7 @@ describe("restricted BlockNote Markdown adapter", () => {
     const markdown = [
       "{{kosh:image:019f547b-6200-7000-8000-000000000201;width=70%;alt=Diagram;caption=Overview}}",
       "",
-      "{{kosh:pdf:019f547b-6200-7000-8000-000000000202}}",
+      "{{kosh:attachment:019f547b-6200-7000-8000-000000000202}}",
       "",
       "{{kosh:attachment:019f547b-6200-7000-8000-000000000203;caption=Appendix}}",
     ].join("\n");
@@ -98,7 +97,7 @@ describe("restricted BlockNote Markdown adapter", () => {
 
     expect(blocks.map((block) => block.type)).toEqual([
       "koshImage",
-      "koshPdf",
+      "koshFileAttachment",
       "koshFileAttachment",
     ]);
     expect(blocks[0]?.props).toMatchObject({

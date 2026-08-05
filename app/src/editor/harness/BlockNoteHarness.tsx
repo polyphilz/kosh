@@ -144,25 +144,12 @@ interface HarnessMediaHarness extends BlockNoteHarnessMediaHarness {
 function createHarnessMediaHarness(): HarnessMediaHarness {
   const records = mediaFixtureRecords();
   const image = records[0]!.recordKind === "IMAGE" ? records[0].record : null;
-  const pdf = records[1]!.recordKind === "PDF" ? records[1].record : null;
-  const file = records[2]!.recordKind === "GENERIC" ? records[2].record : null;
-  if (!image || !pdf || !file) throw new Error("Invalid editor harness media fixtures");
+  if (!image) throw new Error("Invalid editor harness media fixtures");
   const phases: Record<BlockNoteHarnessMediaKind, "FAILED" | "PENDING" | "READY"> = {
     image: "READY",
-    pdf: "READY",
   };
-  const statusCalls: Record<BlockNoteHarnessMediaKind, number> = { image: 0, pdf: 0 };
+  const statusCalls: Record<BlockNoteHarnessMediaKind, number> = { image: 0 };
   const actions: KoshMediaActions = {
-    attachmentStatus: async (attachmentId) => ({
-      attachmentId,
-      byteLength: file.byteLength,
-      displayFilename: file.displayFilename,
-      extractedLineCount: file.extractedLineCount,
-      extractionError: file.extractionError,
-      extractionStatus: file.extractionStatus,
-      kind: file.kind,
-      mediaType: file.mediaType,
-    }),
     imageStatus: async (attachmentId) => {
       statusCalls.image += 1;
       const phase = phases.image;
@@ -179,22 +166,6 @@ function createHarnessMediaHarness(): HarnessMediaHarness {
     mediaUrl: () =>
       "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='480'%3E%3Crect width='640' height='480' fill='%23d97745'/%3E%3C/svg%3E",
     openAttachmentExternal: async () => undefined,
-    openPdfExternal: async () => undefined,
-    pdfStatus: async (attachmentId) => {
-      statusCalls.pdf += 1;
-      const phase = phases.pdf;
-      if (phase === "PENDING") phases.pdf = "READY";
-      return {
-        attachmentId,
-        displayFilename: pdf.displayFilename,
-        extractedPageCount: phase === "FAILED" ? 0 : pdf.pageCount,
-        extractionError: phase === "FAILED" ? "Synthetic PDF failure" : null,
-        extractionStatus: phase === "PENDING" ? "READY" : phase,
-        nextAttemptAtMs: null,
-        pageCount: pdf.pageCount,
-        unavailablePageCount: 0,
-      };
-    },
     revealAttachmentInFinder: async () => undefined,
     retryImageOcr: async (attachmentId) => {
       phases.image = "PENDING";
@@ -205,19 +176,6 @@ function createHarnessMediaHarness(): HarnessMediaHarness {
         nextAttemptAtMs: null,
         ocrError: null,
         ocrStatus: "PENDING",
-      };
-    },
-    retryPdfExtraction: async (attachmentId) => {
-      phases.pdf = "PENDING";
-      return {
-        attachmentId,
-        displayFilename: pdf.displayFilename,
-        extractedPageCount: 0,
-        extractionError: null,
-        extractionStatus: "PENDING",
-        nextAttemptAtMs: null,
-        pageCount: pdf.pageCount,
-        unavailablePageCount: 0,
       };
     },
   };
@@ -406,8 +364,7 @@ function restrictedSlashItems(
       },
     },
     mediaItem(editor, mediaController, "Image", "image", 0),
-    mediaItem(editor, mediaController, "PDF", "document", 1),
-    mediaItem(editor, mediaController, "File", "attachment", 2),
+    mediaItem(editor, mediaController, "File", "attachment", 1),
   ];
 }
 

@@ -98,8 +98,6 @@ impl SearchField {
 pub(crate) enum SearchEvidenceKind {
     Author,
     Ocr,
-    Pdf,
-    Text,
 }
 
 impl SearchEvidenceKind {
@@ -107,8 +105,6 @@ impl SearchEvidenceKind {
         match locator_kind {
             "MARKDOWN_BLOCKS" => Ok(Self::Author),
             "OCR_REGION" => Ok(Self::Ocr),
-            "PDF_PAGE" => Ok(Self::Pdf),
-            "TEXT_LINES" => Ok(Self::Text),
             kind => Err(DatabaseError::Validation {
                 kind: "main",
                 reason: format!("search passage has unknown locator kind {kind}"),
@@ -120,16 +116,12 @@ impl SearchEvidenceKind {
         match self {
             Self::Author => 0.0,
             Self::Ocr => 1.75,
-            Self::Pdf => 2.25,
-            Self::Text => 2.5,
         }
     }
 
     pub(crate) const fn semantic_weight(self) -> f64 {
         match self {
             Self::Author => 1.0,
-            Self::Text => 0.95,
-            Self::Pdf => 0.9,
             Self::Ocr => 0.8,
         }
     }
@@ -213,7 +205,6 @@ pub(crate) struct RankedSemanticPassage {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SearchDiversityKey {
     pub attachment_id: Option<String>,
-    pub page: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -896,11 +887,6 @@ fn citation_diversity_key(citation: &CitationResolution) -> SearchDiversityKey {
             .attachment
             .as_ref()
             .map(|attachment| attachment.id.clone()),
-        page: match &citation.locator {
-            CitationLocator::PdfPage { page } => Some(*page),
-            CitationLocator::OcrRegion { page, .. } => *page,
-            CitationLocator::MarkdownBlocks { .. } | CitationLocator::TextLines { .. } => None,
-        },
     }
 }
 
@@ -924,7 +910,6 @@ struct DiversitySelector<T> {
     selected: Vec<T>,
     deferred: Vec<T>,
     attachment_counts: HashMap<String, usize>,
-    attachment_pages: BTreeSet<(String, u32)>,
 }
 
 impl<T> DiversitySelector<T> {
@@ -934,7 +919,6 @@ impl<T> DiversitySelector<T> {
             selected: Vec::with_capacity(limit),
             deferred: Vec::new(),
             attachment_counts: HashMap::new(),
-            attachment_pages: BTreeSet::new(),
         }
     }
 
@@ -949,24 +933,14 @@ impl<T> DiversitySelector<T> {
                 .copied()
                 .unwrap_or_default()
                 >= INITIAL_RESULTS_PER_ATTACHMENT;
-            let page_seen = key.page.is_some_and(|page| {
-                self.attachment_pages
-                    .contains(&(attachment_id.clone(), page))
-            });
-            attachment_full || page_seen
+            attachment_full
         });
         if defer {
             self.deferred.push(candidate);
             return false;
         }
         if let Some(attachment_id) = key.attachment_id {
-            *self
-                .attachment_counts
-                .entry(attachment_id.clone())
-                .or_default() += 1;
-            if let Some(page) = key.page {
-                self.attachment_pages.insert((attachment_id, page));
-            }
+            *self.attachment_counts.entry(attachment_id).or_default() += 1;
         }
         self.selected.push(candidate);
         self.selected.len() == self.limit
@@ -1110,7 +1084,7 @@ pub(super) fn replace_tidbit_documents(
             coalesce(
                 (
                     SELECT group_concat(
-                        attachment.display_filename || char(10) || attachment.media_type,
+                        attachment.display_filename,
                         char(10)
                     )
                     FROM tidbit_revision_attachment AS membership
@@ -1197,7 +1171,7 @@ pub(super) fn replace_attachment_documents_in_transaction(
             '',
             '',
             '',
-            attachment.display_filename || char(10) || attachment.media_type,
+            attachment.display_filename,
             passage.content,
             passage.content_hash,
             attachment.updated_at
@@ -1262,7 +1236,7 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
             coalesce(
                 (
                     SELECT group_concat(
-                        attachment.display_filename || char(10) || attachment.media_type,
+                        attachment.display_filename,
                         char(10)
                     )
                     FROM tidbit_revision_attachment AS membership
@@ -1316,7 +1290,7 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
             '',
             '',
             '',
-            attachment.display_filename || char(10) || attachment.media_type,
+            attachment.display_filename,
             passage.content,
             passage.content_hash,
             attachment.updated_at
@@ -1463,7 +1437,7 @@ fn load_search_documents(
             coalesce(
                 (
                     SELECT group_concat(
-                        attachment.display_filename || char(10) || attachment.media_type,
+                        attachment.display_filename,
                         char(10)
                     )
                     FROM tidbit_revision_attachment AS membership
@@ -1510,7 +1484,7 @@ fn load_search_documents(
             '',
             '',
             '',
-            attachment.display_filename || char(10) || attachment.media_type,
+            attachment.display_filename,
             passage.content,
             passage.locator_kind,
             candidate.word_rank,
@@ -1902,8 +1876,7 @@ mod tests {
     use crate::database::{
         connection::{self, DatabaseKind, FileState},
         tidbits::CreateTidbitWrite,
-        CitationLocator, Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput,
-        SourceDraft, TidbitDraft,
+        Database, DatabasePaths, DeleteTidbitInput, RestoreTidbitInput, SourceDraft, TidbitDraft,
     };
 
     fn document(
@@ -2045,72 +2018,60 @@ mod tests {
     }
 
     #[test]
-    fn authored_and_extracted_fields_have_deliberate_evidence_weights() {
+    fn authored_and_ocr_fields_have_deliberate_evidence_weights() {
         let parsed = parse_lexical_query("calibration", LexicalSearchMode::Default)
             .expect("valid query")
             .expect("nonempty query");
         let author = document("author", [(SearchField::Body, "calibration")]);
-        let mut text = document("text", [(SearchField::ExtractedText, "calibration")]);
-        text.evidence_kind = SearchEvidenceKind::Text;
-        let mut pdf = document("pdf", [(SearchField::ExtractedText, "calibration")]);
-        pdf.evidence_kind = SearchEvidenceKind::Pdf;
         let mut ocr = document("ocr", [(SearchField::ExtractedText, "calibration")]);
         ocr.evidence_kind = SearchEvidenceKind::Ocr;
 
         assert_eq!(
-            rank_lexical_documents(&parsed, vec![ocr, pdf, text, author], 10)
+            rank_lexical_documents(&parsed, vec![ocr, author], 10)
                 .into_iter()
                 .map(|ranked| ranked.passage_id)
                 .collect::<Vec<_>>(),
-            ["author", "text", "pdf", "ocr"]
+            ["author", "ocr"]
         );
     }
 
     #[test]
-    fn attachment_diversity_defers_repeated_pages_but_backfills_when_needed() {
+    fn attachment_diversity_limits_repeated_image_regions_but_backfills_when_needed() {
         #[derive(Debug, Eq, PartialEq)]
         struct Candidate {
             id: &'static str,
             attachment: Option<&'static str>,
-            page: Option<u32>,
         }
         let candidates = || {
             vec![
                 Candidate {
-                    id: "pdf-a-page-1",
-                    attachment: Some("pdf-a"),
-                    page: Some(1),
+                    id: "image-a-region-1",
+                    attachment: Some("image-a"),
                 },
                 Candidate {
-                    id: "pdf-a-page-1-region-2",
-                    attachment: Some("pdf-a"),
-                    page: Some(1),
+                    id: "image-a-region-2",
+                    attachment: Some("image-a"),
                 },
                 Candidate {
-                    id: "pdf-a-page-2",
-                    attachment: Some("pdf-a"),
-                    page: Some(2),
+                    id: "image-a-region-3",
+                    attachment: Some("image-a"),
                 },
                 Candidate {
-                    id: "pdf-a-page-3",
-                    attachment: Some("pdf-a"),
-                    page: Some(3),
+                    id: "image-a-region-4",
+                    attachment: Some("image-a"),
                 },
                 Candidate {
-                    id: "pdf-b-page-1",
-                    attachment: Some("pdf-b"),
-                    page: Some(1),
+                    id: "image-b-region-1",
+                    attachment: Some("image-b"),
                 },
                 Candidate {
                     id: "authored",
                     attachment: None,
-                    page: None,
                 },
             ]
         };
         let key = |candidate: &Candidate| SearchDiversityKey {
             attachment_id: candidate.attachment.map(str::to_owned),
-            page: candidate.page,
         };
 
         assert_eq!(
@@ -2118,7 +2079,12 @@ mod tests {
                 .into_iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>(),
-            ["pdf-a-page-1", "pdf-a-page-2", "pdf-b-page-1", "authored"]
+            [
+                "image-a-region-1",
+                "image-a-region-2",
+                "image-b-region-1",
+                "authored"
+            ]
         );
         assert_eq!(
             diversify_ranked(candidates().into_iter().take(4).collect(), 4, key)
@@ -2126,10 +2092,10 @@ mod tests {
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>(),
             [
-                "pdf-a-page-1",
-                "pdf-a-page-2",
-                "pdf-a-page-1-region-2",
-                "pdf-a-page-3"
+                "image-a-region-1",
+                "image-a-region-2",
+                "image-a-region-3",
+                "image-a-region-4"
             ]
         );
     }
@@ -2459,516 +2425,6 @@ mod tests {
             vec![SearchField::Body],
             "both atoms must be proven from immutable authored text"
         );
-    }
-
-    #[test]
-    fn database_search_indexes_ready_attachment_passages_and_tracks_deletion() {
-        let root = tempfile::tempdir().expect("temporary attachment search library");
-        let paths = DatabasePaths::new(root.path());
-        let database = Database::initialize(paths.clone()).expect("attachment search database");
-        database
-            .client()
-            .create_tidbit(CreateTidbitWrite {
-                input: TidbitDraft {
-                    document_json: crate::database::document::single_paragraph(
-                        "Authored passage linked to a file.",
-                    ),
-                    body_markdown: "Authored passage linked to a file.".into(),
-                    sources: Vec::new(),
-                },
-                now_ms: 5,
-                tidbit_id: "019f547b-6200-7000-8000-000000009511".into(),
-                revision_id: "019f547b-6200-7000-8000-000000009512".into(),
-                source_ids: Vec::new(),
-            })
-            .expect("create authored attachment host");
-        database
-            .shutdown()
-            .expect("close attachment search database");
-        drop(database);
-        let mut connection =
-            connection::open_writer(&paths.main, DatabaseKind::Main, FileState::Existing)
-                .expect("attachment fixture writer");
-        connection
-            .execute_batch(
-                "INSERT INTO attachment(
-                    id, created_at, updated_at, sha256, display_filename,
-                    media_type, byte_length, kind, extraction_state,
-                    owner_note_id, owner_block_id
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009501',
-                    10, 10, zeroblob(32), 'calibration-plate.pdf',
-                    'application/pdf', 128, 'PDF', 'READY',
-                    '019f547b-6200-7000-8000-000000009511',
-                    'attachment-search-fixture'
-                 );
-                 INSERT INTO tidbit_revision_attachment(
-                    tidbit_revision_id, attachment_id, block_id, sort_order, display_role
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009512',
-                    '019f547b-6200-7000-8000-000000009501',
-                    'attachment-search-fixture', 0, 'ATTACHMENT'
-                 );",
-            )
-            .expect("associate attachment with current revision");
-        let membership_results = super::search_passages(
-            &connection,
-            SearchPassagesInput {
-                query: "calibration-plate.pdf".into(),
-                mode: LexicalSearchMode::Default,
-                limit: 10,
-            },
-        )
-        .expect("search newly associated attachment filename");
-        assert_eq!(membership_results.len(), 1);
-        assert!(membership_results[0].citation.tidbit.is_some());
-        assert!(membership_results[0].citation.attachment.is_none());
-        assert!(membership_results[0]
-            .matched_fields
-            .contains(&SearchField::AttachmentName));
-
-        connection
-            .execute_batch(
-                "INSERT INTO attachment_extraction(
-                    id, attachment_id, extractor, extractor_version, content_hash,
-                    status, created_at, started_at, completed_at
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009502',
-                    '019f547b-6200-7000-8000-000000009501',
-                    'pdf-text', '1', zeroblob(32), 'READY', 10, 10, 10
-                 );
-                 INSERT INTO attachment_segment(
-                    id, extraction_id, ordinal, locator_kind, page_number,
-                    content, content_hash
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009503',
-                    '019f547b-6200-7000-8000-000000009502',
-                    0, 'PDF_PAGE', 7, 'The quasar_needle calibration is authoritative.',
-                    zeroblob(32)
-                 ), (
-                    '019f547b-6200-7000-8000-000000009516',
-                    '019f547b-6200-7000-8000-000000009502',
-                    1, 'PDF_PAGE', 8, 'A second page is installed in the same batch.',
-                    zeroblob(32)
-                 );
-                 INSERT INTO passage(
-                    id, attachment_segment_id, owner_kind, ordinal, content,
-                    content_hash, locator_kind, locator_json, created_at,
-                    construction_version, heading_context_json
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009504',
-                    '019f547b-6200-7000-8000-000000009503',
-                    'ATTACHMENT', 0,
-                    'The quasar_needle calibration is authoritative.', zeroblob(32),
-                    'PDF_PAGE', '{\"page\":7}', 10, 'pdf-page-v1', '[]'
-                 ), (
-                    '019f547b-6200-7000-8000-000000009517',
-                    '019f547b-6200-7000-8000-000000009516',
-                    'ATTACHMENT', 0,
-                    'A second page is installed in the same batch.', zeroblob(32),
-                    'PDF_PAGE', '{\"page\":8}', 10, 'pdf-page-v1', '[]'
-                 );",
-            )
-            .expect("ready attachment passage");
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT count(*) FROM passage_search_document
-                     WHERE passage_id IN (
-                        '019f547b-6200-7000-8000-000000009504',
-                        '019f547b-6200-7000-8000-000000009517'
-                     )",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("unrefreshed attachment document count"),
-            0
-        );
-        super::replace_attachment_documents(
-            &mut connection,
-            "019f547b-6200-7000-8000-000000009501",
-        )
-        .expect("refresh completed attachment passage batch");
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT count(*) FROM passage_search_document
-                     WHERE passage_id IN (
-                        '019f547b-6200-7000-8000-000000009504',
-                        '019f547b-6200-7000-8000-000000009517'
-                     )",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("batched attachment document count"),
-            2
-        );
-        let results = super::search_passages(
-            &connection,
-            SearchPassagesInput {
-                query: "quasar_needle calibration-plate.pdf".into(),
-                mode: LexicalSearchMode::Exact,
-                limit: 10,
-            },
-        )
-        .expect("search extracted attachment text");
-        assert_eq!(results.len(), 1);
-        assert!(results[0]
-            .matched_fields
-            .contains(&SearchField::AttachmentName));
-        assert!(results[0]
-            .matched_fields
-            .contains(&SearchField::ExtractedText));
-        assert!(results[0].citation.tidbit.is_none());
-        assert_eq!(
-            (
-                results[0].note.id.as_str(),
-                results[0].note.revision_id.as_str(),
-                results[0].note.display_title.as_str(),
-            ),
-            (
-                "019f547b-6200-7000-8000-000000009511",
-                "019f547b-6200-7000-8000-000000009512",
-                "Authored passage linked to a file.",
-            ),
-            "attachment results retain the current note and revision needed for exact navigation"
-        );
-        assert_eq!(
-            results[0].citation.locator,
-            CitationLocator::PdfPage { page: 7 }
-        );
-        assert_eq!(
-            results[0]
-                .citation
-                .attachment
-                .as_ref()
-                .map(|attachment| attachment.display_filename.as_str()),
-            Some("calibration-plate.pdf")
-        );
-        connection
-            .execute(
-                "UPDATE attachment
-                 SET updated_at = 15, display_filename = 'renamed-calibration.pdf'
-                 WHERE id = ?1",
-                params!["019f547b-6200-7000-8000-000000009501"],
-            )
-            .expect("rename attachment");
-        let renamed = super::search_passages(
-            &connection,
-            SearchPassagesInput {
-                query: "renamed-calibration.pdf".into(),
-                mode: LexicalSearchMode::Default,
-                limit: 10,
-            },
-        )
-        .expect("search renamed attachment metadata");
-        assert!(renamed
-            .iter()
-            .any(|result| result.citation.tidbit.is_some()));
-        assert!(renamed
-            .iter()
-            .any(|result| result.citation.attachment.is_some()));
-        connection
-            .execute(
-                "UPDATE attachment SET updated_at = 20, deleted_at = 20 WHERE id = ?1",
-                params!["019f547b-6200-7000-8000-000000009501"],
-            )
-            .expect("soft delete attachment");
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT count(*) FROM passage_search_document WHERE passage_id = ?1",
-                    params!["019f547b-6200-7000-8000-000000009504"],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("deleted document count"),
-            0
-        );
-        connection
-            .execute(
-                "UPDATE attachment SET updated_at = 30, deleted_at = NULL WHERE id = ?1",
-                params!["019f547b-6200-7000-8000-000000009501"],
-            )
-            .expect("restore attachment");
-        assert_eq!(
-            super::search_passages(
-                &connection,
-                SearchPassagesInput {
-                    query: "quasar_needle".into(),
-                    mode: LexicalSearchMode::Default,
-                    limit: 10,
-                },
-            )
-            .expect("search restored attachment")
-            .len(),
-            1
-        );
-        let mismatched = connection
-            .execute(
-                "INSERT INTO passage(
-                    id, attachment_segment_id, owner_kind, ordinal, content,
-                    content_hash, locator_kind, locator_json, created_at,
-                    construction_version, heading_context_json
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009508',
-                    '019f547b-6200-7000-8000-000000009503',
-                    'ATTACHMENT', 0, 'fabricated attachment text', randomblob(32),
-                    'PDF_PAGE', '{\"page\":7}', 35, 'pdf-page-bad', '[]'
-                 )",
-                [],
-            )
-            .expect_err("mismatched attachment passage must be rejected");
-        assert!(mismatched
-            .to_string()
-            .contains("does not match its immutable segment"));
-
-        connection
-            .execute_batch(
-                "UPDATE attachment_extractor_config
-                 SET version = '2',
-                     passage_construction_version = 'pdf-page-v2',
-                     updated_at = 40
-                 WHERE extractor = 'pdf-text';
-                 INSERT INTO attachment_extraction(
-                    id, attachment_id, extractor, extractor_version, content_hash,
-                    status, created_at, started_at, completed_at
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009505',
-                    '019f547b-6200-7000-8000-000000009501',
-                    'pdf-text', '2', zeroblob(32), 'READY', 40, 40, 40
-                 );
-                 INSERT INTO attachment_segment(
-                    id, extraction_id, ordinal, locator_kind, page_number,
-                    content, content_hash
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009506',
-                    '019f547b-6200-7000-8000-000000009505',
-                    0, 'PDF_PAGE', 8,
-                    'The nova_needle supersedes the old extraction.', zeroblob(32)
-                 );
-                 INSERT INTO passage(
-                    id, attachment_segment_id, owner_kind, ordinal, content,
-                    content_hash, locator_kind, locator_json, created_at,
-                    construction_version, heading_context_json
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009507',
-                    '019f547b-6200-7000-8000-000000009506',
-                    'ATTACHMENT', 0,
-                    'The nova_needle supersedes the old extraction.', zeroblob(32),
-                    'PDF_PAGE', '{\"page\":8}', 40, 'pdf-page-v2', '[]'
-                 );",
-            )
-            .expect("new extraction version");
-        super::replace_attachment_documents(
-            &mut connection,
-            "019f547b-6200-7000-8000-000000009501",
-        )
-        .expect("refresh versioned extraction passage batch");
-        assert!(super::search_passages(
-            &connection,
-            SearchPassagesInput {
-                query: "quasar_needle".into(),
-                mode: LexicalSearchMode::Default,
-                limit: 10,
-            },
-        )
-        .expect("search stale extraction")
-        .is_empty());
-        assert_eq!(
-            super::search_passages(
-                &connection,
-                SearchPassagesInput {
-                    query: "nova_needle".into(),
-                    mode: LexicalSearchMode::Default,
-                    limit: 10,
-                },
-            )
-            .expect("search current extraction")
-            .len(),
-            1
-        );
-        connection
-            .execute_batch(
-                "UPDATE attachment_extractor_config
-                 SET passage_construction_version = 'pdf-page-v3',
-                     updated_at = 50
-                 WHERE extractor = 'pdf-text';
-                 INSERT INTO passage(
-                    id, attachment_segment_id, owner_kind, ordinal, content,
-                    content_hash, locator_kind, locator_json, created_at,
-                    construction_version, heading_context_json
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009509',
-                    '019f547b-6200-7000-8000-000000009506',
-                    'ATTACHMENT', 0,
-                    'The nova_needle supersedes the old extraction.', zeroblob(32),
-                    'PDF_PAGE', '{\"page\":8}', 50, 'pdf-page-v3', '[]'
-                 )",
-            )
-            .expect("new attachment passage construction");
-        super::replace_attachment_documents(
-            &mut connection,
-            "019f547b-6200-7000-8000-000000009501",
-        )
-        .expect("refresh versioned passage construction batch");
-        let rebuilt = super::search_passages(
-            &connection,
-            SearchPassagesInput {
-                query: "nova_needle".into(),
-                mode: LexicalSearchMode::Default,
-                limit: 10,
-            },
-        )
-        .expect("search current attachment passage construction");
-        assert_eq!(
-            rebuilt
-                .iter()
-                .map(|result| result.passage_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["019f547b-6200-7000-8000-000000009509"]
-        );
-        assert_eq!(
-            crate::database::passages::resolve_citation(
-                &connection,
-                "019f547b-6200-7000-8000-000000009507",
-            )
-            .expect("resolve stale construction citation")
-            .state,
-            crate::database::CitationState::Historical
-        );
-        assert_eq!(
-            crate::database::passages::resolve_citation(
-                &connection,
-                "019f547b-6200-7000-8000-000000009504",
-            )
-            .expect("resolve stale extraction citation")
-            .state,
-            crate::database::CitationState::Historical
-        );
-
-        connection
-            .execute(
-                "INSERT INTO passage(
-                    id, attachment_segment_id, owner_kind, ordinal, content,
-                    content_hash, locator_kind, locator_json, created_at,
-                    construction_version, heading_context_json
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009515',
-                    '019f547b-6200-7000-8000-000000009506',
-                    'ATTACHMENT', 0,
-                    'The nova_needle supersedes the old extraction.', zeroblob(32),
-                    'PDF_PAGE', '{\"page\":8}', 60, 'pdf-page-v1', '[]'
-                 )",
-                [],
-            )
-            .expect("late stale passage builder retry");
-        assert_eq!(
-            super::search_passages(
-                &connection,
-                SearchPassagesInput {
-                    query: "nova_needle".into(),
-                    mode: LexicalSearchMode::Default,
-                    limit: 10,
-                },
-            )
-            .expect("search configured passage construction after stale retry")
-            .iter()
-            .map(|result| result.passage_id.as_str())
-            .collect::<Vec<_>>(),
-            vec!["019f547b-6200-7000-8000-000000009509"]
-        );
-        assert_eq!(
-            crate::database::passages::resolve_citation(
-                &connection,
-                "019f547b-6200-7000-8000-000000009515",
-            )
-            .expect("resolve stale configured construction citation")
-            .state,
-            crate::database::CitationState::Historical
-        );
-
-        connection
-            .execute_batch(
-                "INSERT INTO attachment_extraction(
-                    id, attachment_id, extractor, extractor_version, content_hash,
-                    status, created_at, started_at, completed_at
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009510',
-                    '019f547b-6200-7000-8000-000000009501',
-                    'pdf-text', '0', zeroblob(32), 'READY', 70, 70, 70
-                 );
-                 INSERT INTO attachment_segment(
-                    id, extraction_id, ordinal, locator_kind, page_number,
-                    content, content_hash
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009513',
-                    '019f547b-6200-7000-8000-000000009510',
-                    0, 'PDF_PAGE', 9,
-                    'The stale_needle retry must stay historical.', zeroblob(32)
-                 );
-                 INSERT INTO passage(
-                    id, attachment_segment_id, owner_kind, ordinal, content,
-                    content_hash, locator_kind, locator_json, created_at,
-                    construction_version, heading_context_json
-                 ) VALUES(
-                    '019f547b-6200-7000-8000-000000009514',
-                    '019f547b-6200-7000-8000-000000009513',
-                    'ATTACHMENT', 0,
-                    'The stale_needle retry must stay historical.', zeroblob(32),
-                    'PDF_PAGE', '{\"page\":9}', 70, 'pdf-page-v0', '[]'
-                 );",
-            )
-            .expect("late stale extractor retry");
-        assert!(super::search_passages(
-            &connection,
-            SearchPassagesInput {
-                query: "stale_needle".into(),
-                mode: LexicalSearchMode::Default,
-                limit: 10,
-            },
-        )
-        .expect("search stale configured extractor version")
-        .is_empty());
-        assert_eq!(
-            super::search_passages(
-                &connection,
-                SearchPassagesInput {
-                    query: "nova_needle".into(),
-                    mode: LexicalSearchMode::Default,
-                    limit: 10,
-                },
-            )
-            .expect("search configured extractor version after stale retry")
-            .iter()
-            .map(|result| result.passage_id.as_str())
-            .collect::<Vec<_>>(),
-            vec!["019f547b-6200-7000-8000-000000009509"]
-        );
-        assert_eq!(
-            crate::database::passages::resolve_citation(
-                &connection,
-                "019f547b-6200-7000-8000-000000009514",
-            )
-            .expect("resolve stale configured extractor citation")
-            .state,
-            crate::database::CitationState::Historical
-        );
-        connection
-            .execute(
-                "UPDATE tidbit SET deleted_at = 80, updated_at = 80 WHERE id = ?1",
-                params!["019f547b-6200-7000-8000-000000009511"],
-            )
-            .expect("delete the attachment's only current note owner");
-        assert!(super::search_passages(
-            &connection,
-            SearchPassagesInput {
-                query: "nova_needle".into(),
-                mode: LexicalSearchMode::Default,
-                limit: 10,
-            },
-        )
-        .expect("skip attachment evidence without a current note owner")
-        .is_empty());
     }
 
     #[test]

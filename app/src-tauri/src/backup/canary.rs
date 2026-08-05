@@ -1082,9 +1082,8 @@ fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
     assert!(same_citation_provenance(stored, &resolved));
 
     let mut wrong_locator = resolved.clone();
-    wrong_locator.locator = CitationLocator::TextLines {
-        start_line: 1,
-        end_line: 1,
+    wrong_locator.locator = CitationLocator::OcrRegion {
+        region: serde_json::json!({"x": 0, "y": 0, "width": 1, "height": 1}),
     };
     assert!(!same_citation_provenance(stored, &wrong_locator));
     let mut wrong_sources = resolved;

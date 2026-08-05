@@ -11,7 +11,7 @@ export interface MediaLimits {
   maxReapsPerMaintenance: number;
 }
 
-export type AttachmentKind = "IMAGE" | "PDF" | "TEXT" | "BINARY";
+export type AttachmentKind = "IMAGE" | "FILE";
 
 export interface AttachmentRecord {
   id: string;

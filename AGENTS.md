@@ -8,13 +8,13 @@
 - Capture and lexical search must remain usable when the embedding model or
   remote backup is unavailable.
 - Search results operate on citation-sized passages. A trusted citation must
-  resolve to the exact stored revision, attachment page, OCR evidence, or text
-  line range supplied for that result.
+  resolve to the exact stored revision or image OCR evidence supplied for that
+  result. Other files contribute only their display filenames to search.
 - Research is a retired product surface. The redesign is a hard cutover with
   no deployed profiles to migrate, so do not retain its schema, rows, runtime
   adapters, fixtures, or migrations for compatibility.
-- Tidbit revisions and media blobs are immutable. Background extraction and
-  embedding work must be content-hash checked before stale results can install.
+- Tidbit revisions and media blobs are immutable. Background OCR and embedding
+  work must be content-hash checked before stale results can install.
 - R2 is single-writer backup/recovery, not multi-device synchronization.
 
 ## Repository workflow
