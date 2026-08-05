@@ -22,6 +22,7 @@ use super::{
         OffsiteBackupConfig, OffsiteBackupConfigIntent, OffsiteBackupTakeoverIntent,
         SaveOffsiteBackupConfigInput,
     },
+    block_embedding_index::PendingBlockEmbedding,
     block_search,
     embedding_index::{
         InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
@@ -258,6 +259,28 @@ pub(super) enum WriterMessage {
         reply: SyncSender<Result<bool>>,
     },
     RecordPassageEmbeddingIndexFailure {
+        error: String,
+        failed_at_ms: i64,
+        reply: SyncSender<Result<()>>,
+    },
+    LoadBlockEmbeddingReconciliationBatch {
+        limit: u32,
+        reply: SyncSender<Result<Vec<PendingBlockEmbedding>>>,
+    },
+    InstallBlockEmbedding {
+        pending: PendingBlockEmbedding,
+        embedding: Vec<f32>,
+        created_at_ms: i64,
+        reply: SyncSender<Result<InstallEmbeddingDisposition>>,
+    },
+    BlockEmbeddingIndexNeedsReconciliation {
+        reply: SyncSender<Result<bool>>,
+    },
+    ActivateBlockEmbeddingIndexIfComplete {
+        activated_at_ms: i64,
+        reply: SyncSender<Result<bool>>,
+    },
+    RecordBlockEmbeddingIndexFailure {
         error: String,
         failed_at_ms: i64,
         reply: SyncSender<Result<()>>,
@@ -1260,6 +1283,83 @@ impl DatabaseClient {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::RecordPassageEmbeddingIndexFailure {
+                error,
+                failed_at_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn load_block_embedding_reconciliation_batch(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<PendingBlockEmbedding>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::LoadBlockEmbeddingReconciliationBatch { limit, reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn install_block_embedding(
+        &self,
+        pending: PendingBlockEmbedding,
+        embedding: Vec<f32>,
+        created_at_ms: i64,
+    ) -> Result<InstallEmbeddingDisposition> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::InstallBlockEmbedding {
+                pending,
+                embedding,
+                created_at_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn block_embedding_index_needs_reconciliation(&self) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::BlockEmbeddingIndexNeedsReconciliation { reply })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn activate_block_embedding_index_if_complete(
+        &self,
+        activated_at_ms: i64,
+    ) -> Result<bool> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::ActivateBlockEmbeddingIndexIfComplete {
+                activated_at_ms,
+                reply,
+            })
+            .map_err(|_| DatabaseError::WriterUnavailable)?;
+        receiver
+            .recv()
+            .map_err(|_| DatabaseError::WriterUnavailable)?
+    }
+
+    pub(crate) fn record_block_embedding_index_failure(
+        &self,
+        error: String,
+        failed_at_ms: i64,
+    ) -> Result<()> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(WriterMessage::RecordBlockEmbeddingIndexFailure {
                 error,
                 failed_at_ms,
                 reply,

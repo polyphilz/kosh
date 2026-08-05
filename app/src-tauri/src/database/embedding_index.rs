@@ -474,7 +474,7 @@ pub(crate) fn validate_definition(connection: &Connection) -> Result<()> {
                 id, created_at, index_key, model_name, model_revision,
                 lower(hex(model_file_sha256)), dimension, distance_metric,
                 normalized, index_schema_version, config_json
-             FROM passage_embedding_index
+             FROM text_embedding_index
              WHERE index_key = ?1",
             params![manifest.index_key.as_str()],
             |row| {

@@ -158,6 +158,21 @@ fn worker_loop(database: DatabaseClient, runtime: Arc<EmbeddingRuntime>, shutdow
                     );
                 }
             }
+            match database.block_embedding_index_needs_reconciliation() {
+                Ok(true) => {
+                    if let Err(error) = reconcile_block_batch(&database, &runtime, shutdown) {
+                        let _ = database
+                            .record_block_embedding_index_failure(error, timestamp_now_ms());
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = database.record_block_embedding_index_failure(
+                        error.to_string(),
+                        timestamp_now_ms(),
+                    );
+                }
+            }
         }
         match shutdown.recv_timeout(POLL_INTERVAL) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
@@ -190,6 +205,38 @@ fn reconcile_batch(
             .map_err(|error| error.public_message())?;
         let disposition = database
             .install_passage_embedding(passage, embedding, timestamp_now_ms())
+            .map_err(|error| error.to_string())?;
+        if disposition == InstallEmbeddingDisposition::Stale {
+            continue;
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_block_batch(
+    database: &DatabaseClient,
+    runtime: &EmbeddingRuntime,
+    shutdown: &Receiver<()>,
+) -> Result<(), String> {
+    let pending = database
+        .load_block_embedding_reconciliation_batch(RECONCILIATION_BATCH_SIZE)
+        .map_err(|error| error.to_string())?;
+    if pending.is_empty() {
+        database
+            .activate_block_embedding_index_if_complete(timestamp_now_ms())
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    for block in pending {
+        if shutdown.try_recv().is_ok() {
+            return Ok(());
+        }
+        let embedding = runtime
+            .embed_document(&block.content)
+            .map_err(|error| error.public_message())?;
+        let disposition = database
+            .install_block_embedding(block, embedding, timestamp_now_ms())
             .map_err(|error| error.to_string())?;
         if disposition == InstallEmbeddingDisposition::Stale {
             continue;
