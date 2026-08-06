@@ -194,7 +194,7 @@
 
 .kosh-blocknote-editor [data-kosh-search-hit="true"] {
   border-radius: 4px;
-  animation: kosh-search-match-flash 1.15s cubic-bezier(0.2, 0.75, 0.25, 1) both;
+  animation: kosh-search-match-flash 1.4s cubic-bezier(0.2, 0.75, 0.25, 1) both;
 }
 
 .kosh-blocknote-editor [data-kosh-find-match="true"] {

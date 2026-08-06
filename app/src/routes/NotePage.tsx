@@ -55,6 +55,7 @@ interface FileDropNotice {
 }
 
 interface NotePageProps {
+  blockId?: string;
   mode: "durable" | "ephemeral";
   noteId: string;
   passageId?: string;
@@ -73,7 +74,7 @@ const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>
 const SEARCH_MATCH_FLASH_MS = 1_400;
 const EMPTY_FIND_RESULT: FindInNoteResult = { activeIndex: -1, count: 0 };
 
-export function NotePage({ mode, noteId, passageId }: NotePageProps) {
+export function NotePage({ blockId, mode, noteId, passageId }: NotePageProps) {
   const backend = useBackend();
   const navigate = useNavigate();
   const [session, setSession] = useState<NoteSession | null>(null);
@@ -130,6 +131,7 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
   }
   return (
     <NoteEditorSession
+      blockId={blockId}
       coordinator={session.coordinator}
       key={session.coordinator.getSnapshot().editGeneration === 0 ? "clean" : "recovered"}
       mode={mode}
@@ -140,13 +142,20 @@ export function NotePage({ mode, noteId, passageId }: NotePageProps) {
 }
 
 interface NoteEditorSessionProps {
+  blockId?: string;
   coordinator: NoteAutosaveCoordinator;
   mode: NotePageProps["mode"];
   noteId: string;
   passageId?: string;
 }
 
-function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorSessionProps) {
+function NoteEditorSession({
+  blockId,
+  coordinator,
+  mode,
+  noteId,
+  passageId,
+}: NoteEditorSessionProps) {
   const backend = useBackend();
   const announceDeletedNote = useNoteDeletion();
   const navigate = useNavigate();
@@ -173,6 +182,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
     query: initialFindTransfer?.query ?? "",
   });
   const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
+  const [blockFocusVisible, setBlockFocusVisible] = useState(false);
   const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
   const editorInitialValue = useRef(coordinator.getSnapshot().documentJson).current;
@@ -320,6 +330,10 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
 
   useEffect(() => {
     editorRef.current?.clearSearchFocus();
+    if (blockId) {
+      setSearchFocus(null);
+      return;
+    }
     if (!passageId) {
       setSearchFocus(null);
       return;
@@ -398,7 +412,45 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
       if (flashTimer !== null) window.clearTimeout(flashTimer);
       editorRef.current?.clearSearchFocus();
     };
-  }, [backend, navigate, noteId, passageId, searchSelectionRevision]);
+  }, [backend, blockId, navigate, noteId, passageId, searchSelectionRevision]);
+
+  const removeStaleBlockId = useCallback(() => {
+    void navigate({
+      to: "/notes/$noteId",
+      params: { noteId },
+      search: passageId ? { passage: passageId } : {},
+      replace: true,
+    });
+  }, [navigate, noteId, passageId]);
+
+  useEffect(() => {
+    if (!blockId) {
+      setBlockFocusVisible(false);
+      return;
+    }
+    let active = true;
+    let flashTimer: number | null = null;
+    const frame = window.requestAnimationFrame(() => {
+      if (!active) return;
+      if (!editorRef.current?.focusBlock(blockId)) {
+        removeStaleBlockId();
+        return;
+      }
+      setBlockFocusVisible(true);
+      flashTimer = window.setTimeout(() => {
+        if (!active) return;
+        editorRef.current?.clearSearchFocus();
+        setBlockFocusVisible(false);
+      }, SEARCH_MATCH_FLASH_MS);
+    });
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      if (flashTimer !== null) window.clearTimeout(flashTimer);
+      editorRef.current?.clearSearchFocus();
+      setBlockFocusVisible(false);
+    };
+  }, [blockId, removeStaleBlockId]);
 
   useEffect(() => {
     if (disposeTimerRef.current !== null) {
@@ -586,7 +638,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
         sources={snapshot.sources}
       />
       <div className="note-page__document">
-        {searchFocus?.phase === "FOCUSED" && (
+        {(blockFocusVisible || searchFocus?.phase === "FOCUSED") && (
           <span aria-live="polite" className="visually-hidden" role="status">
             Search match
           </span>
@@ -606,6 +658,7 @@ function NoteEditorSession({ coordinator, mode, noteId, passageId }: NoteEditorS
           imageStatus={(attachmentId) => backend.imageStatus(attachmentId)}
           onChange={(documentJson, bodyMarkdown) => {
             coordinator.update(bodyMarkdown, undefined, documentJson);
+            if (blockId && !editorRef.current?.hasBlock(blockId)) removeStaleBlockId();
             if (
               searchFocus?.phase === "FOCUSED" &&
               !editorRef.current?.revalidateCitationFocus(searchFocus.citation)
