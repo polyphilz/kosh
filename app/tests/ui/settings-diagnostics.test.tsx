@@ -2,7 +2,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { MaintenanceOutcome, PassageEmbeddingIndexPhase } from "../../src/backend/contracts";
+import type { MaintenanceOutcome, BlockEmbeddingIndexPhase } from "../../src/backend/contracts";
 import { BackendProvider } from "../../src/backend/context";
 import { FakeBackend } from "../../src/backend/fakeBackend";
 import { AppearanceProvider } from "../../src/components/Appearance";
@@ -27,18 +27,17 @@ describe("settings diagnostics and maintenance", () => {
 
     await user.click(screen.getByRole("button", { name: "Rebuild search" }));
     expect(rebuild).not.toHaveBeenCalled();
-    const firstDialog = screen.getByRole("dialog", { name: "Rebuild passages and search?" });
+    const firstDialog = screen.getByRole("dialog", { name: "Rebuild block search?" });
     expect(firstDialog).toBeInTheDocument();
     await user.click(within(firstDialog).getByRole("button", { name: "Rebuild search" }));
     await waitFor(() => expect(rebuild).toHaveBeenCalledOnce());
-    expect(await screen.findByText("Rebuilt passages and full-text indexes.")).toBeInTheDocument();
+    expect(await screen.findByText("Rebuilt current block search indexes.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Rebuild search" }));
     await user.click(
-      within(screen.getByRole("dialog", { name: "Rebuild passages and search?" })).getByRole(
-        "button",
-        { name: "Rebuild search" },
-      ),
+      within(screen.getByRole("dialog", { name: "Rebuild block search?" })).getByRole("button", {
+        name: "Rebuild search",
+      }),
     );
     await waitFor(() => expect(rebuild).toHaveBeenCalledTimes(2));
   });
@@ -99,17 +98,17 @@ describe("settings diagnostics and maintenance", () => {
   it.each([
     ["FAILED", "Index failed"],
     ["WAITING_FOR_RUNTIME", "Index waiting"],
-  ] satisfies [PassageEmbeddingIndexPhase, string][])(
+  ] satisfies [BlockEmbeddingIndexPhase, string][])(
     "reports a ready runtime with a %s embedding index as unhealthy",
     async (phase, label) => {
       const backend = new FakeBackend();
       await backend.prepareSemanticRuntime();
-      vi.spyOn(backend, "passageEmbeddingIndexStatus").mockResolvedValue({
+      vi.spyOn(backend, "blockEmbeddingIndexStatus").mockResolvedValue({
         phase,
         embeddingIndexId: "019f547b-6200-7000-8000-000000000002",
         indexKey: "jina_v1",
-        indexedPassages: 2,
-        totalPassages: 3,
+        indexedBlocks: 2,
+        totalBlocks: 3,
         active: false,
         message: "controlled index state",
       });

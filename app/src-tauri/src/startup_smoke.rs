@@ -16,8 +16,8 @@ use tauri::{App, AppHandle, Listener, Manager};
 
 use crate::{
     database::{
-        CitationState, DatabaseClient, DatabaseDiagnostics, LexicalSearchMode, SearchExecutionMode,
-        SearchPassagesInput, SemanticSearchReadiness,
+        DatabaseClient, DatabaseDiagnostics, LexicalSearchMode, SearchBlocksInput,
+        SearchExecutionMode, SemanticSearchReadiness,
     },
     runtime::RuntimeState,
 };
@@ -46,19 +46,18 @@ enum CanaryExpectation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CanaryEvidence {
-    tidbit_id: String,
+    block_id: String,
+    note_id: String,
     revision_id: String,
-    passage_id: String,
     source_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WebviewCanaryEvidence {
-    citation_state: String,
+    block_id: String,
     execution_mode: String,
-    passage_id: String,
-    resolved_passage_id: String,
+    note_id: String,
     revision_id: String,
     result_count: usize,
     source_url: String,
@@ -251,20 +250,19 @@ fn complete_startup_smoke(
         }
         let canary = ready.canary.as_ref().ok_or_else(|| {
             invalid(format!(
-                "the {} webview emitted readiness without search and citation IPC evidence",
+                "the {} webview emitted readiness without block-search IPC evidence",
                 ready.surface
             ))
         })?;
         if canary.execution_mode != "EXACT"
-            || canary.citation_state != "CURRENT"
             || canary.result_count != 1
-            || canary.passage_id != live_evidence.passage_id
-            || canary.resolved_passage_id != live_evidence.passage_id
+            || canary.block_id != live_evidence.block_id
+            || canary.note_id != live_evidence.note_id
             || canary.revision_id != live_evidence.revision_id
             || canary.source_url != live_evidence.source_url
         {
             return Err(invalid(format!(
-                "the {} webview search or citation IPC evidence did not resolve the startup canary",
+                "the {} webview block-search IPC evidence did not resolve the startup canary",
                 ready.surface
             )));
         }
@@ -415,8 +413,8 @@ fn readiness_timeout(ready: &HashMap<String, WebviewReady>) -> io::Error {
 
 fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {
     let response = client
-        .search_passages_with_semantics(
-            SearchPassagesInput {
+        .search_blocks_with_semantics(
+            SearchBlocksInput {
                 query: CANARY.into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
@@ -434,43 +432,35 @@ fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {
     let matches = response
         .results
         .into_iter()
-        .filter(|result| result.citation.excerpt.contains(CANARY))
+        .filter(|result| result.excerpt.contains(CANARY))
         .collect::<Vec<_>>();
     if matches.len() > 1 {
         return Err(invalid(
-            "the startup smoke canary resolved to more than one passage",
+            "the startup smoke canary resolved to more than one block",
         ));
     }
     let Some(result) = matches.into_iter().next() else {
         return Ok(None);
     };
-    if result.citation.state != CitationState::Current {
-        return Err(invalid("the startup smoke canary citation is not current"));
-    }
-    let tidbit = result
-        .citation
-        .tidbit
-        .ok_or_else(|| invalid("the startup smoke citation has no authored tidbit"))?;
-    let source_url = result
-        .citation
+    let tidbit = client
+        .load_tidbit(result.note_id.clone())
+        .map_err(database_error)?;
+    let source_url = tidbit
         .sources
         .iter()
         .find_map(|source| source.url.as_deref())
         .filter(|url| *url == CANARY_SOURCE_URL)
-        .ok_or_else(|| invalid("the startup smoke citation lost its source URL"))?;
-    let loaded = client
-        .load_tidbit(tidbit.id.clone())
-        .map_err(database_error)?;
-    if loaded.current_revision_id != tidbit.revision_id || loaded.body_markdown != CANARY {
+        .ok_or_else(|| invalid("the startup smoke note lost its source URL"))?;
+    if tidbit.body_markdown != CANARY {
         return Err(invalid(
-            "the startup smoke citation did not resolve to the stored authored revision",
+            "the startup smoke block did not resolve to the stored current note",
         ));
     }
 
     Ok(Some(CanaryEvidence {
-        tidbit_id: tidbit.id,
-        revision_id: tidbit.revision_id,
-        passage_id: result.passage_id,
+        block_id: result.block_id,
+        note_id: tidbit.id,
+        revision_id: tidbit.current_revision_id,
         source_url: source_url.into(),
     }))
 }

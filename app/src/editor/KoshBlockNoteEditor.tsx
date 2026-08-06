@@ -32,7 +32,6 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type {
-  CitationResolution,
   ImageRecord,
   ImageStatusRecord,
   SelectedAttachmentRecord,
@@ -52,7 +51,7 @@ import {
   setGutterBlockSelection,
 } from "./gutterSelection";
 import { parseKoshDocument, serializeKoshDocument } from "./document";
-import { koshBlocksToMarkdown, markdownToKoshBlocks } from "./markdownAdapter";
+import { koshBlocksToMarkdown } from "./markdownAdapter";
 import { KoshMediaActionsProvider, type KoshMediaActions } from "./mediaBlocks";
 import { createBlockNoteMediaController } from "./mediaController";
 import { KoshSearchFocusExtension, setSearchFocusBlocks } from "./searchFocus";
@@ -71,13 +70,11 @@ export interface KoshBlockNoteEditorHandle {
   findInNote: (query: string, activeIndex?: number) => FindInNoteResult;
   focus: () => void;
   focusBlock: (blockId: string) => boolean;
-  focusCitation: (citation: CitationResolution) => boolean;
   hasBlock: (blockId: string) => boolean;
   isSuggestionMenuOpen: () => boolean;
   insertAttachments: (attachments: SelectedAttachmentRecord[]) => void;
   insertImages: (images: ImageRecord[]) => void;
   moveFindInNote: (direction: "next" | "previous") => FindInNoteResult;
-  revalidateCitationFocus: (citation: CitationResolution) => boolean;
 }
 
 export interface KoshBlockNoteEditorProps {
@@ -252,15 +249,12 @@ export const KoshBlockNoteEditor = forwardRef<KoshBlockNoteEditorHandle, KoshBlo
         findInNote: (query, activeIndex) => findEditorText(editor, query, activeIndex),
         focus: () => editor.focus(),
         focusBlock: (blockId) => focusBlock(editor, blockId, searchFocusBlockIds),
-        focusCitation: (citation) => focusCitation(editor, citation, searchFocusBlockIds),
         hasBlock: (blockId) => flattenBlocks(editor.document).some((block) => block.id === blockId),
         isSuggestionMenuOpen: () => suggestionMenuOpen.current,
         insertAttachments: (attachments) => mediaController.insert(attachments),
         insertImages: (images) =>
           mediaController.insert(images.map((record) => ({ recordKind: "IMAGE", record }))),
         moveFindInNote: (direction) => moveEditorFind(editor, direction),
-        revalidateCitationFocus: (citation) =>
-          revalidateCitationFocus(editor, citation, searchFocusBlockIds),
       }),
       [editor, mediaController],
     );
@@ -562,42 +556,6 @@ function blockElementAtY(blocks: HTMLElement[], clientY: number): HTMLElement | 
   });
 }
 
-function focusCitation(
-  editor: KoshBlockNoteEditorInstance,
-  citation: CitationResolution,
-  focusedBlockIds: MutableRefObject<string[]>,
-): boolean {
-  clearSearchFocus(editor, focusedBlockIds);
-  const blocks = flattenBlocks(editor.document);
-  if (blocks.length === 0) return false;
-  const range = citationBlockRange(blocks, citation);
-  if (!range) return false;
-  const selectedBlocks = blocks.slice(range.start, range.end + 1);
-  editor.setTextCursorPosition(selectedBlocks[0]!, "start");
-  editor.focus();
-  const root = editor.domElement?.closest<HTMLElement>(".kosh-blocknote-editor");
-  if (!root) return false;
-  focusedBlockIds.current = selectedBlocks.map((block) => block.id);
-  const hasInlineLocator = citationHasInlineLocator(citation);
-  if (hasInlineLocator && selectedBlocks.length !== 1) {
-    clearSearchFocus(editor, focusedBlockIds);
-    return false;
-  }
-  const inlineRange =
-    selectedBlocks.length === 1 ? citationInlineRange(selectedBlocks[0]!, citation) : null;
-  if (hasInlineLocator && !inlineRange) {
-    clearSearchFocus(editor, focusedBlockIds);
-    return false;
-  }
-  if (!setSearchFocusBlocks(editor, focusedBlockIds.current, inlineRange)) {
-    clearSearchFocus(editor, focusedBlockIds);
-    return false;
-  }
-  const element = root.querySelector<HTMLElement>('[data-kosh-search-hit="true"]');
-  element?.scrollIntoView({ behavior: "instant", block: "center" });
-  return element !== null;
-}
-
 function focusBlock(
   editor: KoshBlockNoteEditorInstance,
   blockId: string,
@@ -628,31 +586,6 @@ function clearSearchFocus(
   if (hadFocus) setSearchFocusBlocks(editor, []);
 }
 
-function revalidateCitationFocus(
-  editor: KoshBlockNoteEditorInstance,
-  citation: CitationResolution,
-  focusedBlockIds: MutableRefObject<string[]>,
-): boolean {
-  if (focusedBlockIds.current.length === 0) return false;
-  const blocks = flattenBlocks(editor.document);
-  const range = citationBlockRange(blocks, citation);
-  if (!range) {
-    clearSearchFocus(editor, focusedBlockIds);
-    return false;
-  }
-  const selectedBlocks = blocks.slice(range.start, range.end + 1);
-  const sameBlocks =
-    selectedBlocks.length === focusedBlockIds.current.length &&
-    selectedBlocks.every((block, index) => block.id === focusedBlockIds.current[index]);
-  const inlineRange =
-    selectedBlocks.length === 1 ? citationInlineRange(selectedBlocks[0]!, citation) : null;
-  if (!sameBlocks || (citationHasInlineLocator(citation) && !inlineRange)) {
-    clearSearchFocus(editor, focusedBlockIds);
-    return false;
-  }
-  return true;
-}
-
 type SearchableBlock = {
   children?: SearchableBlock[];
   content?: unknown;
@@ -671,175 +604,6 @@ function flattenBlocks(blocks: readonly unknown[]): SearchableBlock[] {
   };
   for (const block of blocks) visit(block);
   return flattened;
-}
-
-function citationBlockRange(
-  blocks: readonly SearchableBlock[],
-  citation: CitationResolution,
-): { end: number; start: number } | null {
-  if (citation.attachment) {
-    const index = blocks.findIndex(
-      (block) => block.props?.attachmentId === citation.attachment?.id,
-    );
-    return index < 0 ? null : { start: index, end: index };
-  }
-  if (citation.locator.kind !== "MARKDOWN_BLOCKS") return null;
-  const span = Math.max(1, citation.locator.endBlock - citation.locator.startBlock + 1);
-  const excerptCandidates = citationExcerptCandidates(citation.excerpt);
-  if (excerptCandidates.length === 0) return null;
-  let best: { end: number; start: number } | null = null;
-  let bestScore: CitationMatchScore | null = null;
-  let bestIsAmbiguous = false;
-  for (let start = 0; start < blocks.length; start += 1) {
-    const candidate = { start, end: Math.min(blocks.length - 1, start + span - 1) };
-    const score = blockRangeMatchScore(blocks, candidate, excerptCandidates);
-    if (!score) continue;
-    const comparison = compareCitationMatchScore(score, bestScore);
-    if (comparison > 0) {
-      best = candidate;
-      bestScore = score;
-      bestIsAmbiguous = false;
-    } else if (comparison === 0) {
-      bestIsAmbiguous = true;
-    }
-  }
-  return bestIsAmbiguous ? null : best;
-}
-
-interface CitationMatchScore {
-  coverage: number;
-  relation: number;
-}
-
-function blockRangeMatchScore(
-  blocks: readonly SearchableBlock[],
-  range: { end: number; start: number },
-  excerptCandidates: readonly string[],
-): CitationMatchScore | null {
-  const blockText = comparableCitationText(
-    blocks
-      .slice(range.start, range.end + 1)
-      .map(searchableBlockEvidenceText)
-      .join(" "),
-  );
-  if (!blockText) return null;
-  let best: CitationMatchScore | null = null;
-  for (const excerpt of excerptCandidates) {
-    const score =
-      blockText === excerpt
-        ? { relation: 3, coverage: blockText.length }
-        : excerpt.includes(blockText)
-          ? { relation: 2, coverage: blockText.length }
-          : blockText.includes(excerpt)
-            ? { relation: 1, coverage: -blockText.length }
-            : null;
-    if (score && compareCitationMatchScore(score, best) > 0) best = score;
-  }
-  return best;
-}
-
-function compareCitationMatchScore(
-  left: CitationMatchScore,
-  right: CitationMatchScore | null,
-): number {
-  if (!right) return 1;
-  if (left.relation !== right.relation) return left.relation - right.relation;
-  return left.coverage - right.coverage;
-}
-
-function citationInlineRange(
-  block: SearchableBlock,
-  citation: CitationResolution,
-): { blockId: string; endChar: number; startChar: number } | null {
-  if (citation.locator.kind !== "MARKDOWN_BLOCKS") return null;
-  const { startChar, endChar, startLine, endLine } = citation.locator;
-  const text = searchableBlockEvidenceText(block);
-  const characterCount = [...text].length;
-  if (startChar !== null && endChar !== null) {
-    if (startChar < 0 || endChar <= startChar || endChar > characterCount) return null;
-    return citationRangeMatchesExcerpt(text, startChar, endChar, citation.excerpt)
-      ? { blockId: block.id, startChar, endChar }
-      : null;
-  }
-  if (startLine === null || endLine === null || startLine < 1 || endLine < startLine) return null;
-  const lines = text.split("\n");
-  if (endLine > lines.length) return null;
-  const start = lines
-    .slice(0, startLine - 1)
-    .reduce((total, line) => total + [...line].length + 1, 0);
-  const end = lines.slice(0, endLine).reduce((total, line) => total + [...line].length + 1, 0) - 1;
-  return end > start && citationRangeMatchesExcerpt(text, start, end, citation.excerpt)
-    ? { blockId: block.id, startChar: start, endChar: end }
-    : null;
-}
-
-function citationHasInlineLocator(citation: CitationResolution): boolean {
-  if (citation.locator.kind !== "MARKDOWN_BLOCKS") return false;
-  const { startChar, endChar, startLine, endLine } = citation.locator;
-  return [startChar, endChar, startLine, endLine].some((value) => value !== null);
-}
-
-function citationRangeMatchesExcerpt(
-  text: string,
-  start: number,
-  end: number,
-  excerpt: string,
-): boolean {
-  const selectedText = comparableCitationText([...text].slice(start, end).join(""));
-  return citationExcerptCandidates(excerpt).some((candidate) => selectedText === candidate);
-}
-
-function searchableBlockEvidenceText(block: {
-  content?: unknown;
-  props?: unknown;
-  type?: string;
-}): string {
-  const props = recordFromUnknown(block.props);
-  if (block.type === "displayMath") {
-    const latex = stringFromRecord(props, "latex");
-    return latex ? `$$${latex}$$` : "";
-  }
-  if (block.type === "koshImage") {
-    return [stringFromRecord(props, "altText"), stringFromRecord(props, "caption")]
-      .filter(Boolean)
-      .join(" ");
-  }
-  if (block.type === "koshFileAttachment") return stringFromRecord(props, "caption");
-  return inlineEvidenceText(block.content);
-}
-
-function inlineEvidenceText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(inlineEvidenceText).join("");
-  if (!value || typeof value !== "object") return "";
-  const object = value as Record<string, unknown>;
-  if (object.type === "text") return typeof object.text === "string" ? object.text : "";
-  if (object.type === "inlineMath") {
-    const props = object.props as Record<string, unknown> | undefined;
-    const latex = stringFromRecord(props, "latex");
-    return latex ? `$${latex}$` : "";
-  }
-  return inlineEvidenceText(object.content);
-}
-
-function stringFromRecord(record: Record<string, unknown> | undefined, key: string): string {
-  return typeof record?.[key] === "string" ? record[key] : "";
-}
-
-function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
-}
-
-function comparableCitationText(value: string): string {
-  return value.normalize("NFC").replace(/\s+/gu, " ").trim();
-}
-
-function citationExcerptCandidates(excerpt: string): string[] {
-  const candidates = new Set([comparableCitationText(excerpt)]);
-  const rendered = markdownToKoshBlocks(excerpt).map(searchableBlockEvidenceText).join(" ");
-  candidates.add(comparableCitationText(rendered));
-  candidates.delete("");
-  return [...candidates];
 }
 
 function KoshSlashMenuLifecycle({

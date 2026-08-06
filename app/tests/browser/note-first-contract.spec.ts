@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "./fixtures";
 
-test("note-first capture preserves image, file, source, and citation surfaces", async ({
+test("note-first capture preserves image, file, source, and block-search surfaces", async ({
   page,
 }) => {
   await page.route("kosh-media://**", async (route) => {
@@ -79,10 +79,9 @@ test("note-first capture preserves image, file, source, and citation surfaces", 
 
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByRole("combobox", { name: "Search notes" }).fill("contiguous arrays");
-  const citation = page.getByRole("option", { name: /Vector note/u });
-  await expect(citation).toContainText("The exact note passage remembers contiguous arrays.");
-  await expect(citation).toContainText("NumPy notebook · example.com");
-  await citation.click();
+  const result = page.getByRole("option", { name: /Vector note/u });
+  await expect(result).toContainText("The exact note passage remembers contiguous arrays.");
+  await result.click();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("contiguous arrays");
   await expect(page.getByLabel("Search result location")).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);

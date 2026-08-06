@@ -3,8 +3,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use super::{
-    block_embedding_index::JINA_V1_VEC_TABLE,
-    embedding_index::InstallEmbeddingDisposition,
+    block_embedding_index::{InstallEmbeddingDisposition, JINA_V1_VEC_TABLE},
     tidbits::CreateTidbitWrite,
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     Database, DatabasePaths, MediaLimits, Tidbit, TidbitDraft,

@@ -3,7 +3,7 @@ import type {
   IntegrityCheckOutcome,
   MaintenanceDiagnostics,
   MaintenanceOutcome,
-  PassageEmbeddingIndexStatus,
+  BlockEmbeddingIndexStatus,
   SemanticRuntimeStatus,
 } from "../backend/contracts";
 import { useBackend } from "../backend/context";
@@ -20,7 +20,7 @@ type MaintenanceAction =
 interface DiagnosticsState {
   diagnostics: MaintenanceDiagnostics;
   semantic: SemanticRuntimeStatus;
-  embeddings: PassageEmbeddingIndexStatus;
+  embeddings: BlockEmbeddingIndexStatus;
 }
 
 const actionCopy: Record<
@@ -35,11 +35,11 @@ const actionCopy: Record<
     running: "Checking local data…",
   },
   REBUILD_SEARCH: {
-    title: "Rebuild passages and search?",
+    title: "Rebuild block search?",
     description:
-      "Kosh will recreate derived passage and full-text search data. Tidbits, revisions, attachments, and citation history stay unchanged.",
+      "Kosh will recreate derived block and full-text search data. Notes and attachments stay unchanged.",
     confirm: "Rebuild search",
-    running: "Rebuilding passages and search…",
+    running: "Rebuilding block search…",
   },
   REBUILD_EMBEDDINGS: {
     title: "Rebuild semantic embeddings?",
@@ -85,7 +85,7 @@ export function SettingsDiagnostics() {
       const [diagnostics, semantic, embeddings] = await Promise.all([
         backend.loadMaintenanceDiagnostics(),
         backend.semanticRuntimeStatus(),
-        backend.passageEmbeddingIndexStatus(),
+        backend.blockEmbeddingIndexStatus(),
       ]);
       if (!mounted.current || sequence !== loadSequence.current) return;
       setState({ diagnostics, semantic, embeddings });
@@ -223,7 +223,7 @@ export function SettingsDiagnostics() {
         </SettingsPanelHeader>
         <dl className="settings-diagnostics-grid settings-diagnostics-grid--services">
           <DiagnosticItem
-            detail={`${formatBytes(semantic.modelDiskUsageBytes)} on disk · ${embeddings.indexedPassages.toLocaleString()} of ${embeddings.totalPassages.toLocaleString()} passages`}
+            detail={`${formatBytes(semantic.modelDiskUsageBytes)} on disk · ${embeddings.indexedBlocks.toLocaleString()} of ${embeddings.totalBlocks.toLocaleString()} blocks`}
             label="Semantic search"
             value={semanticSearch.label}
             warning={semanticSearch.warning}
@@ -261,9 +261,9 @@ export function SettingsDiagnostics() {
             value={`${diagnostics.library.activeTidbits.toLocaleString()} active tidbits`}
           />
           <DiagnosticItem
-            detail={`${diagnostics.library.authoredPassages.toLocaleString()} authored · ${diagnostics.library.attachmentPassages.toLocaleString()} attachment`}
+            detail="Current non-empty note blocks and attachment evidence"
             label="Search blocks"
-            value={`${diagnostics.library.blockSearchDocuments.toLocaleString()} indexed`}
+            value={`${diagnostics.library.searchableBlocks.toLocaleString()} indexed`}
             warning={unhealthyIndexes > 0}
           />
           <DiagnosticItem
@@ -312,7 +312,7 @@ export function SettingsDiagnostics() {
 
       <section aria-labelledby="maintenance-title" className="settings-panel">
         <SettingsPanelHeader
-          description="Derived data can be rebuilt without changing tidbits, revisions, attachments, or citation history."
+          description="Derived data can be rebuilt without changing notes or attachments."
           title="Maintenance"
         />
         <div className="settings-maintenance-list">
@@ -324,7 +324,7 @@ export function SettingsDiagnostics() {
           />
           <MaintenanceRow
             action="Rebuild search"
-            description="Reconcile authored passages and recreate lexical indexes."
+            description="Reconcile current blocks and recreate lexical indexes."
             disabled={disabled}
             onClick={() => setConfirmation("REBUILD_SEARCH")}
           />
@@ -513,7 +513,7 @@ function semanticPhaseLabel(status: SemanticRuntimeStatus): string {
 
 function semanticSearchHealth(
   runtime: SemanticRuntimeStatus,
-  embeddings: PassageEmbeddingIndexStatus,
+  embeddings: BlockEmbeddingIndexStatus,
 ): { label: string; warning: boolean } {
   if (runtime.phase !== "READY") {
     return {

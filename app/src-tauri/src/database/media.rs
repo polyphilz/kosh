@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{document, search, DatabaseError, Result};
+use super::{block_search, document, DatabaseError, Result};
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_FILENAME_CHARS: usize = 255;
@@ -1310,16 +1310,8 @@ pub(crate) fn complete_image_ocr(
         result.and_then(|regions| validate_ocr_regions(regions).map_err(|error| error.to_string()));
     match result {
         Ok(regions) => {
-            let construction_version: String = transaction.query_row(
-                "SELECT passage_construction_version
-                 FROM attachment_extractor_config
-                 WHERE extractor = ?1 AND version = ?2",
-                params![IMAGE_OCR_EXTRACTOR, &job.extractor_version],
-                |row| row.get(0),
-            )?;
             for (ordinal, region) in regions.into_iter().enumerate() {
                 let segment_id = Uuid::now_v7().to_string();
-                let passage_id = Uuid::now_v7().to_string();
                 let region_value = serde_json::json!({
                     "coordinateSystem": "vision-normalized-bottom-left",
                     "height": region.height,
@@ -1329,12 +1321,6 @@ pub(crate) fn complete_image_ocr(
                 });
                 let region_json = serde_json::to_string(&region_value).map_err(|error| {
                     DatabaseError::InvalidInput(format!("could not serialize OCR region: {error}"))
-                })?;
-                let locator_json = serde_json::to_string(
-                    &serde_json::json!({ "region": region_value }),
-                )
-                .map_err(|error| {
-                    DatabaseError::InvalidInput(format!("could not serialize OCR locator: {error}"))
                 })?;
                 let content_hash = Sha256::digest(region.text.as_bytes()).to_vec();
                 transaction.execute(
@@ -1356,25 +1342,6 @@ pub(crate) fn complete_image_ocr(
                      SET status = 'READY', error = NULL, completed_at = ?1
                      WHERE id = ?2",
                     params![completed_at_ms, &job.extraction_id],
-                )?;
-                transaction.execute(
-                    "INSERT INTO passage(
-                        id, tidbit_revision_id, attachment_segment_id, owner_kind,
-                        ordinal, content, content_hash, locator_kind, locator_json,
-                        created_at, construction_version, heading_context_json
-                     ) VALUES(
-                        ?1, NULL, ?2, 'ATTACHMENT', 0, ?3, ?4, 'OCR_REGION',
-                        ?5, ?6, ?7, '[]'
-                     )",
-                    params![
-                        &passage_id,
-                        &segment_id,
-                        &region.text,
-                        &content_hash,
-                        &locator_json,
-                        completed_at_ms,
-                        &construction_version
-                    ],
                 )?;
             }
             transaction.execute(
@@ -1400,7 +1367,7 @@ pub(crate) fn complete_image_ocr(
                  WHERE id = ?2",
                 params![completed_at_ms, &job.attachment_id],
             )?;
-            search::replace_attachment_documents_in_transaction(&transaction, &job.attachment_id)?;
+            block_search::refresh_attachment_owners(&transaction, &job.attachment_id)?;
         }
         Err(error) => {
             let error = truncate_ocr_error(&error);

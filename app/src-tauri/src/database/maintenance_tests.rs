@@ -2,7 +2,7 @@ use tempfile::TempDir;
 
 use super::{
     connection::{self, DatabaseKind, FileState},
-    maintenance, Database, DatabasePaths, LexicalSearchMode, SearchPassagesInput, TidbitDraft,
+    maintenance, Database, DatabasePaths, LexicalSearchMode, SearchBlocksInput, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -23,7 +23,7 @@ impl TestLibrary {
 }
 
 #[test]
-fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
+fn diagnostics_and_rebuilds_preserve_current_note_search() {
     let library = TestLibrary::new();
     let client = library.database.client();
     let original = client
@@ -41,8 +41,8 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
             Vec::new(),
         )
         .expect("create tidbit");
-    let original_passage = client
-        .search_passages(SearchPassagesInput {
+    let original_block = client
+        .search_blocks(SearchBlocksInput {
             query: "\"Original exact citation evidence\"".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
@@ -50,7 +50,7 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
         .expect("original search")
         .first()
         .expect("original result")
-        .passage_id
+        .block_id
         .clone();
     client
         .save_working_copy_for_test(
@@ -69,14 +69,13 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
         .expect("edited note");
     install_all_embeddings(&client, 30);
     client
-        .activate_passage_embedding_index_if_complete(31)
+        .activate_block_embedding_index_if_complete(31)
         .expect("activate embeddings");
 
     let before = client.maintenance_snapshot().expect("before snapshot");
     assert_eq!(before.active_tidbits, 1);
     assert_eq!(before.revisions, 2);
-    assert!(before.authored_passages >= 2);
-    assert_eq!(before.block_search_documents, 1);
+    assert_eq!(before.searchable_blocks, 1);
 
     let rebuild_probe = connection::open_writer(
         &library.database.paths().main,
@@ -118,33 +117,31 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
         .maintenance_snapshot()
         .expect("after search snapshot");
     assert_eq!(after_search.revisions, before.revisions);
-    assert_eq!(after_search.authored_passages, before.authored_passages);
+    assert_eq!(after_search.searchable_blocks, before.searchable_blocks);
+    assert!(client
+        .search_blocks(SearchBlocksInput {
+            query: "Original exact citation evidence".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("removed content search")
+        .is_empty());
     assert_eq!(
         client
-            .resolve_citation(original_passage)
-            .expect("historical citation")
-            .tidbit
-            .expect("citation tidbit")
-            .revision_id,
-        original.current_revision_id
-    );
-    assert_eq!(
-        client
-            .search_passages(SearchPassagesInput {
+            .search_blocks(SearchBlocksInput {
                 query: "\"Updated searchable citation evidence\"".into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
             })
             .expect("rebuilt search")
             .first()
-            .and_then(|result| result.citation.tidbit.as_ref())
-            .map(|tidbit| tidbit.revision_id.as_str()),
-        Some(edited.current_revision_id.as_str())
+            .map(|result| (result.note_id.as_str(), result.block_id.as_str())),
+        Some((edited.id.as_str(), original_block.as_str()))
     );
 
     install_all_embeddings(&client, 35);
     client
-        .activate_passage_embedding_index_if_complete(36)
+        .activate_block_embedding_index_if_complete(36)
         .expect("reactivate embeddings after search rebuild");
     assert!(
         client
@@ -159,10 +156,10 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
         0
     );
     let embedding = client
-        .passage_embedding_index_progress()
+        .block_embedding_index_progress()
         .expect("embedding progress");
     assert!(!embedding.active);
-    assert_eq!(embedding.indexed_passages, 0);
+    assert_eq!(embedding.indexed_blocks, 0);
     assert_eq!(
         client
             .maintenance_snapshot()
@@ -349,14 +346,14 @@ fn only_current_ocr_failures_are_reported_and_retried() {
 fn install_all_embeddings(client: &super::DatabaseClient, created_at_ms: i64) {
     loop {
         let pending = client
-            .load_embedding_reconciliation_batch(32)
+            .load_block_embedding_reconciliation_batch(32)
             .expect("embedding batch");
         if pending.is_empty() {
             return;
         }
-        for passage in pending {
+        for block in pending {
             client
-                .install_passage_embedding(passage, unit_vector(), created_at_ms)
+                .install_block_embedding(block, unit_vector(), created_at_ms)
                 .expect("install embedding");
         }
     }

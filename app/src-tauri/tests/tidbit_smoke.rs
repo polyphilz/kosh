@@ -2,7 +2,7 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    SearchExecutionMode, SearchPassagesResponse, SemanticSearchReadiness, Tidbit,
+    SearchBlocksResponse, SearchExecutionMode, SemanticSearchReadiness, Tidbit,
 };
 
 fn invoke(
@@ -101,7 +101,7 @@ fn note_autosave_checkpoint_and_search_cross_the_typed_ipc_boundary() {
 
     let search_results = invoke(
         &window,
-        "search_passages",
+        "search_blocks",
         serde_json::json!({
             "input": {
                 "query": "\"Exact body\"",
@@ -110,7 +110,7 @@ fn note_autosave_checkpoint_and_search_cross_the_typed_ipc_boundary() {
             }
         }),
     )
-    .deserialize::<SearchPassagesResponse>()
+    .deserialize::<SearchBlocksResponse>()
     .expect("search result payload");
     assert_eq!(
         search_results.execution_mode,
@@ -121,13 +121,10 @@ fn note_autosave_checkpoint_and_search_cross_the_typed_ipc_boundary() {
         SemanticSearchReadiness::WaitingForRuntime
     );
     assert_eq!(search_results.results.len(), 1);
+    assert_eq!(search_results.results[0].note_id, created.id);
     assert_eq!(
-        search_results.results[0]
-            .citation
-            .tidbit
-            .as_ref()
-            .map(|tidbit| tidbit.id.as_str()),
-        Some(created.id.as_str())
+        search_results.results[0].block_id,
+        "019f547b-6200-7000-8000-000000002012"
     );
 
     assert!(!data_root

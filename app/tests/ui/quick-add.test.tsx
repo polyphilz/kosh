@@ -75,12 +75,12 @@ describe("global quick add", () => {
     expect(note).toMatchObject({
       bodyMarkdown: "The shower thought must survive dismissal.",
     });
-    const search = await backend.searchPassages({
+    const search = await backend.searchBlocks({
       limit: 10,
       mode: "DEFAULT",
       query: "shower thought",
     });
-    expect(search.results[0]?.note.id).toBe(note.id);
+    expect(search.results[0]?.noteId).toBe(note.id);
   });
 
   it("keeps Command-Enter available while inline math is being edited", async () => {

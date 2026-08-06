@@ -153,7 +153,7 @@ pub(crate) async fn rebuild_embedding_index(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let invalidated = client.rebuild_embeddings(now_ms)?;
-        log::info!("maintenance invalidated {invalidated} passage embeddings");
+        log::info!("maintenance invalidated {invalidated} block embeddings");
         Ok(MaintenanceOutcome {
             operation: "REBUILD_EMBEDDINGS",
             changed_items: invalidated,
@@ -164,7 +164,7 @@ pub(crate) async fn rebuild_embedding_index(
                     .into()
             } else {
                 format!(
-                    "Queued {invalidated} passage embedding{} for a safe rebuild.",
+                    "Queued {invalidated} block embedding{} for a safe rebuild.",
                     if invalidated == 1 { "" } else { "s" }
                 )
             },

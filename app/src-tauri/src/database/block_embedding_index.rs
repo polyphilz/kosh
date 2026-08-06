@@ -2,11 +2,36 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use crate::embedding;
 
-use super::{embedding_index, DatabaseError, Result};
+use super::{DatabaseError, Result};
 
 pub(crate) const JINA_V1_VEC_TABLE: &str = "block_embedding_vec_jina_v1";
 pub(crate) const RECONCILIATION_BATCH_SIZE: u32 = 32;
 const MAX_BLOCK_EMBEDDING_BYTES: usize = 24 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InstallEmbeddingDisposition {
+    Installed,
+    Stale,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BlockEmbeddingIndexState {
+    Dirty,
+    Running,
+    Idle,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BlockEmbeddingIndexProgress {
+    pub state: BlockEmbeddingIndexState,
+    pub embedding_index_id: String,
+    pub index_key: String,
+    pub indexed_blocks: i64,
+    pub total_blocks: i64,
+    pub active: bool,
+    pub error: Option<String>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PendingBlockEmbedding {
@@ -216,7 +241,7 @@ pub(crate) fn install_embedding(
     pending: &PendingBlockEmbedding,
     vector: &[f32],
     created_at_ms: i64,
-) -> Result<embedding_index::InstallEmbeddingDisposition> {
+) -> Result<InstallEmbeddingDisposition> {
     if created_at_ms < 0 {
         return Err(DatabaseError::InvalidInput(
             "block embedding timestamp must not be negative".into(),
@@ -235,11 +260,11 @@ fn install_embedding_in_transaction(
     pending: &PendingBlockEmbedding,
     vector: &[f32],
     created_at_ms: i64,
-) -> Result<embedding_index::InstallEmbeddingDisposition> {
+) -> Result<InstallEmbeddingDisposition> {
     let manifest = embedding::jina_v1_manifest();
-    embedding_index::validate_embedding(vector, manifest.dimension as usize)?;
+    validate_embedding(vector, manifest.dimension as usize)?;
     if pending.embedding_index_id != manifest.id || pending.index_key != manifest.index_key {
-        return Ok(embedding_index::InstallEmbeddingDisposition::Stale);
+        return Ok(InstallEmbeddingDisposition::Stale);
     }
     let still_current = transaction
         .query_row(
@@ -260,7 +285,7 @@ fn install_embedding_in_transaction(
         .optional()?
         .is_some();
     if !still_current {
-        return Ok(embedding_index::InstallEmbeddingDisposition::Stale);
+        return Ok(InstallEmbeddingDisposition::Stale);
     }
 
     transaction.execute(
@@ -297,7 +322,60 @@ fn install_embedding_in_transaction(
             created_at_ms
         ],
     )?;
-    Ok(embedding_index::InstallEmbeddingDisposition::Installed)
+    Ok(InstallEmbeddingDisposition::Installed)
+}
+
+pub(crate) fn progress(connection: &Connection) -> Result<BlockEmbeddingIndexProgress> {
+    let manifest = embedding::jina_v1_manifest();
+    let (status, active_index_id, error) = connection.query_row(
+        "SELECT state.status, settings.active_embedding_index_id, state.error
+         FROM index_state AS state
+         CROSS JOIN block_embedding_settings AS settings
+         WHERE state.name = 'BLOCK_EMBEDDING' AND settings.singleton_id = 1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
+    )?;
+    let state = match status.as_str() {
+        "DIRTY" => BlockEmbeddingIndexState::Dirty,
+        "RUNNING" => BlockEmbeddingIndexState::Running,
+        "IDLE" => BlockEmbeddingIndexState::Idle,
+        "FAILED" => BlockEmbeddingIndexState::Failed,
+        _ => {
+            return Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!("BLOCK_EMBEDDING has unknown status {status}"),
+            });
+        }
+    };
+    Ok(BlockEmbeddingIndexProgress {
+        state,
+        embedding_index_id: manifest.id.clone(),
+        index_key: manifest.index_key.clone(),
+        indexed_blocks: indexed_count(connection)?,
+        total_blocks: document_count(connection)?,
+        active: active_index_id.as_deref() == Some(manifest.id.as_str()),
+        error,
+    })
+}
+
+pub(crate) fn validate_embedding(embedding: &[f32], expected_dimension: usize) -> Result<()> {
+    if embedding.len() != expected_dimension {
+        return Err(DatabaseError::InvalidInput(format!(
+            "embedding must contain {expected_dimension} dimensions"
+        )));
+    }
+    if embedding.iter().any(|value| !value.is_finite()) {
+        return Err(DatabaseError::InvalidInput(
+            "embedding values must be finite".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn activate_if_complete(

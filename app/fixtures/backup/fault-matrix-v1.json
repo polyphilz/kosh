@@ -98,7 +98,7 @@
       "phase": "media",
       "failureClass": "corruption",
       "test": "backup::media_reconciler::tests::remote_metadata_mismatch_fails_closed",
-      "invariants": ["media-immutability", "citation-provenance"]
+      "invariants": ["media-immutability", "block-provenance"]
     },
     {
       "id": "replication-child-crash",
@@ -154,14 +154,14 @@
       "phase": "checkpoint",
       "failureClass": "crash-boundary",
       "test": "backup::checkpoint::tests::every_media_head_precedes_immutable_manifest_put_and_exact_readback",
-      "invariants": ["exact-txid", "media-immutability", "citation-provenance"]
+      "invariants": ["exact-txid", "media-immutability", "block-provenance"]
     },
     {
       "id": "checkpoint-missing-or-corrupt-media",
       "phase": "checkpoint",
       "failureClass": "corruption",
       "test": "backup::checkpoint::tests::absent_or_corrupt_remote_media_blocks_manifest_publication",
-      "invariants": ["media-immutability", "citation-provenance"]
+      "invariants": ["media-immutability", "block-provenance"]
     },
     {
       "id": "checkpoint-manifest-readback-failure",
@@ -189,7 +189,7 @@
       "phase": "discovery",
       "failureClass": "corruption",
       "test": "backup::restore::tests::discovery_rejects_duplicate_logical_checkpoint_ids_across_manifest_keys",
-      "invariants": ["citation-provenance", "single-writer"]
+      "invariants": ["block-provenance", "single-writer"]
     },
     {
       "id": "discovery-wrong-replica-epoch",
@@ -203,7 +203,7 @@
       "phase": "restore",
       "failureClass": "corruption",
       "test": "backup::restore::tests::staging_rejects_manifest_evidence_not_bound_to_the_restored_txid",
-      "invariants": ["exact-txid", "citation-provenance"]
+      "invariants": ["exact-txid", "block-provenance"]
     },
     {
       "id": "restore-media-pagination",
@@ -280,7 +280,7 @@
       "phase": "install",
       "failureClass": "concurrency",
       "test": "backup::recovery_cli::tests::descriptor_bound_install_uses_the_audited_staging_pair_after_parent_replacement",
-      "invariants": ["authored-bytes", "bounded-cleanup", "citation-provenance"]
+      "invariants": ["authored-bytes", "bounded-cleanup", "block-provenance"]
     },
     {
       "id": "install-interrupted-reservation-reclaim",
@@ -308,7 +308,7 @@
       "phase": "install",
       "failureClass": "crash-boundary",
       "test": "backup::recovery_cli::tests::descriptor_bound_install_publishes_a_durable_retry_receipt",
-      "invariants": ["authored-bytes", "citation-provenance", "idempotency"]
+      "invariants": ["authored-bytes", "block-provenance", "idempotency"]
     },
     {
       "id": "restore-interrupted-ephemeral-runtime-reclaim",
@@ -342,8 +342,8 @@
       "id": "reopen-search-and-citation-rebuild",
       "phase": "reopen",
       "failureClass": "stale-state",
-      "test": "database::maintenance_tests::diagnostics_and_rebuilds_preserve_authored_history_and_citations",
-      "invariants": ["authored-bytes", "citation-provenance", "search-rebuildability"]
+      "test": "database::maintenance_tests::diagnostics_and_rebuilds_preserve_current_note_search",
+      "invariants": ["authored-bytes", "block-provenance", "search-rebuildability"]
     },
     {
       "id": "reopen-clean-target-race",
@@ -363,10 +363,10 @@
       "id": "reopen-snapshot-provenance",
       "phase": "reopen",
       "failureClass": "retry",
-      "test": "database::safety_snapshot::tests::verified_snapshot_pair_reopens_with_search_and_citation_provenance",
+      "test": "database::safety_snapshot::tests::verified_snapshot_pair_reopens_with_current_block_search",
       "invariants": [
         "authored-bytes",
-        "citation-provenance",
+        "block-provenance",
         "search-rebuildability",
         "media-immutability"
       ]
@@ -375,8 +375,8 @@
       "id": "reopen-historical-note-citation",
       "phase": "reopen",
       "failureClass": "stale-state",
-      "test": "backup::canary::historical_canary_evidence_requires_exact_locator_and_source_provenance",
-      "invariants": ["authored-bytes", "citation-provenance"]
+      "test": "backup::canary::canary_fixture_exposes_current_block_search_evidence",
+      "invariants": ["authored-bytes", "block-provenance"]
     },
     {
       "id": "reopen-cli-refuses-existing-target",

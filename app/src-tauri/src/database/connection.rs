@@ -10,9 +10,9 @@ use std::{
 use rusqlite::{functions::FunctionFlags, limits::Limit, Connection, OpenFlags};
 
 use super::{
-    block_search,
+    block_query, block_search,
     error::{DatabaseError, Result},
-    media, search,
+    media,
 };
 
 pub const MAIN_APPLICATION_ID: i32 = i32::from_be_bytes(*b"KOSH");
@@ -219,7 +219,7 @@ fn configure_writer(
                 | FunctionFlags::SQLITE_INNOCUOUS,
             |context| {
                 let value = context.get::<String>(0)?;
-                Ok(search::normalize_for_search(&value))
+                Ok(block_query::normalize(&value))
             },
         )?;
         connection.create_scalar_function(
@@ -230,7 +230,7 @@ fn configure_writer(
                 | FunctionFlags::SQLITE_INNOCUOUS,
             |context| {
                 let value = context.get::<String>(0)?;
-                Ok(search::short_grams_for_search(&value))
+                Ok(block_query::short_grams(&value))
             },
         )?;
         connection.create_scalar_function(

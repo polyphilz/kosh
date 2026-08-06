@@ -1,21 +1,20 @@
 mod backup_media;
 mod backup_state;
 pub(crate) mod block_embedding_index;
+pub(crate) mod block_query;
 mod block_search;
 pub(crate) mod commands;
 pub(crate) mod connection;
 pub(crate) mod document;
-pub(crate) mod embedding_index;
 mod error;
 mod maintenance;
 pub(crate) mod media;
 mod migrations;
 mod offsite_checkpoint;
-pub(crate) mod passages;
 mod paths;
+pub(crate) mod relevance_search;
 mod restore_validation;
 mod safety_snapshot;
-pub(crate) mod search;
 pub(crate) mod settings;
 pub(crate) mod tidbits;
 mod validation;
@@ -30,8 +29,6 @@ mod backup_state_tests;
 mod block_embedding_index_tests;
 #[cfg(test)]
 mod block_search_tests;
-#[cfg(test)]
-mod embedding_index_tests;
 #[cfg(test)]
 mod maintenance_tests;
 #[cfg(test)]
@@ -63,6 +60,10 @@ pub(crate) use backup_state::{
     CredentialIntentAction, OffsiteBackupConfig, OffsiteBackupConfigIntent,
     OffsiteBackupTakeoverIntent, OffsiteOperationState, SaveOffsiteBackupConfigInput,
 };
+pub use block_query::{
+    BlockSearchResult, LexicalSearchMode, SearchBlocksInput, SearchBlocksResponse,
+    SearchExecutionMode, SearchField, SearchHighlight, SemanticSearchReadiness,
+};
 pub use error::{DatabaseError, Result};
 pub use maintenance::MaintenanceDatabaseSnapshot;
 pub use media::{
@@ -74,9 +75,6 @@ pub(crate) use offsite_checkpoint::{
     CheckpointMediaReference, OffsiteCheckpointScheduleState, PrepareOffsiteCheckpointInput,
     PreparedOffsiteCheckpoint,
 };
-pub use passages::{
-    CitationAttachment, CitationLocator, CitationResolution, CitationState, CitationTidbit,
-};
 pub use paths::DatabasePaths;
 pub(crate) use restore_validation::{
     create_empty_media_at as create_empty_restore_media_database_at,
@@ -85,10 +83,6 @@ pub(crate) use restore_validation::{
 };
 pub(crate) use safety_snapshot::available_space_bytes as available_storage_bytes;
 pub(crate) use safety_snapshot::SafetySnapshotReason;
-pub use search::{
-    LexicalSearchMode, PassageSearchResult, SearchExecutionMode, SearchField, SearchHighlight,
-    SearchPassagesInput, SearchPassagesResponse, SemanticSearchReadiness,
-};
 pub use settings::{
     validate_complete_bindings, KeyboardBinding, KoshCommand, SetAutomaticUpdateChecksInput,
     SetShortcutSettingsInput, ShortcutSettings, DEFAULT_MAIN_WINDOW_ACCELERATOR,
@@ -188,9 +182,6 @@ impl Database {
         }
         if main_status.pending {
             migrations::run_main(&mut main)?;
-        }
-        if let Err(error) = embedding_index::ensure_vector_table(&main) {
-            log::warn!("could not materialize the optional semantic vector table: {error}");
         }
         if let Err(error) = block_embedding_index::ensure_vector_table(&main) {
             log::warn!("could not materialize the optional semantic block vector table: {error}");
@@ -534,51 +525,6 @@ fn writer_loop(
             WriterMessage::RetryFailedExtractions { now_ms, reply } => {
                 let _ = reply.send(maintenance::retry_failed_extractions(&mut main, now_ms));
             }
-            WriterMessage::LoadEmbeddingReconciliationBatch { limit, reply } => {
-                let _ = reply.send(embedding_index::load_reconciliation_batch(&mut main, limit));
-            }
-            WriterMessage::InstallPassageEmbedding {
-                pending,
-                embedding,
-                created_at_ms,
-                reply,
-            } => {
-                let _ = reply.send(embedding_index::install_embedding(
-                    &mut main,
-                    &pending,
-                    &embedding,
-                    created_at_ms,
-                ));
-            }
-            WriterMessage::PassageEmbeddingIndexProgress { reply } => {
-                let _ = reply.send(embedding_index::progress(&main));
-            }
-            WriterMessage::PassageEmbeddingIndexNeedsReconciliation { reply } => {
-                let _ = reply.send(embedding_index::needs_reconciliation(&main));
-            }
-            WriterMessage::PassageEmbeddingSearchReadiness { reply } => {
-                let _ = reply.send(search::semantic_index_readiness(&main));
-            }
-            WriterMessage::ActivatePassageEmbeddingIndexIfComplete {
-                activated_at_ms,
-                reply,
-            } => {
-                let _ = reply.send(embedding_index::activate_if_complete(
-                    &mut main,
-                    activated_at_ms,
-                ));
-            }
-            WriterMessage::RecordPassageEmbeddingIndexFailure {
-                error,
-                failed_at_ms,
-                reply,
-            } => {
-                let _ = reply.send(embedding_index::record_retryable_failure(
-                    &main,
-                    &error,
-                    failed_at_ms,
-                ));
-            }
             WriterMessage::LoadBlockEmbeddingReconciliationBatch { limit, reply } => {
                 let _ = reply.send(block_embedding_index::load_reconciliation_batch(
                     &mut main, limit,
@@ -596,6 +542,12 @@ fn writer_loop(
                     &embedding,
                     created_at_ms,
                 ));
+            }
+            WriterMessage::BlockEmbeddingIndexProgress { reply } => {
+                let _ = reply.send(block_embedding_index::progress(&main));
+            }
+            WriterMessage::BlockEmbeddingSearchReadiness { reply } => {
+                let _ = reply.send(block_query::semantic_index_readiness(&main));
             }
             WriterMessage::BlockEmbeddingIndexNeedsReconciliation { reply } => {
                 let _ = reply.send(block_embedding_index::needs_reconciliation(&main));
@@ -865,16 +817,13 @@ fn writer_loop(
             } => {
                 let _ = reply.send(tidbits::restore_tidbit(&mut main, input, now_ms));
             }
-            WriterMessage::ResolveCitation { passage_id, reply } => {
-                let _ = reply.send(passages::resolve_citation(&main, &passage_id));
-            }
-            WriterMessage::SearchPassages {
+            WriterMessage::SearchBlocks {
                 input,
                 query_embedding,
                 fallback_readiness,
                 reply,
             } => {
-                let _ = reply.send(search::search_passages_with_semantics(
+                let _ = reply.send(block_query::search_blocks_with_semantics(
                     &main,
                     input,
                     query_embedding.as_deref(),
@@ -885,10 +834,14 @@ fn writer_loop(
                 attachment_id,
                 reply,
             } => {
-                let _ = reply.send(search::replace_attachment_documents(
-                    &mut main,
-                    &attachment_id,
-                ));
+                let result =
+                    main.transaction()
+                        .map_err(DatabaseError::from)
+                        .and_then(|transaction| {
+                            block_search::refresh_attachment_owners(&transaction, &attachment_id)?;
+                            transaction.commit().map_err(DatabaseError::from)
+                        });
+                let _ = reply.send(result);
             }
             WriterMessage::InstallLexicalBenchmarkAttachments { writes, reply } => {
                 let _ = reply.send(writer::install_lexical_benchmark_attachments(

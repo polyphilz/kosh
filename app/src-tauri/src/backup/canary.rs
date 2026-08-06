@@ -16,12 +16,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-#[cfg(test)]
-use crate::database::CitationLocator;
 use crate::database::{
-    passages, AttachmentIngestInput, CitationResolution, CitationState, Database, DatabasePaths,
-    LexicalSearchMode, MediaLimits, PrepareOffsiteCheckpointInput, SaveOffsiteBackupConfigInput,
-    SearchPassagesInput, SourceDraft,
+    AttachmentIngestInput, Database, DatabasePaths, LexicalSearchMode, MediaLimits,
+    PrepareOffsiteCheckpointInput, SaveOffsiteBackupConfigInput, SearchBlocksInput, SourceDraft,
 };
 
 use super::{
@@ -77,8 +74,7 @@ struct CanaryReport {
     packaged_recovery_command: CanaryOutcome,
     normal_database_reopen: CanaryOutcome,
     search_rebuild: CanaryOutcome,
-    citation_resolution: CanaryOutcome,
-    historical_citation_resolution: CanaryOutcome,
+    current_block_search: CanaryOutcome,
     restored: RestoredEvidence,
     removed_remote_objects: u64,
     remote_residue_objects: u64,
@@ -95,8 +91,7 @@ struct RestoredEvidence {
     media_blobs: u64,
     block_search_documents: u64,
     exact_result_count: u64,
-    resolved_source_url: String,
-    historical_citations: u64,
+    exact_block_id: String,
     interrupted_replication_working_copies: u64,
 }
 
@@ -105,7 +100,8 @@ struct SourceFixture {
     paths: DatabasePaths,
     backup_set_id: BackupSetId,
     epoch: ReplicaEpochId,
-    historical_citation: CitationResolution,
+    evidence_note_id: String,
+    evidence_block_id: String,
     database: Option<Database>,
 }
 
@@ -355,7 +351,11 @@ fn live_r2_canary_restores_complete_kosh_library_and_cleans_unique_backup_set() 
         });
         "LIBRARY"
     };
-    let restored = verify_restored_library(&restored_root, &source.historical_citation);
+    let restored = verify_restored_library(
+        &restored_root,
+        &source.evidence_note_id,
+        &source.evidence_block_id,
+    );
     let removed_remote_objects = cleanup.cleanup().expect("clean unique backup set");
     let report = CanaryReport {
         schema_version: 1,
@@ -380,8 +380,7 @@ fn live_r2_canary_restores_complete_kosh_library_and_cleans_unique_backup_set() 
         },
         normal_database_reopen: CanaryOutcome::Passed,
         search_rebuild: CanaryOutcome::Passed,
-        citation_resolution: CanaryOutcome::Passed,
-        historical_citation_resolution: CanaryOutcome::Passed,
+        current_block_search: CanaryOutcome::Passed,
         restored,
         removed_remote_objects,
         remote_residue_objects: 0,
@@ -453,19 +452,6 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
         .expect("checkpoint original canary note")
         .note
         .expect("checkpointed original canary note");
-    let connection = database
-        .open_main_read_only()
-        .expect("canary citation read");
-    let passage_id = connection
-        .query_row(
-            "SELECT id FROM passage WHERE tidbit_revision_id = ?1 ORDER BY ordinal LIMIT 1",
-            [&original_revision_id],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("canary historical passage");
-    let historical_citation =
-        passages::resolve_citation(&connection, &passage_id).expect("canary citation resolution");
-    drop(connection);
     database
         .client()
         .save_working_copy_for_test(
@@ -483,13 +469,25 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
     database
         .client()
         .checkpoint_working_copy_for_test(
-            note_id,
+            note_id.clone(),
             3,
             51,
             Uuid::now_v7().to_string(),
             vec![Uuid::now_v7().to_string()],
         )
         .expect("checkpoint current canary note");
+    let evidence_block_id = database
+        .client()
+        .search_blocks(SearchBlocksInput {
+            query: "citrine".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search current canary note")
+        .into_iter()
+        .find(|result| result.note_id == note_id)
+        .expect("current canary block")
+        .block_id;
     let startup_note_id = Uuid::now_v7().to_string();
     database
         .client()
@@ -540,7 +538,8 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
         paths,
         backup_set_id,
         epoch,
-        historical_citation,
+        evidence_note_id: note_id,
+        evidence_block_id,
         database: Some(database),
     }
 }
@@ -939,32 +938,23 @@ fn run_packaged_restore(
     );
 }
 
-fn verify_restored_library(
-    root: &Path,
-    historical_citation: &CitationResolution,
-) -> RestoredEvidence {
+fn verify_restored_library(root: &Path, note_id: &str, block_id: &str) -> RestoredEvidence {
     let database = Database::initialize(DatabasePaths::new(root)).expect("reopen restored library");
     let client = database.client();
     let before = client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "citrine".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
         .expect("restored exact search before rebuild");
     assert_eq!(before.len(), 1);
-    assert_eq!(
-        before[0]
-            .citation
-            .sources
-            .iter()
-            .find_map(|source| source.url.as_deref()),
-        Some("https://example.com/current-recovery")
-    );
+    assert_eq!(before[0].note_id, note_id);
+    assert_eq!(before[0].block_id, block_id);
     let rebuilt = client.rebuild_search().expect("rebuild restored search");
     assert!(rebuilt >= 2);
     let after = client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: "citrine".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
@@ -988,13 +978,7 @@ fn verify_restored_library(
         media_blobs: query_count(&media, "SELECT count(*) FROM media_blob"),
         block_search_documents: query_count(&main, "SELECT count(*) FROM block_search_document"),
         exact_result_count: u64::try_from(after.len()).expect("exact result count"),
-        resolved_source_url: after[0]
-            .citation
-            .sources
-            .iter()
-            .find_map(|source| source.url.clone())
-            .expect("restored result source"),
-        historical_citations: verify_historical_citation(&main, historical_citation),
+        exact_block_id: after[0].block_id.clone(),
         interrupted_replication_working_copies: interrupted_replication_working_copy_count(&main),
     };
     assert!(evidence.active_tidbits >= 2);
@@ -1003,50 +987,13 @@ fn verify_restored_library(
     assert!(evidence.attachments >= 1);
     assert!(evidence.media_blobs >= 1);
     assert!(evidence.block_search_documents >= 2);
-    assert_eq!(evidence.historical_citations, 1);
+    assert_eq!(after[0].note_id, note_id);
+    assert_eq!(evidence.exact_block_id, block_id);
     assert_eq!(evidence.interrupted_replication_working_copies, 1);
     drop(media);
     drop(main);
     database.shutdown().expect("close restored library");
     evidence
-}
-
-fn verify_historical_citation(
-    connection: &rusqlite::Connection,
-    stored: &CitationResolution,
-) -> u64 {
-    assert_eq!(stored.state, CitationState::Current);
-    let resolved = passages::resolve_citation(connection, &stored.passage_id)
-        .expect("resolve restored historical passage");
-    assert_eq!(resolved.state, CitationState::Historical);
-    assert!(
-        same_citation_provenance(stored, &resolved),
-        "restored citation changed its passage, revision, locator, or source provenance"
-    );
-    let tidbit = resolved
-        .tidbit
-        .as_ref()
-        .expect("historical authored citation tidbit");
-    let current_revision_id = connection
-        .query_row(
-            "SELECT current_revision_id FROM tidbit WHERE id = ?1",
-            [tidbit.id.as_str()],
-            |row| row.get::<_, String>(0),
-        )
-        .expect("current revision for restored historical citation");
-    assert_ne!(current_revision_id, tidbit.revision_id);
-    1
-}
-
-fn same_citation_provenance(stored: &CitationResolution, resolved: &CitationResolution) -> bool {
-    stored.passage_id == resolved.passage_id
-        && stored.excerpt == resolved.excerpt
-        && stored.heading_context == resolved.heading_context
-        && stored.construction_version == resolved.construction_version
-        && stored.locator == resolved.locator
-        && stored.tidbit == resolved.tidbit
-        && stored.attachment == resolved.attachment
-        && stored.sources == resolved.sources
 }
 
 fn interrupted_replication_working_copy_count(connection: &rusqlite::Connection) -> u64 {
@@ -1065,7 +1012,7 @@ fn interrupted_replication_working_copy_count(connection: &rusqlite::Connection)
 }
 
 #[test]
-fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
+fn canary_fixture_exposes_current_block_search_evidence() {
     let target = R2Target {
         account_id: R2AccountId::parse("0123456789abcdef0123456789abcdef")
             .expect("test account ID"),
@@ -1074,23 +1021,17 @@ fn historical_canary_evidence_requires_exact_locator_and_source_provenance() {
     };
     let mut source = create_source_fixture(&target);
     let database = source.database.as_ref().expect("test canary database");
-    let connection = database.open_main_read_only().expect("test canary read");
-    let stored = &source.historical_citation;
-    assert_eq!(verify_historical_citation(&connection, stored), 1);
-    let resolved = passages::resolve_citation(&connection, &stored.passage_id)
-        .expect("test historical passage resolution");
-    assert!(same_citation_provenance(stored, &resolved));
-
-    let mut wrong_locator = resolved.clone();
-    wrong_locator.locator = CitationLocator::OcrRegion {
-        region: serde_json::json!({"x": 0, "y": 0, "width": 1, "height": 1}),
-    };
-    assert!(!same_citation_provenance(stored, &wrong_locator));
-    let mut wrong_sources = resolved;
-    wrong_sources.sources.clear();
-    assert!(!same_citation_provenance(stored, &wrong_sources));
-
-    drop(connection);
+    let matches = database
+        .client()
+        .search_blocks(SearchBlocksInput {
+            query: "citrine".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("test canary block search");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].note_id, source.evidence_note_id);
+    assert_eq!(matches[0].block_id, source.evidence_block_id);
     source
         .database
         .take()

@@ -6,7 +6,6 @@ import type {
   BackupRestoreDrill,
   BackupRestorePreview,
   BackupSettingsSnapshot,
-  CitationResolution,
   CheckpointWorkingCopyInput,
   ConfigureBackupInput,
   DeleteTidbitInput,
@@ -18,7 +17,7 @@ import type {
   IntegrityCheckOutcome,
   MaintenanceDiagnostics,
   MaintenanceOutcome,
-  PassageEmbeddingIndexStatus,
+  BlockEmbeddingIndexStatus,
   RuntimeProbe,
   RemoteBackupCheckpoint,
   SelectedAttachmentRecord,
@@ -27,8 +26,8 @@ import type {
   SetBackupEnabledInput,
   RestoreTidbitInput,
   SaveWorkingCopyInput,
-  SearchPassagesInput,
-  SearchPassagesResponse,
+  SearchBlocksInput,
+  SearchBlocksResponse,
   SemanticRuntimeLogs,
   SemanticRuntimeStatus,
   ShortcutSettingsSnapshot,
@@ -63,8 +62,8 @@ export const tauriBackend: Backend = {
   retrySemanticRuntime: () => invoke<SemanticRuntimeStatus>(TauriCommand.RetrySemanticRuntime),
   repairSemanticRuntime: () => invoke<SemanticRuntimeStatus>(TauriCommand.RepairSemanticRuntime),
   semanticRuntimeLogs: () => invoke<SemanticRuntimeLogs>(TauriCommand.SemanticRuntimeLogs),
-  passageEmbeddingIndexStatus: () =>
-    invoke<PassageEmbeddingIndexStatus>(TauriCommand.PassageEmbeddingIndexStatus),
+  blockEmbeddingIndexStatus: () =>
+    invoke<BlockEmbeddingIndexStatus>(TauriCommand.BlockEmbeddingIndexStatus),
   loadMaintenanceDiagnostics: () =>
     invoke<MaintenanceDiagnostics>(TauriCommand.LoadMaintenanceDiagnostics),
   runIntegrityCheck: () => invoke<IntegrityCheckOutcome>(TauriCommand.RunIntegrityCheck),
@@ -78,10 +77,8 @@ export const tauriBackend: Backend = {
   restoreTidbit: (input: RestoreTidbitInput) =>
     invoke<TidbitRecord>(TauriCommand.RestoreTidbit, { input }),
   openSourceUrl: (sourceId: string) => invoke<void>(TauriCommand.OpenSourceUrl, { sourceId }),
-  resolveCitation: (passageId: string) =>
-    invoke<CitationResolution>(TauriCommand.ResolveCitation, { passageId }),
-  searchPassages: (input: SearchPassagesInput) =>
-    invoke<SearchPassagesResponse>(TauriCommand.SearchPassages, { input }),
+  searchBlocks: (input: SearchBlocksInput) =>
+    invoke<SearchBlocksResponse>(TauriCommand.SearchBlocks, { input }),
   saveWorkingCopy: (input: SaveWorkingCopyInput) =>
     invoke<WorkingCopySaveResult>(TauriCommand.SaveWorkingCopy, { input }),
   reserveWorkingCopyForMedia: (input: SaveWorkingCopyInput) =>

@@ -12,7 +12,6 @@ import {
 import { useBackend } from "../backend/context";
 import type {
   Backend,
-  CitationResolution,
   SelectedAttachmentRecord,
   TidbitRecord,
   WorkingCopyRecord,
@@ -40,7 +39,6 @@ import { hasMeaningfulAuthoredContent } from "../notes/content";
 import { useNoteDeletion } from "../notes/deletion";
 import { registerQuitParticipant } from "../lifecycle/quit";
 import { registerSearchCheckpoint } from "../search/checkpoint";
-import { citationLocation, citationOwner } from "../search/presentation";
 import {
   SEARCH_RESULT_SELECTED_EVENT,
   type SearchResultSelectedDetail,
@@ -58,7 +56,6 @@ interface NotePageProps {
   blockId?: string;
   mode: "durable" | "ephemeral";
   noteId: string;
-  passageId?: string;
 }
 
 interface NoteSession {
@@ -74,7 +71,7 @@ const reconciliationOperations = new WeakMap<Backend, Map<string, Promise<void>>
 const SEARCH_MATCH_FLASH_MS = 1_400;
 const EMPTY_FIND_RESULT: FindInNoteResult = { activeIndex: -1, count: 0 };
 
-export function NotePage({ blockId, mode, noteId, passageId }: NotePageProps) {
+export function NotePage({ blockId, mode, noteId }: NotePageProps) {
   const backend = useBackend();
   const navigate = useNavigate();
   const [session, setSession] = useState<NoteSession | null>(null);
@@ -136,7 +133,6 @@ export function NotePage({ blockId, mode, noteId, passageId }: NotePageProps) {
       key={session.coordinator.getSnapshot().editGeneration === 0 ? "clean" : "recovered"}
       mode={mode}
       noteId={noteId}
-      passageId={passageId}
     />
   );
 }
@@ -146,16 +142,9 @@ interface NoteEditorSessionProps {
   coordinator: NoteAutosaveCoordinator;
   mode: NotePageProps["mode"];
   noteId: string;
-  passageId?: string;
 }
 
-function NoteEditorSession({
-  blockId,
-  coordinator,
-  mode,
-  noteId,
-  passageId,
-}: NoteEditorSessionProps) {
+function NoteEditorSession({ blockId, coordinator, mode, noteId }: NoteEditorSessionProps) {
   const backend = useBackend();
   const announceDeletedNote = useNoteDeletion();
   const navigate = useNavigate();
@@ -181,7 +170,6 @@ function NoteEditorSession({
     activeIndex: initialFindTransfer?.activeIndex ?? EMPTY_FIND_RESULT.activeIndex,
     query: initialFindTransfer?.query ?? "",
   });
-  const [searchFocus, setSearchFocus] = useState<SearchFocusState | null>(null);
   const [blockFocusVisible, setBlockFocusVisible] = useState(false);
   const [searchSelectionRevision, setSearchSelectionRevision] = useState(0);
   const snapshot = useSyncExternalStore(coordinator.subscribe, coordinator.getRenderedSnapshot);
@@ -305,13 +293,13 @@ function NoteEditorSession({
   useEffect(() => {
     const repeatSelection = (event: Event) => {
       const detail = (event as CustomEvent<SearchResultSelectedDetail>).detail;
-      if (detail.noteId === noteId && detail.passageId === passageId) {
+      if (detail.noteId === noteId && detail.blockId === blockId) {
         setSearchSelectionRevision((current) => current + 1);
       }
     };
     window.addEventListener(SEARCH_RESULT_SELECTED_EVENT, repeatSelection);
     return () => window.removeEventListener(SEARCH_RESULT_SELECTED_EVENT, repeatSelection);
-  }, [noteId, passageId]);
+  }, [blockId, noteId]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -328,100 +316,14 @@ function NoteEditorSession({
     return () => window.cancelAnimationFrame(frame);
   }, [backend, noteId]);
 
-  useEffect(() => {
-    editorRef.current?.clearSearchFocus();
-    if (blockId) {
-      setSearchFocus(null);
-      return;
-    }
-    if (!passageId) {
-      setSearchFocus(null);
-      return;
-    }
-    let active = true;
-    let flashTimer: number | null = null;
-    setSearchFocus({ phase: "LOADING" });
-    void backend
-      .resolveCitation(passageId)
-      .then((citation) => {
-        if (!active) return;
-        if (citation.tidbit && citation.tidbit.id !== noteId) {
-          setSearchFocus({
-            phase: "UNAVAILABLE",
-            message: "This search result belongs to a different note.",
-            citation,
-          });
-          return;
-        }
-        if (citation.state === "HISTORICAL") {
-          setSearchFocus({
-            phase: "HISTORICAL",
-            message: "This exact passage is from an older revision; the current note is open.",
-            citation,
-          });
-          return;
-        }
-        window.requestAnimationFrame(() => {
-          if (!active) return;
-          const focusCitation = () => editorRef.current?.focusCitation(citation) ?? false;
-          const focused = focusCitation();
-          setSearchFocus(
-            focused
-              ? { phase: "FOCUSED", citation }
-              : {
-                  phase: "UNAVAILABLE",
-                  message: "The cited passage is no longer present in this note.",
-                  citation,
-                },
-          );
-          if (focused) {
-            window.requestAnimationFrame(() => {
-              if (active) focusCitation();
-            });
-            flashTimer = window.setTimeout(() => {
-              if (!active) return;
-              if (!citation.attachment) {
-                void navigate({
-                  to: "/notes/$noteId",
-                  params: { noteId },
-                  search: {},
-                  replace: true,
-                });
-                return;
-              }
-              editorRef.current?.clearSearchFocus();
-              setSearchFocus((current) =>
-                current?.phase === "FOCUSED" && current.citation.passageId === citation.passageId
-                  ? { phase: "EVIDENCE", citation: current.citation }
-                  : current,
-              );
-            }, SEARCH_MATCH_FLASH_MS);
-          }
-        });
-      })
-      .catch((reason: unknown) => {
-        if (active) {
-          setSearchFocus({
-            phase: "UNAVAILABLE",
-            message: `Could not resolve this passage: ${errorMessage(reason)}`,
-          });
-        }
-      });
-    return () => {
-      active = false;
-      if (flashTimer !== null) window.clearTimeout(flashTimer);
-      editorRef.current?.clearSearchFocus();
-    };
-  }, [backend, blockId, navigate, noteId, passageId, searchSelectionRevision]);
-
   const removeStaleBlockId = useCallback(() => {
     void navigate({
       to: "/notes/$noteId",
       params: { noteId },
-      search: passageId ? { passage: passageId } : {},
+      search: {},
       replace: true,
     });
-  }, [navigate, noteId, passageId]);
+  }, [navigate, noteId]);
 
   useEffect(() => {
     if (!blockId) {
@@ -450,7 +352,7 @@ function NoteEditorSession({
       editorRef.current?.clearSearchFocus();
       setBlockFocusVisible(false);
     };
-  }, [blockId, removeStaleBlockId]);
+  }, [blockId, removeStaleBlockId, searchSelectionRevision]);
 
   useEffect(() => {
     if (disposeTimerRef.current !== null) {
@@ -595,19 +497,6 @@ function NoteEditorSession({
     }
   }, [announceDeletedNote, backend, coordinator, deleting, flushForNavigation, navigate, noteId]);
 
-  const dismissSearchFocus = useCallback(() => {
-    if (!passageId) {
-      setSearchFocus(null);
-      return;
-    }
-    void navigate({
-      to: "/notes/$noteId",
-      params: { noteId },
-      search: {},
-      replace: true,
-    });
-  }, [navigate, noteId, passageId]);
-
   const error = snapshot.error ?? mediaError ?? actionError;
   return (
     <main aria-busy={mediaPending || lifecyclePreparing || undefined} className="note-page">
@@ -638,20 +527,11 @@ function NoteEditorSession({
         sources={snapshot.sources}
       />
       <div className="note-page__document">
-        {(blockFocusVisible || searchFocus?.phase === "FOCUSED") && (
+        {blockFocusVisible && (
           <span aria-live="polite" className="visually-hidden" role="status">
             Search match
           </span>
         )}
-        {searchFocus &&
-          (searchFocus.phase === "HISTORICAL" || searchFocus.phase === "UNAVAILABLE") && (
-            <SearchIntegrityNotice focus={searchFocus} onDismiss={dismissSearchFocus} />
-          )}
-        {searchFocus &&
-          (searchFocus.phase === "FOCUSED" || searchFocus.phase === "EVIDENCE") &&
-          searchFocus.citation.attachment && (
-            <SearchEvidenceNotice citation={searchFocus.citation} onDismiss={dismissSearchFocus} />
-          )}
         <KoshBlockNoteEditor
           ariaLabel="Note"
           disabled={lifecyclePreparing || deleting}
@@ -659,16 +539,6 @@ function NoteEditorSession({
           onChange={(documentJson, bodyMarkdown) => {
             coordinator.update(bodyMarkdown, undefined, documentJson);
             if (blockId && !editorRef.current?.hasBlock(blockId)) removeStaleBlockId();
-            if (
-              searchFocus?.phase === "FOCUSED" &&
-              !editorRef.current?.revalidateCitationFocus(searchFocus.citation)
-            ) {
-              setSearchFocus({
-                phase: "UNAVAILABLE",
-                message: "The cited passage is no longer present in this note.",
-                citation: searchFocus.citation,
-              });
-            }
           }}
           onFindStateChange={() => {
             if (findOpen) updateFindState(findState.query, findState.activeIndex);
@@ -796,57 +666,6 @@ function NoteFindBar({ inputRef, onClose, onMove, onQueryChange, state }: NoteFi
         ×
       </button>
     </section>
-  );
-}
-
-type SearchFocusState =
-  | { phase: "LOADING" }
-  | {
-      citation?: CitationResolution;
-      message: string;
-      phase: "HISTORICAL" | "UNAVAILABLE";
-    }
-  | { citation: CitationResolution; phase: "EVIDENCE" | "FOCUSED" };
-
-function SearchEvidenceNotice({
-  citation,
-  onDismiss,
-}: {
-  citation: CitationResolution;
-  onDismiss: () => void;
-}) {
-  return (
-    <aside aria-label="Search result location" className="note-search-evidence" role="status">
-      <div>
-        <strong>{citationOwner(citation)}</strong>
-        <span>{citationLocation(citation)}</span>
-        <q>{citation.excerpt}</q>
-      </div>
-      <button aria-label="Dismiss search result location" onClick={onDismiss} type="button">
-        ×
-      </button>
-    </aside>
-  );
-}
-
-function SearchIntegrityNotice({
-  focus,
-  onDismiss,
-}: {
-  focus: Extract<SearchFocusState, { phase: "HISTORICAL" | "UNAVAILABLE" }>;
-  onDismiss: () => void;
-}) {
-  return (
-    <aside aria-label="Search citation warning" className="note-search-warning" role="alert">
-      <div>
-        <strong>{focus.phase === "HISTORICAL" ? "Older revision" : "Match unavailable"}</strong>
-        <span>{focus.message}</span>
-        {focus.citation && <q>{focus.citation.excerpt}</q>}
-      </div>
-      <button aria-label="Dismiss search citation warning" onClick={onDismiss} type="button">
-        ×
-      </button>
-    </aside>
   );
 }
 

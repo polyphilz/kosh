@@ -56,7 +56,7 @@ describe("StartupSmokeReady", () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
-  it("proves exact search and citation resolution when startup smoke requests it", async () => {
+  it("proves exact current-block search when startup smoke requests it", async () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -94,21 +94,20 @@ describe("StartupSmokeReady", () => {
         expect.objectContaining({
           surface: "main",
           captureCreated: false,
-          canary: {
-            citationState: "CURRENT",
+          canary: expect.objectContaining({
+            blockId: expect.any(String),
             executionMode: "EXACT",
-            passageId: `fake-passage:${tidbit.currentRevisionId}`,
-            resolvedPassageId: `fake-passage:${tidbit.currentRevisionId}`,
+            noteId: tidbit.id,
             revisionId: tidbit.currentRevisionId,
             resultCount: 1,
             sourceUrl: "https://example.invalid/kosh-progressive-operability",
-          },
+          }),
         }),
       );
     });
   });
 
-  it("creates the fresh canary through capture IPC before proving search and citation", async () => {
+  it("creates the fresh canary through capture IPC before proving search", async () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -139,8 +138,9 @@ describe("StartupSmokeReady", () => {
           surface: "main",
           captureCreated: true,
           canary: expect.objectContaining({
-            citationState: "CURRENT",
+            blockId: expect.any(String),
             executionMode: "EXACT",
+            noteId: expect.any(String),
             resultCount: 1,
             sourceUrl: "https://example.invalid/kosh-progressive-operability",
           }),
@@ -148,7 +148,7 @@ describe("StartupSmokeReady", () => {
       );
     });
     await expect(
-      backend.searchPassages({ query: "koshstartupcanaryv1", mode: "EXACT", limit: 10 }),
-    ).resolves.toMatchObject({ results: [{ citation: { state: "CURRENT" } }] });
+      backend.searchBlocks({ query: "koshstartupcanaryv1", mode: "EXACT", limit: 10 }),
+    ).resolves.toMatchObject({ results: [{ blockId: expect.any(String) }] });
   });
 });

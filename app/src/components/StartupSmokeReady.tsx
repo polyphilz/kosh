@@ -14,10 +14,9 @@ const CANARY_SOURCE_URL = "https://example.invalid/kosh-progressive-operability"
 let startupCapture: Promise<boolean> | undefined;
 
 interface StartupCanaryEvidence {
-  citationState: "CURRENT" | "HISTORICAL";
+  blockId: string;
   executionMode: "EXACT" | "HYBRID" | "LEXICAL_ONLY";
-  passageId: string;
-  resolvedPassageId: string;
+  noteId: string;
   revisionId: string;
   resultCount: number;
   sourceUrl: string;
@@ -38,7 +37,7 @@ export function StartupSmokeReady({ surface }: StartupSmokeReadyProps) {
           ? await (startupCapture ??= captureCanary(backend, probe.startupSmokeCanary))
           : false;
       if (canceled) return;
-      const canary = await proveSearchAndCitation(backend, probe.startupSmokeCanary);
+      const canary = await proveCurrentBlockSearch(backend, probe.startupSmokeCanary);
       if (canceled) return;
       const root = document.getElementById("root");
       await emit(TauriEvent.StartupSmokeReady, {
@@ -64,12 +63,12 @@ export function StartupSmokeReady({ surface }: StartupSmokeReadyProps) {
 }
 
 async function captureCanary(backend: Backend, query: string): Promise<boolean> {
-  const existing = await backend.searchPassages({
+  const existing = await backend.searchBlocks({
     query,
     mode: "EXACT",
     limit: 10,
   });
-  if (existing.results.some(({ citation }) => citation.excerpt.includes(query))) return false;
+  if (existing.results.some(({ excerpt }) => excerpt.includes(query))) return false;
   const coordinator = NoteAutosaveCoordinator.ephemeral(backend, { noteId: createUuidV7() });
   coordinator.update(query, [{ label: CANARY_SOURCE_LABEL, url: CANARY_SOURCE_URL }]);
   await coordinator.flush("IDLE");
@@ -77,36 +76,35 @@ async function captureCanary(backend: Backend, query: string): Promise<boolean> 
   return true;
 }
 
-async function proveSearchAndCitation(
+async function proveCurrentBlockSearch(
   backend: Backend,
   query: string,
 ): Promise<StartupCanaryEvidence> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const response = await backend.searchPassages({
+    const response = await backend.searchBlocks({
       query,
       mode: "EXACT",
       limit: 10,
     });
-    const matches = response.results.filter(({ citation }) => citation.excerpt.includes(query));
+    const matches = response.results.filter(({ excerpt }) => excerpt.includes(query));
     if (matches.length > 1) {
-      throw new Error(`startup canary search returned ${matches.length} matching passages`);
+      throw new Error(`startup canary search returned ${matches.length} matching blocks`);
     }
     if (matches.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       continue;
     }
     const result = matches[0]!;
-    const citation = await backend.resolveCitation(result.passageId);
-    const sourceUrl = citation.sources.find((source) => source.url !== null)?.url;
-    if (!citation.tidbit || !sourceUrl) {
-      throw new Error("startup canary citation lost its authored revision or source URL");
+    const note = await backend.loadTidbit(result.noteId);
+    const sourceUrl = note.sources.find((source) => source.url !== null)?.url;
+    if (!sourceUrl || note.currentRevisionId.length === 0) {
+      throw new Error("startup canary block lost its current note or source URL");
     }
     return {
-      citationState: citation.state,
+      blockId: result.blockId,
       executionMode: response.executionMode,
-      passageId: result.passageId,
-      resolvedPassageId: citation.passageId,
-      revisionId: citation.tidbit.revisionId,
+      noteId: result.noteId,
+      revisionId: note.currentRevisionId,
       resultCount: response.results.length,
       sourceUrl,
     };

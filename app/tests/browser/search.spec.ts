@@ -3,7 +3,7 @@ import type { TidbitRecord } from "../../src/backend/contracts";
 import type { FakeNoteInput } from "../../src/backend/fakeBackend";
 import { expect, test, type Page } from "./fixtures";
 
-test("Command-K searches locally and opens the exact cited note block", async ({ page }) => {
+test("Command-K searches locally and opens the exact current note block", async ({ page }) => {
   await page.goto("/#/");
   await expect(page.getByRole("textbox", { name: "Note" })).toBeFocused();
   const originalUrl = page.url();
@@ -11,6 +11,7 @@ test("Command-K searches locally and opens the exact cited note block", async ({
     bodyMarkdown: "Tomato technique: slow simmering preserves a bright tomato sauce.",
     sources: [{ label: "Cookbook", url: "https://www.example.com/tomato" }],
   });
+  const firstBlockId = documentBlockIds(first)[0]!;
   await seedTidbit(page, {
     bodyMarkdown: "Second tomato note: roast tomato halves before blending the sauce.",
     sources: [{ label: "Kitchen log", url: "https://notes.example.org/roasting" }],
@@ -26,14 +27,13 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   await search.fill("slow simmering");
   const result = page.getByRole("option", { name: /Tomato technique/u });
   await expect(result).toBeVisible();
-  await expect(result).toContainText("Cookbook · example.com");
   await expect(page.getByText("Lexical ready", { exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "Exact" })).toHaveCount(0);
   await expect(result.locator("mark")).toHaveText([/slow/iu, /simmering/iu]);
 
   await search.press("Enter");
   await expect(dialog).toHaveCount(0);
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page).toHaveURL(`http://127.0.0.1:1422/#/notes/${first.id}?blockId=${firstBlockId}`);
   await expect(page.getByLabel("Search result location")).toHaveCount(0);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCSS(
@@ -44,19 +44,19 @@ test("Command-K searches locally and opens the exact cited note block", async ({
   expect(await searchStorageKeys(page)).toEqual([]);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0, { timeout: 3_000 });
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}$`, "u"));
+  await expect(page).toHaveURL(`http://127.0.0.1:1422/#/notes/${first.id}?blockId=${firstBlockId}`);
 
   await page.keyboard.press("Meta+k");
   await page.getByRole("combobox", { name: "Search notes" }).fill("slow simmering");
   await page.getByRole("option", { name: /Tomato technique/u }).click();
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText(/slow simmering/iu);
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${first.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page).toHaveURL(`http://127.0.0.1:1422/#/notes/${first.id}?blockId=${firstBlockId}`);
 
   await page.getByRole("textbox", { name: "Note" }).fill("A replacement passage.");
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
 });
 
-test("reduced motion leaves the cited passage visibly highlighted", async ({ page }) => {
+test("reduced motion leaves the selected block visibly highlighted", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/#/");
   await seedTidbit(page, {
@@ -74,7 +74,7 @@ test("reduced motion leaves the cited passage visibly highlighted", async ({ pag
   await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 });
 
-test("a blocked route cleanup retains its search match", async ({ page }) => {
+test("a block route remains addressable when checkpoint cleanup fails", async ({ page }) => {
   await page.goto("/#/");
   const note = await seedTidbit(page, {
     bodyMarkdown: "Blocked cleanup must keep this precise passage visible.",
@@ -91,6 +91,7 @@ test("a blocked route cleanup retains its search match", async ({ page }) => {
       noteId: seeded.id,
       baseRevisionId: seeded.currentRevisionId,
       editGeneration: 1,
+      documentJson: seeded.documentJson,
       bodyMarkdown: seeded.bodyMarkdown,
       sources: seeded.sources,
     });
@@ -104,9 +105,8 @@ test("a blocked route cleanup retains its search match", async ({ page }) => {
   const match = page.locator('[data-kosh-search-hit="true"]');
   await expect(match).toContainText("precise passage");
   await page.waitForTimeout(1_800);
-  await expect(match).toHaveCount(1);
-  await expect(match).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=`, "u"));
+  await expect(match).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?blockId=`, "u"));
 });
 
 test("search checkpoints the active note before querying", async ({ page }) => {
@@ -121,7 +121,7 @@ test("search checkpoints the active note before querying", async ({ page }) => {
   await expect(page.getByRole("option", { name: /quokka detail/u })).toBeVisible();
 });
 
-test("a route-backed search result remains on its cited note", async ({ page }) => {
+test("a route-backed search result remains on its owning note", async ({ page }) => {
   await page.goto("/#/");
   const note = await seedTidbit(page, {
     title: null,
@@ -134,7 +134,9 @@ test("a route-backed search result remains on its cited note", async ({ page }) 
   await dialog.getByRole("option", { name: /cedar passage/u }).click();
 
   await expect(dialog).toHaveCount(0);
-  await expect(page).toHaveURL(new RegExp(`/#/notes/${note.id}\\?passage=fake-passage%3A`, "u"));
+  await expect(page).toHaveURL(
+    `http://127.0.0.1:1422/#/notes/${note.id}?blockId=${documentBlockIds(note)[0]}`,
+  );
   await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("cedar passage");
   await expect(page.getByLabel("Search result location")).toHaveCount(0);
 });
@@ -154,13 +156,13 @@ test("dismissal clears transient search and stale responses cannot replace newer
   await page.evaluate(() => {
     const backend = window.__KOSH_FAKE_BACKEND__;
     if (!backend) throw new Error("fake backend is unavailable");
-    const search = backend.searchPassages.bind(backend);
+    const search = backend.searchBlocks.bind(backend);
     let releaseSlow!: () => void;
     const slowRelease = new Promise<void>((resolve) => {
       releaseSlow = resolve;
     });
     let failedOnce = false;
-    backend.searchPassages = async (input) => {
+    backend.searchBlocks = async (input) => {
       if (input.query === "slow") {
         Reflect.set(window, "__KOSH_SLOW_SEARCH_STARTED__", true);
         await slowRelease;
@@ -193,7 +195,7 @@ test("dismissal clears transient search and stale responses cannot replace newer
   await input.fill("explode");
   await expect(page.getByRole("alert")).toContainText("controlled search failure");
   await page.getByRole("button", { name: "Try again" }).click();
-  await expect(page.getByText("No passages found", { exact: true })).toBeVisible();
+  await expect(page.getByText("No matches found", { exact: true })).toBeVisible();
   await input.fill("fast");
   await expect(page.getByRole("option", { name: /Fast response/u })).toBeVisible();
 
@@ -206,16 +208,18 @@ test("dismissal clears transient search and stale responses cannot replace newer
   expect(await searchStorageKeys(page)).toEqual([]);
 });
 
-test("a result edited after retrieval opens honest historical evidence", async ({ page }) => {
+test("a result edited away before navigation becomes a silent stale block link", async ({
+  page,
+}) => {
   await page.goto("/#/");
   const created = await seedTidbit(page, {
-    bodyMarkdown: "Revision evidence: the original immutable passage mentions cobalt.",
+    bodyMarkdown: "Current evidence: the original block mentions cobalt.",
     sources: [{ label: "Lab notebook", url: "https://example.com/lab" }],
   });
   await page.keyboard.press("Meta+k");
   const search = page.getByRole("combobox", { name: "Search notes" });
   await search.fill("cobalt");
-  const result = page.getByRole("option", { name: /Revision evidence/u });
+  const result = page.getByRole("option", { name: /Current evidence/u });
   await expect(result).toBeVisible();
 
   await page.evaluate(async (noteId) => {
@@ -225,20 +229,17 @@ test("a result edited after retrieval opens honest historical evidence", async (
     await backend.replaceNoteForTest({
       id: current.id,
       expectedRevisionId: current.currentRevisionId,
-      bodyMarkdown: "Revision evidence: the current passage now mentions indigo.",
+      bodyMarkdown: "Current evidence: the replacement block now mentions indigo.",
       sources: current.sources,
     });
   }, created.id);
 
   await result.click();
-  await expect(
-    page.getByText("This exact passage is from an older revision; the current note is open."),
-  ).toBeVisible();
-  await expect(page.getByText(/original immutable passage mentions cobalt/u)).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Note" })).toContainText(
-    "the current passage now mentions indigo.",
+    "the replacement block now mentions indigo.",
   );
-  expect(page.url()).not.toContain("cobalt");
+  await expect(page).toHaveURL(`http://127.0.0.1:1422/#/notes/${created.id}`);
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
 });
 
 test("file results use the attachment filename without indexing file contents", async ({
@@ -272,75 +273,16 @@ test("file results use the attachment filename without indexing file contents", 
     }),
     sources: [],
   });
-  await page.evaluate(
-    ({ note: seeded }) => {
-      const backend = window.__KOSH_FAKE_BACKEND__;
-      if (!backend) throw new Error("fake backend is unavailable");
-      const passageId = "fake-file-filename-passage";
-      const citation = {
-        passageId,
-        excerpt: "Vector chapter",
-        headingContext: ["Vector chapter"],
-        constructionVersion: "fake-file-filename-v1",
-        state: "CURRENT" as const,
-        locator: {
-          kind: "MARKDOWN_BLOCKS" as const,
-          startBlock: 0,
-          endBlock: 0,
-          sourceStartByte: 0,
-          sourceEndByte: 16,
-          startChar: 0,
-          endChar: 14,
-          startLine: 1,
-          endLine: 1,
-        },
-        tidbit: {
-          id: seeded.id,
-          revisionId: seeded.currentRevisionId,
-          revisionNumber: seeded.revisionNumber,
-          displayTitle: seeded.displayTitle,
-          deleted: false,
-        },
-        attachment: null,
-        sources: [],
-      };
-      backend.resolveCitation = async (requestedPassageId) => {
-        if (requestedPassageId !== passageId) throw new Error("unexpected passage");
-        return citation;
-      };
-      backend.searchPassages = async () => ({
-        executionMode: "LEXICAL_ONLY",
-        semanticReadiness: "WAITING_FOR_RUNTIME",
-        results: [
-          {
-            passageId,
-            score: 10,
-            matchedFields: ["ATTACHMENT_NAME"],
-            highlights: [],
-            note: {
-              id: seeded.id,
-              revisionId: seeded.currentRevisionId,
-              revisionNumber: seeded.revisionNumber,
-              displayTitle: seeded.displayTitle,
-              deleted: false,
-            },
-            citation,
-          },
-        ],
-      });
-    },
-    { note },
-  );
-
   await page.keyboard.press("Meta+k");
   await page.getByRole("combobox", { name: "Search notes" }).fill("vectors.csv");
   await page.getByRole("option", { name: /Vector chapter/u }).click();
 
-  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("Vector chapter");
-  await expect(page.getByRole("status", { name: "Search result location" })).toHaveCount(0);
+  await expect(page.locator('[data-kosh-search-hit="true"]')).toContainText("vectors.csv");
+  await expect(page).toHaveURL(
+    `http://127.0.0.1:1422/#/notes/${note.id}?blockId=019f547b-6200-7000-8000-00000000d102`,
+  );
   await page.waitForTimeout(1_500);
   await expect(page.locator('[data-kosh-search-hit="true"]')).toHaveCount(0);
-  await expect.poll(() => new URL(page.url()).searchParams.has("passage")).toBe(false);
 });
 
 test("StrictMode keeps semantic polling bounded to the open overlay", async ({ page }) => {
@@ -404,5 +346,11 @@ async function seedTidbit(page: Page, input: FakeNoteInput): Promise<TidbitRecor
 async function searchStorageKeys(page: Page): Promise<string[]> {
   return page.evaluate(() =>
     Object.keys(localStorage).filter((key) => /search|query|history/iu.test(key)),
+  );
+}
+
+function documentBlockIds(note: TidbitRecord): string[] {
+  return (JSON.parse(note.documentJson) as { blocks: Array<{ id: string }> }).blocks.map(
+    ({ id }) => id,
   );
 }

@@ -1,5 +1,7 @@
 mod attachments;
 pub mod backup;
+#[path = "passage_embedding_indexer.rs"]
+mod block_embedding_indexer;
 mod database;
 #[cfg(target_os = "macos")]
 mod distribution_signing;
@@ -8,7 +10,6 @@ mod embedding_runtime;
 mod maintenance;
 mod media;
 mod native_log;
-mod passage_embedding_indexer;
 pub mod relevance;
 mod runtime;
 mod startup_smoke;
@@ -53,7 +54,7 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         backup::settings::drill_backup_restore,
         backup::settings::take_over_backup,
         runtime::semantic_runtime_status,
-        runtime::passage_embedding_index_status,
+        runtime::block_embedding_index_status,
         runtime::prepare_semantic_runtime,
         runtime::retry_semantic_runtime,
         runtime::repair_semantic_runtime,
@@ -85,8 +86,7 @@ fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
         database::commands::load_tidbit,
         database::commands::delete_tidbit,
         database::commands::restore_tidbit,
-        database::commands::resolve_citation,
-        database::commands::search_passages,
+        database::commands::search_blocks,
         database::commands::save_working_copy,
         database::commands::reserve_working_copy_for_media,
         database::commands::load_working_copy,
@@ -126,7 +126,7 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         backup::settings::drill_backup_restore,
         backup::settings::take_over_backup,
         runtime::semantic_runtime_status,
-        runtime::passage_embedding_index_status,
+        runtime::block_embedding_index_status,
         runtime::prepare_semantic_runtime,
         runtime::retry_semantic_runtime,
         runtime::repair_semantic_runtime,
@@ -158,8 +158,7 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
         database::commands::load_tidbit,
         database::commands::delete_tidbit,
         database::commands::restore_tidbit,
-        database::commands::resolve_citation,
-        database::commands::search_passages,
+        database::commands::search_blocks,
         database::commands::save_working_copy,
         database::commands::reserve_working_copy_for_media,
         database::commands::load_working_copy,
@@ -233,14 +232,14 @@ pub fn run_recovery_cli_if_requested() -> Option<i32> {
     backup::recovery_cli::run_if_requested()
 }
 
+pub use block_embedding_indexer::{BlockEmbeddingIndexPhase, BlockEmbeddingIndexStatus};
 pub use database::{
-    AttachmentIngestInput, AttachmentKind, AttachmentRecord, CitationAttachment, CitationLocator,
-    CitationResolution, CitationState, CitationTidbit, Database, DatabaseDiagnostics,
-    DatabaseError, DatabasePaths, DeleteTidbitInput, ImageOcrDiagnostics, ImageOcrRecovery,
-    ImageOcrStatus, ImageRecord, ImageStatusRecord, LexicalSearchMode, MediaCleanupResult,
-    MediaIntegrityReport, MediaLimits, MediaMaintenanceReport, PassageSearchResult,
-    RestoreTidbitInput, SearchExecutionMode, SearchField, SearchHighlight, SearchPassagesInput,
-    SearchPassagesResponse, SemanticSearchReadiness, SetAutomaticUpdateChecksInput,
+    AttachmentIngestInput, AttachmentKind, AttachmentRecord, BlockSearchResult, Database,
+    DatabaseDiagnostics, DatabaseError, DatabasePaths, DeleteTidbitInput, ImageOcrDiagnostics,
+    ImageOcrRecovery, ImageOcrStatus, ImageRecord, ImageStatusRecord, LexicalSearchMode,
+    MediaCleanupResult, MediaIntegrityReport, MediaLimits, MediaMaintenanceReport,
+    RestoreTidbitInput, SearchBlocksInput, SearchBlocksResponse, SearchExecutionMode, SearchField,
+    SearchHighlight, SemanticSearchReadiness, SetAutomaticUpdateChecksInput,
     SetShortcutSettingsInput, ShortcutSettings, SourceDraft, Tidbit, TidbitDraft, TidbitSource,
 };
 pub use embedding::{TextEmbeddingConfig, TextEmbeddingManifest};
@@ -248,7 +247,6 @@ pub use embedding_runtime::{
     EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimePhase,
     SemanticRuntimeStatus,
 };
-pub use passage_embedding_indexer::{PassageEmbeddingIndexPhase, PassageEmbeddingIndexStatus};
 pub use runtime::RuntimeProbe;
 
 #[cfg(test)]

@@ -201,12 +201,18 @@ fn load_attachment_evidence(
                 coalesce((
                     SELECT group_concat(content, char(10))
                     FROM (
-                        SELECT passage.content
-                        FROM current_attachment_passage AS current
-                        JOIN passage ON passage.id = current.passage_id
-                        WHERE current.attachment_id = attachment.id
-                          AND passage.locator_kind = 'OCR_REGION'
-                        ORDER BY passage.ordinal
+                        SELECT segment.content
+                        FROM attachment_extraction AS extraction
+                        JOIN attachment_extractor_config AS config
+                          ON config.extractor = extraction.extractor
+                         AND config.version = extraction.extractor_version
+                        JOIN attachment_segment AS segment
+                          ON segment.extraction_id = extraction.id
+                        WHERE extraction.attachment_id = attachment.id
+                          AND extraction.content_hash = attachment.sha256
+                          AND extraction.status = 'READY'
+                          AND segment.locator_kind = 'OCR_REGION'
+                        ORDER BY segment.ordinal
                     ) AS ordered_evidence
                 ), '')
              FROM tidbit_revision_attachment AS membership

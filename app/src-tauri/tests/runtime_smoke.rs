@@ -2,7 +2,7 @@
 
 use kosh_lib::{
     test_support::{mock_app, TestDataRoot},
-    PassageEmbeddingIndexPhase, PassageEmbeddingIndexStatus, RuntimeProbe, SemanticRuntimePhase,
+    BlockEmbeddingIndexPhase, BlockEmbeddingIndexStatus, RuntimeProbe, SemanticRuntimePhase,
     SemanticRuntimeStatus,
 };
 
@@ -56,7 +56,7 @@ fn main_window_invokes_runtime_probe_with_temporary_state() {
 }
 
 #[test]
-fn passage_embedding_progress_is_available_before_the_model_is_downloaded() {
+fn block_embedding_progress_is_available_before_the_model_is_downloaded() {
     let data_root = TestDataRoot::new();
     let app = mock_app(&data_root, 1_785_201_600_000, std::iter::empty::<String>());
     let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -66,7 +66,7 @@ fn passage_embedding_progress_is_available_before_the_model_is_downloaded() {
     let response = tauri::test::get_ipc_response(
         &window,
         tauri::webview::InvokeRequest {
-            cmd: "passage_embedding_index_status".into(),
+            cmd: "block_embedding_index_status".into(),
             callback: tauri::ipc::CallbackFn(0),
             error: tauri::ipc::CallbackFn(1),
             url: if cfg!(any(windows, target_os = "android")) {
@@ -81,17 +81,14 @@ fn passage_embedding_progress_is_available_before_the_model_is_downloaded() {
             invoke_key: tauri::test::INVOKE_KEY.to_owned(),
         },
     )
-    .expect("passage embedding status IPC response")
-    .deserialize::<PassageEmbeddingIndexStatus>()
-    .expect("passage embedding status payload");
+    .expect("block embedding status IPC response")
+    .deserialize::<BlockEmbeddingIndexStatus>()
+    .expect("block embedding status payload");
 
-    assert_eq!(
-        response.phase,
-        PassageEmbeddingIndexPhase::WaitingForRuntime
-    );
+    assert_eq!(response.phase, BlockEmbeddingIndexPhase::WaitingForRuntime);
     assert_eq!(response.index_key, "jina_v1");
-    assert_eq!(response.indexed_passages, 0);
-    assert_eq!(response.total_passages, 0);
+    assert_eq!(response.indexed_blocks, 0);
+    assert_eq!(response.total_blocks, 0);
     assert!(!response.active);
 }
 

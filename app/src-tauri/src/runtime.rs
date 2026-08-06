@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
+    block_embedding_indexer::{BlockEmbeddingIndexStatus, BlockEmbeddingIndexer},
     database::{Database, DatabaseClient, DatabasePaths, MediaLimits},
     embedding_runtime::{
         EmbeddingRuntime, SemanticRuntimeError, SemanticRuntimeLogs, SemanticRuntimeStatus,
     },
-    passage_embedding_indexer::{PassageEmbeddingIndexStatus, PassageEmbeddingIndexer},
 };
 
 pub(crate) trait Clock: Send + Sync {
@@ -46,7 +46,7 @@ impl IdGenerator for UuidV7Generator {
 pub(crate) struct RuntimeState {
     data_dir: PathBuf,
     resource_dir: Option<PathBuf>,
-    passage_embedding_indexer: PassageEmbeddingIndexer,
+    block_embedding_indexer: BlockEmbeddingIndexer,
     litestream_backup: crate::backup::litestream_runtime::LitestreamRuntimeService,
     media_backup: crate::backup::media_reconciler::MediaBackupCoordinator,
     checkpoint_backup: crate::backup::checkpoint::CheckpointBackupCoordinator,
@@ -137,8 +137,8 @@ impl RuntimeState {
             resource_dir.clone(),
         );
         let embedding_runtime = Arc::new(EmbeddingRuntime::new(&data_dir, resource_dir.as_deref()));
-        let passage_embedding_indexer =
-            PassageEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
+        let block_embedding_indexer =
+            BlockEmbeddingIndexer::start(database.client(), Arc::clone(&embedding_runtime));
         let image_ocr = start_optional_image_ocr(database.client());
         let media_backup = start_optional_media_backup(database.client(), database.paths().clone());
         let checkpoint_backup = crate::backup::checkpoint::CheckpointBackupCoordinator::start(
@@ -150,7 +150,7 @@ impl RuntimeState {
         let state = Self {
             data_dir,
             resource_dir,
-            passage_embedding_indexer,
+            block_embedding_indexer,
             litestream_backup,
             media_backup,
             checkpoint_backup,
@@ -196,7 +196,7 @@ impl RuntimeState {
             embedding_runtime: Arc::new(EmbeddingRuntime::without_sidecar(&data_dir)),
             data_dir,
             resource_dir: None,
-            passage_embedding_indexer: PassageEmbeddingIndexer::disabled(),
+            block_embedding_indexer: BlockEmbeddingIndexer::disabled(),
             litestream_backup:
                 crate::backup::litestream_runtime::LitestreamRuntimeService::disabled(),
             media_backup: crate::backup::media_reconciler::MediaBackupCoordinator::disabled(),
@@ -297,13 +297,13 @@ impl RuntimeState {
         Arc::clone(&self.embedding_runtime)
     }
 
-    pub(crate) fn passage_embedding_index_status(
+    pub(crate) fn block_embedding_index_status(
         &self,
-    ) -> crate::database::Result<PassageEmbeddingIndexStatus> {
-        let progress = self.database.client().passage_embedding_index_progress()?;
+    ) -> crate::database::Result<BlockEmbeddingIndexStatus> {
+        let progress = self.database.client().block_embedding_index_progress()?;
         let runtime = self.embedding_runtime.status();
         Ok(self
-            .passage_embedding_indexer
+            .block_embedding_indexer
             .status(progress, runtime.phase, runtime.message))
     }
 
@@ -681,11 +681,11 @@ pub(crate) fn semantic_runtime_status(state: State<'_, RuntimeState>) -> Semanti
 }
 
 #[tauri::command]
-pub(crate) fn passage_embedding_index_status(
+pub(crate) fn block_embedding_index_status(
     state: State<'_, RuntimeState>,
-) -> Result<PassageEmbeddingIndexStatus, String> {
+) -> Result<BlockEmbeddingIndexStatus, String> {
     state
-        .passage_embedding_index_status()
+        .block_embedding_index_status()
         .map_err(|error| error.to_string())
 }
 

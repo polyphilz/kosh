@@ -1,14 +1,14 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Instant};
 
-use crate::database::search::{
+use crate::database::relevance_search::{
     candidate_limit, diversify_ranked, normalize_for_search, parse_lexical_query,
     rank_lexical_documents, short_grams_for_search, trigram_candidate_limit, LexicalDocument,
     LexicalSearchMode, RankedLexicalDocument, SearchDiversityKey, SearchEvidenceKind, SearchField,
     FTS_BM25_WEIGHTS,
 };
 use crate::database::{
-    Database, DatabaseClient, DatabasePaths, LexicalBenchmarkAttachmentWrite, SearchPassagesInput,
-    SourceDraft, TidbitDraft,
+    Database, DatabaseClient, DatabasePaths, LexicalBenchmarkAttachmentWrite,
+    LexicalSearchMode as BlockLexicalSearchMode, SearchBlocksInput, SourceDraft, TidbitDraft,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -98,7 +98,7 @@ impl Retriever for LexicalFixtureRetriever {
 
 pub(crate) fn fixture_candidate_ranks(
     corpus: &[EvaluationPassage],
-    query: &crate::database::search::ParsedLexicalQuery,
+    query: &crate::database::relevance_search::ParsedLexicalQuery,
     result_limit: usize,
 ) -> std::result::Result<FixtureCandidates, String> {
     let connection = Connection::open_in_memory().map_err(|error| error.to_string())?;
@@ -345,6 +345,7 @@ pub(crate) fn hydrate_fixture_hits(
     Ok(
         diversify_ranked(candidates, limit, |candidate| SearchDiversityKey {
             attachment_id: candidate.passage.evidence_attachment_id.clone(),
+            page: None,
         })
         .into_iter()
         .map(|candidate| RetrievalHit {
@@ -512,7 +513,7 @@ pub fn benchmark_scale_lexical(
                 connection
                     .query_row(
                         "SELECT count(*)
-                         FROM passage_search_document
+                         FROM block_search_document
                          WHERE tidbit_id IS NOT NULL",
                         [],
                         |row| row.get::<_, i64>(0),
@@ -583,9 +584,9 @@ pub fn benchmark_scale_lexical(
 
 fn run_benchmark_query(client: &DatabaseClient, query: &str) -> super::Result<()> {
     client
-        .search_passages(SearchPassagesInput {
+        .search_blocks(SearchBlocksInput {
             query: query.into(),
-            mode: LexicalSearchMode::Default,
+            mode: BlockLexicalSearchMode::Default,
             limit: BENCHMARK_RESULT_LIMIT,
         })
         .map(|_| ())

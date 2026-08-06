@@ -6,9 +6,8 @@ use crate::runtime::RuntimeState;
 
 use super::{
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
-    CheckpointWorkingCopyInput, CitationResolution, DatabaseError, DeleteTidbitInput,
-    DiscardWorkingCopyInput, RestoreTidbitInput, SaveWorkingCopyInput, SearchPassagesInput,
-    SearchPassagesResponse, SemanticSearchReadiness, Tidbit, WorkingCopy,
+    CheckpointWorkingCopyInput, DatabaseError, DeleteTidbitInput, DiscardWorkingCopyInput,
+    RestoreTidbitInput, SaveWorkingCopyInput, SemanticSearchReadiness, Tidbit, WorkingCopy,
     WorkingCopyCheckpointResult, WorkingCopySaveResult,
 };
 
@@ -94,25 +93,16 @@ pub(crate) async fn restore_tidbit(
 }
 
 #[tauri::command]
-pub(crate) async fn resolve_citation(
+pub(crate) async fn search_blocks(
     state: State<'_, RuntimeState>,
-    passage_id: String,
-) -> CommandResult<CitationResolution> {
-    let client = state.database_client();
-    run_writer(move || client.resolve_citation(passage_id)).await
-}
-
-#[tauri::command]
-pub(crate) async fn search_passages(
-    state: State<'_, RuntimeState>,
-    input: SearchPassagesInput,
-) -> CommandResult<SearchPassagesResponse> {
-    let has_query = super::search::validate_search_input(&input)?;
+    input: super::SearchBlocksInput,
+) -> CommandResult<super::SearchBlocksResponse> {
+    let has_query = super::block_query::validate_search_input(&input)?;
     let client = state.database_client();
     let runtime = state.embedding_runtime();
     run_writer(move || {
         if input.mode == super::LexicalSearchMode::Exact {
-            return client.search_passages_with_semantics(
+            return client.search_blocks_with_semantics(
                 input,
                 None,
                 SemanticSearchReadiness::NotRequested,
@@ -120,7 +110,7 @@ pub(crate) async fn search_passages(
         }
 
         let index_readiness = client
-            .passage_embedding_search_readiness()
+            .block_embedding_search_readiness()
             .unwrap_or(SemanticSearchReadiness::Failed);
         let runtime_phase = runtime.status().phase;
         let readiness = match index_readiness {
@@ -135,11 +125,11 @@ pub(crate) async fn search_passages(
             }
         };
         if !has_query || readiness != SemanticSearchReadiness::Ready {
-            return client.search_passages_with_semantics(input, None, readiness);
+            return client.search_blocks_with_semantics(input, None, readiness);
         }
 
         match runtime.embed_query(&input.query) {
-            Ok(query_embedding) => client.search_passages_with_semantics(
+            Ok(query_embedding) => client.search_blocks_with_semantics(
                 input,
                 Some(query_embedding),
                 SemanticSearchReadiness::Ready,
@@ -149,7 +139,7 @@ pub(crate) async fn search_passages(
                     "semantic query embedding failed; using lexical search: {}",
                     error.public_message()
                 );
-                client.search_passages_with_semantics(
+                client.search_blocks_with_semantics(
                     input,
                     None,
                     readiness_for_runtime(runtime.status().phase),

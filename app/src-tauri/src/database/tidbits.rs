@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use super::{block_search, document, media, passages, DatabaseError, Result};
+use super::{block_search, document, media, DatabaseError, Result};
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const DISPLAY_TITLE_LIMIT: usize = 96;
@@ -125,13 +125,7 @@ pub(super) fn create_tidbit(
         &prepared.body_markdown,
         write.now_ms,
     )?;
-    passages::insert_author_passages(
-        &transaction,
-        &write.revision_id,
-        &prepared.body_markdown,
-        write.now_ms,
-    )?;
-    passages::replace_active_author_passages(&transaction, &write.tidbit_id, &write.revision_id)?;
+    block_search::replace_tidbit_documents(&transaction, &write.tidbit_id)?;
     transaction.commit()?;
 
     load_tidbit(connection, &write.tidbit_id)
@@ -174,7 +168,6 @@ pub(super) fn delete_tidbit(
             actual_revision_id: current.revision_id,
         });
     }
-    passages::deactivate_tidbit(&transaction, &input.id)?;
     block_search::clear_tidbit_documents(&transaction, &input.id)?;
     transaction.commit()?;
 
@@ -221,16 +214,7 @@ pub(super) fn restore_tidbit(
             actual_revision_id: current.revision_id,
         });
     }
-    let activated = passages::activate_author_passages_on_restore(
-        &transaction,
-        &input.id,
-        &input.expected_revision_id,
-    )?;
-    if !activated {
-        // A media-only note has no authored passage to activate, but its current
-        // attachment blocks still belong in block search after restoration.
-        block_search::replace_tidbit_documents(&transaction, &input.id)?;
-    }
+    block_search::replace_tidbit_documents(&transaction, &input.id)?;
     transaction.commit()?;
 
     load_tidbit(connection, &input.id)
