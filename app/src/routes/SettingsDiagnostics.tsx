@@ -256,7 +256,7 @@ export function SettingsDiagnostics() {
             warning={!databaseHealthy}
           />
           <DiagnosticItem
-            detail={`${diagnostics.library.trashedTidbits.toLocaleString()} in Trash · ${diagnostics.library.revisions.toLocaleString()} revisions retained`}
+            detail={`${diagnostics.library.trashedTidbits.toLocaleString()} in Trash · ${diagnostics.library.currentNotes.toLocaleString()} current note${diagnostics.library.currentNotes === 1 ? "" : "s"}`}
             label="Library"
             value={`${diagnostics.library.activeTidbits.toLocaleString()} active tidbits`}
           />

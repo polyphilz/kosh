@@ -225,7 +225,7 @@ function checkCore(values) {
     numberSql(
       profile.main,
       `SELECT count(*)
-       FROM pragma_table_info('tidbit_revision')
+       FROM pragma_table_info('tidbit')
        WHERE name = 'title'`,
     ),
     0,
@@ -252,7 +252,7 @@ function checkCore(values) {
     "retired or query-history tables",
   );
   assert(
-    numberSql(profile.main, "SELECT count(*) FROM passage_search_document") >= 1,
+    numberSql(profile.main, "SELECT count(*) FROM block_search_document") >= 1,
     "lexical search projection is empty",
   );
   console.info(
@@ -271,8 +271,8 @@ function checkJourneys(values) {
       "a URL-bearing source",
       `SELECT count(*)
        FROM tidbit
-       JOIN tidbit_revision_source AS membership
-         ON membership.tidbit_revision_id = tidbit.current_revision_id
+       JOIN tidbit_source AS membership
+         ON membership.tidbit_id = tidbit.id
        JOIN source ON source.id = membership.source_id
        WHERE tidbit.deleted_at IS NULL
          AND source.normalized_url IS NOT NULL`,
@@ -281,17 +281,15 @@ function checkJourneys(values) {
       "a code-bearing tidbit",
       `SELECT count(*)
        FROM tidbit
-       JOIN tidbit_revision AS revision ON revision.id = tidbit.current_revision_id
        WHERE tidbit.deleted_at IS NULL
-         AND instr(revision.body_markdown, char(96) || char(96) || char(96)) > 0`,
+         AND instr(tidbit.body_markdown, char(96) || char(96) || char(96)) > 0`,
     ],
     [
       "a math-bearing tidbit",
       `SELECT count(*)
        FROM tidbit
-       JOIN tidbit_revision AS revision ON revision.id = tidbit.current_revision_id
        WHERE tidbit.deleted_at IS NULL
-         AND instr(revision.body_markdown, '$') > 0`,
+         AND instr(tidbit.body_markdown, '$') > 0`,
     ],
     [
       "an image attachment",
@@ -320,40 +318,37 @@ function checkJourneys(values) {
       ),
     ],
     [
-      "an opaque file attachment",
-      currentAttachmentCount(
-        "",
-        "attachment.kind = 'FILE' AND attachment.media_type = 'application/octet-stream'",
-      ),
+      "searchable image OCR text",
+      `SELECT count(*)
+       FROM tidbit
+       JOIN tidbit_attachment AS membership
+         ON membership.tidbit_id = tidbit.id
+       JOIN attachment ON attachment.id = membership.attachment_id
+       JOIN attachment_extraction AS extraction
+         ON extraction.attachment_id = attachment.id
+        AND extraction.content_hash = attachment.sha256
+       JOIN attachment_extractor_config AS config
+         ON config.extractor = extraction.extractor
+        AND config.version = extraction.extractor_version
+       JOIN block_search_document AS document
+         ON document.tidbit_id = tidbit.id
+        AND document.block_id = membership.block_id
+       WHERE tidbit.deleted_at IS NULL
+         AND attachment.deleted_at IS NULL
+         AND attachment.kind = 'IMAGE'
+         AND extraction.extractor = 'ocr'
+         AND length(document.extracted_text) > 0`,
     ],
     [
-      "a semantic passage embedding",
+      "a semantic block embedding",
       `SELECT count(*)
-       FROM passage_embedding AS embedding
-       JOIN passage ON passage.id = embedding.passage_id
-       WHERE embedding.passage_content_hash = passage.content_hash
-         AND (
-           EXISTS (
-             SELECT 1
-             FROM active_passage
-             WHERE active_passage.passage_id = passage.id
-           )
-           OR EXISTS (
-             SELECT 1
-             FROM attachment_segment AS segment
-             JOIN attachment_extraction AS extraction ON extraction.id = segment.extraction_id
-             JOIN attachment
-               ON attachment.id = extraction.attachment_id
-              AND attachment.sha256 = extraction.content_hash
-             JOIN tidbit_revision_attachment AS membership
-               ON membership.attachment_id = attachment.id
-             JOIN tidbit
-               ON tidbit.current_revision_id = membership.tidbit_revision_id
-              AND tidbit.deleted_at IS NULL
-             WHERE segment.id = passage.attachment_segment_id
-               AND attachment.deleted_at IS NULL
-           )
-         )`,
+       FROM block_embedding AS embedding
+       JOIN block_search_document AS document
+         ON document.tidbit_id = embedding.tidbit_id
+        AND document.block_id = embedding.block_id
+        AND document.content_hash = embedding.block_content_hash
+       JOIN tidbit ON tidbit.id = document.tidbit_id
+       WHERE tidbit.deleted_at IS NULL`,
     ],
   ];
   for (const [label, statement] of requirements) {
@@ -394,8 +389,8 @@ function checkJourneys(values) {
 function currentAttachmentCount(extraJoin, predicate) {
   return `SELECT count(DISTINCT attachment.id)
           FROM tidbit
-          JOIN tidbit_revision_attachment AS membership
-            ON membership.tidbit_revision_id = tidbit.current_revision_id
+          JOIN tidbit_attachment AS membership
+            ON membership.tidbit_id = tidbit.id
           JOIN attachment ON attachment.id = membership.attachment_id
           ${extraJoin}
           WHERE tidbit.deleted_at IS NULL
@@ -465,18 +460,13 @@ function logicalEvidence(profile) {
       "SELECT count(*) FROM tidbit WHERE deleted_at IS NOT NULL",
     ),
     workingCopies: numberSql(profile.main, "SELECT count(*) FROM draft"),
-    revisions: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision"),
+    currentNotes: numberSql(profile.main, "SELECT count(*) FROM tidbit"),
     sources: numberSql(profile.main, "SELECT count(*) FROM source"),
-    revisionSources: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_source"),
+    noteSources: numberSql(profile.main, "SELECT count(*) FROM tidbit_source"),
     attachments: numberSql(profile.main, "SELECT count(*) FROM attachment"),
-    revisionAttachments: numberSql(profile.main, "SELECT count(*) FROM tidbit_revision_attachment"),
-    passages: numberSql(profile.main, "SELECT count(*) FROM passage"),
-    attachmentPassageRevisions: numberSql(
-      profile.main,
-      "SELECT count(*) FROM attachment_passage_revision",
-    ),
-    searchDocuments: numberSql(profile.main, "SELECT count(*) FROM passage_search_document"),
-    embeddings: numberSql(profile.main, "SELECT count(*) FROM passage_embedding"),
+    noteAttachments: numberSql(profile.main, "SELECT count(*) FROM tidbit_attachment"),
+    searchDocuments: numberSql(profile.main, "SELECT count(*) FROM block_search_document"),
+    embeddings: numberSql(profile.main, "SELECT count(*) FROM block_embedding"),
   };
 }
 

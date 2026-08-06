@@ -73,7 +73,7 @@ pub(super) struct PreparedSource {
 #[derive(Clone, Debug)]
 pub(super) struct PreparedRevision {
     pub(super) document_json: String,
-    pub(super) attachments: Vec<document::DocumentAttachment>,
+    pub(super) document: document::DocumentAnalysis,
     pub(super) body_markdown: String,
     pub(super) sources: Vec<PreparedSource>,
     pub(super) content_hash: Vec<u8>,
@@ -103,29 +103,40 @@ pub(super) fn create_tidbit(
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute(
-        "INSERT INTO tidbit(id, created_at, updated_at, current_revision_id)
-         VALUES(?1, ?2, ?2, ?3)",
-        params![write.tidbit_id, write.now_ms, write.revision_id],
+        "INSERT INTO tidbit(
+            id, created_at, updated_at, current_revision_id, revision_number,
+            document_json, body_markdown, content_hash
+         ) VALUES(?1, ?2, ?2, ?3, 1, ?4, ?5, ?6)",
+        params![
+            write.tidbit_id,
+            write.now_ms,
+            write.revision_id,
+            prepared.document_json,
+            prepared.body_markdown,
+            prepared.content_hash,
+        ],
     )?;
-    insert_revision(
+    replace_sources(
         &transaction,
-        &write.revision_id,
         &write.tidbit_id,
-        1,
         write.now_ms,
         &prepared,
         &write.source_ids,
     )?;
-    media::link_revision_attachments(
+    media::replace_note_attachments(
         &transaction,
-        &write.revision_id,
-        None,
         &write.tidbit_id,
-        &prepared.attachments,
+        None,
+        &prepared.document.attachments,
         &prepared.body_markdown,
         write.now_ms,
     )?;
-    block_search::replace_tidbit_documents(&transaction, &write.tidbit_id)?;
+    block_search::replace_tidbit_documents_from_blocks(
+        &transaction,
+        &write.tidbit_id,
+        write.now_ms,
+        &prepared.document.searchable_blocks,
+    )?;
     transaction.commit()?;
 
     load_tidbit(connection, &write.tidbit_id)
@@ -225,19 +236,10 @@ pub(crate) fn load_tidbit(connection: &Connection, id: &str) -> Result<Tidbit> {
     let mut tidbit = connection
         .query_row(
             "SELECT
-                tidbit.id,
-                tidbit.current_revision_id,
-                revision.revision_number,
-                tidbit.created_at,
-                tidbit.updated_at,
-                tidbit.deleted_at,
-                revision.document_json,
-                revision.body_markdown
+                id, current_revision_id, revision_number, created_at, updated_at,
+                deleted_at, document_json, body_markdown
              FROM tidbit
-             JOIN tidbit_revision AS revision
-               ON revision.id = tidbit.current_revision_id
-              AND revision.tidbit_id = tidbit.id
-             WHERE tidbit.id = ?1",
+             WHERE id = ?1",
             params![id],
             tidbit_from_row,
         )
@@ -246,7 +248,7 @@ pub(crate) fn load_tidbit(connection: &Connection, id: &str) -> Result<Tidbit> {
             entity: "tidbit",
             id: id.to_owned(),
         })?;
-    tidbit.sources = load_sources(connection, &tidbit.current_revision_id)?;
+    tidbit.sources = load_sources(connection, &tidbit.id)?;
     Ok(tidbit)
 }
 
@@ -279,7 +281,7 @@ pub(super) fn prepare_revision_with_empty(
     sources: Vec<SourceDraft>,
     allow_empty_body: bool,
 ) -> Result<PreparedRevision> {
-    let attachments = document::extract_attachments(&document_json)?;
+    let document = document::analyze(&document_json)?;
     if !allow_empty_body && body_markdown.trim().is_empty() {
         return Err(DatabaseError::InvalidInput(
             "bodyMarkdown must contain non-whitespace text".into(),
@@ -300,7 +302,7 @@ pub(super) fn prepare_revision_with_empty(
     let content_hash = revision_content_hash(&document_json, &body_markdown, &sources);
     Ok(PreparedRevision {
         document_json,
-        attachments,
+        document,
         body_markdown,
         sources,
         content_hash,
@@ -359,28 +361,16 @@ pub(super) fn validate_source_ids(ids: &[String], expected: usize) -> Result<()>
     Ok(())
 }
 
-pub(super) fn insert_revision(
+pub(super) fn replace_sources(
     transaction: &Transaction<'_>,
-    revision_id: &str,
     tidbit_id: &str,
-    revision_number: i64,
     created_at_ms: i64,
     revision: &PreparedRevision,
     source_ids: &[String],
 ) -> Result<()> {
     transaction.execute(
-        "INSERT INTO tidbit_revision(
-            id, tidbit_id, revision_number, created_at, document_json, body_markdown, content_hash
-         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            revision_id,
-            tidbit_id,
-            revision_number,
-            created_at_ms,
-            revision.document_json,
-            revision.body_markdown,
-            revision.content_hash
-        ],
+        "DELETE FROM tidbit_source WHERE tidbit_id = ?1",
+        params![tidbit_id],
     )?;
     for (sort_order, (source, proposed_id)) in
         revision.sources.iter().zip(source_ids.iter()).enumerate()
@@ -412,26 +402,30 @@ pub(super) fn insert_revision(
             proposed_id.clone()
         };
         transaction.execute(
-            "INSERT INTO tidbit_revision_source(tidbit_revision_id, source_id, sort_order)
+            "INSERT INTO tidbit_source(tidbit_id, source_id, sort_order)
              VALUES(?1, ?2, ?3)",
-            params![revision_id, source_id, sort_order as i64],
+            params![tidbit_id, source_id, sort_order as i64],
         )?;
     }
+    transaction.execute(
+        "DELETE FROM source
+         WHERE NOT EXISTS (
+            SELECT 1 FROM tidbit_source WHERE tidbit_source.source_id = source.id
+         )",
+        [],
+    )?;
     Ok(())
 }
 
-pub(super) fn load_sources(
-    connection: &Connection,
-    revision_id: &str,
-) -> Result<Vec<TidbitSource>> {
+pub(super) fn load_sources(connection: &Connection, tidbit_id: &str) -> Result<Vec<TidbitSource>> {
     let mut statement = connection.prepare(
         "SELECT source.id, source.label, source.normalized_url
-         FROM tidbit_revision_source AS membership
+         FROM tidbit_source AS membership
          JOIN source ON source.id = membership.source_id
-         WHERE membership.tidbit_revision_id = ?1
+         WHERE membership.tidbit_id = ?1
          ORDER BY membership.sort_order",
     )?;
-    let rows = statement.query_map(params![revision_id], |row| {
+    let rows = statement.query_map(params![tidbit_id], |row| {
         Ok(TidbitSource {
             id: row.get(0)?,
             label: row.get(1)?,
@@ -471,16 +465,9 @@ pub(super) fn load_current_revision(
 ) -> Result<CurrentRevision> {
     transaction
         .query_row(
-            "SELECT
-                tidbit.current_revision_id,
-                revision.revision_number,
-                tidbit.updated_at,
-                tidbit.deleted_at
+            "SELECT current_revision_id, revision_number, updated_at, deleted_at
              FROM tidbit
-             JOIN tidbit_revision AS revision
-               ON revision.id = tidbit.current_revision_id
-              AND revision.tidbit_id = tidbit.id
-             WHERE tidbit.id = ?1",
+             WHERE id = ?1",
             params![id],
             |row| {
                 Ok(CurrentRevision {

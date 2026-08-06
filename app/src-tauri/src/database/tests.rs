@@ -47,7 +47,9 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
     ] {
         assert!(!table_exists(&main, retired), "retired table {retired}");
     }
-    assert!(!column_exists(&main, "tidbit_revision", "title"));
+    assert!(!table_exists(&main, "tidbit_revision"));
+    assert!(column_exists(&main, "tidbit", "document_json"));
+    assert!(column_exists(&main, "tidbit", "content_hash"));
     assert_eq!(
         table_columns(&main, "draft"),
         [
@@ -61,12 +63,8 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
             "body_markdown",
         ]
     );
-    for guard in [
-        "tidbit_revision_attachment_prevent_delete",
-        "tidbit_revision_source_prevent_delete",
-    ] {
-        assert!(trigger_exists(&main, guard), "missing delete guard {guard}");
-    }
+    assert!(trigger_exists(&main, "tidbit_attachment_prevent_update"));
+    assert!(trigger_exists(&main, "tidbit_source_prevent_update"));
     drop(main);
     database.shutdown().expect("close fresh database pair");
 }

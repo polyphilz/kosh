@@ -234,22 +234,17 @@ assert(
   recoveryEntry >= 0 && applicationEntry > recoveryEntry,
   "packaged recovery command must run before Tauri application startup",
 );
-for (const contract of [
-  "JOIN tidbit_revision AS revision ON revision.id = passage.tidbit_revision_id",
-  "JOIN tidbit ON tidbit.id = revision.tidbit_id",
-  "WHERE revision.id <> tidbit.current_revision_id",
-  "tidbit_revision_source.tidbit_revision_id = revision.id",
-]) {
+for (const contract of ["block_search_document", "currentNotes", "activeTidbits"]) {
   assert(
     recoveredPackageSmoke.includes(contract),
-    `packaged recovery historical-citation query omits ${contract}`,
+    `packaged recovery current-note evidence omits ${contract}`,
   );
 }
 assert(
-  !recoveredPackageSmoke.includes("passage.tidbit_id") &&
-    !recoveredPackageSmoke.includes("passage.revision_id") &&
-    !recoveredPackageSmoke.includes("tidbit_revision_source.revision_id"),
-  "packaged recovery historical-citation query uses retired schema columns",
+  !recoveredPackageSmoke.includes("tidbit_revision") &&
+    !recoveredPackageSmoke.includes("passage") &&
+    !recoveredPackageSmoke.includes("active_passage"),
+  "packaged recovery smoke retains archival note or passage machinery",
 );
 
 console.info(

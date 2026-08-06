@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{
+    block_query,
     connection::{self, DatabaseKind, FileState},
     media::{
         media_blob_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
@@ -19,7 +20,6 @@ use super::{
         MediaBlobReclamationPreflight, MediaByteRange, MediaRangeRequest, StagedAttachment,
         MEDIA_RECONCILE_BATCH_SIZE,
     },
-    block_query,
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput, Database, DatabaseClient,
     DatabaseError, DatabasePaths, DeleteTidbitInput, DiscardWorkingCopyInput, LexicalSearchMode,
@@ -430,8 +430,8 @@ fn file_search_indexes_only_the_attachment_filename() {
         .query_row(
             "SELECT document.attachment_names, document.extracted_text
              FROM block_search_document AS document
-             JOIN tidbit_revision_attachment AS membership
-               ON membership.tidbit_revision_id = document.tidbit_revision_id
+             JOIN tidbit_attachment AS membership
+               ON membership.tidbit_id = document.tidbit_id
               AND membership.block_id = document.block_id
              WHERE membership.attachment_id = ?1",
             params![archive.id],
@@ -626,8 +626,8 @@ fn image_ocr_adds_searchable_text_without_mutating_authored_revision() {
         .query_row(
             "SELECT document.block_id, document.extracted_text
              FROM block_search_document AS document
-             JOIN tidbit_revision_attachment AS membership
-               ON membership.tidbit_revision_id = document.tidbit_revision_id
+             JOIN tidbit_attachment AS membership
+               ON membership.tidbit_id = document.tidbit_id
               AND membership.block_id = document.block_id
              WHERE membership.attachment_id = ?1",
             params![image.attachment.id],

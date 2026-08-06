@@ -41,9 +41,8 @@ const MAIN_TABLES: &[&str] = &[
     "shortcut_settings",
     "source",
     "tidbit",
-    "tidbit_revision",
-    "tidbit_revision_attachment",
-    "tidbit_revision_source",
+    "tidbit_attachment",
+    "tidbit_source",
     "text_embedding_index",
 ];
 
@@ -502,7 +501,7 @@ fn validate_media_relationship(main: &Connection, media: &Connection) -> Result<
          WHERE attachment.deleted_at IS NULL
             OR EXISTS (
                 SELECT 1
-                FROM tidbit_revision_attachment AS membership
+                FROM tidbit_attachment AS membership
                 WHERE membership.attachment_id = attachment.id
             )
          ORDER BY id",

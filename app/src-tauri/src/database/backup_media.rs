@@ -14,7 +14,7 @@ const REFERENCED_MEDIA_SELECT: &str = "
     WHERE attachment.deleted_at IS NULL
        OR EXISTS (
             SELECT 1
-            FROM tidbit_revision_attachment AS membership
+            FROM tidbit_attachment AS membership
             WHERE membership.attachment_id = attachment.id
        )
     UNION
@@ -24,7 +24,7 @@ const REFERENCED_MEDIA_SELECT: &str = "
     WHERE attachment.deleted_at IS NULL
        OR EXISTS (
             SELECT 1
-            FROM tidbit_revision_attachment AS membership
+            FROM tidbit_attachment AS membership
             WHERE membership.attachment_id = attachment.id
        )
 ";
@@ -161,7 +161,7 @@ pub(super) fn reconcile(connection: &mut Connection, now_ms: i64) -> Result<u64>
                    WHERE attachment.deleted_at IS NULL
                       OR EXISTS (
                            SELECT 1
-                           FROM tidbit_revision_attachment AS membership
+                           FROM tidbit_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                       )
                    UNION
@@ -171,7 +171,7 @@ pub(super) fn reconcile(connection: &mut Connection, now_ms: i64) -> Result<u64>
                    WHERE attachment.deleted_at IS NULL
                       OR EXISTS (
                            SELECT 1
-                           FROM tidbit_revision_attachment AS membership
+                           FROM tidbit_attachment AS membership
                            WHERE membership.attachment_id = attachment.id
                       )
                )

@@ -99,29 +99,15 @@ const main = join(dataDirectory, "kosh.sqlite3");
 const media = join(dataDirectory, "media.sqlite3");
 const evidence = {
   activeTidbits: numberSql(main, "SELECT count(*) FROM tidbit WHERE deleted_at IS NULL"),
-  revisions: numberSql(main, "SELECT count(*) FROM tidbit_revision"),
+  currentNotes: numberSql(main, "SELECT count(*) FROM tidbit"),
   attachments: numberSql(main, "SELECT count(*) FROM attachment"),
   mediaBlobs: numberSql(media, "SELECT count(*) FROM media_blob"),
-  searchDocuments: numberSql(main, "SELECT count(*) FROM passage_search_document"),
-  historicalCitations: numberSql(
-    main,
-    `SELECT count(*)
-     FROM passage
-     JOIN tidbit_revision AS revision ON revision.id = passage.tidbit_revision_id
-     JOIN tidbit ON tidbit.id = revision.tidbit_id
-     WHERE revision.id <> tidbit.current_revision_id
-       AND EXISTS (
-         SELECT 1
-         FROM tidbit_revision_source
-         WHERE tidbit_revision_source.tidbit_revision_id = revision.id
-       )`,
-  ),
+  searchDocuments: numberSql(main, "SELECT count(*) FROM block_search_document"),
 };
 assert(evidence.activeTidbits >= 2, "restored package lost tidbits");
-assert(evidence.revisions >= 3, "restored package lost immutable revisions");
+assert(evidence.currentNotes >= evidence.activeTidbits, "restored package lost current note rows");
 assert(evidence.attachments >= 1 && evidence.mediaBlobs >= 1, "restored package lost media");
 assert(evidence.searchDocuments >= 2, "restored package lost rebuilt lexical search");
-assert(evidence.historicalCitations >= 1, "restored package lost historical note citations");
 writeFileSync(
   reportPath,
   `${JSON.stringify(
