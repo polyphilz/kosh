@@ -469,8 +469,24 @@ BEGIN
 END;
 CREATE TRIGGER block_search_document_prevent_update
 BEFORE UPDATE ON block_search_document
+WHEN old.tidbit_id IS NOT new.tidbit_id
+  OR old.tidbit_revision_id IS NOT new.tidbit_revision_id
+  OR old.block_id IS NOT new.block_id
+  OR old.block_ordinal IS NOT new.block_ordinal
+  OR old.block_type IS NOT new.block_type
+  OR old.heading_context IS NOT new.heading_context
+  OR old.body IS NOT new.body
+  OR old.attachment_names IS NOT new.attachment_names
+  OR old.updated_at IS NOT new.updated_at
+  OR new.content_hash IS NOT kosh_block_search_content_hash(
+      new.block_type,
+      new.heading_context,
+      new.body,
+      new.attachment_names,
+      new.extracted_text
+  )
 BEGIN
-    SELECT RAISE(ABORT, 'block search documents are replaced, never updated');
+    SELECT RAISE(ABORT, 'block search documents permit only canonical evidence refresh');
 END;
 CREATE VIRTUAL TABLE block_fts_word USING fts5(
     heading_context,
@@ -559,6 +575,64 @@ BEGIN
         kosh_search_short_grams(old.body),
         kosh_search_short_grams(old.attachment_names),
         kosh_search_short_grams(old.extracted_text)
+    );
+END;
+CREATE TRIGGER block_search_document_fts_after_update
+AFTER UPDATE OF extracted_text, content_hash ON block_search_document
+BEGIN
+    INSERT INTO block_fts_word(
+        block_fts_word, rowid, heading_context, body, attachment_names, extracted_text
+    ) VALUES(
+        'delete', old.rowid,
+        kosh_search_normalize(old.heading_context),
+        kosh_search_normalize(old.body),
+        kosh_search_normalize(old.attachment_names),
+        kosh_search_normalize(old.extracted_text)
+    );
+    INSERT INTO block_fts_word(
+        rowid, heading_context, body, attachment_names, extracted_text
+    ) VALUES(
+        new.rowid,
+        kosh_search_normalize(new.heading_context),
+        kosh_search_normalize(new.body),
+        kosh_search_normalize(new.attachment_names),
+        kosh_search_normalize(new.extracted_text)
+    );
+    INSERT INTO block_fts_trigram(
+        block_fts_trigram, rowid, heading_context, body, attachment_names, extracted_text
+    ) VALUES(
+        'delete', old.rowid,
+        kosh_search_normalize(old.heading_context),
+        kosh_search_normalize(old.body),
+        kosh_search_normalize(old.attachment_names),
+        kosh_search_normalize(old.extracted_text)
+    );
+    INSERT INTO block_fts_trigram(
+        rowid, heading_context, body, attachment_names, extracted_text
+    ) VALUES(
+        new.rowid,
+        kosh_search_normalize(new.heading_context),
+        kosh_search_normalize(new.body),
+        kosh_search_normalize(new.attachment_names),
+        kosh_search_normalize(new.extracted_text)
+    );
+    INSERT INTO block_fts_short(
+        block_fts_short, rowid, heading_context, body, attachment_names, extracted_text
+    ) VALUES(
+        'delete', old.rowid,
+        kosh_search_short_grams(old.heading_context),
+        kosh_search_short_grams(old.body),
+        kosh_search_short_grams(old.attachment_names),
+        kosh_search_short_grams(old.extracted_text)
+    );
+    INSERT INTO block_fts_short(
+        rowid, heading_context, body, attachment_names, extracted_text
+    ) VALUES(
+        new.rowid,
+        kosh_search_short_grams(new.heading_context),
+        kosh_search_short_grams(new.body),
+        kosh_search_short_grams(new.attachment_names),
+        kosh_search_short_grams(new.extracted_text)
     );
 END;
 CREATE TABLE passage_search_document (
@@ -1354,6 +1428,51 @@ BEGIN
     JOIN attachment_extraction AS extraction
       ON extraction.id = current.extraction_id
     WHERE extraction.extractor = new.extractor;
+
+    UPDATE block_search_document
+    SET (extracted_text, content_hash) = (
+        SELECT
+            current_evidence.content,
+            kosh_block_search_content_hash(
+                block_search_document.block_type,
+                block_search_document.heading_context,
+                block_search_document.body,
+                block_search_document.attachment_names,
+                current_evidence.content
+            )
+        FROM (
+            SELECT coalesce(
+                (
+                    SELECT group_concat(ordered_evidence.content, char(10))
+                    FROM (
+                        SELECT passage.content
+                        FROM tidbit_revision_attachment AS membership
+                        JOIN current_attachment_passage AS current
+                          ON current.attachment_id = membership.attachment_id
+                        JOIN passage ON passage.id = current.passage_id
+                        JOIN attachment_extraction AS extraction
+                          ON extraction.id = current.extraction_id
+                        WHERE membership.tidbit_revision_id =
+                                  block_search_document.tidbit_revision_id
+                          AND membership.block_id = block_search_document.block_id
+                          AND extraction.extractor = new.extractor
+                        ORDER BY passage.ordinal
+                    ) AS ordered_evidence
+                ),
+                ''
+            ) AS content
+        ) AS current_evidence
+    )
+    WHERE EXISTS (
+        SELECT 1
+        FROM tidbit_revision_attachment AS membership
+        JOIN attachment_extraction AS extraction
+          ON extraction.attachment_id = membership.attachment_id
+        WHERE membership.tidbit_revision_id =
+                  block_search_document.tidbit_revision_id
+          AND membership.block_id = block_search_document.block_id
+          AND extraction.extractor = new.extractor
+    );
 END;
 CREATE TRIGGER attachment_search_refresh_after_update
 AFTER UPDATE OF display_filename, deleted_at, updated_at ON attachment

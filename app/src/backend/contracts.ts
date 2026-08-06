@@ -76,7 +76,7 @@ export interface MaintenanceDiagnostics {
     revisions: number;
     authoredPassages: number;
     attachmentPassages: number;
-    searchDocuments: number;
+    blockSearchDocuments: number;
     attachments: number;
     attachmentBytes: number;
     imageOcr: MaintenanceQueueCounts;

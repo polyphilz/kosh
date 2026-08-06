@@ -85,7 +85,7 @@ struct RemoteRestoreReport {
     sources: u64,
     attachments: u64,
     media_blobs: u64,
-    search_documents_rebuilt: u64,
+    block_search_documents_rebuilt: u64,
     safety_snapshot_created: bool,
 }
 
@@ -96,7 +96,7 @@ struct StagedAcceptanceEvidence {
     sources: u64,
     attachments: u64,
     media_blobs: u64,
-    search_documents_rebuilt: u64,
+    block_search_documents_rebuilt: u64,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -247,7 +247,7 @@ fn restore_remote(
         sources: evidence.sources,
         attachments: evidence.attachments,
         media_blobs: evidence.media_blobs,
-        search_documents_rebuilt: evidence.search_documents_rebuilt,
+        block_search_documents_rebuilt: evidence.block_search_documents_rebuilt,
         safety_snapshot_created: false,
     };
 
@@ -283,7 +283,7 @@ pub(crate) fn install_staged_for_test(
         sources: evidence.sources,
         attachments: evidence.attachments,
         media_blobs: evidence.media_blobs,
-        search_documents_rebuilt: evidence.search_documents_rebuilt,
+        block_search_documents_rebuilt: evidence.block_search_documents_rebuilt,
         safety_snapshot_created: false,
     };
     let staged_pair = staged
@@ -1476,7 +1476,7 @@ fn audit_staged_database(directory: &File) -> Result<StagedAcceptanceEvidence, S
     with_bound_working_directory(directory, || {
         let database = Database::initialize(DatabasePaths::new("."))
             .map_err(|_| "the independently staged Kosh library did not reopen normally")?;
-        let search_documents_rebuilt = database
+        let block_search_documents_rebuilt = database
             .client()
             .rebuild_search()
             .map_err(|_| "the staged lexical search projection could not be rebuilt")?;
@@ -1499,7 +1499,7 @@ fn audit_staged_database(directory: &File) -> Result<StagedAcceptanceEvidence, S
             sources: count(&main, "SELECT count(*) FROM source")?,
             attachments: count(&main, "SELECT count(*) FROM attachment")?,
             media_blobs: count(&media, "SELECT count(*) FROM media_blob")?,
-            search_documents_rebuilt,
+            block_search_documents_rebuilt,
         };
         drop(media);
         drop(main);
@@ -1590,7 +1590,7 @@ mod tests {
             sources: 0,
             attachments: 0,
             media_blobs: 0,
-            search_documents_rebuilt: 0,
+            block_search_documents_rebuilt: 0,
             safety_snapshot_created: false,
         }
     }
@@ -1958,7 +1958,7 @@ mod tests {
         let evidence = audit_staged_database(&staging_directory)
             .expect("descriptor-bound write-capable audit");
         assert_eq!(evidence.active_tidbits, 0);
-        assert_eq!(evidence.search_documents_rebuilt, 0);
+        assert_eq!(evidence.block_search_documents_rebuilt, 0);
         assert_eq!(
             fs::read(&replacement_paths.main).expect("preserved replacement main"),
             replacement_main

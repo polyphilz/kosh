@@ -214,6 +214,21 @@ fn validate_blocks(
         if !SUPPORTED_BLOCK_TYPES.contains(&block_type) {
             return invalid("documentJson contains an unsupported block type");
         }
+        if block_type == "heading" {
+            let level = object
+                .get("props")
+                .and_then(Value::as_object)
+                .and_then(|props| props.get("level"))
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    DatabaseError::InvalidInput(
+                        "heading blocks must have an integer props.level from 1 to 3".into(),
+                    )
+                })?;
+            if !(1..=3).contains(&level) {
+                return invalid("heading blocks must have an integer props.level from 1 to 3");
+            }
+        }
         if let Some(kind) = attachment_kind(block_type) {
             let attachment_id = object
                 .get("props")
@@ -269,19 +284,16 @@ fn collect_searchable_blocks(
                 join_nonempty([string_prop(props, "altText"), string_prop(props, "caption")])
             }
             "koshFileAttachment" => string_prop(props, "caption").unwrap_or_default().to_owned(),
-            "koshPdf" | "koshPendingMedia" => String::new(),
             _ => inline_text(object.get("content")),
         };
         authored_text = authored_text.trim().to_owned();
-        let heading_level = (block_type == "heading")
-            .then(|| {
-                props
-                    .and_then(|value| value.get("level"))
-                    .and_then(Value::as_u64)
-            })
-            .flatten()
-            .and_then(|level| usize::try_from(level).ok())
-            .filter(|level| (1..=3).contains(level));
+        let heading_level = (block_type == "heading").then(|| {
+            props
+                .and_then(|value| value.get("level"))
+                .and_then(Value::as_u64)
+                .and_then(|level| usize::try_from(level).ok())
+                .expect("validated heading has an integer level from 1 to 3")
+        });
         let heading_context = headings.iter().flatten().cloned().collect::<Vec<_>>();
         let attachment_id = attachment_kind(block_type)
             .and_then(|_| string_prop(props, "attachmentId").map(ToOwned::to_owned));
@@ -384,6 +396,27 @@ mod tests {
             validate(r#"{"schemaVersion":1,"blocks":[{"id":"a","type":"table","children":[]}]}"#)
                 .unwrap_err();
         assert!(error.to_string().contains("unsupported block type"));
+    }
+
+    #[test]
+    fn rejects_headings_without_a_supported_level() {
+        for props in [
+            r#"{}"#,
+            r#"{"level":0}"#,
+            r#"{"level":4}"#,
+            r#"{"level":"2"}"#,
+        ] {
+            let document = format!(
+                r#"{{"schemaVersion":1,"blocks":[{{"id":"heading","type":"heading","props":{props},"content":[]}}]}}"#
+            );
+            let error = validate(&document).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("integer props.level from 1 to 3"),
+                "unexpected error for {props}: {error}"
+            );
+        }
     }
 
     #[test]

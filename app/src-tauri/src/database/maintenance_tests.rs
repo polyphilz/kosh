@@ -76,7 +76,7 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
     assert_eq!(before.active_tidbits, 1);
     assert_eq!(before.revisions, 2);
     assert!(before.authored_passages >= 2);
-    assert_eq!(before.search_documents, 1);
+    assert_eq!(before.block_search_documents, 1);
 
     assert_eq!(client.rebuild_search().expect("first search rebuild"), 1);
     assert_eq!(

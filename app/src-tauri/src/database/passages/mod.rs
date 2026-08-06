@@ -270,7 +270,6 @@ pub(super) fn deactivate_tidbit(transaction: &Transaction<'_>, tidbit_id: &str) 
         params![tidbit_id],
     )?;
     search::replace_tidbit_documents(transaction, tidbit_id)?;
-    block_search::replace_tidbit_documents(transaction, tidbit_id)?;
     Ok(())
 }
 

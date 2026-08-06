@@ -22,6 +22,7 @@ use super::{
         OffsiteBackupConfig, OffsiteBackupConfigIntent, OffsiteBackupTakeoverIntent,
         SaveOffsiteBackupConfigInput,
     },
+    block_search,
     embedding_index::{
         InstallEmbeddingDisposition, PassageEmbeddingIndexProgress, PendingPassageEmbedding,
     },
@@ -1640,6 +1641,49 @@ pub(super) fn install_lexical_benchmark_attachments(
              ) VALUES(?1, ?2, ?3, 0, 'ATTACHMENT')",
             params![&write.revision_id, &write.attachment_id, &owner_block_id],
         )?;
+        let block_type = if kind == "IMAGE" {
+            "koshImage"
+        } else {
+            "koshFileAttachment"
+        };
+        let search_hash =
+            block_search::search_content_hash(block_type, "", "", &write.display_filename, "");
+        let indexed = transaction.execute(
+            "INSERT INTO block_search_document(
+                tidbit_id, tidbit_revision_id, block_id, block_ordinal, block_type,
+                heading_context, body, attachment_names, extracted_text,
+                content_hash, updated_at
+             )
+             SELECT
+                tidbit.id, revision.id, ?1,
+                coalesce((
+                    SELECT max(existing.block_ordinal) + 1
+                    FROM block_search_document AS existing
+                    WHERE existing.tidbit_id = tidbit.id
+                ), 0),
+                ?2, '', '', ?3, '', ?4, tidbit.updated_at
+             FROM tidbit_revision AS revision
+             JOIN tidbit ON tidbit.id = revision.tidbit_id
+             WHERE revision.id = ?5
+               AND tidbit.current_revision_id = revision.id
+               AND tidbit.deleted_at IS NULL",
+            params![
+                &owner_block_id,
+                block_type,
+                &write.display_filename,
+                search_hash,
+                &write.revision_id,
+            ],
+        )?;
+        if indexed != 1 {
+            return Err(DatabaseError::Validation {
+                kind: "main",
+                reason: format!(
+                    "benchmark attachment {} has no active owning revision",
+                    write.attachment_id
+                ),
+            });
+        }
     }
     transaction.commit()?;
     Ok(())

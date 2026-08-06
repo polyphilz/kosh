@@ -5,9 +5,11 @@ use uuid::Uuid;
 use super::{
     block_search,
     connection::{self, DatabaseKind, FileState},
+    search,
     tidbits::CreateTidbitWrite,
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
-    Database, DatabasePaths, DeleteTidbitInput, MediaLimits, RestoreTidbitInput, TidbitDraft,
+    Database, DatabasePaths, DeleteTidbitInput, LexicalBenchmarkAttachmentWrite, MediaLimits,
+    RestoreTidbitInput, TidbitDraft,
 };
 
 struct TestLibrary {
@@ -177,6 +179,18 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
         [(note_id.clone(), "fact".into())]
     );
     assert_eq!(document_count(&library.connection(), &note_id), 2);
+    assert_eq!(
+        search_blocks_in(&library.connection(), "block_fts_trigram", "trine"),
+        [(note_id.clone(), "fact".into())]
+    );
+    assert_eq!(
+        search_blocks_in(
+            &library.connection(),
+            "block_fts_short",
+            &search::short_grams_for_search("ci"),
+        ),
+        [(note_id.clone(), "fact".into())]
+    );
 
     client
         .save_working_copy(SaveWorkingCopyWrite {
@@ -245,6 +259,145 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
     );
 }
 
+#[test]
+fn strict_refresh_rejects_drifted_attachment_ownership_but_rebuild_skips_it() {
+    let library = TestLibrary::new();
+    let client = library.database.client();
+    let valid_note_id = Uuid::now_v7().to_string();
+    client
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                document_json: document("healthy"),
+                body_markdown: "A healthy note.".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 10,
+            tidbit_id: valid_note_id.clone(),
+            revision_id: Uuid::now_v7().to_string(),
+            source_ids: Vec::new(),
+        })
+        .expect("create valid note");
+    let drifted_note_id = Uuid::now_v7().to_string();
+    let drifted_revision_id = Uuid::now_v7().to_string();
+    client
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                document_json: document("before-drift"),
+                body_markdown: "A note before drift.".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 11,
+            tidbit_id: drifted_note_id.clone(),
+            revision_id: drifted_revision_id.clone(),
+            source_ids: Vec::new(),
+        })
+        .expect("create note that will drift");
+
+    let mut writer =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("open block-search writer");
+    writer
+        .execute("DROP TRIGGER tidbit_revision_prevent_update", [])
+        .expect("allow corrupt restore fixture");
+    let missing_attachment_id = Uuid::now_v7().to_string();
+    let drifted_document = serde_json::json!({
+        "schemaVersion": 1,
+        "blocks": [{
+            "id": "missing-file",
+            "type": "koshFileAttachment",
+            "props": {"attachmentId": missing_attachment_id, "caption": "missing evidence"},
+            "children": [],
+        }],
+    })
+    .to_string();
+    writer
+        .execute(
+            "UPDATE tidbit_revision SET document_json = ?1 WHERE id = ?2",
+            params![drifted_document, drifted_revision_id],
+        )
+        .expect("install drifted document fixture");
+
+    let transaction = writer.transaction().expect("strict refresh transaction");
+    let error = block_search::replace_tidbit_documents(&transaction, &drifted_note_id)
+        .expect_err("routine refresh must reject drifted ownership");
+    assert!(error.to_string().contains("does not own attachment"));
+    transaction.rollback().expect("roll back strict refresh");
+
+    let transaction = writer.transaction().expect("rebuild transaction");
+    block_search::rebuild_documents(&transaction).expect("rebuild skips only drifted block");
+    transaction.commit().expect("commit tolerant rebuild");
+    assert_eq!(
+        search_blocks(&library.connection(), "healthy"),
+        [(valid_note_id, "fact".into())]
+    );
+    assert_eq!(document_count(&library.connection(), &drifted_note_id), 0);
+}
+
+#[test]
+fn failed_block_fts_reconciliation_stays_dirty_and_reports_the_index() {
+    let library = TestLibrary::new();
+    let client = library.database.client();
+    let writer =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("open block-search writer");
+    writer
+        .execute("DROP TABLE block_fts_short", [])
+        .expect("remove one block FTS index");
+    writer
+        .execute(
+            "UPDATE index_state SET status = 'DIRTY' WHERE name = 'BLOCK_FTS'",
+            [],
+        )
+        .expect("mark block FTS dirty");
+    drop(writer);
+
+    assert!(!client
+        .reconcile_fts()
+        .expect("failed reconciliation report"));
+    let (version, status, error) = block_fts_state(&library.connection());
+    assert_eq!(version, block_search::FTS_VERSION);
+    assert_eq!(status, "DIRTY");
+    assert!(error
+        .as_deref()
+        .is_some_and(|message| message.contains("block_fts_short")));
+}
+
+#[test]
+fn lexical_benchmark_attachments_are_present_in_block_search() {
+    let library = TestLibrary::new();
+    let client = library.database.client();
+    let note_id = Uuid::now_v7().to_string();
+    let revision_id = Uuid::now_v7().to_string();
+    client
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                document_json: document("benchmark"),
+                body_markdown: "A benchmark note.".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 10,
+            tidbit_id: note_id.clone(),
+            revision_id: revision_id.clone(),
+            source_ids: Vec::new(),
+        })
+        .expect("create benchmark note");
+    client
+        .install_lexical_benchmark_attachments(vec![LexicalBenchmarkAttachmentWrite {
+            revision_id,
+            attachment_id: Uuid::now_v7().to_string(),
+            created_at_ms: 11,
+            display_filename: "benchmark-evidence.bin".into(),
+            media_type: "application/octet-stream".into(),
+            byte_length: 128,
+        }])
+        .expect("install benchmark attachment");
+
+    let hits = search_blocks(&library.connection(), "evidence");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0, note_id);
+    assert!(hits[0].1.starts_with("benchmark-attachment-"));
+}
+
 fn document(word: &str) -> String {
     serde_json::json!({
         "schemaVersion": 1,
@@ -276,15 +429,19 @@ fn document(word: &str) -> String {
 }
 
 fn search_blocks(connection: &Connection, query: &str) -> Vec<(String, String)> {
+    search_blocks_in(connection, "block_fts_word", query)
+}
+
+fn search_blocks_in(connection: &Connection, index: &str, query: &str) -> Vec<(String, String)> {
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT document.tidbit_id, document.block_id
-             FROM block_fts_word
+             FROM {index}
              JOIN block_search_document AS document
-               ON document.rowid = block_fts_word.rowid
-             WHERE block_fts_word MATCH ?1
-             ORDER BY document.tidbit_id, document.block_ordinal",
-        )
+               ON document.rowid = {index}.rowid
+             WHERE {index} MATCH ?1
+             ORDER BY document.tidbit_id, document.block_ordinal"
+        ))
         .expect("block FTS query");
     statement
         .query_map(params![query], |row| Ok((row.get(0)?, row.get(1)?)))

@@ -93,7 +93,7 @@ struct RestoredEvidence {
     sources: u64,
     attachments: u64,
     media_blobs: u64,
-    search_documents: u64,
+    block_search_documents: u64,
     exact_result_count: u64,
     resolved_source_url: String,
     historical_citations: u64,
@@ -986,7 +986,7 @@ fn verify_restored_library(
         sources: query_count(&main, "SELECT count(*) FROM source"),
         attachments: query_count(&main, "SELECT count(*) FROM attachment"),
         media_blobs: query_count(&media, "SELECT count(*) FROM media_blob"),
-        search_documents: query_count(&main, "SELECT count(*) FROM block_search_document"),
+        block_search_documents: query_count(&main, "SELECT count(*) FROM block_search_document"),
         exact_result_count: u64::try_from(after.len()).expect("exact result count"),
         resolved_source_url: after[0]
             .citation
@@ -1002,7 +1002,7 @@ fn verify_restored_library(
     assert!(evidence.sources >= 3);
     assert!(evidence.attachments >= 1);
     assert!(evidence.media_blobs >= 1);
-    assert!(evidence.search_documents >= 2);
+    assert!(evidence.block_search_documents >= 2);
     assert_eq!(evidence.historical_citations, 1);
     assert_eq!(evidence.interrupted_replication_working_copies, 1);
     drop(media);

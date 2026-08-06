@@ -426,7 +426,7 @@ export class FakeBackend implements Backend {
         revisions: this.citations.size,
         authoredPassages: this.citations.size,
         attachmentPassages: 0,
-        searchDocuments: activeTidbits,
+        blockSearchDocuments: activeTidbits,
         attachments: 0,
         attachmentBytes: 0,
         imageOcr: {

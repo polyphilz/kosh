@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use super::{document, media, passages, DatabaseError, Result};
+use super::{block_search, document, media, passages, DatabaseError, Result};
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const DISPLAY_TITLE_LIMIT: usize = 96;
@@ -175,6 +175,7 @@ pub(super) fn delete_tidbit(
         });
     }
     passages::deactivate_tidbit(&transaction, &input.id)?;
+    block_search::clear_tidbit_documents(&transaction, &input.id)?;
     transaction.commit()?;
 
     load_tidbit(connection, &input.id)
@@ -220,11 +221,16 @@ pub(super) fn restore_tidbit(
             actual_revision_id: current.revision_id,
         });
     }
-    passages::activate_author_passages_on_restore(
+    let activated = passages::activate_author_passages_on_restore(
         &transaction,
         &input.id,
         &input.expected_revision_id,
     )?;
+    if !activated {
+        // A media-only note has no authored passage to activate, but its current
+        // attachment blocks still belong in block search after restoration.
+        block_search::replace_tidbit_documents(&transaction, &input.id)?;
+    }
     transaction.commit()?;
 
     load_tidbit(connection, &input.id)

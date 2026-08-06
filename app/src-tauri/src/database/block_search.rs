@@ -11,14 +11,33 @@ struct AttachmentEvidence {
     extracted_text: String,
 }
 
+#[derive(Clone, Copy)]
+enum MissingAttachmentPolicy {
+    Reject,
+    SkipBlock,
+}
+
 pub(super) fn replace_tidbit_documents(
     transaction: &Transaction<'_>,
     tidbit_id: &str,
 ) -> Result<()> {
+    replace_tidbit_documents_with_policy(transaction, tidbit_id, MissingAttachmentPolicy::Reject)
+}
+
+pub(super) fn clear_tidbit_documents(transaction: &Transaction<'_>, tidbit_id: &str) -> Result<()> {
     transaction.execute(
         "DELETE FROM block_search_document WHERE tidbit_id = ?1",
         params![tidbit_id],
     )?;
+    Ok(())
+}
+
+fn replace_tidbit_documents_with_policy(
+    transaction: &Transaction<'_>,
+    tidbit_id: &str,
+    missing_attachment_policy: MissingAttachmentPolicy,
+) -> Result<()> {
+    clear_tidbit_documents(transaction, tidbit_id)?;
     let current = transaction
         .query_row(
             "SELECT revision.id, revision.document_json, tidbit.updated_at
@@ -41,19 +60,39 @@ pub(super) fn replace_tidbit_documents(
         return Ok(());
     };
     for block in document::extract_searchable_blocks(&document_json)? {
-        let attachment = block
-            .attachment_id
-            .as_deref()
-            .map(|attachment_id| {
-                load_attachment_evidence(
-                    transaction,
-                    tidbit_id,
-                    &revision_id,
-                    &block.block_id,
-                    attachment_id,
-                )
-            })
-            .transpose()?;
+        let attachment = match block.attachment_id.as_deref() {
+            Some(attachment_id) => match load_attachment_evidence(
+                transaction,
+                tidbit_id,
+                &revision_id,
+                &block.block_id,
+                attachment_id,
+            )? {
+                Some(evidence) => Some(evidence),
+                None if matches!(
+                    missing_attachment_policy,
+                    MissingAttachmentPolicy::SkipBlock
+                ) =>
+                {
+                    log::warn!(
+                        "skipping block {} while rebuilding search because attachment {} is not owned by its current note",
+                        block.block_id,
+                        attachment_id
+                    );
+                    continue;
+                }
+                None => {
+                    return Err(DatabaseError::Validation {
+                        kind: "main",
+                        reason: format!(
+                            "current block {} does not own attachment {attachment_id}",
+                            block.block_id
+                        ),
+                    });
+                }
+            },
+            None => None,
+        };
         let attachment_names = attachment
             .as_ref()
             .map(|evidence| evidence.display_filename.as_str())
@@ -139,7 +178,11 @@ pub(super) fn rebuild_documents(transaction: &Transaction<'_>) -> Result<()> {
         rows
     };
     for tidbit_id in tidbit_ids {
-        replace_tidbit_documents(transaction, &tidbit_id)?;
+        replace_tidbit_documents_with_policy(
+            transaction,
+            &tidbit_id,
+            MissingAttachmentPolicy::SkipBlock,
+        )?;
     }
     mark_current(transaction)
 }
@@ -150,8 +193,8 @@ fn load_attachment_evidence(
     revision_id: &str,
     block_id: &str,
     attachment_id: &str,
-) -> Result<AttachmentEvidence> {
-    transaction
+) -> Result<Option<AttachmentEvidence>> {
+    Ok(transaction
         .query_row(
             "SELECT
                 attachment.display_filename,
@@ -162,7 +205,7 @@ fn load_attachment_evidence(
                         FROM current_attachment_passage AS current
                         JOIN passage ON passage.id = current.passage_id
                         WHERE current.attachment_id = attachment.id
-                          AND passage.locator_kind IN ('OCR_REGION', 'TEXT_LINES')
+                          AND passage.locator_kind = 'OCR_REGION'
                         ORDER BY passage.ordinal
                     ) AS ordered_evidence
                 ), '')
@@ -187,14 +230,10 @@ fn load_attachment_evidence(
                 })
             },
         )
-        .optional()?
-        .ok_or_else(|| DatabaseError::Validation {
-            kind: "main",
-            reason: format!("current block {block_id} does not own attachment {attachment_id}"),
-        })
+        .optional()?)
 }
 
-fn search_content_hash(
+pub(super) fn search_content_hash(
     block_type: &str,
     heading_context: &str,
     body: &str,
