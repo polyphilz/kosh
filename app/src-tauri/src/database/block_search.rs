@@ -38,7 +38,6 @@ pub(super) fn replace_tidbit_documents(
         )
         .optional()?;
     let Some((revision_id, document_json, updated_at)) = current else {
-        mark_current(transaction)?;
         return Ok(());
     };
     for block in document::extract_searchable_blocks(&document_json)? {
@@ -101,7 +100,7 @@ pub(super) fn replace_tidbit_documents(
             ],
         )?;
     }
-    mark_current(transaction)
+    Ok(())
 }
 
 pub(super) fn refresh_attachment_owners(

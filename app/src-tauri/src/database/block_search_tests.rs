@@ -3,6 +3,8 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use super::{
+    block_search,
+    connection::{self, DatabaseKind, FileState},
     tidbits::CreateTidbitWrite,
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     Database, DatabasePaths, DeleteTidbitInput, MediaLimits, RestoreTidbitInput, TidbitDraft,
@@ -10,16 +12,18 @@ use super::{
 
 struct TestLibrary {
     _root: TempDir,
+    paths: DatabasePaths,
     database: Database,
 }
 
 impl TestLibrary {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("temporary block-search library");
-        let database =
-            Database::initialize(DatabasePaths::new(root.path())).expect("block-search database");
+        let paths = DatabasePaths::new(root.path());
+        let database = Database::initialize(paths.clone()).expect("block-search database");
         Self {
             _root: root,
+            paths,
             database,
         }
     }
@@ -29,6 +33,121 @@ impl TestLibrary {
             .open_main_read_only()
             .expect("block-search connection")
     }
+}
+
+#[test]
+fn per_note_refresh_preserves_global_block_fts_rebuild_state() {
+    let library = TestLibrary::new();
+    let client = library.database.client();
+    let edited_note_id = Uuid::now_v7().to_string();
+    let edited_revision_id = Uuid::now_v7().to_string();
+    let edited = client
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                document_json: document("amber"),
+                body_markdown: "# Vectors\n\nAn amber invariant.".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 10,
+            tidbit_id: edited_note_id.clone(),
+            revision_id: edited_revision_id,
+            source_ids: Vec::new(),
+        })
+        .expect("create edited note");
+    let missing_note_id = Uuid::now_v7().to_string();
+    client
+        .create_tidbit(CreateTidbitWrite {
+            input: TidbitDraft {
+                document_json: document("beryl"),
+                body_markdown: "# Vectors\n\nA beryl invariant.".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 11,
+            tidbit_id: missing_note_id.clone(),
+            revision_id: Uuid::now_v7().to_string(),
+            source_ids: Vec::new(),
+        })
+        .expect("create missing-index note");
+
+    let writer =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("open block-search writer");
+    writer
+        .execute(
+            "INSERT INTO block_fts_word(
+                block_fts_word, rowid, heading_context, body, attachment_names, extracted_text
+             )
+             SELECT
+                'delete', rowid,
+                kosh_search_normalize(heading_context),
+                kosh_search_normalize(body),
+                kosh_search_normalize(attachment_names),
+                kosh_search_normalize(extracted_text)
+             FROM block_search_document
+             WHERE tidbit_id = ?1",
+            params![&missing_note_id],
+        )
+        .expect("remove one note's block word index rows");
+    writer
+        .execute(
+            "UPDATE index_state
+             SET version = 'block-lexical-v0', status = 'DIRTY', error = 'interrupted rebuild'
+             WHERE name = 'BLOCK_FTS'",
+            [],
+        )
+        .expect("mark block FTS stale");
+    drop(writer);
+
+    client
+        .save_working_copy(SaveWorkingCopyWrite {
+            input: super::SaveWorkingCopyInput {
+                note_id: edited_note_id.clone(),
+                base_revision_id: Some(edited.current_revision_id),
+                edit_generation: 2,
+                document_json: document("copper"),
+                body_markdown: "# Vectors\n\nA copper invariant.".into(),
+                sources: Vec::new(),
+            },
+            now_ms: 20,
+            media_limits: MediaLimits::default(),
+            allow_empty_ephemeral: false,
+        })
+        .expect("save routine note edit");
+    client
+        .checkpoint_working_copy(CheckpointWorkingCopyWrite {
+            input: super::CheckpointWorkingCopyInput {
+                note_id: edited_note_id.clone(),
+                expected_edit_generation: 2,
+            },
+            now_ms: 21,
+            revision_id: Uuid::now_v7().to_string(),
+            source_ids: Vec::new(),
+        })
+        .expect("checkpoint routine note edit");
+
+    assert_eq!(
+        block_fts_state(&library.connection()),
+        (
+            "block-lexical-v0".into(),
+            "DIRTY".into(),
+            Some("interrupted rebuild".into()),
+        )
+    );
+    assert!(search_blocks(&library.connection(), "beryl").is_empty());
+    assert_eq!(
+        search_blocks(&library.connection(), "copper"),
+        [(edited_note_id, "fact".into())]
+    );
+
+    assert!(client.reconcile_fts().expect("reconcile stale block FTS"));
+    assert_eq!(
+        block_fts_state(&library.connection()),
+        (block_search::FTS_VERSION.into(), "IDLE".into(), None)
+    );
+    assert_eq!(
+        search_blocks(&library.connection(), "beryl"),
+        [(missing_note_id, "fact".into())]
+    );
 }
 
 #[test]
@@ -194,4 +313,14 @@ fn document_count(connection: &Connection, note_id: &str) -> i64 {
             |row| row.get(0),
         )
         .expect("block document count")
+}
+
+fn block_fts_state(connection: &Connection) -> (String, String, Option<String>) {
+    connection
+        .query_row(
+            "SELECT version, status, error FROM index_state WHERE name = 'BLOCK_FTS'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("BLOCK_FTS state")
 }
