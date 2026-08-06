@@ -115,7 +115,7 @@ app/src-tauri/target/universal-apple-darwin/release/bundle/macos/Kosh.app
 `release:smoke` starts that exact bundle twice with a temporary isolated home
 and Finder-like minimal `PATH`. The packaged React root creates a URL-bearing
 canary through normal capture IPC, both packaged surfaces resolve its exact
-search citation, and the second launch proves the same cited revision survives.
+search block link, and the second launch proves the same current note state survives.
 The native executable embeds its source commit, and the lane rejects a bundle
 whose embedded commit differs from the checkout under test. Release build and
 smoke commands also reject modified, staged, or untracked source, while ignored
@@ -125,7 +125,7 @@ WAL/integrity, and operation without a semantic model.
 ## 3. Run release acceptance
 
 The checklist's `launch-hidden` preflight can verify the exact packaged commit,
-schema, both rendered webviews, IPC, restart, lexical search, and citations
+schema, both rendered webviews, IPC, restart, lexical search, and block links
 without foregrounding Kosh. It is useful while the Mac is in active use, but it
 does not replace the checklist's visible menu, shortcut, file-dialog, focus,
 or `/Applications` observations.
@@ -138,7 +138,7 @@ profiles and never point the candidate at production data.
 
 The required record covers titleless autosave and lexical search without a
 model, Quick Add, code/math, image OCR, filename-only file search, opaque
-attachments, hybrid search, exact source citations, forced-termination
+attachments, hybrid search, exact block links, forced-termination
 recovery, restart, and commit-bound performance budgets.
 Do not claim a UI journey from database checks alone.
 
@@ -238,13 +238,13 @@ Use the copy under `/Applications`, not the build directory.
 - Exercise the configurable Quick Add and main-window shortcuts.
 - Create a titleless URL-bearing note containing code and math, then quit
   immediately and confirm it survives restart without an explicit Save action.
-- Use `Cmd+K` to find an authored phrase and open its resolved citation.
+- Use `Cmd+K` to find an authored phrase and open its resolved block link.
 - Use `Cmd+N`, `Cmd+/`, and back/forward navigation between two notes and
   Settings.
 - Add a real image; wait for OCR and search its recognized text.
 - Add text, document, and opaque binary files; confirm their filenames are
   searchable and all files survive restart.
-- Prepare semantic search, run a paraphrase, and open the exact cited passage.
+- Prepare semantic search, run a paraphrase, and open the exact cited block.
 - Confirm capture and lexical search still work while semantic setup is
   unavailable or offline.
 - Quit with `Cmd+Q`, reopen, and confirm all durable content survives.

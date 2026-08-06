@@ -8,9 +8,8 @@ mod scale;
 use std::path::Path;
 
 pub use fixture::{
-    EvaluationAttachment, EvaluationLocator, EvaluationOwnerKind, EvaluationPassage,
-    EvaluationQuery, EvaluationRegion, EvaluationSource, ExpectedCitation, QueryCategory,
-    RelevanceFixture, RelevanceJudgment, RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
+    EvaluationBlock, EvaluationQuery, QueryCategory, RelevanceFixture, RelevanceJudgment,
+    RetrievalNeed, SearchMode, FIXTURE_SCHEMA_VERSION,
 };
 pub use hybrid::{
     generate_hybrid_vector_fixture, validate_hybrid_vector_fixture, HybridFixtureRetriever,
@@ -21,10 +20,10 @@ pub use lexical::{
     INTERACTIVE_LEXICAL_P95_BUDGET_MS, LEXICAL_PERFORMANCE_SCHEMA_VERSION,
 };
 pub use quality::{
-    enforce_quality_gate, CitationAudit, CitationAuditEntry, QualityGateReport, QualityThresholds,
-    CITATION_AUDIT_SCHEMA_VERSION, MINIMUM_CITATION_AUDIT_COUNT, MINIMUM_HYBRID_CITATION_ACCURACY,
+    enforce_quality_gate, BlockAudit, BlockAuditEntry, QualityGateReport, QualityThresholds,
+    BLOCK_AUDIT_SCHEMA_VERSION, MINIMUM_BLOCK_AUDIT_COUNT, MINIMUM_HYBRID_EXPECTED_BLOCK_ACCURACY,
     MINIMUM_HYBRID_MRR, MINIMUM_HYBRID_NDCG_AT_10, MINIMUM_HYBRID_RECALL_AT_10,
-    MINIMUM_LEXICAL_CITATION_ACCURACY, MINIMUM_LEXICAL_RECALL_AT_10, MINIMUM_QUERY_COUNT,
+    MINIMUM_LEXICAL_EXPECTED_BLOCK_ACCURACY, MINIMUM_LEXICAL_RECALL_AT_10, MINIMUM_QUERY_COUNT,
     QUALITY_GATE_SCHEMA_VERSION,
 };
 pub use report::{

@@ -6,7 +6,7 @@ is disaster recovery for one writing installation. It is not multi-device
 sync, collaboration, or a replacement for retaining the original Mac until a
 recovery drill has passed.
 
-Note capture, autosave, Command-K search, and local citations never wait for R2,
+Note capture, autosave, Command-K search, and local block links never wait for R2,
 Litestream, or the network.
 
 ## Set up the R2 target
@@ -70,7 +70,7 @@ Use **Find recovery points**, select the newest point, and:
 - **Run recovery drill** to reconstruct and fully validate a disposable copy.
 
 The drill verifies migration heads, both SQLite databases, foreign keys,
-attachment bytes, search rebuildability, and citation provenance, then removes
+attachment bytes, search rebuildability, and block ownership, then removes
 its private workspace. It never changes the live library.
 
 Run a drill after initial setup, after changing the bucket or credentials, and
@@ -119,7 +119,7 @@ The packaged command:
 - emits a bounded JSON receipt with counts, never credentials.
 
 After a `PASSED` receipt, clear the shell variables, launch Kosh normally, and
-inspect notes, attachments, Command-K results, historical citation resolution,
+inspect notes, attachments, Command-K results, current block link resolution,
 and source links before declaring recovery complete:
 
 ```sh
@@ -172,6 +172,6 @@ KOSH_R2_CANARY_REQUIRE_PACKAGED=1 ../scripts/run-litestream-r2-canary.sh
 This non-PR lane interrupts and resumes real replication, publishes the
 manifest last, drills it, restores through the packaged command into a clean
 isolated home, launches the recovered package with hidden windows, rebuilds
-search, verifies authored citations, and removes the
+search, verifies authored block links, and removes the
 unique R2 prefix. Its retained reports are redacted; the restored profile and
 credentials are never uploaded.

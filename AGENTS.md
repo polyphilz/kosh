@@ -4,17 +4,19 @@
 
 - Kosh is a macOS-first, local-first Tauri application.
 - Kosh is a titleless, note-first capture tool: cold launch, typing, durable
-  autosave, hybrid search, and exact passage navigation are its critical path.
+  autosave, hybrid search, and exact block navigation are its critical path.
 - Capture and lexical search must remain usable when the embedding model or
   remote backup is unavailable.
-- Search results operate on citation-sized passages. A trusted citation must
-  resolve to the exact stored revision or image OCR evidence supplied for that
-  result. Other files contribute only their display filenames to search.
+- Every searchable unit is a stable, nonempty block owned by exactly one
+  current note. Image blocks include current OCR evidence; other file blocks
+  contribute only their display filenames. Search links resolve only current
+  block IDs, and a missing or wrong-note ID is silently removed.
 - Research is a retired product surface. The redesign is a hard cutover with
   no deployed profiles to migrate, so do not retain its schema, rows, runtime
   adapters, fixtures, or migrations for compatibility.
-- Tidbit revisions and media blobs are immutable. Background OCR and embedding
-  work must be content-hash checked before stale results can install.
+- Kosh does not retain note revision history. Media blobs are immutable, and
+  background OCR and embedding work must be content-hash checked before stale
+  results can install.
 - R2 is single-writer backup/recovery, not multi-device synchronization.
 
 ## Repository workflow
@@ -64,12 +66,12 @@ contract.
 
 ## Code Review Rules
 
-### Citation integrity
+### Block-link integrity
 
-- Flag any path that lets search or agent output display a citation whose
-  target was not resolved from Kosh-owned passage and provenance data.
-- Historical citations must remain attached to the revision that was actually
-  used; edits must not silently retarget them.
+- Flag any path that lets search display or navigate to a block not resolved
+  from Kosh-owned current note data.
+- Stale or mismatched block links must degrade to the note route without
+  retargeting another block or resurrecting deleted content.
 
 ### Durable background work
 

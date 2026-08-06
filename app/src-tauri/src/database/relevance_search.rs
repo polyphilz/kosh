@@ -114,7 +114,7 @@ pub struct SearchHighlight {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LexicalDocument {
-    pub passage_id: String,
+    pub block_id: String,
     pub updated_at_ms: i64,
     pub evidence_kind: SearchEvidenceKind,
     pub fields: BTreeMap<SearchField, String>,
@@ -125,7 +125,7 @@ pub(crate) struct LexicalDocument {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RankedLexicalDocument {
-    pub passage_id: String,
+    pub block_id: String,
     pub score: f64,
     pub evidence_kind: SearchEvidenceKind,
     pub matched_fields: Vec<SearchField>,
@@ -133,8 +133,8 @@ pub(crate) struct RankedLexicalDocument {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct RankedSemanticPassage {
-    pub passage_id: String,
+pub(crate) struct RankedSemanticBlock {
+    pub block_id: String,
     pub evidence_kind: SearchEvidenceKind,
 }
 
@@ -235,13 +235,13 @@ impl ParsedLexicalQuery {
     }
 }
 
-pub(crate) fn fuse_ranked_passages(
+pub(crate) fn fuse_ranked_blocks(
     query: &ParsedLexicalQuery,
     lexical: Vec<RankedLexicalDocument>,
-    semantic: Vec<RankedSemanticPassage>,
+    semantic: Vec<RankedSemanticBlock>,
 ) -> Vec<RankedLexicalDocument> {
     struct FusedCandidate {
-        passage_id: String,
+        block_id: String,
         score: f64,
         best_rank: usize,
         lexical_rank: Option<usize>,
@@ -266,9 +266,9 @@ pub(crate) fn fuse_ranked_passages(
             score += HEADING_RRF_WEIGHT / (RRF_RANK_CONSTANT + rank as f64);
         }
         candidates.insert(
-            candidate.passage_id.clone(),
+            candidate.block_id.clone(),
             FusedCandidate {
-                passage_id: candidate.passage_id,
+                block_id: candidate.block_id,
                 score,
                 best_rank: rank,
                 lexical_rank: Some(rank),
@@ -281,13 +281,13 @@ pub(crate) fn fuse_ranked_passages(
     }
     for (index, semantic) in semantic.into_iter().enumerate() {
         let rank = index + 1;
-        if !candidates.contains_key(&semantic.passage_id) && rank > SEMANTIC_EXPANSION_RANK_LIMIT {
+        if !candidates.contains_key(&semantic.block_id) && rank > SEMANTIC_EXPANSION_RANK_LIMIT {
             continue;
         }
         let candidate = candidates
-            .entry(semantic.passage_id.clone())
+            .entry(semantic.block_id.clone())
             .or_insert_with(|| FusedCandidate {
-                passage_id: semantic.passage_id,
+                block_id: semantic.block_id,
                 score: 0.0,
                 best_rank: rank,
                 lexical_rank: None,
@@ -318,12 +318,12 @@ pub(crate) fn fuse_ranked_passages(
             })
             .then_with(|| left.lexical_rank.cmp(&right.lexical_rank))
             .then_with(|| left.semantic_rank.cmp(&right.semantic_rank))
-            .then_with(|| left.passage_id.cmp(&right.passage_id))
+            .then_with(|| left.block_id.cmp(&right.block_id))
     });
     candidates
         .into_iter()
         .map(|candidate| RankedLexicalDocument {
-            passage_id: candidate.passage_id,
+            block_id: candidate.block_id,
             score: candidate.score,
             evidence_kind: candidate.evidence_kind,
             matched_fields: candidate.matched_fields,
@@ -432,13 +432,13 @@ pub(crate) fn rank_lexical_documents(
             .partial_cmp(&left.score)
             .unwrap_or(Ordering::Equal)
             .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
-            .then_with(|| left.passage_id.cmp(&right.passage_id))
+            .then_with(|| left.block_id.cmp(&right.block_id))
     });
     ranked
         .into_iter()
         .take(limit)
         .map(|scored| RankedLexicalDocument {
-            passage_id: scored.passage_id,
+            block_id: scored.block_id,
             score: scored.score,
             evidence_kind: scored.evidence_kind,
             matched_fields: scored.matched_fields,
@@ -448,7 +448,7 @@ pub(crate) fn rank_lexical_documents(
 }
 
 struct ScoredDocument {
-    passage_id: String,
+    block_id: String,
     updated_at_ms: i64,
     score: f64,
     evidence_kind: SearchEvidenceKind,
@@ -519,7 +519,7 @@ fn score_document(query: &ParsedLexicalQuery, document: LexicalDocument) -> Opti
         .collect();
 
     Some(ScoredDocument {
-        passage_id: document.passage_id,
+        block_id: document.block_id,
         updated_at_ms: document.updated_at_ms,
         score,
         evidence_kind: document.evidence_kind,

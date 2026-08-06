@@ -98,7 +98,7 @@ describe("StartupSmokeReady", () => {
             blockId: expect.any(String),
             executionMode: "EXACT",
             noteId: tidbit.id,
-            revisionId: tidbit.currentRevisionId,
+            contentVersionId: tidbit.contentVersionId,
             resultCount: 1,
             sourceUrl: "https://example.invalid/kosh-progressive-operability",
           }),

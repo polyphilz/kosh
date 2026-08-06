@@ -49,7 +49,7 @@ fn note_autosave_checkpoint_and_search_cross_the_typed_ipc_boundary() {
         serde_json::json!({
             "input": {
                 "noteId": note_id,
-                "baseRevisionId": null,
+                "baseContentVersionId": null,
                 "editGeneration": 1,
                 "documentJson": r#"{"schemaVersion":1,"blocks":[{"id":"019f547b-6200-7000-8000-000000002011","type":"heading","props":{"level":1},"content":[{"type":"text","text":"IPC thought","styles":{}}],"children":[]},{"id":"019f547b-6200-7000-8000-000000002012","type":"paragraph","content":[{"type":"text","text":"Exact body.","styles":{}}],"children":[]}]}"#,
                 "bodyMarkdown": "# IPC thought\n\nExact body.",

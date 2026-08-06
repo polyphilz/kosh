@@ -1,6 +1,5 @@
 mod attachments;
 pub mod backup;
-#[path = "passage_embedding_indexer.rs"]
 mod block_embedding_indexer;
 mod database;
 #[cfg(target_os = "macos")]

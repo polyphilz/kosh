@@ -89,7 +89,7 @@ test("a block route remains addressable when checkpoint cleanup fails", async ({
     if (!backend) throw new Error("fake backend is unavailable");
     await backend.saveWorkingCopy({
       noteId: seeded.id,
-      baseRevisionId: seeded.currentRevisionId,
+      baseContentVersionId: seeded.contentVersionId,
       editGeneration: 1,
       documentJson: seeded.documentJson,
       bodyMarkdown: seeded.bodyMarkdown,
@@ -228,7 +228,7 @@ test("a result edited away before navigation becomes a silent stale block link",
     const current = await backend.loadTidbit(noteId);
     await backend.replaceNoteForTest({
       id: current.id,
-      expectedRevisionId: current.currentRevisionId,
+      expectedContentVersionId: current.contentVersionId,
       bodyMarkdown: "Current evidence: the replacement block now mentions indigo.",
       sources: current.sources,
     });

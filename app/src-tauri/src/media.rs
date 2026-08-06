@@ -831,7 +831,7 @@ pub(crate) fn protocol_response<R: tauri::Runtime>(
                 .header(http::header::ACCEPT_RANGES, "bytes")
                 .header(
                     http::header::CACHE_CONTROL,
-                    if payload.revision_bound {
+                    if payload.current_note_bound {
                         "private, max-age=31536000, immutable"
                     } else {
                         "private, no-store"

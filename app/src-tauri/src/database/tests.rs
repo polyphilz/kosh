@@ -54,7 +54,7 @@ fn fresh_schema_has_one_cutover_migration_and_no_retired_surfaces() {
         table_columns(&main, "draft"),
         [
             "id",
-            "base_revision_id",
+            "base_content_version_id",
             "edit_generation",
             "media_reservation",
             "created_at",
@@ -75,7 +75,7 @@ fn note_lifecycle_search_delete_restore_and_restart() {
     let database = Database::initialize(pair.paths.clone()).expect("database");
     let client = database.client();
     let note_id = Uuid::now_v7().to_string();
-    let first_revision_id = Uuid::now_v7().to_string();
+    let first_content_version_id = Uuid::now_v7().to_string();
     client
         .save_working_copy_for_test(
             note_id.clone(),
@@ -94,7 +94,7 @@ fn note_lifecycle_search_delete_restore_and_restart() {
             note_id.clone(),
             1,
             11,
-            first_revision_id.clone(),
+            first_content_version_id.clone(),
             vec![Uuid::now_v7().to_string()],
         )
         .expect("checkpoint new note")
@@ -108,7 +108,7 @@ fn note_lifecycle_search_delete_restore_and_restart() {
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
-        .expect("search first revision")
+        .expect("search first note state")
         .pop()
         .expect("first search result");
     assert_eq!(first_result.note_id, created.id);
@@ -117,7 +117,7 @@ fn note_lifecycle_search_delete_restore_and_restart() {
     client
         .save_working_copy_for_test(
             note_id.clone(),
-            Some(first_revision_id.clone()),
+            Some(first_content_version_id.clone()),
             2,
             "# Arrays\n\nExact amber evidence replaced the earlier wording.".into(),
             Vec::new(),
@@ -149,7 +149,7 @@ fn note_lifecycle_search_delete_restore_and_restart() {
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
-        .expect("search current revision")
+        .expect("search current content version")
         .iter()
         .any(|result| result.note_id == note_id));
 
@@ -157,7 +157,7 @@ fn note_lifecycle_search_delete_restore_and_restart() {
         .delete_tidbit(
             DeleteTidbitInput {
                 id: note_id.clone(),
-                expected_revision_id: edited.current_revision_id.clone(),
+                expected_content_version_id: edited.content_version_id.clone(),
             },
             30,
         )
@@ -175,7 +175,7 @@ fn note_lifecycle_search_delete_restore_and_restart() {
         .restore_tidbit(
             RestoreTidbitInput {
                 id: note_id.clone(),
-                expected_revision_id: edited.current_revision_id,
+                expected_content_version_id: edited.content_version_id,
             },
             31,
         )

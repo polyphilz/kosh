@@ -31,7 +31,7 @@ export type NoteFlushReason = "IDLE" | "NAVIGATION" | "HIDE" | "QUIT" | "UPDATE_
 
 export interface NoteAutosaveSnapshot {
   noteId: string;
-  baseRevisionId: string | null;
+  baseContentVersionId: string | null;
   editGeneration: number;
   durableGeneration: number;
   checkpointedGeneration: number;
@@ -87,7 +87,10 @@ export class NoteAutosaveCoordinator {
 
   constructor(
     gateway: NoteWorkingCopyGateway,
-    initial: Pick<NoteAutosaveSnapshot, "noteId" | "baseRevisionId" | "bodyMarkdown" | "sources"> &
+    initial: Pick<
+      NoteAutosaveSnapshot,
+      "noteId" | "baseContentVersionId" | "bodyMarkdown" | "sources"
+    > &
       Partial<
         Pick<
           NoteAutosaveSnapshot,
@@ -109,14 +112,14 @@ export class NoteAutosaveCoordinator {
     const checkpointedGeneration = initial.checkpointedGeneration ?? 0;
     this.state = {
       noteId: initial.noteId,
-      baseRevisionId: initial.baseRevisionId,
+      baseContentVersionId: initial.baseContentVersionId,
       editGeneration,
       durableGeneration,
       checkpointedGeneration,
       documentJson: initial.documentJson ?? createKoshDocumentFromMarkdown(initial.bodyMarkdown),
       bodyMarkdown: initial.bodyMarkdown,
       sources: cloneSources(initial.sources),
-      phase: phaseForInitialState(initial.baseRevisionId, editGeneration),
+      phase: phaseForInitialState(initial.baseContentVersionId, editGeneration),
       error: null,
     };
     this.renderedState = this.state;
@@ -130,7 +133,7 @@ export class NoteAutosaveCoordinator {
       gateway,
       {
         noteId: options.noteId ?? createUuidV7(),
-        baseRevisionId: null,
+        baseContentVersionId: null,
         documentJson: createEmptyKoshDocument(),
         bodyMarkdown: "",
         sources: [],
@@ -149,7 +152,7 @@ export class NoteAutosaveCoordinator {
       gateway,
       {
         noteId: workingCopy.noteId,
-        baseRevisionId: workingCopy.baseRevisionId,
+        baseContentVersionId: workingCopy.baseContentVersionId,
         editGeneration: workingCopy.editGeneration,
         durableGeneration: workingCopy.editGeneration,
         documentJson: workingCopy.documentJson,
@@ -234,7 +237,7 @@ export class NoteAutosaveCoordinator {
       try {
         result = await this.gateway.reserveWorkingCopyForMedia({
           noteId: target.noteId,
-          baseRevisionId: target.baseRevisionId,
+          baseContentVersionId: target.baseContentVersionId,
           editGeneration: target.editGeneration,
           documentJson: target.documentJson,
           bodyMarkdown: target.bodyMarkdown,
@@ -288,7 +291,7 @@ export class NoteAutosaveCoordinator {
         ...this.state,
         durableGeneration: Math.max(this.state.durableGeneration, reservation.generation),
         checkpointedGeneration: Math.max(this.state.checkpointedGeneration, reservation.generation),
-        phase: this.state.baseRevisionId === null ? "EPHEMERAL" : "CLEAN",
+        phase: this.state.baseContentVersionId === null ? "EPHEMERAL" : "CLEAN",
         error: null,
       });
       return true;
@@ -321,7 +324,7 @@ export class NoteAutosaveCoordinator {
       if (target.editGeneration <= this.state.checkpointedGeneration) {
         this.publish({
           ...this.state,
-          phase: this.state.baseRevisionId === null ? "EPHEMERAL" : "CLEAN",
+          phase: this.state.baseContentVersionId === null ? "EPHEMERAL" : "CLEAN",
           error: null,
         });
         return null;
@@ -356,7 +359,7 @@ export class NoteAutosaveCoordinator {
               this.state.checkpointedGeneration,
               reservationGeneration,
             ),
-            phase: this.state.baseRevisionId === null ? "EPHEMERAL" : "CLEAN",
+            phase: this.state.baseContentVersionId === null ? "EPHEMERAL" : "CLEAN",
             error: null,
           });
           return null;
@@ -368,7 +371,7 @@ export class NoteAutosaveCoordinator {
         await this.saveTarget(target);
       }
       if (target.editGeneration !== this.state.editGeneration) continue;
-      if (this.state.baseRevisionId === null && this.workingCopyId === null) {
+      if (this.state.baseContentVersionId === null && this.workingCopyId === null) {
         this.publish({
           ...this.state,
           durableGeneration: Math.max(this.state.durableGeneration, target.editGeneration),
@@ -406,7 +409,7 @@ export class NoteAutosaveCoordinator {
       const hasNewerLocalEdit = this.state.editGeneration !== target.editGeneration;
       this.publish({
         ...this.state,
-        baseRevisionId: note.currentRevisionId,
+        baseContentVersionId: note.contentVersionId,
         durableGeneration: Math.max(this.state.durableGeneration, target.editGeneration),
         checkpointedGeneration: target.editGeneration,
         phase: hasNewerLocalEdit ? "DIRTY" : "CLEAN",
@@ -422,7 +425,7 @@ export class NoteAutosaveCoordinator {
     try {
       result = await this.gateway.saveWorkingCopy({
         noteId: target.noteId,
-        baseRevisionId: target.baseRevisionId,
+        baseContentVersionId: target.baseContentVersionId,
         editGeneration: target.editGeneration,
         documentJson: target.documentJson,
         bodyMarkdown: target.bodyMarkdown,
@@ -530,7 +533,7 @@ export class NoteAutosaveCoordinator {
 
 interface AuthoredSnapshot {
   noteId: string;
-  baseRevisionId: string | null;
+  baseContentVersionId: string | null;
   editGeneration: number;
   documentJson: string;
   bodyMarkdown: string;
@@ -540,7 +543,7 @@ interface AuthoredSnapshot {
 function authoredSnapshot(state: NoteAutosaveSnapshot): AuthoredSnapshot {
   return {
     noteId: state.noteId,
-    baseRevisionId: state.baseRevisionId,
+    baseContentVersionId: state.baseContentVersionId,
     editGeneration: state.editGeneration,
     documentJson: createDurableKoshDocument(state.documentJson),
     bodyMarkdown: state.bodyMarkdown,
@@ -549,11 +552,11 @@ function authoredSnapshot(state: NoteAutosaveSnapshot): AuthoredSnapshot {
 }
 
 function phaseForInitialState(
-  baseRevisionId: string | null,
+  baseContentVersionId: string | null,
   editGeneration: number,
 ): NoteSavePhase {
   if (editGeneration > 0) return "DURABLE";
-  return baseRevisionId === null ? "EPHEMERAL" : "CLEAN";
+  return baseContentVersionId === null ? "EPHEMERAL" : "CLEAN";
 }
 
 function nextGeneration(generation: number): number {

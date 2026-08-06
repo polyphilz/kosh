@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "fixtureId": "kosh-relevance-v1",
-  "fixtureDigest": "4360bf6331b16bee2c7a8cb93d243d771d07390eb916467e443b639f7c42d97d",
+  "fixtureId": "kosh-search-blocks-v1",
+  "fixtureDigest": "ab64e94e066773d8c9d69ce40c9ad6a6d53170fc614d2ad8e26711a13515bc47",
   "retriever": "kosh-lexical-v1",
   "resultLimit": 10,
   "passed": true,
   "summary": {
     "queryCount": 25,
     "passedQueryCount": 25,
-    "recallAt5": 0.9866666666666667,
+    "recallAt5": 1.0,
     "recallAt10": 1.0,
-    "meanReciprocalRank": 0.9413333333333334,
-    "ndcgAt10": 0.9518355880574041,
-    "citationLocatorAccuracy": 1.0,
+    "meanReciprocalRank": 1.0,
+    "ndcgAt10": 0.9993136891162696,
+    "expectedBlockAccuracy": 1.0,
     "exactPhraseSuccess": 1.0,
     "forbiddenHitsAt10": 0
   },
@@ -24,7 +24,7 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
@@ -35,19 +35,8 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": 1.0,
-      "forbiddenHitsAt10": 0
-    },
-    "FILE_NAME": {
-      "queryCount": 1,
-      "passedQueryCount": 1,
-      "recallAt5": 1.0,
-      "recallAt10": 1.0,
-      "meanReciprocalRank": 1.0,
-      "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
-      "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
     "FORMULA": {
@@ -57,7 +46,7 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
@@ -68,7 +57,7 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
@@ -79,7 +68,7 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
@@ -90,18 +79,29 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
-    "MEDIA_VOLUME": {
-      "queryCount": 1,
-      "passedQueryCount": 1,
-      "recallAt5": 0.6666666666666666,
+    "ATTACHMENT_FILENAME": {
+      "queryCount": 4,
+      "passedQueryCount": 4,
+      "recallAt5": 1.0,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
-      "ndcgAt10": 0.9261946662938199,
-      "citationLocatorAccuracy": 1.0,
+      "ndcgAt10": 1.0,
+      "expectedBlockAccuracy": 1.0,
+      "exactPhraseSuccess": null,
+      "forbiddenHitsAt10": 0
+    },
+    "RANKING": {
+      "queryCount": 1,
+      "passedQueryCount": 1,
+      "recallAt5": 1.0,
+      "recallAt10": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
@@ -112,40 +112,40 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": 1.0,
       "forbiddenHitsAt10": 0
     },
     "PROSE": {
-      "queryCount": 4,
-      "passedQueryCount": 4,
+      "queryCount": 2,
+      "passedQueryCount": 2,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
-      "ndcgAt10": 0.9957105569766849,
-      "citationLocatorAccuracy": 1.0,
+      "ndcgAt10": 0.9914211139533698,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
-    "SOURCE_DOMAIN": {
+    "LINK": {
       "queryCount": 2,
       "passedQueryCount": 2,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
     "SYNONYM": {
-      "queryCount": 4,
-      "passedQueryCount": 4,
+      "queryCount": 3,
+      "passedQueryCount": 3,
       "recallAt5": 1.0,
       "recallAt10": 1.0,
-      "meanReciprocalRank": 0.6333333333333333,
-      "ndcgAt10": 0.7217132018086354,
-      "citationLocatorAccuracy": 1.0,
+      "meanReciprocalRank": 1.0,
+      "ndcgAt10": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     },
@@ -156,7 +156,7 @@
       "recallAt10": 1.0,
       "meanReciprocalRank": 1.0,
       "ndcgAt10": 1.0,
-      "citationLocatorAccuracy": 1.0,
+      "expectedBlockAccuracy": 1.0,
       "exactPhraseSuccess": null,
       "forbiddenHitsAt10": 0
     }
@@ -173,25 +173,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": true,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-heat-modern",
+          "blockId": "block-heat-modern",
           "score": 17.0327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 36,
-            "sourceEndByte": 174,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "body"
           ]
@@ -200,7 +189,7 @@
     },
     {
       "queryId": "query-cache-identifier",
-      "text": "passage_cache_key",
+      "text": "block_cache_key",
       "searchMode": "DEFAULT",
       "category": "CODE_IDENTIFIER",
       "passed": true,
@@ -209,25 +198,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-code-cache-key",
+          "blockId": "block-code-cache-key",
           "score": 13.532786885245901,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 3,
-            "endBlock": 3,
-            "sourceStartByte": 54,
-            "sourceEndByte": 168,
-            "startChar": null,
-            "endChar": null,
-            "startLine": 1,
-            "endLine": 3
-          },
           "matchedFields": [
             "body"
           ]
@@ -245,25 +223,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-formula-bayes",
+          "blockId": "block-formula-bayes",
           "score": 17.0327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 15,
-            "sourceEndByte": 59,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "body"
           ]
@@ -274,37 +241,24 @@
       "queryId": "query-sqlite-domain",
       "text": "sqlite.org FTS5 tokenizer",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "LINK",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-source-sqlite",
-          "score": 36.73278688524591,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-source-sqlite",
+          "score": 30.7327868852459,
           "matchedFields": [
             "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
+            "body"
           ]
         }
       ]
@@ -320,23 +274,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-ocr-receipt",
+          "blockId": "block-ocr-receipt",
           "score": 15.282786885245901,
-          "locator": {
-            "kind": "OCR_REGION",
-            "region": {
-              "x": 84,
-              "y": 122,
-              "width": 1032,
-              "height": 214
-            }
-          },
           "matchedFields": [
             "extractedText"
           ]
@@ -344,37 +289,26 @@
       ]
     },
     {
-      "queryId": "query-transformer-attention",
-      "text": "attention heads representation subspaces page 42",
+      "queryId": "query-file-attention",
+      "text": "transformer-notes.txt",
       "searchMode": "DEFAULT",
-      "category": "PROSE",
+      "category": "ATTACHMENT_FILENAME",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-authored-transformer",
-          "score": 20.699453551912566,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 96,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-file-transformer",
+          "score": 15.032786885245901,
           "matchedFields": [
-            "body"
+            "attachmentName"
           ]
         }
       ]
@@ -390,25 +324,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-synonym-automobile",
+          "blockId": "block-synonym-automobile",
           "score": 13.699453551912567,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 23,
-            "sourceEndByte": 126,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "body"
           ]
@@ -426,25 +349,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-misspelling-concurrency",
+          "blockId": "block-misspelling-concurrency",
           "score": 31.0827868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 113,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
@@ -463,25 +375,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-heat-caloric",
+          "blockId": "block-heat-caloric",
           "score": 39.532786885245905,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 29,
-            "sourceEndByte": 137,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
@@ -490,8 +391,8 @@
       ]
     },
     {
-      "queryId": "query-resolve-citation-exact",
-      "text": "resolveCitationTarget",
+      "queryId": "query-block-link-exact",
+      "text": "openBlockLink",
       "searchMode": "EXACT",
       "category": "EXACT",
       "passed": true,
@@ -500,25 +401,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": true,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-code-resolve-citation",
+          "blockId": "block-code-open-link",
           "score": 25.5327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 32,
-            "sourceEndByte": 121,
-            "startChar": null,
-            "endChar": null,
-            "startLine": 1,
-            "endLine": 1
-          },
           "matchedFields": [
             "body"
           ]
@@ -536,25 +426,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-unicode-cafe",
+          "blockId": "block-unicode-cafe",
           "score": 30.0327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 11,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
@@ -566,32 +445,21 @@
       "queryId": "query-model-filename",
       "text": "jina-embeddings-v5-small.onnx tokenizer digest",
       "searchMode": "EXACT",
-      "category": "FILE_NAME",
+      "category": "EXACT",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
-        "exactPhraseSuccess": null,
+        "expectedBlockFound": true,
+        "exactPhraseSuccess": true,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-filename-model",
+          "blockId": "block-filename-model",
           "score": 34.0327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 16,
-            "sourceEndByte": 105,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "body",
             "attachmentName"
@@ -608,204 +476,88 @@
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
-        "reciprocalRank": 0.3333333333333333,
-        "ndcgAt10": 0.5,
-        "citationLocatorCorrect": true,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-source-rust",
-          "score": 35.87122736418511,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
-          "passageId": "passage-heat-modern",
-          "score": 35.87103174603174,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 36,
-            "sourceEndByte": 174,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
-          "passageId": "passage-prose-gardening",
+          "blockId": "block-prose-gardening",
           "score": 29.318501170960186,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 14,
-            "sourceEndByte": 114,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-phrase-dough",
+          "blockId": "block-phrase-dough",
           "score": 26.817716333845365,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-synonym-automobile",
+          "blockId": "block-synonym-automobile",
           "score": 26.8172123015873,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 23,
-            "sourceEndByte": 126,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-authored-distributed-112",
-          "score": 25.8718487394958,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "attachmentName"
-          ]
-        },
-        {
-          "passageId": "passage-authored-distributed-113",
-          "score": 25.871635610766045,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 92,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "attachmentName"
-          ]
-        },
-        {
-          "passageId": "passage-formula-fourier",
+          "blockId": "block-formula-fourier",
           "score": 21.87327188940092,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 72,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-heat-caloric",
+          "blockId": "block-source-rust",
+          "score": 21.8718487394958,
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "blockId": "block-heat-caloric",
+          "score": 21.871635610766045,
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "blockId": "block-heat-modern",
           "score": 21.871428571428574,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 29,
-            "sourceEndByte": 137,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-formula-bayes",
+          "blockId": "block-formula-bayes",
           "score": 18.372527472527473,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 15,
-            "sourceEndByte": 59,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "blockId": "block-misspelling-concurrency",
+          "score": 15.872294372294373,
+          "matchedFields": [
+            "headingContext",
+            "body"
+          ]
+        },
+        {
+          "blockId": "block-unicode-cafe",
+          "score": 15.872068230277186,
           "matchedFields": [
             "headingContext",
             "body"
@@ -824,25 +576,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": true,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-phrase-dough",
+          "blockId": "block-phrase-dough",
           "score": 17.0327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "body"
           ]
@@ -860,25 +601,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-formula-fourier",
+          "blockId": "block-formula-fourier",
           "score": 15.532786885245901,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 72,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "body"
           ]
@@ -889,36 +619,24 @@
       "queryId": "query-rust-domain",
       "text": "doc.rust-lang.org lazy iterator adaptor",
       "searchMode": "DEFAULT",
-      "category": "SOURCE_DOMAIN",
+      "category": "LINK",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-source-rust",
-          "score": 31.5327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-source-rust",
+          "score": 30.0327868852459,
           "matchedFields": [
             "headingContext",
-            "body",
-            "sourceDomain"
+            "body"
           ]
         }
       ]
@@ -934,82 +652,38 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 0.9828422279067397,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-heat-modern",
+          "blockId": "block-heat-modern",
           "score": 35.19945355191257,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 36,
-            "sourceEndByte": 174,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-filename-model",
-          "score": 12.865335381464412,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 16,
-            "sourceEndByte": 105,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-filename-model",
+          "score": 12.865591397849462,
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-heat-caloric",
-          "score": 12.864846980976012,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 29,
-            "sourceEndByte": 137,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-heat-caloric",
+          "score": 12.864831349206348,
           "matchedFields": [
             "headingContext",
             "body"
           ]
         },
         {
-          "passageId": "passage-prose-gardening",
-          "score": 10.364583333333332,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 14,
-            "sourceEndByte": 114,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-prose-gardening",
+          "score": 10.364831349206348,
           "matchedFields": [
             "body"
           ]
@@ -1017,219 +691,77 @@
       ]
     },
     {
-      "queryId": "query-authored-release-log",
-      "text": "cobalt_index release-notes.log",
+      "queryId": "query-file-release-log",
+      "text": "release-notes.log",
       "searchMode": "DEFAULT",
-      "category": "EXACT",
+      "category": "ATTACHMENT_FILENAME",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
-        "exactPhraseSuccess": true,
+        "expectedBlockFound": true,
+        "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-authored-release-log",
-          "score": 18.5327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 75,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-file-release-log",
+          "score": 15.032786885245901,
           "matchedFields": [
-            "body",
             "attachmentName"
           ]
         }
       ]
     },
     {
-      "queryId": "query-authored-over-volume",
+      "queryId": "query-authored-over-file-volume",
       "text": "vector clock reconciliation causal order",
       "searchMode": "DEFAULT",
-      "category": "MEDIA_VOLUME",
-      "passed": true,
-      "metrics": {
-        "recallAt5": 0.6666666666666666,
-        "recallAt10": 1.0,
-        "reciprocalRank": 1.0,
-        "ndcgAt10": 0.9261946662938199,
-        "citationLocatorCorrect": true,
-        "exactPhraseSuccess": null,
-        "forbiddenHitsAt10": []
-      },
-      "hits": [
-        {
-          "passageId": "passage-authored-vector-clock",
-          "score": 39.53226645849597,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 31,
-            "sourceEndByte": 164,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-conference-clock",
-          "score": 27.531754032258064,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 111,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-distributed-112",
-          "score": 27.531754032258064,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-distributed-114",
-          "score": 27.531318815757277,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 100,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-distributed-115",
-          "score": 27.53125763125763,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 96,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-distributed-110",
-          "score": 27.530309988518944,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 114,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-distributed-111",
-          "score": 27.53030303030303,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 98,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body"
-          ]
-        }
-      ]
-    },
-    {
-      "queryId": "query-lease-fencing",
-      "text": "lease fencing token epoch 47",
-      "searchMode": "DEFAULT",
-      "category": "PROSE",
+      "category": "RANKING",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-authored-distributed-113",
-          "score": 27.5327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 92,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-authored-vector-clock",
+          "score": 39.532786885245905,
           "matchedFields": [
+            "headingContext",
             "body"
+          ]
+        }
+      ]
+    },
+    {
+      "queryId": "query-file-fencing-name",
+      "text": "distributed-systems-reader.txt",
+      "searchMode": "DEFAULT",
+      "category": "ATTACHMENT_FILENAME",
+      "passed": true,
+      "metrics": {
+        "recallAt5": 1.0,
+        "recallAt10": 1.0,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "expectedBlockFound": true,
+        "exactPhraseSuccess": null,
+        "forbiddenHitsAt10": []
+      },
+      "hits": [
+        {
+          "blockId": "block-file-distributed-reader",
+          "score": 15.032786885245901,
+          "matchedFields": [
+            "attachmentName"
           ]
         }
       ]
@@ -1245,25 +777,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-heat-modern",
+          "blockId": "block-heat-modern",
           "score": 15.532786885245901,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 36,
-            "sourceEndByte": 174,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
             "body"
@@ -1282,23 +803,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-ocr-receipt",
+          "blockId": "block-ocr-receipt",
           "score": 17.0327868852459,
-          "locator": {
-            "kind": "OCR_REGION",
-            "region": {
-              "x": 84,
-              "y": 122,
-              "width": 1032,
-              "height": 214
-            }
-          },
           "matchedFields": [
             "extractedText"
           ]
@@ -1307,218 +819,39 @@
     },
     {
       "queryId": "query-stale-writer",
-      "text": "how do I stop an old lease holder from writing",
+      "text": "distributed systems reader txt",
       "searchMode": "DEFAULT",
-      "category": "SYNONYM",
+      "category": "ATTACHMENT_FILENAME",
       "passed": true,
       "metrics": {
         "recallAt5": 1.0,
         "recallAt10": 1.0,
-        "reciprocalRank": 0.2,
-        "ndcgAt10": 0.38685280723454163,
-        "citationLocatorCorrect": true,
+        "reciprocalRank": 1.0,
+        "ndcgAt10": 1.0,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-source-rust",
-          "score": 38.515151515151516,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 94,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-file-distributed-reader",
+          "score": 30.0327868852459,
           "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
-          "passageId": "passage-source-sqlite",
-          "score": 38.02985739750446,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body",
-            "sourceLabel",
-            "sourceDomain"
-          ]
-        },
-        {
-          "passageId": "passage-synonym-automobile",
-          "score": 21.015873015873016,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 23,
-            "sourceEndByte": 126,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-heat-caloric",
-          "score": 19.531778058007568,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 29,
-            "sourceEndByte": 137,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-distributed-113",
-          "score": 18.531009615384615,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 92,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body",
             "attachmentName"
           ]
         },
         {
-          "passageId": "passage-unicode-cafe",
-          "score": 17.532522474881016,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 11,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
+          "blockId": "block-authored-vector-clock",
+          "score": 17.032258064516128,
           "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-formula-fourier",
-          "score": 17.516129032258064,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 72,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-misspelling-concurrency",
-          "score": 15.015625,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 113,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-authored-release-log",
-          "score": 10.515873015873016,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 75,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body",
-            "attachmentName"
-          ]
-        },
-        {
-          "passageId": "passage-authored-conference-clock",
-          "score": 9.029850746268657,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 111,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body"
+            "headingContext"
           ]
         }
       ]
     },
     {
-      "queryId": "query-citation-function",
-      "text": "backend.resolveCitation passageId",
+      "queryId": "query-block-link-function",
+      "text": "openBlockLink blockId",
       "searchMode": "DEFAULT",
       "category": "CODE_IDENTIFIER",
       "passed": true,
@@ -1527,25 +860,14 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-code-resolve-citation",
+          "blockId": "block-code-open-link",
           "score": 17.0327868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 2,
-            "endBlock": 2,
-            "sourceStartByte": 32,
-            "sourceEndByte": 121,
-            "startChar": null,
-            "endChar": null,
-            "startLine": 1,
-            "endLine": 1
-          },
           "matchedFields": [
             "body"
           ]
@@ -1563,64 +885,16 @@
         "recallAt10": 1.0,
         "reciprocalRank": 1.0,
         "ndcgAt10": 1.0,
-        "citationLocatorCorrect": true,
+        "expectedBlockFound": true,
         "exactPhraseSuccess": null,
         "forbiddenHitsAt10": []
       },
       "hits": [
         {
-          "passageId": "passage-misspelling-concurrency",
+          "blockId": "block-misspelling-concurrency",
           "score": 19.2827868852459,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 12,
-            "sourceEndByte": 113,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
           "matchedFields": [
             "headingContext",
-            "body"
-          ]
-        },
-        {
-          "passageId": "passage-source-sqlite",
-          "score": 10.531754032258064,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 1,
-            "endBlock": 1,
-            "sourceStartByte": 10,
-            "sourceEndByte": 91,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
-            "body",
-            "sourceLabel"
-          ]
-        },
-        {
-          "passageId": "passage-authored-conference-clock",
-          "score": 9.531746031746032,
-          "locator": {
-            "kind": "MARKDOWN_BLOCKS",
-            "startBlock": 0,
-            "endBlock": 0,
-            "sourceStartByte": 0,
-            "sourceEndByte": 111,
-            "startChar": null,
-            "endChar": null,
-            "startLine": null,
-            "endLine": null
-          },
-          "matchedFields": [
             "body"
           ]
         }

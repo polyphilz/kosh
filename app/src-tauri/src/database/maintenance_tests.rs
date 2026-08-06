@@ -29,10 +29,8 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
     let original = client
         .create_tidbit_with_ids(
             TidbitDraft {
-                document_json: super::document::single_paragraph(
-                    "Original exact citation evidence.",
-                ),
-                body_markdown: "Original exact citation evidence.".into(),
+                document_json: super::document::single_paragraph("Original exact block evidence."),
+                body_markdown: "Original exact block evidence.".into(),
                 sources: Vec::new(),
             },
             10,
@@ -43,7 +41,7 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
         .expect("create tidbit");
     let original_block = client
         .search_blocks(SearchBlocksInput {
-            query: "\"Original exact citation evidence\"".into(),
+            query: "\"Original exact block evidence\"".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
@@ -55,9 +53,9 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
     client
         .save_working_copy_for_test(
             original.id.clone(),
-            Some(original.current_revision_id.clone()),
+            Some(original.content_version_id.clone()),
             1,
-            "Updated searchable citation evidence.".into(),
+            "Updated searchable block evidence.".into(),
             Vec::new(),
             20,
         )
@@ -120,7 +118,7 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
     assert_eq!(after_search.searchable_blocks, before.searchable_blocks);
     assert!(client
         .search_blocks(SearchBlocksInput {
-            query: "Original exact citation evidence".into(),
+            query: "Original exact block evidence".into(),
             mode: LexicalSearchMode::Exact,
             limit: 10,
         })
@@ -129,7 +127,7 @@ fn diagnostics_and_rebuilds_preserve_current_note_search() {
     assert_eq!(
         client
             .search_blocks(SearchBlocksInput {
-                query: "\"Updated searchable citation evidence\"".into(),
+                query: "\"Updated searchable block evidence\"".into(),
                 mode: LexicalSearchMode::Exact,
                 limit: 10,
             })

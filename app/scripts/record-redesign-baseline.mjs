@@ -291,9 +291,9 @@ async function measureFirstSearchResult(page, index) {
       const noteId = `019f547b-6200-7000-8000-${String(sequence + 1).padStart(12, "0")}`;
       const saved = await backend.saveWorkingCopy({
         noteId,
-        baseRevisionId: null,
+        baseContentVersionId: null,
         editGeneration: 1,
-        bodyMarkdown: `Deterministic ${marker} passage ${sequence}.`,
+        bodyMarkdown: `Deterministic ${marker} block ${sequence}.`,
         sources: [],
       });
       if (saved.status !== "SAVED") {

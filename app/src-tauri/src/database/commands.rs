@@ -232,7 +232,9 @@ pub(crate) async fn checkpoint_working_copy(
     let write = CheckpointWorkingCopyWrite {
         input,
         now_ms: state.now_ms(),
-        revision_id: ids.next().expect("requested working-copy revision ID"),
+        content_version_id: ids
+            .next()
+            .expect("requested working-copy content version ID"),
         source_ids: ids.collect(),
     };
     run_writer(move || client.checkpoint_working_copy(write)).await

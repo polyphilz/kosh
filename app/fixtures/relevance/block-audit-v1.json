@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "fixtureDigest": "ab64e94e066773d8c9d69ce40c9ad6a6d53170fc614d2ad8e26711a13515bc47",
+  "reviewedAt": "2026-07-29",
+  "reviewer": "Codex implementation audit",
+  "entries": [
+    {
+      "queryId": "query-heat-phrase",
+      "blockId": "block-heat-modern",
+      "evidenceExcerpt": "Heat is impatient motion transferred between systems. Temperature describes a di",
+      "verified": true
+    },
+    {
+      "queryId": "query-cache-identifier",
+      "blockId": "block-code-cache-key",
+      "evidenceExcerpt": "fn block_cache_key(content_hash: &str, block_id: &str) -> String {\n    format!(\"",
+      "verified": true
+    },
+    {
+      "queryId": "query-bayes-formula",
+      "blockId": "block-formula-bayes",
+      "evidenceExcerpt": "$$P(A|B) = \\frac{P(B|A)P(A)}{P(B)}$$",
+      "verified": true
+    },
+    {
+      "queryId": "query-sqlite-domain",
+      "blockId": "block-source-sqlite",
+      "evidenceExcerpt": "FTS5 tokenizers decide how query terms and document text become searchable token",
+      "verified": true
+    },
+    {
+      "queryId": "query-ocr-invoice",
+      "blockId": "block-ocr-receipt",
+      "evidenceExcerpt": "workshop-receipt.png",
+      "verified": true
+    },
+    {
+      "queryId": "query-file-attention",
+      "blockId": "block-file-transformer",
+      "evidenceExcerpt": "transformer-notes.txt",
+      "verified": true
+    },
+    {
+      "queryId": "query-car-upkeep",
+      "blockId": "block-synonym-automobile",
+      "evidenceExcerpt": "An automobile upkeep schedule should include tire pressure, brake fluid, coolant",
+      "verified": true
+    },
+    {
+      "queryId": "query-concurrency-misspelling",
+      "blockId": "block-misspelling-concurrency",
+      "evidenceExcerpt": "A semaphore bounds concurrency by requiring each worker to hold a permit while e",
+      "verified": true
+    },
+    {
+      "queryId": "query-obsolete-caloric",
+      "blockId": "block-heat-caloric",
+      "evidenceExcerpt": "The obsolete caloric theory treated heat as a weightless fluid that flowed from ",
+      "verified": true
+    },
+    {
+      "queryId": "query-block-link-exact",
+      "blockId": "block-code-open-link",
+      "evidenceExcerpt": "const openBlockLink = (blockId: string) => navigate(`?blockId=${blockId}`);",
+      "verified": true
+    }
+  ]
+}

@@ -53,7 +53,7 @@ export interface FakeNoteInput {
 
 interface ReplaceNoteForTestInput extends FakeNoteInput {
   id: string;
-  expectedRevisionId: string;
+  expectedContentVersionId: string;
 }
 
 interface ListNotesForTestInput {
@@ -143,7 +143,7 @@ export class FakeBackend implements Backend {
       this.sequence = Math.max(
         this.sequence,
         generatedIdSequence(tidbit.id),
-        generatedIdSequence(tidbit.currentRevisionId),
+        generatedIdSequence(tidbit.contentVersionId),
         ...tidbit.sources.map((source) => generatedIdSequence(source.id)),
       );
       for (const source of tidbit.sources) {
@@ -605,8 +605,8 @@ export class FakeBackend implements Backend {
     const sources = this.prepareSources(input.sources);
     const tidbit: TidbitRecord = {
       id: `fake-tidbit-${sequence}`,
-      currentRevisionId: `fake-revision-${sequence}`,
-      revisionNumber: 1,
+      contentVersionId: `fake-content-version-${sequence}`,
+      versionNumber: 1,
       createdAtMs: this.probe.nowMs + sequence,
       updatedAtMs: this.probe.nowMs + sequence,
       deletedAtMs: null,
@@ -647,7 +647,7 @@ export class FakeBackend implements Backend {
     return {
       items: page.map((tidbit) => ({
         id: tidbit.id,
-        currentRevisionId: tidbit.currentRevisionId,
+        contentVersionId: tidbit.contentVersionId,
         createdAtMs: tidbit.createdAtMs,
         updatedAtMs: tidbit.updatedAtMs,
         deletedAtMs: tidbit.deletedAtMs,
@@ -669,15 +669,15 @@ export class FakeBackend implements Backend {
     if (current.deletedAtMs !== null) {
       throw new Error(`tidbit ${input.id} is deleted`);
     }
-    if (current.currentRevisionId !== input.expectedRevisionId) {
+    if (current.contentVersionId !== input.expectedContentVersionId) {
       throw new Error(`tidbit ${input.id} is stale`);
     }
     const sequence = this.nextSequence();
     const bodyMarkdown = validateBody(input.bodyMarkdown);
     const updated: TidbitRecord = {
       ...current,
-      currentRevisionId: `fake-revision-${sequence}`,
-      revisionNumber: current.revisionNumber + 1,
+      contentVersionId: `fake-content-version-${sequence}`,
+      versionNumber: current.versionNumber + 1,
       updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
       displayTitle: deriveDisplayTitle(bodyMarkdown),
       documentJson: input.documentJson ?? createKoshDocumentFromMarkdown(bodyMarkdown),
@@ -693,7 +693,7 @@ export class FakeBackend implements Backend {
     if (current.deletedAtMs !== null) {
       throw new Error(`tidbit ${input.id} is deleted`);
     }
-    if (current.currentRevisionId !== input.expectedRevisionId) {
+    if (current.contentVersionId !== input.expectedContentVersionId) {
       throw new Error(`tidbit ${input.id} is stale`);
     }
     const deletedAtMs = Math.max(current.updatedAtMs + 1, this.probe.nowMs + this.nextSequence());
@@ -711,7 +711,7 @@ export class FakeBackend implements Backend {
     if (current.deletedAtMs === null) {
       throw new Error(`tidbit ${input.id} is not deleted`);
     }
-    if (current.currentRevisionId !== input.expectedRevisionId) {
+    if (current.contentVersionId !== input.expectedContentVersionId) {
       throw new Error(`tidbit ${input.id} is stale`);
     }
     const restored = {
@@ -725,7 +725,7 @@ export class FakeBackend implements Backend {
 
   async openSourceUrl(sourceId: string): Promise<void> {
     const source = [...this.tidbits.values()]
-      .flatMap((revision) => revision.sources)
+      .flatMap((note) => note.sources)
       .find((candidate) => candidate.id === sourceId && candidate.url !== null);
     if (!source) {
       throw new Error(`source URL ${sourceId} was not found`);
@@ -834,9 +834,9 @@ export class FakeBackend implements Backend {
     };
     validateEditGeneration(input.editGeneration, "editGeneration");
     const currentNote = this.tidbits.get(input.noteId);
-    if (input.baseRevisionId === null) {
-      if (currentNote) throw new Error("an existing note requires its current base revision");
-    } else if (!currentNote || currentNote.currentRevisionId !== input.baseRevisionId) {
+    if (input.baseContentVersionId === null) {
+      if (currentNote) throw new Error("an existing note requires its current content version");
+    } else if (!currentNote || currentNote.contentVersionId !== input.baseContentVersionId) {
       throw new Error(`note ${input.noteId} is stale`);
     }
     const existing = this.workingCopies.get(input.noteId);
@@ -864,7 +864,7 @@ export class FakeBackend implements Backend {
     }
     if (
       !allowEmptyEphemeral &&
-      input.baseRevisionId === null &&
+      input.baseContentVersionId === null &&
       !hasMeaningfulAuthoredContent(input.bodyMarkdown)
     ) {
       this.workingCopies.delete(input.noteId);
@@ -932,17 +932,17 @@ export class FakeBackend implements Backend {
     }
     const sequence = this.nextSequence();
     const current = this.tidbits.get(input.noteId);
-    if (workingCopy.baseRevisionId === null && current) {
+    if (workingCopy.baseContentVersionId === null && current) {
       throw new Error("ephemeral working-copy identity already belongs to a note");
     }
     if (
-      workingCopy.baseRevisionId !== null &&
-      (!current || current.currentRevisionId !== workingCopy.baseRevisionId)
+      workingCopy.baseContentVersionId !== null &&
+      (!current || current.contentVersionId !== workingCopy.baseContentVersionId)
     ) {
       throw new Error(`note ${input.noteId} is stale`);
     }
     if (
-      workingCopy.baseRevisionId === null &&
+      workingCopy.baseContentVersionId === null &&
       !hasMeaningfulAuthoredContent(workingCopy.bodyMarkdown)
     ) {
       throw new Error("an ephemeral note must contain authored text or media");
@@ -951,8 +951,8 @@ export class FakeBackend implements Backend {
     const note: TidbitRecord = current
       ? {
           ...current,
-          currentRevisionId: `fake-revision-${sequence}`,
-          revisionNumber: current.revisionNumber + 1,
+          contentVersionId: `fake-content-version-${sequence}`,
+          versionNumber: current.versionNumber + 1,
           updatedAtMs: Math.max(current.updatedAtMs + 1, this.probe.nowMs + sequence),
           displayTitle: deriveDisplayTitle(workingCopy.bodyMarkdown),
           documentJson: workingCopy.documentJson,
@@ -961,8 +961,8 @@ export class FakeBackend implements Backend {
         }
       : {
           id: input.noteId,
-          currentRevisionId: `fake-revision-${sequence}`,
-          revisionNumber: 1,
+          contentVersionId: `fake-content-version-${sequence}`,
+          versionNumber: 1,
           createdAtMs: this.probe.nowMs + sequence,
           updatedAtMs: this.probe.nowMs + sequence,
           deletedAtMs: null,
@@ -1130,7 +1130,7 @@ function cloneWorkingCopy(workingCopy: WorkingCopyRecord): WorkingCopyRecord {
 
 function sameWorkingCopy(workingCopy: WorkingCopyRecord, input: SaveWorkingCopyInput): boolean {
   return (
-    workingCopy.baseRevisionId === input.baseRevisionId &&
+    workingCopy.baseContentVersionId === input.baseContentVersionId &&
     workingCopy.documentJson === input.documentJson &&
     workingCopy.bodyMarkdown === input.bodyMarkdown &&
     JSON.stringify(workingCopy.sources) === JSON.stringify(input.sources)
@@ -1204,7 +1204,7 @@ function truncate(value: string, limit: number): string {
 }
 
 function generatedIdSequence(value: string): number {
-  const match = /^fake-(?:tidbit|revision|source)-(\d+)$/u.exec(value);
+  const match = /^fake-(?:tidbit|content-version|source)-(\d+)$/u.exec(value);
   if (!match) {
     return 0;
   }

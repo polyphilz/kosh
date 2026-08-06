@@ -40,7 +40,7 @@ pub struct ScaleCorpus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScaleTidbit {
     pub id: String,
-    pub revision_id: String,
+    pub content_version_id: String,
     pub created_at_ms: u64,
     pub body_markdown: String,
     pub length_class: ScaleLengthClass,
@@ -189,7 +189,7 @@ pub fn generate_scale_corpus(options: ScaleGenerationOptions) -> Result<ScaleCor
 
         tidbits.push(ScaleTidbit {
             id: deterministic_uuid(options.seed, index, 0),
-            revision_id: deterministic_uuid(options.seed, index, 1),
+            content_version_id: deterministic_uuid(options.seed, index, 1),
             created_at_ms: BASE_TIMESTAMP_MS + index as u64,
             body_markdown,
             length_class,
@@ -266,7 +266,7 @@ fn generated_body(
     const TOPICS: [(&str, &str); 8] = [
         (
             "retrieval",
-            "Passage retrieval should preserve exact provenance while ranking useful evidence.",
+            "Block retrieval should preserve exact provenance while ranking useful evidence.",
         ),
         (
             "gardening",
@@ -310,7 +310,7 @@ fn generated_body(
             body.push_str("\n\n");
         }
         body.push_str(&format!(
-            "{} Observation {}-{} records token kosh_{:05} with enough surrounding context for realistic passage construction.",
+            "{} Observation {}-{} records token kosh_{:05} with enough surrounding context for realistic block construction.",
             topic.1,
             index,
             paragraph,
@@ -465,8 +465,8 @@ mod tests {
                 Some(Version::SortRand)
             );
             assert_eq!(
-                Uuid::parse_str(&tidbit.revision_id)
-                    .expect("revision fixture UUID")
+                Uuid::parse_str(&tidbit.content_version_id)
+                    .expect("content-version fixture UUID")
                     .get_version(),
                 Some(Version::SortRand)
             );

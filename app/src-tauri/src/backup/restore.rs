@@ -1154,7 +1154,7 @@ mod tests {
     };
 
     const TIDBIT_ID: &str = "019f547b-6200-7000-8000-00000000f001";
-    const REVISION_ID: &str = "019f547b-6200-7000-8000-00000000f002";
+    const CONTENT_VERSION_ID: &str = "019f547b-6200-7000-8000-00000000f002";
     const SOURCE_ID: &str = "019f547b-6200-7000-8000-00000000f003";
     const DRAFT_ID: &str = "019f547b-6200-7000-8000-00000000f004";
 
@@ -1314,7 +1314,7 @@ mod tests {
                     },
                     now_ms: 10,
                     tidbit_id: TIDBIT_ID.into(),
-                    revision_id: REVISION_ID.into(),
+                    content_version_id: CONTENT_VERSION_ID.into(),
                     source_ids: vec![SOURCE_ID.into()],
                 })
                 .expect("source tidbit");

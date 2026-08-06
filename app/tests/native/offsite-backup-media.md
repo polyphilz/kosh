@@ -4,7 +4,7 @@ The canonical main schema includes a non-secret outbox for immutable media
 objects. Each row is scoped to the current backup-set UUID and content SHA-256.
 Source blobs and canonical image previews are seeded when backup is enabled and
 by the same SQLite transaction that creates a new attachment, preview, or
-authored revision membership.
+authored note membership.
 
 Changing the R2 destination resets the current set's upload evidence. Changing
 backup sets removes stale local work and seeds the replacement namespace.

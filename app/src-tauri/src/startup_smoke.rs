@@ -48,7 +48,7 @@ enum CanaryExpectation {
 struct CanaryEvidence {
     block_id: String,
     note_id: String,
-    revision_id: String,
+    content_version_id: String,
     source_url: String,
 }
 
@@ -58,7 +58,7 @@ struct WebviewCanaryEvidence {
     block_id: String,
     execution_mode: String,
     note_id: String,
-    revision_id: String,
+    content_version_id: String,
     result_count: usize,
     source_url: String,
 }
@@ -258,7 +258,7 @@ fn complete_startup_smoke(
             || canary.result_count != 1
             || canary.block_id != live_evidence.block_id
             || canary.note_id != live_evidence.note_id
-            || canary.revision_id != live_evidence.revision_id
+            || canary.content_version_id != live_evidence.content_version_id
             || canary.source_url != live_evidence.source_url
         {
             return Err(invalid(format!(
@@ -460,7 +460,7 @@ fn find_canary(client: &DatabaseClient) -> io::Result<Option<CanaryEvidence>> {
     Ok(Some(CanaryEvidence {
         block_id: result.block_id,
         note_id: tidbit.id,
-        revision_id: tidbit.current_revision_id,
+        content_version_id: tidbit.content_version_id,
         source_url: source_url.into(),
     }))
 }

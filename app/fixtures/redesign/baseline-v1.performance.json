@@ -83,7 +83,7 @@
     "generatorVersion": "kosh-scale-v1",
     "seed": "0x4b4f53485f563108",
     "tidbitCount": 10000,
-    "passageCount": 37333,
+    "blockCount": 37333,
     "queryCount": 200,
     "resultLimit": 20,
     "indexingDurationMs": 56361.827667,

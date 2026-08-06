@@ -76,7 +76,6 @@ for forbidden_text in \
   'KOSH_FAKE_BACKEND' \
   '/tmp/kosh-browser-fixture' \
   'fixture-request-1' \
-  'fake-passage:' \
   'VITE_KOSH_BACKEND' \
   'tests/browser'; do
   if LC_ALL=C grep -R -I -F -q -- "$forbidden_text" "$dist_root"; then

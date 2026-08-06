@@ -104,13 +104,14 @@ jq -e \
     and .cleanDirectoryRestore == "PASSED"
     and .normalDatabaseReopen == "PASSED"
     and .searchRebuild == "PASSED"
-    and .citationResolution == "PASSED"
-    and .historicalCitationResolution == "PASSED"
+    and .currentBlockSearch == "PASSED"
     and .restored.activeTidbits >= 2
-    and .restored.revisions >= 3
+    and .restored.currentNotes >= 2
     and .restored.attachments >= 1
     and .restored.mediaBlobs >= 1
-    and .restored.historicalCitations >= 1
+    and .restored.searchDocuments >= 2
+    and .restored.exactResultCount == 1
+    and (.restored.exactBlockId | length) > 0
     and .restored.interruptedReplicationWorkingCopies == 1
     and .removedRemoteObjects > 0
     and .remoteResidueObjects == 0

@@ -368,7 +368,7 @@ pub(crate) struct MediaPayload {
     pub sha256: Vec<u8>,
     pub total_byte_length: u64,
     pub range: MediaByteRange,
-    pub revision_bound: bool,
+    pub current_note_bound: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -815,7 +815,7 @@ pub(crate) fn load_media_payload(
             "media response limit must be positive".into(),
         ));
     }
-    let (sha256, display_filename, media_type, byte_length, revision_bound) = main
+    let (sha256, display_filename, media_type, byte_length, current_note_bound) = main
         .query_row(
             "SELECT
                 coalesce(image.preview_sha256, attachment.sha256),
@@ -957,7 +957,7 @@ pub(crate) fn load_media_payload(
         sha256,
         total_byte_length,
         range,
-        revision_bound,
+        current_note_bound,
     })
 }
 
@@ -2468,13 +2468,13 @@ pub(super) fn sync_draft_media_leases(
                 ],
             )?;
         }
-        let inherited_from_base_revision = transaction
+        let inherited_from_base_content_version = transaction
             .query_row(
                 "SELECT 1
                  FROM draft
                  JOIN tidbit
                    ON tidbit.id = draft.id
-                  AND tidbit.current_revision_id = draft.base_revision_id
+                  AND tidbit.content_version_id = draft.base_content_version_id
                  JOIN tidbit_attachment AS membership
                    ON membership.tidbit_id = tidbit.id
                  JOIN attachment
@@ -2488,7 +2488,7 @@ pub(super) fn sync_draft_media_leases(
             )
             .optional()?
             .is_some();
-        if !actively_leased && !inherited_from_base_revision {
+        if !actively_leased && !inherited_from_base_content_version {
             return Err(DatabaseError::InvalidInput(format!(
                 "attachment {} is not authorized for this draft",
                 reference.attachment_id
@@ -2549,27 +2549,27 @@ pub(crate) fn abandon_draft_media_leases(
 pub(super) fn replace_note_attachments(
     transaction: &Transaction<'_>,
     note_id: &str,
-    expected_current_revision_id: Option<&str>,
+    expected_content_version_id: Option<&str>,
     references: &[document::DocumentAttachment],
     body_markdown: &str,
     now_ms: i64,
 ) -> Result<()> {
     validate_document_attachment_projection(references, body_markdown)?;
     for reference in references {
-        let already_linked = expected_current_revision_id
-            .map(|expected_current_revision_id| {
+        let already_linked = expected_content_version_id
+            .map(|expected_content_version_id| {
                 transaction
                     .query_row(
                         "SELECT 1
                          FROM tidbit_attachment
                          JOIN tidbit ON tidbit.id = tidbit_attachment.tidbit_id
                          WHERE tidbit_attachment.tidbit_id = ?1
-                           AND tidbit.current_revision_id = ?2
+                           AND tidbit.content_version_id = ?2
                            AND tidbit_attachment.attachment_id = ?3
                            AND tidbit_attachment.block_id = ?4",
                         params![
                             note_id,
-                            expected_current_revision_id,
+                            expected_content_version_id,
                             &reference.attachment_id,
                             &reference.block_id
                         ],
@@ -2600,7 +2600,7 @@ pub(super) fn replace_note_attachments(
             .is_some();
         if !already_linked && !actively_leased {
             return Err(DatabaseError::InvalidInput(format!(
-                "attachment {} is not authorized for this revision",
+                "attachment {} is not authorized for this content version",
                 reference.attachment_id
             )));
         }

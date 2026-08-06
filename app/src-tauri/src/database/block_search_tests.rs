@@ -41,7 +41,7 @@ fn per_note_refresh_preserves_global_block_fts_rebuild_state() {
     let library = TestLibrary::new();
     let client = library.database.client();
     let edited_note_id = Uuid::now_v7().to_string();
-    let edited_revision_id = Uuid::now_v7().to_string();
+    let edited_content_version_id = Uuid::now_v7().to_string();
     let edited = client
         .create_tidbit(CreateTidbitWrite {
             input: TidbitDraft {
@@ -51,7 +51,7 @@ fn per_note_refresh_preserves_global_block_fts_rebuild_state() {
             },
             now_ms: 10,
             tidbit_id: edited_note_id.clone(),
-            revision_id: edited_revision_id,
+            content_version_id: edited_content_version_id,
             source_ids: Vec::new(),
         })
         .expect("create edited note");
@@ -65,7 +65,7 @@ fn per_note_refresh_preserves_global_block_fts_rebuild_state() {
             },
             now_ms: 11,
             tidbit_id: missing_note_id.clone(),
-            revision_id: Uuid::now_v7().to_string(),
+            content_version_id: Uuid::now_v7().to_string(),
             source_ids: Vec::new(),
         })
         .expect("create missing-index note");
@@ -103,7 +103,7 @@ fn per_note_refresh_preserves_global_block_fts_rebuild_state() {
         .save_working_copy(SaveWorkingCopyWrite {
             input: super::SaveWorkingCopyInput {
                 note_id: edited_note_id.clone(),
-                base_revision_id: Some(edited.current_revision_id),
+                base_content_version_id: Some(edited.content_version_id),
                 edit_generation: 2,
                 document_json: document("copper"),
                 body_markdown: "# Vectors\n\nA copper invariant.".into(),
@@ -121,7 +121,7 @@ fn per_note_refresh_preserves_global_block_fts_rebuild_state() {
                 expected_edit_generation: 2,
             },
             now_ms: 21,
-            revision_id: Uuid::now_v7().to_string(),
+            content_version_id: Uuid::now_v7().to_string(),
             source_ids: Vec::new(),
         })
         .expect("checkpoint routine note edit");
@@ -156,7 +156,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
     let library = TestLibrary::new();
     let client = library.database.client();
     let note_id = Uuid::now_v7().to_string();
-    let first_revision_id = Uuid::now_v7().to_string();
+    let first_content_version_id = Uuid::now_v7().to_string();
     let first_document = document("citrine");
     let created = client
         .create_tidbit(CreateTidbitWrite {
@@ -167,7 +167,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
             },
             now_ms: 10,
             tidbit_id: note_id.clone(),
-            revision_id: first_revision_id.clone(),
+            content_version_id: first_content_version_id.clone(),
             source_ids: Vec::new(),
         })
         .expect("create note");
@@ -195,7 +195,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
         .save_working_copy(SaveWorkingCopyWrite {
             input: super::SaveWorkingCopyInput {
                 note_id: note_id.clone(),
-                base_revision_id: Some(created.current_revision_id.clone()),
+                base_content_version_id: Some(created.content_version_id.clone()),
                 edit_generation: 2,
                 document_json: document("amber"),
                 body_markdown: "# Vectors\n\nAn amber invariant.".into(),
@@ -206,7 +206,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
             allow_empty_ephemeral: false,
         })
         .expect("save edit");
-    let second_revision_id = Uuid::now_v7().to_string();
+    let second_content_version_id = Uuid::now_v7().to_string();
     let edited = client
         .checkpoint_working_copy(CheckpointWorkingCopyWrite {
             input: super::CheckpointWorkingCopyInput {
@@ -214,7 +214,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
                 expected_edit_generation: 2,
             },
             now_ms: 21,
-            revision_id: second_revision_id,
+            content_version_id: second_content_version_id,
             source_ids: Vec::new(),
         })
         .expect("checkpoint edit")
@@ -235,7 +235,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
         .delete_tidbit(
             DeleteTidbitInput {
                 id: note_id.clone(),
-                expected_revision_id: edited.current_revision_id.clone(),
+                expected_content_version_id: edited.content_version_id.clone(),
             },
             30,
         )
@@ -247,7 +247,7 @@ fn current_block_fts_replaces_edits_and_follows_note_lifecycle() {
         .restore_tidbit(
             RestoreTidbitInput {
                 id: note_id.clone(),
-                expected_revision_id: edited.current_revision_id,
+                expected_content_version_id: edited.content_version_id,
             },
             40,
         )
@@ -272,12 +272,12 @@ fn strict_refresh_rejects_drifted_attachment_ownership_but_rebuild_skips_it() {
             },
             now_ms: 10,
             tidbit_id: valid_note_id.clone(),
-            revision_id: Uuid::now_v7().to_string(),
+            content_version_id: Uuid::now_v7().to_string(),
             source_ids: Vec::new(),
         })
         .expect("create valid note");
     let drifted_note_id = Uuid::now_v7().to_string();
-    let drifted_revision_id = Uuid::now_v7().to_string();
+    let drifted_content_version_id = Uuid::now_v7().to_string();
     client
         .create_tidbit(CreateTidbitWrite {
             input: TidbitDraft {
@@ -287,7 +287,7 @@ fn strict_refresh_rejects_drifted_attachment_ownership_but_rebuild_skips_it() {
             },
             now_ms: 11,
             tidbit_id: drifted_note_id.clone(),
-            revision_id: drifted_revision_id.clone(),
+            content_version_id: drifted_content_version_id,
             source_ids: Vec::new(),
         })
         .expect("create note that will drift");
@@ -295,9 +295,6 @@ fn strict_refresh_rejects_drifted_attachment_ownership_but_rebuild_skips_it() {
     let mut writer =
         connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
             .expect("open block-search writer");
-    writer
-        .execute("DROP TRIGGER tidbit_revision_prevent_update", [])
-        .expect("allow corrupt restore fixture");
     let missing_attachment_id = Uuid::now_v7().to_string();
     let drifted_document = serde_json::json!({
         "schemaVersion": 1,
@@ -311,8 +308,8 @@ fn strict_refresh_rejects_drifted_attachment_ownership_but_rebuild_skips_it() {
     .to_string();
     writer
         .execute(
-            "UPDATE tidbit_revision SET document_json = ?1 WHERE id = ?2",
-            params![drifted_document, drifted_revision_id],
+            "UPDATE tidbit SET document_json = ?1 WHERE id = ?2",
+            params![drifted_document, drifted_note_id],
         )
         .expect("install drifted document fixture");
 
@@ -366,7 +363,7 @@ fn lexical_benchmark_attachments_are_present_in_block_search() {
     let library = TestLibrary::new();
     let client = library.database.client();
     let note_id = Uuid::now_v7().to_string();
-    let revision_id = Uuid::now_v7().to_string();
+    let content_version_id = Uuid::now_v7().to_string();
     client
         .create_tidbit(CreateTidbitWrite {
             input: TidbitDraft {
@@ -376,13 +373,13 @@ fn lexical_benchmark_attachments_are_present_in_block_search() {
             },
             now_ms: 10,
             tidbit_id: note_id.clone(),
-            revision_id: revision_id.clone(),
+            content_version_id: content_version_id.clone(),
             source_ids: Vec::new(),
         })
         .expect("create benchmark note");
     client
         .install_lexical_benchmark_attachments(vec![LexicalBenchmarkAttachmentWrite {
-            revision_id,
+            content_version_id,
             attachment_id: Uuid::now_v7().to_string(),
             created_at_ms: 11,
             display_filename: "benchmark-evidence.bin".into(),

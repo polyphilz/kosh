@@ -173,11 +173,9 @@ run_launch() {
         and (.probeRequestId | type) == "string"
         and (.probeRequestId | length) > 0
         and .canary.executionMode == "EXACT"
-        and .canary.citationState == "CURRENT"
         and .canary.resultCount == 1
-        and .canary.passageId == $launch.canary.passageId
-        and .canary.resolvedPassageId == $launch.canary.passageId
-        and .canary.revisionId == $launch.canary.revisionId
+        and .canary.blockId == $launch.canary.blockId
+        and .canary.contentVersionId == $launch.canary.contentVersionId
         and .canary.sourceUrl == $launch.canary.sourceUrl
       )
       and ([.webviews[].probeRequestId] | unique | length) == 2
@@ -215,12 +213,12 @@ jq -e -n \
   --slurpfile restart "$fresh_restart_receipt" \
   '
     $seed[0].dataDir == $restart[0].dataDir
-    and $seed[0].canary.tidbitId == $restart[0].canary.tidbitId
-    and $seed[0].canary.revisionId == $restart[0].canary.revisionId
-    and $seed[0].canary.passageId == $restart[0].canary.passageId
+    and $seed[0].canary.noteId == $restart[0].canary.noteId
+    and $seed[0].canary.contentVersionId == $restart[0].canary.contentVersionId
+    and $seed[0].canary.blockId == $restart[0].canary.blockId
     and $seed[0].canary.sourceUrl == $restart[0].canary.sourceUrl
   ' >/dev/null ||
-  fail "the fresh restart silently retargeted the startup canary citation"
+  fail "the fresh restart silently retargeted the startup canary block"
 
 temporary="$aggregate_receipt.$$.tmp"
 jq -n \

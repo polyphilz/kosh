@@ -118,7 +118,7 @@ impl TestLibrary {
         &self,
         expected_edit_generation: i64,
         now_ms: i64,
-        revision_id: String,
+        content_version_id: String,
         source_ids: Vec<String>,
     ) -> Tidbit {
         self.database
@@ -127,7 +127,7 @@ impl TestLibrary {
                 CAPTURE_DRAFT_ID.into(),
                 expected_edit_generation,
                 now_ms,
-                revision_id,
+                content_version_id,
                 source_ids,
             )
             .expect("checkpoint capture working copy")
@@ -540,8 +540,8 @@ fn media_only_notes_leave_and_reenter_block_search_with_the_note_lifecycle() {
             .query_row(
                 "SELECT count(*)
                  FROM block_search_document AS document
-                 JOIN tidbit_revision_attachment AS membership
-                   ON membership.tidbit_revision_id = document.tidbit_revision_id
+                 JOIN tidbit_attachment AS membership
+                   ON membership.tidbit_id = document.tidbit_id
                   AND membership.block_id = document.block_id
                  WHERE membership.attachment_id = ?1",
                 params![&image.attachment.id],
@@ -555,7 +555,7 @@ fn media_only_notes_leave_and_reenter_block_search_with_the_note_lifecycle() {
         .delete_tidbit(
             DeleteTidbitInput {
                 id: tidbit.id.clone(),
-                expected_revision_id: tidbit.current_revision_id.clone(),
+                expected_content_version_id: tidbit.content_version_id.clone(),
             },
             14,
         )
@@ -566,7 +566,7 @@ fn media_only_notes_leave_and_reenter_block_search_with_the_note_lifecycle() {
         .restore_tidbit(
             RestoreTidbitInput {
                 id: tidbit.id,
-                expected_revision_id: tidbit.current_revision_id,
+                expected_content_version_id: tidbit.content_version_id,
             },
             15,
         )
@@ -575,7 +575,7 @@ fn media_only_notes_leave_and_reenter_block_search_with_the_note_lifecycle() {
 }
 
 #[test]
-fn image_ocr_adds_searchable_text_without_mutating_authored_revision() {
+fn image_ocr_adds_searchable_text_without_mutating_authored_content() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
         (0x780, 0x781, 0x782, 0x783),
@@ -590,7 +590,7 @@ fn image_ocr_adds_searchable_text_without_mutating_authored_revision() {
     );
     library.save_capture(&body, 12);
     let tidbit = library.checkpoint_capture(12, 13, id(0x785), Vec::new());
-    let original_revision_id = tidbit.current_revision_id.clone();
+    let original_content_version_id = tidbit.content_version_id.clone();
 
     let client = library.database.client();
     let job = client
@@ -654,7 +654,7 @@ fn image_ocr_adds_searchable_text_without_mutating_authored_revision() {
     let loaded = client
         .load_tidbit(tidbit.id.clone())
         .expect("load unchanged tidbit");
-    assert_eq!(loaded.current_revision_id, original_revision_id);
+    assert_eq!(loaded.content_version_id, original_content_version_id);
     let results = client
         .search_blocks(SearchBlocksInput {
             query: "exact image evidence".into(),
@@ -695,8 +695,8 @@ fn image_ocr_adds_searchable_text_without_mutating_authored_revision() {
         .query_row(
             "SELECT document.extracted_text
              FROM block_search_document AS document
-             JOIN tidbit_revision_attachment AS membership
-               ON membership.tidbit_revision_id = document.tidbit_revision_id
+             JOIN tidbit_attachment AS membership
+               ON membership.tidbit_id = document.tidbit_id
               AND membership.block_id = document.block_id
              WHERE membership.attachment_id = ?1",
             params![image.attachment.id],
@@ -901,7 +901,7 @@ fn retiring_a_draft_only_image_terminally_fails_in_flight_ocr() {
 }
 
 #[test]
-fn completed_draft_image_ocr_is_indexed_when_a_revision_takes_ownership() {
+fn completed_draft_image_ocr_is_indexed_when_the_note_takes_ownership() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
         (0x796, 0x797, 0x798, 0x799),
@@ -1329,7 +1329,7 @@ fn ingestion_deduplicates_bytes_preserves_metadata_and_bounds_reads() {
     assert_eq!(payload.bytes, b"bytes");
     assert_eq!(payload.total_byte_length, 10);
     assert_eq!(payload.media_type, "text/plain");
-    assert!(!payload.revision_bound);
+    assert!(!payload.current_note_bound);
 
     let clamped = client
         .load_media_payload(
@@ -1701,7 +1701,7 @@ fn owned_draft_media_remains_readable_and_renews_after_expiry_without_restart() 
             .save_working_copy(SaveWorkingCopyWrite {
                 input: SaveWorkingCopyInput {
                     note_id: CAPTURE_DRAFT_ID.into(),
-                    base_revision_id: None,
+                    base_content_version_id: None,
                     edit_generation: now_ms,
                     document_json: super::document::fixture_from_markdown(&body),
                     body_markdown: body.clone(),
@@ -1788,7 +1788,7 @@ fn attachment_ownership_follows_the_stable_note_block_identity() {
             .save_working_copy(SaveWorkingCopyWrite {
                 input: SaveWorkingCopyInput {
                     note_id: CAPTURE_DRAFT_ID.into(),
-                    base_revision_id: None,
+                    base_content_version_id: None,
                     edit_generation: generation,
                     document_json,
                     body_markdown: body.clone(),
@@ -1901,7 +1901,7 @@ fn working_copy_media_and_note_survive_restart() {
                 expected_edit_generation: 2,
             },
             now_ms: 15,
-            revision_id: id(0x733),
+            content_version_id: id(0x733),
             source_ids: vec![id(0x734)],
         })
         .expect("checkpoint recovered working copy");
@@ -1942,7 +1942,7 @@ fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
         .save_working_copy(SaveWorkingCopyWrite {
             input: SaveWorkingCopyInput {
                 note_id: CAPTURE_DRAFT_ID.into(),
-                base_revision_id: None,
+                base_content_version_id: None,
                 edit_generation: 12,
                 document_json: super::document::fixture_from_markdown(&canonical),
                 body_markdown: canonical,
@@ -1960,7 +1960,7 @@ fn malformed_media_text_does_not_renew_an_expired_draft_lease() {
         .save_working_copy(SaveWorkingCopyWrite {
             input: SaveWorkingCopyInput {
                 note_id: CAPTURE_DRAFT_ID.into(),
-                base_revision_id: None,
+                base_content_version_id: None,
                 edit_generation: 13,
                 document_json: super::document::fixture_from_markdown(&malformed),
                 body_markdown: malformed,
@@ -2010,7 +2010,7 @@ fn startup_recovery_renews_expired_media_still_referenced_by_a_saved_draft() {
         .save_working_copy(SaveWorkingCopyWrite {
             input: SaveWorkingCopyInput {
                 note_id: CAPTURE_DRAFT_ID.into(),
-                base_revision_id: None,
+                base_content_version_id: None,
                 edit_generation: 12,
                 document_json: super::document::fixture_from_markdown(&body),
                 body_markdown: body,
@@ -2451,7 +2451,7 @@ fn lifecycle_reconciliation_yields_between_bounded_hash_batches() {
 }
 
 #[test]
-fn revision_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
+fn current_note_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
     let library = TestLibrary::new();
     let limits = MediaLimits {
         draft_lease_duration_ms: 10,
@@ -2485,10 +2485,10 @@ fn revision_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
                 expected_edit_generation: saved.edit_generation,
             },
             now_ms: 14,
-            revision_id: id(0x747),
+            content_version_id: id(0x747),
             source_ids: Vec::new(),
         })
-        .expect("checkpoint revision with attachment");
+        .expect("checkpoint note state with attachment");
     assert_eq!(
         checkpoint.note.expect("checkpoint note").body_markdown,
         body
@@ -2505,9 +2505,9 @@ fn revision_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
         .database
         .client()
         .load_media_payload(first.id, 30, None, 64)
-        .expect("revision-authorized media");
+        .expect("content-version-authorized media");
     assert_eq!(payload.bytes, b"shared");
-    assert!(payload.revision_bound);
+    assert!(payload.current_note_bound);
     assert!(matches!(
         library
             .database
@@ -2518,7 +2518,7 @@ fn revision_membership_keeps_shared_blob_and_authenticates_long_lived_reads() {
 }
 
 #[test]
-fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
+fn edit_draft_authorizes_media_inherited_from_its_base_content_version() {
     let library = TestLibrary::new();
     let attachment = library.ingest(
         (0x748, 0x749, 0x74a),
@@ -2542,10 +2542,10 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
                 expected_edit_generation: capture.edit_generation,
             },
             now_ms: 13,
-            revision_id: id(0x74c),
+            content_version_id: id(0x74c),
             source_ids: Vec::new(),
         })
-        .expect("checkpoint revision with media")
+        .expect("checkpoint note state with media")
         .note
         .expect("checkpointed note");
 
@@ -2559,7 +2559,7 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
         .save_working_copy(SaveWorkingCopyWrite {
             input: SaveWorkingCopyInput {
                 note_id: tidbit.id.clone(),
-                base_revision_id: Some(tidbit.current_revision_id.clone()),
+                base_content_version_id: Some(tidbit.content_version_id.clone()),
                 edit_generation: 14,
                 document_json: super::document::fixture_from_markdown(&body),
                 body_markdown: body.clone(),
@@ -2569,7 +2569,7 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
             media_limits: edit_limits,
             allow_empty_ephemeral: false,
         })
-        .expect("save edit working copy with base-revision media")
+        .expect("save edit working copy with base-content-version media")
         .working_copy
         .expect("saved edit working copy");
 
@@ -2607,7 +2607,7 @@ fn edit_draft_authorizes_media_inherited_from_its_base_revision() {
         .save_working_copy(SaveWorkingCopyWrite {
             input: SaveWorkingCopyInput {
                 note_id: tidbit.id.clone(),
-                base_revision_id: Some(tidbit.current_revision_id.clone()),
+                base_content_version_id: Some(tidbit.content_version_id.clone()),
                 edit_generation: 15,
                 document_json: super::document::single_paragraph(&format!(
                     "{body}\n{{{{kosh:attachment:{}}}}}",

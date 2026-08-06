@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     block_search, document, media,
-    tidbits::{self, PreparedRevision},
+    tidbits::{self, PreparedNoteContent},
     DatabaseError, Result, SourceDraft, Tidbit,
 };
 
@@ -12,7 +12,7 @@ use super::{
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveWorkingCopyInput {
     pub note_id: String,
-    pub base_revision_id: Option<String>,
+    pub base_content_version_id: Option<String>,
     pub edit_generation: i64,
     pub document_json: String,
     pub body_markdown: String,
@@ -39,7 +39,7 @@ pub struct DiscardWorkingCopyInput {
 pub struct WorkingCopy {
     pub id: String,
     pub note_id: String,
-    pub base_revision_id: Option<String>,
+    pub base_content_version_id: Option<String>,
     pub edit_generation: i64,
     pub media_reservation: bool,
     pub created_at_ms: i64,
@@ -91,7 +91,7 @@ pub(crate) struct SaveWorkingCopyWrite {
 pub(crate) struct CheckpointWorkingCopyWrite {
     pub input: CheckpointWorkingCopyInput,
     pub now_ms: i64,
-    pub revision_id: String,
+    pub content_version_id: String,
     pub source_ids: Vec<String>,
 }
 
@@ -103,7 +103,7 @@ pub(super) fn save(
     tidbits::validate_timestamp(write.now_ms, "nowMs")?;
     let limits = write.media_limits.validate()?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    validate_base_revision(&transaction, &write.input)?;
+    validate_base_content_version(&transaction, &write.input)?;
     let existing = load_in_transaction(&transaction, &write.input.note_id)?;
 
     if let Some(existing) = existing.as_ref() {
@@ -146,7 +146,7 @@ pub(super) fn save(
     }
 
     if !write.allow_empty_ephemeral
-        && write.input.base_revision_id.is_none()
+        && write.input.base_content_version_id.is_none()
         && !has_meaningful_authored_content(&write.input.body_markdown)
     {
         if existing.is_some() {
@@ -188,7 +188,7 @@ pub(super) fn save(
         transaction.execute(
             "INSERT INTO draft(
                 id,
-                base_revision_id,
+                base_content_version_id,
                 edit_generation,
                 media_reservation,
                 created_at,
@@ -198,7 +198,7 @@ pub(super) fn save(
              ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
             params![
                 &write.input.note_id,
-                &write.input.base_revision_id,
+                &write.input.base_content_version_id,
                 write.input.edit_generation,
                 write.allow_empty_ephemeral,
                 write.now_ms,
@@ -310,7 +310,7 @@ pub(super) fn checkpoint(
         "expectedEditGeneration",
     )?;
     tidbits::validate_timestamp(write.now_ms, "nowMs")?;
-    tidbits::validate_uuid_v7(&write.revision_id, "revisionId")?;
+    tidbits::validate_uuid_v7(&write.content_version_id, "contentVersionId")?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(working_copy) = load_in_transaction(&transaction, &write.input.note_id)? else {
         return Err(DatabaseError::NotFound {
@@ -328,24 +328,24 @@ pub(super) fn checkpoint(
         });
     }
 
-    let allow_empty_body = working_copy.base_revision_id.is_some();
+    let allow_empty_body = working_copy.base_content_version_id.is_some();
     if !allow_empty_body && !has_meaningful_authored_content(&working_copy.body_markdown) {
         return Err(DatabaseError::InvalidInput(
             "an ephemeral note must contain authored text or media before checkpoint".into(),
         ));
     }
-    let prepared = tidbits::prepare_revision_with_empty(
+    let prepared = tidbits::prepare_note_content_with_empty(
         working_copy.document_json.clone(),
         working_copy.body_markdown.clone(),
         working_copy.sources.clone(),
         allow_empty_body,
     )?;
     tidbits::validate_source_ids(&write.source_ids, prepared.sources.len())?;
-    if let Some(base_revision_id) = working_copy.base_revision_id.as_deref() {
+    if let Some(base_content_version_id) = working_copy.base_content_version_id.as_deref() {
         checkpoint_existing(
             &transaction,
             &working_copy,
-            base_revision_id,
+            base_content_version_id,
             &write,
             &prepared,
         )?;
@@ -367,7 +367,7 @@ fn checkpoint_new(
     transaction: &Transaction<'_>,
     working_copy: &WorkingCopy,
     write: &CheckpointWorkingCopyWrite,
-    prepared: &PreparedRevision,
+    prepared: &PreparedNoteContent,
 ) -> Result<()> {
     let already_exists = transaction
         .query_row(
@@ -384,13 +384,13 @@ fn checkpoint_new(
     }
     transaction.execute(
         "INSERT INTO tidbit(
-            id, created_at, updated_at, current_revision_id, revision_number,
+            id, created_at, updated_at, content_version_id, version_number,
             document_json, body_markdown, content_hash
          ) VALUES(?1, ?2, ?2, ?3, 1, ?4, ?5, ?6)",
         params![
             &working_copy.note_id,
             write.now_ms,
-            &write.revision_id,
+            &write.content_version_id,
             &prepared.document_json,
             &prepared.body_markdown,
             &prepared.content_hash,
@@ -422,32 +422,32 @@ fn checkpoint_new(
 fn checkpoint_existing(
     transaction: &Transaction<'_>,
     working_copy: &WorkingCopy,
-    base_revision_id: &str,
+    base_content_version_id: &str,
     write: &CheckpointWorkingCopyWrite,
-    prepared: &PreparedRevision,
+    prepared: &PreparedNoteContent,
 ) -> Result<()> {
-    let current = tidbits::load_current_revision(transaction, &working_copy.note_id)?;
+    let current = tidbits::load_current_note_state(transaction, &working_copy.note_id)?;
     if current.deleted_at_ms.is_some() {
         return Err(DatabaseError::TidbitDeleted {
             id: working_copy.note_id.clone(),
         });
     }
-    if current.revision_id != base_revision_id {
+    if current.content_version_id != base_content_version_id {
         return Err(DatabaseError::StaleTidbit {
             id: working_copy.note_id.clone(),
-            expected_revision_id: base_revision_id.to_owned(),
-            actual_revision_id: current.revision_id,
+            expected_content_version_id: base_content_version_id.to_owned(),
+            actual_content_version_id: current.content_version_id,
         });
     }
-    let revision_number = current
-        .revision_number
+    let version_number = current
+        .version_number
         .checked_add(1)
-        .ok_or_else(|| DatabaseError::InvalidInput("revision number overflow".into()))?;
+        .ok_or_else(|| DatabaseError::InvalidInput("content version number overflow".into()))?;
     let updated_at_ms = tidbits::next_timestamp(current.updated_at_ms, write.now_ms)?;
     media::replace_note_attachments(
         transaction,
         &working_copy.note_id,
-        Some(base_revision_id),
+        Some(base_content_version_id),
         &prepared.document.attachments,
         &prepared.body_markdown,
         updated_at_ms,
@@ -461,29 +461,29 @@ fn checkpoint_existing(
     )?;
     let changed = transaction.execute(
         "UPDATE tidbit
-         SET current_revision_id = ?1,
-             revision_number = ?2,
+         SET content_version_id = ?1,
+             version_number = ?2,
              document_json = ?3,
              body_markdown = ?4,
              content_hash = ?5,
              updated_at = ?6
-         WHERE id = ?7 AND current_revision_id = ?8 AND deleted_at IS NULL",
+         WHERE id = ?7 AND content_version_id = ?8 AND deleted_at IS NULL",
         params![
-            &write.revision_id,
-            revision_number,
+            &write.content_version_id,
+            version_number,
             &prepared.document_json,
             &prepared.body_markdown,
             &prepared.content_hash,
             updated_at_ms,
             &working_copy.note_id,
-            base_revision_id,
+            base_content_version_id,
         ],
     )?;
     if changed != 1 {
         return Err(DatabaseError::StaleTidbit {
             id: working_copy.note_id.clone(),
-            expected_revision_id: base_revision_id.to_owned(),
-            actual_revision_id: current.revision_id,
+            expected_content_version_id: base_content_version_id.to_owned(),
+            actual_content_version_id: current.content_version_id,
         });
     }
     block_search::replace_tidbit_documents_from_blocks(
@@ -497,29 +497,29 @@ fn checkpoint_existing(
 fn validate_save_input(input: &SaveWorkingCopyInput) -> Result<()> {
     tidbits::validate_uuid_v7(&input.note_id, "noteId")?;
     validate_generation(input.edit_generation, "editGeneration")?;
-    if let Some(base_revision_id) = input.base_revision_id.as_deref() {
-        tidbits::validate_uuid_v7(base_revision_id, "baseRevisionId")?;
+    if let Some(base_content_version_id) = input.base_content_version_id.as_deref() {
+        tidbits::validate_uuid_v7(base_content_version_id, "baseContentVersionId")?;
     }
     document::validate(&input.document_json)?;
     Ok(())
 }
 
-fn validate_base_revision(
+fn validate_base_content_version(
     transaction: &Transaction<'_>,
     input: &SaveWorkingCopyInput,
 ) -> Result<()> {
-    if let Some(expected_revision_id) = input.base_revision_id.as_deref() {
-        let current = tidbits::load_current_revision(transaction, &input.note_id)?;
+    if let Some(expected_content_version_id) = input.base_content_version_id.as_deref() {
+        let current = tidbits::load_current_note_state(transaction, &input.note_id)?;
         if current.deleted_at_ms.is_some() {
             return Err(DatabaseError::TidbitDeleted {
                 id: input.note_id.clone(),
             });
         }
-        if current.revision_id != expected_revision_id {
+        if current.content_version_id != expected_content_version_id {
             return Err(DatabaseError::StaleTidbit {
                 id: input.note_id.clone(),
-                expected_revision_id: expected_revision_id.to_owned(),
-                actual_revision_id: current.revision_id,
+                expected_content_version_id: expected_content_version_id.to_owned(),
+                actual_content_version_id: current.content_version_id,
             });
         }
         return Ok(());
@@ -534,7 +534,7 @@ fn validate_base_revision(
         .is_some();
     if exists {
         Err(DatabaseError::InvalidInput(
-            "an existing note working copy requires its current base revision".into(),
+            "an existing note working copy requires its current base content version".into(),
         ))
     } else {
         Ok(())
@@ -564,7 +564,7 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
             "SELECT
                 draft.id,
                 draft.id,
-                draft.base_revision_id,
+                draft.base_content_version_id,
                 draft.edit_generation,
                 draft.media_reservation,
                 draft.created_at,
@@ -578,7 +578,7 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
                 Ok(WorkingCopy {
                     id: row.get(0)?,
                     note_id: row.get(1)?,
-                    base_revision_id: row.get(2)?,
+                    base_content_version_id: row.get(2)?,
                     edit_generation: row.get(3)?,
                     media_reservation: row.get(4)?,
                     created_at_ms: row.get(5)?,
@@ -611,7 +611,7 @@ fn load_from_connection(connection: &Connection, note_id: &str) -> Result<Option
 }
 
 fn same_authored_state(existing: &WorkingCopy, input: &SaveWorkingCopyInput) -> bool {
-    existing.base_revision_id == input.base_revision_id
+    existing.base_content_version_id == input.base_content_version_id
         && existing.document_json == input.document_json
         && existing.body_markdown == input.body_markdown
         && existing.sources == input.sources
@@ -676,8 +676,8 @@ mod tests {
     const NOTE_ID: &str = "019f547b-6200-7000-8000-000000007001";
     const DRAFT_ID_1: &str = "019f547b-6200-7000-8000-000000007002";
     const DRAFT_ID_2: &str = "019f547b-6200-7000-8000-000000007003";
-    const REVISION_ID_1: &str = "019f547b-6200-7000-8000-000000007004";
-    const REVISION_ID_2: &str = "019f547b-6200-7000-8000-000000007005";
+    const CONTENT_VERSION_ID_1: &str = "019f547b-6200-7000-8000-000000007004";
+    const CONTENT_VERSION_ID_2: &str = "019f547b-6200-7000-8000-000000007005";
     const SOURCE_ID_1: &str = "019f547b-6200-7000-8000-000000007006";
 
     struct TestLibrary {
@@ -700,17 +700,23 @@ mod tests {
             &self,
             generation: i64,
             body: &str,
-            base_revision_id: Option<String>,
+            base_content_version_id: Option<String>,
             draft_id: &str,
         ) -> WorkingCopySaveResult {
-            self.save_with_sources(generation, body, base_revision_id, draft_id, Vec::new())
+            self.save_with_sources(
+                generation,
+                body,
+                base_content_version_id,
+                draft_id,
+                Vec::new(),
+            )
         }
 
         fn save_with_sources(
             &self,
             generation: i64,
             body: &str,
-            base_revision_id: Option<String>,
+            base_content_version_id: Option<String>,
             _draft_id: &str,
             sources: Vec<SourceDraft>,
         ) -> WorkingCopySaveResult {
@@ -719,7 +725,7 @@ mod tests {
                 .save_working_copy(SaveWorkingCopyWrite {
                     input: SaveWorkingCopyInput {
                         note_id: NOTE_ID.into(),
-                        base_revision_id,
+                        base_content_version_id,
                         edit_generation: generation,
                         document_json: super::document::fixture_from_markdown(body),
                         body_markdown: body.into(),
@@ -732,14 +738,18 @@ mod tests {
                 .expect("save working copy")
         }
 
-        fn checkpoint(&self, generation: i64, revision_id: &str) -> WorkingCopyCheckpointResult {
-            self.checkpoint_with_sources(generation, revision_id, Vec::new())
+        fn checkpoint(
+            &self,
+            generation: i64,
+            content_version_id: &str,
+        ) -> WorkingCopyCheckpointResult {
+            self.checkpoint_with_sources(generation, content_version_id, Vec::new())
         }
 
         fn checkpoint_with_sources(
             &self,
             generation: i64,
-            revision_id: &str,
+            content_version_id: &str,
             source_ids: Vec<String>,
         ) -> WorkingCopyCheckpointResult {
             self.database
@@ -750,7 +760,7 @@ mod tests {
                         expected_edit_generation: generation,
                     },
                     now_ms: 200 + generation,
-                    revision_id: revision_id.into(),
+                    content_version_id: content_version_id.into(),
                     source_ids,
                 })
                 .expect("checkpoint working copy")
@@ -875,7 +885,7 @@ mod tests {
             .save_working_copy(SaveWorkingCopyWrite {
                 input: SaveWorkingCopyInput {
                     note_id: NOTE_ID.into(),
-                    base_revision_id: None,
+                    base_content_version_id: None,
                     edit_generation: 1,
                     document_json: super::document::single_paragraph(""),
                     body_markdown: String::new(),
@@ -962,7 +972,7 @@ mod tests {
             .save_working_copy(SaveWorkingCopyWrite {
                 input: SaveWorkingCopyInput {
                     note_id: NOTE_ID.into(),
-                    base_revision_id: None,
+                    base_content_version_id: None,
                     edit_generation: 1,
                     document_json: super::document::single_paragraph(""),
                     body_markdown: String::new(),
@@ -989,7 +999,7 @@ mod tests {
         let body = format!("{{{{kosh:attachment:{}}}}}", attachment.id);
         let saved = library.save(2, &body, None, DRAFT_ID_2);
         assert_eq!(saved.status, WorkingCopySaveStatus::Saved);
-        let checkpoint = library.checkpoint(2, REVISION_ID_1);
+        let checkpoint = library.checkpoint(2, CONTENT_VERSION_ID_1);
         assert_eq!(checkpoint.status, WorkingCopyCheckpointStatus::Checkpointed);
         assert_eq!(
             checkpoint
@@ -1008,7 +1018,7 @@ mod tests {
                     params![NOTE_ID],
                     |row| row.get::<_, i64>(0),
                 )
-                .expect("revision attachment count"),
+                .expect("current attachment count"),
             1
         );
     }
@@ -1034,7 +1044,7 @@ mod tests {
             .save_working_copy(SaveWorkingCopyWrite {
                 input: SaveWorkingCopyInput {
                     note_id: NOTE_ID.into(),
-                    base_revision_id: None,
+                    base_content_version_id: None,
                     edit_generation: 2,
                     document_json: super::document::single_paragraph("different bytes"),
                     body_markdown: "different bytes".into(),
@@ -1048,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_checkpoint_creates_titleless_revision_and_consumes_copy_atomically() {
+    fn exact_checkpoint_updates_titleless_note_and_consumes_copy_atomically() {
         let library = TestLibrary::new();
         library.save_with_sources(
             1,
@@ -1060,13 +1070,14 @@ mod tests {
                 url: Some("HTTPS://Example.COM:443/reference#fragment".into()),
             }],
         );
-        let result = library.checkpoint_with_sources(1, REVISION_ID_1, vec![SOURCE_ID_1.into()]);
+        let result =
+            library.checkpoint_with_sources(1, CONTENT_VERSION_ID_1, vec![SOURCE_ID_1.into()]);
         assert_eq!(result.status, WorkingCopyCheckpointStatus::Checkpointed);
         assert_eq!(result.consumed_edit_generation, Some(1));
         let note = result.note.expect("checkpointed note");
         assert_eq!(note.id, NOTE_ID);
-        assert_eq!(note.current_revision_id, REVISION_ID_1);
-        assert_eq!(note.revision_number, 1);
+        assert_eq!(note.content_version_id, CONTENT_VERSION_ID_1);
+        assert_eq!(note.version_number, 1);
         assert_eq!(note.body_markdown, "Remember the blue hour.");
         assert_eq!(note.sources.len(), 1);
         assert_eq!(note.sources[0].id, SOURCE_ID_1);
@@ -1090,7 +1101,7 @@ mod tests {
         let library = TestLibrary::new();
         library.save(1, "first", None, DRAFT_ID_1);
         library.save(2, "second", None, DRAFT_ID_2);
-        let result = library.checkpoint(1, REVISION_ID_1);
+        let result = library.checkpoint(1, CONTENT_VERSION_ID_1);
         assert_eq!(result.status, WorkingCopyCheckpointStatus::Stale);
         assert_eq!(result.note, None);
         assert_eq!(
@@ -1112,17 +1123,17 @@ mod tests {
         library.save(2, "ab", None, DRAFT_ID_2);
         library.save(3, "abc", None, DRAFT_ID_2);
         let first = library
-            .checkpoint(3, REVISION_ID_1)
+            .checkpoint(3, CONTENT_VERSION_ID_1)
             .note
             .expect("first checkpoint");
-        assert_eq!(first.revision_number, 1);
+        assert_eq!(first.version_number, 1);
 
-        library.save(4, "", Some(first.current_revision_id.clone()), DRAFT_ID_2);
+        library.save(4, "", Some(first.content_version_id.clone()), DRAFT_ID_2);
         let cleared = library
-            .checkpoint(4, REVISION_ID_2)
+            .checkpoint(4, CONTENT_VERSION_ID_2)
             .note
             .expect("empty checkpoint");
-        assert_eq!(cleared.revision_number, 2);
+        assert_eq!(cleared.version_number, 2);
         assert_eq!(cleared.body_markdown, "");
         assert_eq!(cleared.deleted_at_ms, None);
         let connection = library
@@ -1168,7 +1179,7 @@ mod tests {
             .save_working_copy(SaveWorkingCopyWrite {
                 input: SaveWorkingCopyInput {
                     note_id: NOTE_ID.into(),
-                    base_revision_id: None,
+                    base_content_version_id: None,
                     edit_generation: 7,
                     document_json: super::document::single_paragraph(
                         "recoverable saffron observation",
@@ -1214,7 +1225,7 @@ mod tests {
                     expected_edit_generation: 7,
                 },
                 now_ms: 301,
-                revision_id: REVISION_ID_1.into(),
+                content_version_id: CONTENT_VERSION_ID_1.into(),
                 source_ids: Vec::new(),
             })
             .expect("checkpoint recovered copy");
@@ -1257,7 +1268,7 @@ mod tests {
                 },
                 now_ms: 400,
                 tidbit_id: NOTE_ID.into(),
-                revision_id: REVISION_ID_1.into(),
+                content_version_id: CONTENT_VERSION_ID_1.into(),
                 source_ids: Vec::new(),
             })
             .expect("existing note");
@@ -1267,7 +1278,7 @@ mod tests {
             .save_working_copy(SaveWorkingCopyWrite {
                 input: SaveWorkingCopyInput {
                     note_id: NOTE_ID.into(),
-                    base_revision_id: Some(REVISION_ID_2.into()),
+                    base_content_version_id: Some(CONTENT_VERSION_ID_2.into()),
                     edit_generation: 1,
                     document_json: super::document::single_paragraph("unsafe overwrite"),
                     body_markdown: "unsafe overwrite".into(),
@@ -1280,7 +1291,7 @@ mod tests {
         assert!(matches!(stale, Err(DatabaseError::StaleTidbit { .. })));
         assert_eq!(
             library
-                .save(1, "safe edit", Some(note.current_revision_id), DRAFT_ID_1,)
+                .save(1, "safe edit", Some(note.content_version_id), DRAFT_ID_1,)
                 .status,
             WorkingCopySaveStatus::Saved
         );

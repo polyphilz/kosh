@@ -40,9 +40,9 @@ jq -e \
     and .fresh.restart.canaryPreexisting == true
     and .fresh.restart.canaryCreated == false
     and .fresh.seed.dataDir == .fresh.restart.dataDir
-    and .fresh.seed.canary.tidbitId == .fresh.restart.canary.tidbitId
-    and .fresh.seed.canary.revisionId == .fresh.restart.canary.revisionId
-    and .fresh.seed.canary.passageId == .fresh.restart.canary.passageId
+    and .fresh.seed.canary.noteId == .fresh.restart.canary.noteId
+    and .fresh.seed.canary.contentVersionId == .fresh.restart.canary.contentVersionId
+    and .fresh.seed.canary.blockId == .fresh.restart.canary.blockId
     and (.fresh.seed.windows | sort) == ["main", "quick-add"]
     and (.fresh.restart.windows | sort) == ["main", "quick-add"]
     and all(
@@ -64,11 +64,9 @@ jq -e \
         and (.probeRequestId | type) == "string"
         and (.probeRequestId | length) > 0
         and .canary.executionMode == "EXACT"
-        and .canary.citationState == "CURRENT"
         and .canary.resultCount == 1
-        and .canary.passageId == $launch.canary.passageId
-        and .canary.resolvedPassageId == $launch.canary.passageId
-        and .canary.revisionId == $launch.canary.revisionId
+        and .canary.blockId == $launch.canary.blockId
+        and .canary.contentVersionId == $launch.canary.contentVersionId
         and .canary.sourceUrl == $launch.canary.sourceUrl
       )
       and ([$launch.webviews[].probeRequestId] | unique | length) == 2

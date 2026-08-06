@@ -227,7 +227,7 @@ function AppShell() {
     try {
       const restored = await backend.restoreTidbit({
         id: deletedNote.id,
-        expectedRevisionId: deletedNote.currentRevisionId,
+        expectedContentVersionId: deletedNote.contentVersionId,
       });
       clearUndoTimer();
       setDeletedNote(null);

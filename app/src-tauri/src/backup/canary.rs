@@ -424,7 +424,7 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             Cursor::new(b"immutable attachment evidence".to_vec()),
         )
         .expect("canary attachment");
-    let original_revision_id = Uuid::now_v7().to_string();
+    let original_content_version_id = Uuid::now_v7().to_string();
     let attachment_token = format!("{{{{kosh:attachment:{}}}}}", attachment.id);
     database
         .client()
@@ -432,10 +432,10 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             note_id.clone(),
             None,
             2,
-            format!("The durable historical fact is forty-two.\n\n{attachment_token}"),
+            format!("The durable current fact is forty-two.\n\n{attachment_token}"),
             vec![SourceDraft {
                 label: Some("Historical source".into()),
-                url: Some("https://example.com/historical-recovery".into()),
+                url: Some("https://example.com/current-recovery".into()),
             }],
             22,
         )
@@ -446,7 +446,7 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
             note_id.clone(),
             2,
             30,
-            original_revision_id.clone(),
+            original_content_version_id.clone(),
             vec![Uuid::now_v7().to_string()],
         )
         .expect("checkpoint original canary note")
@@ -456,7 +456,7 @@ fn create_source_fixture(target: &R2Target) -> SourceFixture {
         .client()
         .save_working_copy_for_test(
             note_id.clone(),
-            Some(original.current_revision_id),
+            Some(original.content_version_id),
             3,
             format!("Exact citrine recovery evidence.\n\n{attachment_token}"),
             vec![SourceDraft {

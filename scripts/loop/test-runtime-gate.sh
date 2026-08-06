@@ -13,16 +13,16 @@ launch_receipt() {
   local expectation="$1"
   local preexisting="$2"
   local created="$3"
-  local tidbit="$4"
-  local revision="$5"
-  local passage="$6"
+  local note="$4"
+  local content_version="$5"
+  local block="$6"
 
   jq -n \
     --arg head "$head_sha" \
     --arg expectation "$expectation" \
-    --arg tidbit "$tidbit" \
-    --arg revision "$revision" \
-    --arg passage "$passage" \
+    --arg note "$note" \
+    --arg content_version "$content_version" \
+    --arg block "$block" \
     --argjson preexisting "$preexisting" \
     --argjson created "$created" \
     '{
@@ -46,11 +46,9 @@ launch_receipt() {
           probeRequestId: "00000000-0000-7000-8000-000000000004",
           canary: {
             executionMode: "EXACT",
-            citationState: "CURRENT",
             resultCount: 1,
-            passageId: $passage,
-            resolvedPassageId: $passage,
-            revisionId: $revision,
+            blockId: $block,
+            contentVersionId: $content_version,
             sourceUrl: "https://example.invalid/kosh-progressive-operability"
           }
         },
@@ -65,11 +63,9 @@ launch_receipt() {
           probeRequestId: "00000000-0000-7000-8000-000000000005",
           canary: {
             executionMode: "EXACT",
-            citationState: "CURRENT",
             resultCount: 1,
-            passageId: $passage,
-            resolvedPassageId: $passage,
-            revisionId: $revision,
+            blockId: $block,
+            contentVersionId: $content_version,
             sourceUrl: "https://example.invalid/kosh-progressive-operability"
           }
         }
@@ -84,9 +80,9 @@ launch_receipt() {
       canaryPreexisting: $preexisting,
       canaryCreated: $created,
       canary: {
-        tidbitId: $tidbit,
-        revisionId: $revision,
-        passageId: $passage,
+        noteId: $note,
+        contentVersionId: $content_version,
+        blockId: $block,
         sourceUrl: "https://example.invalid/kosh-progressive-operability"
       }
     }'
@@ -142,9 +138,9 @@ write_aggregate ci "$head_sha"
 expect_blocked "CI-only receipt used for a local merge"
 
 original_restart="$restart"
-restart="$(jq '.canary.revisionId = "00000000-0000-7000-8000-000000000099"' <<<"$restart")"
+restart="$(jq '.canary.contentVersionId = "00000000-0000-7000-8000-000000000099"' <<<"$restart")"
 write_aggregate local "$head_sha"
-expect_blocked "restart silently retargets the citation"
+expect_blocked "restart silently retargets the block target"
 
 restart="$(jq '.webviews[1].rendered = false' <<<"$original_restart")"
 write_aggregate local "$head_sha"
@@ -155,11 +151,11 @@ write_aggregate local "$head_sha"
 expect_blocked "a webview has no backend IPC evidence"
 
 restart="$(
-  jq '.webviews[0].canary.resolvedPassageId = "00000000-0000-7000-8000-000000000099"' \
+  jq '.webviews[0].canary.blockId = "00000000-0000-7000-8000-000000000099"' \
     <<<"$original_restart"
 )"
 write_aggregate local "$head_sha"
-expect_blocked "a citation resolves to a different passage"
+expect_blocked "a webview resolves a different block"
 
 restart="$(jq '.webviews[0].frontendOrigin = "http://localhost:1420"' <<<"$original_restart")"
 write_aggregate local "$head_sha"
