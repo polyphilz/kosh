@@ -132,7 +132,7 @@ pub(crate) async fn rebuild_search_indexes(
             reclaimed_bytes: 0,
             safety_snapshot_id: None,
             message: format!(
-                "Rebuilt passages and full-text indexes for {documents} searchable passage{}.",
+                "Rebuilt full-text indexes for {documents} searchable block{}.",
                 if documents == 1 { "" } else { "s" }
             ),
             completed_at_ms: now_ms,
