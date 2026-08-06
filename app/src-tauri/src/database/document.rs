@@ -67,10 +67,14 @@ pub(super) struct SearchableBlock {
 }
 
 pub(super) fn validate(document_json: &str) -> Result<()> {
-    extract_attachments(document_json).map(|_| ())
+    parse_and_validate(document_json).map(|_| ())
 }
 
 pub(super) fn extract_attachments(document_json: &str) -> Result<Vec<DocumentAttachment>> {
+    parse_and_validate(document_json).map(|(_, attachments)| attachments)
+}
+
+fn parse_and_validate(document_json: &str) -> Result<(Value, Vec<DocumentAttachment>)> {
     if document_json.len() > MAX_DOCUMENT_BYTES {
         return invalid("documentJson exceeds the 16 MiB limit");
     }
@@ -103,13 +107,11 @@ pub(super) fn extract_attachments(document_json: &str) -> Result<Vec<DocumentAtt
         &mut attachment_ids,
         &mut attachments,
     )?;
-    Ok(attachments)
+    Ok((value, attachments))
 }
 
 pub(super) fn extract_searchable_blocks(document_json: &str) -> Result<Vec<SearchableBlock>> {
-    validate(document_json)?;
-    let value: Value = serde_json::from_str(document_json)
-        .map_err(|_| DatabaseError::InvalidInput("documentJson must be valid JSON".into()))?;
+    let (value, _) = parse_and_validate(document_json)?;
     let blocks = value
         .get("blocks")
         .and_then(Value::as_array)
