@@ -407,11 +407,16 @@ fn checkpoint_new(
         transaction,
         &working_copy.note_id,
         None,
-        &prepared.attachments,
+        &prepared.document.attachments,
         &prepared.body_markdown,
         write.now_ms,
     )?;
-    block_search::replace_tidbit_documents(transaction, &working_copy.note_id)
+    block_search::replace_tidbit_documents_from_blocks(
+        transaction,
+        &working_copy.note_id,
+        write.now_ms,
+        &prepared.document.searchable_blocks,
+    )
 }
 
 fn checkpoint_existing(
@@ -443,7 +448,7 @@ fn checkpoint_existing(
         transaction,
         &working_copy.note_id,
         Some(base_revision_id),
-        &prepared.attachments,
+        &prepared.document.attachments,
         &prepared.body_markdown,
         updated_at_ms,
     )?;
@@ -481,7 +486,12 @@ fn checkpoint_existing(
             actual_revision_id: current.revision_id,
         });
     }
-    block_search::replace_tidbit_documents(transaction, &working_copy.note_id)
+    block_search::replace_tidbit_documents_from_blocks(
+        transaction,
+        &working_copy.note_id,
+        updated_at_ms,
+        &prepared.document.searchable_blocks,
+    )
 }
 
 fn validate_save_input(input: &SaveWorkingCopyInput) -> Result<()> {

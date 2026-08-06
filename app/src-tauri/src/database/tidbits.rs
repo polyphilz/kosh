@@ -73,7 +73,7 @@ pub(super) struct PreparedSource {
 #[derive(Clone, Debug)]
 pub(super) struct PreparedRevision {
     pub(super) document_json: String,
-    pub(super) attachments: Vec<document::DocumentAttachment>,
+    pub(super) document: document::DocumentAnalysis,
     pub(super) body_markdown: String,
     pub(super) sources: Vec<PreparedSource>,
     pub(super) content_hash: Vec<u8>,
@@ -127,11 +127,16 @@ pub(super) fn create_tidbit(
         &transaction,
         &write.tidbit_id,
         None,
-        &prepared.attachments,
+        &prepared.document.attachments,
         &prepared.body_markdown,
         write.now_ms,
     )?;
-    block_search::replace_tidbit_documents(&transaction, &write.tidbit_id)?;
+    block_search::replace_tidbit_documents_from_blocks(
+        &transaction,
+        &write.tidbit_id,
+        write.now_ms,
+        &prepared.document.searchable_blocks,
+    )?;
     transaction.commit()?;
 
     load_tidbit(connection, &write.tidbit_id)
@@ -276,7 +281,7 @@ pub(super) fn prepare_revision_with_empty(
     sources: Vec<SourceDraft>,
     allow_empty_body: bool,
 ) -> Result<PreparedRevision> {
-    let attachments = document::extract_attachments(&document_json)?;
+    let document = document::analyze(&document_json)?;
     if !allow_empty_body && body_markdown.trim().is_empty() {
         return Err(DatabaseError::InvalidInput(
             "bodyMarkdown must contain non-whitespace text".into(),
@@ -297,7 +302,7 @@ pub(super) fn prepare_revision_with_empty(
     let content_hash = revision_content_hash(&document_json, &body_markdown, &sources);
     Ok(PreparedRevision {
         document_json,
-        attachments,
+        document,
         body_markdown,
         sources,
         content_hash,

@@ -37,7 +37,6 @@ fn replace_tidbit_documents_with_policy(
     tidbit_id: &str,
     missing_attachment_policy: MissingAttachmentPolicy,
 ) -> Result<()> {
-    clear_tidbit_documents(transaction, tidbit_id)?;
     let current = transaction
         .query_row(
             "SELECT tidbit.document_json, tidbit.updated_at
@@ -48,9 +47,43 @@ fn replace_tidbit_documents_with_policy(
         )
         .optional()?;
     let Some((document_json, updated_at)) = current else {
+        clear_tidbit_documents(transaction, tidbit_id)?;
         return Ok(());
     };
-    for block in document::extract_searchable_blocks(&document_json)? {
+    let analysis = document::analyze(&document_json)?;
+    replace_tidbit_documents_from_blocks_with_policy(
+        transaction,
+        tidbit_id,
+        updated_at,
+        &analysis.searchable_blocks,
+        missing_attachment_policy,
+    )
+}
+
+pub(super) fn replace_tidbit_documents_from_blocks(
+    transaction: &Transaction<'_>,
+    tidbit_id: &str,
+    updated_at: i64,
+    blocks: &[document::SearchableBlock],
+) -> Result<()> {
+    replace_tidbit_documents_from_blocks_with_policy(
+        transaction,
+        tidbit_id,
+        updated_at,
+        blocks,
+        MissingAttachmentPolicy::Reject,
+    )
+}
+
+fn replace_tidbit_documents_from_blocks_with_policy(
+    transaction: &Transaction<'_>,
+    tidbit_id: &str,
+    updated_at: i64,
+    blocks: &[document::SearchableBlock],
+    missing_attachment_policy: MissingAttachmentPolicy,
+) -> Result<()> {
+    clear_tidbit_documents(transaction, tidbit_id)?;
+    for block in blocks {
         let attachment = match block.attachment_id.as_deref() {
             Some(attachment_id) => match load_attachment_evidence(
                 transaction,
@@ -113,14 +146,14 @@ fn replace_tidbit_documents_with_policy(
              ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 tidbit_id,
-                block.block_id,
+                &block.block_id,
                 i64::try_from(block.ordinal).map_err(|_| DatabaseError::Validation {
                     kind: "main",
                     reason: "document block ordinal exceeds SQLite".into(),
                 })?,
-                block.block_type,
+                &block.block_type,
                 heading_context,
-                block.authored_text,
+                &block.authored_text,
                 attachment_names,
                 extracted_text,
                 content_hash.as_slice(),

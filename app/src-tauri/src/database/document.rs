@@ -69,6 +69,12 @@ pub(super) struct SearchableBlock {
     pub(super) ordinal: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct DocumentAnalysis {
+    pub(super) attachments: Vec<DocumentAttachment>,
+    pub(super) searchable_blocks: Vec<SearchableBlock>,
+}
+
 pub(super) fn validate(document_json: &str) -> Result<()> {
     parse_and_validate(document_json).map(|_| ())
 }
@@ -113,8 +119,8 @@ fn parse_and_validate(document_json: &str) -> Result<(Value, Vec<DocumentAttachm
     Ok((value, attachments))
 }
 
-pub(super) fn extract_searchable_blocks(document_json: &str) -> Result<Vec<SearchableBlock>> {
-    let (value, _) = parse_and_validate(document_json)?;
+pub(super) fn analyze(document_json: &str) -> Result<DocumentAnalysis> {
+    let (value, attachments) = parse_and_validate(document_json)?;
     let blocks = value
         .get("blocks")
         .and_then(Value::as_array)
@@ -122,7 +128,10 @@ pub(super) fn extract_searchable_blocks(document_json: &str) -> Result<Vec<Searc
     let mut result = Vec::new();
     let mut headings = [None, None, None];
     collect_searchable_blocks(blocks, &mut headings, &mut result);
-    Ok(result)
+    Ok(DocumentAnalysis {
+        attachments,
+        searchable_blocks: result,
+    })
 }
 
 /// Creates a valid one-block document for native fixtures that do not exercise the editor.
@@ -390,7 +399,7 @@ fn invalid<T>(message: &str) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_attachments, extract_searchable_blocks, validate, AttachmentBlockKind,
+        analyze, extract_attachments, validate, AttachmentBlockKind,
         MAX_HEADING_CONTEXT_BYTES_PER_LEVEL,
     };
 
@@ -463,6 +472,20 @@ mod tests {
     }
 
     #[test]
+    fn one_analysis_drives_attachment_ownership_and_block_search() {
+        let analysis = analyze(
+            r#"{"schemaVersion":1,"blocks":[{"id":"context","type":"heading","props":{"level":1},"content":[{"type":"text","text":"Models"}]},{"id":"file","type":"koshFileAttachment","props":{"attachmentId":"019f547b-6200-7000-8000-000000002002","caption":"Weights"},"children":[]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(analysis.attachments.len(), 1);
+        assert_eq!(analysis.attachments[0].block_id, "file");
+        assert_eq!(analysis.searchable_blocks.len(), 2);
+        assert_eq!(analysis.searchable_blocks[1].block_id, "file");
+        assert_eq!(analysis.searchable_blocks[1].authored_text, "Weights");
+        assert_eq!(analysis.searchable_blocks[1].heading_context, ["Models"]);
+    }
+
+    #[test]
     fn rejects_one_attachment_reused_by_multiple_blocks() {
         let error = validate(
             r#"{"schemaVersion":1,"blocks":[{"id":"a","type":"koshImage","props":{"attachmentId":"019f547b-6200-7000-8000-000000002001"}},{"id":"b","type":"koshImage","props":{"attachmentId":"019f547b-6200-7000-8000-000000002001"}}]}"#,
@@ -473,10 +496,11 @@ mod tests {
 
     #[test]
     fn extracts_one_search_record_per_stable_block_in_document_order() {
-        let blocks = extract_searchable_blocks(
+        let blocks = analyze(
             r#"{"schemaVersion":1,"blocks":[{"id":"heading","type":"heading","props":{"level":1},"content":[{"type":"text","text":"Vectors"}]},{"id":"paragraph","type":"paragraph","content":[{"type":"text","text":"Magnitude "},{"type":"inlineMath","props":{"latex":"\\lVert x \\rVert"}}],"children":[{"id":"nested","type":"bulletListItem","content":[{"type":"text","text":"Normalize first"}]}]},{"id":"image","type":"koshImage","props":{"attachmentId":"019f547b-6200-7000-8000-000000002001","altText":"Unit sphere","caption":"Geometry"}}]}"#,
         )
-        .unwrap();
+        .unwrap()
+        .searchable_blocks;
         assert_eq!(
             blocks
                 .iter()
@@ -496,10 +520,11 @@ mod tests {
 
     #[test]
     fn empty_blocks_do_not_inherit_heading_text_as_authored_content() {
-        let blocks = extract_searchable_blocks(
+        let blocks = analyze(
             r#"{"schemaVersion":1,"blocks":[{"id":"heading","type":"heading","props":{"level":2},"content":[{"type":"text","text":"Context"}]},{"id":"empty","type":"paragraph","content":[]}]}"#,
         )
-        .unwrap();
+        .unwrap()
+        .searchable_blocks;
         assert!(blocks[1].authored_text.is_empty());
         assert_eq!(blocks[1].heading_context, ["Context"]);
     }
@@ -521,7 +546,9 @@ mod tests {
         })
         .to_string();
 
-        let blocks = extract_searchable_blocks(&document).expect("searchable blocks");
+        let blocks = analyze(&document)
+            .expect("document analysis")
+            .searchable_blocks;
         let context = &blocks[1].heading_context[0];
         assert_eq!(context.len(), 255);
         assert_eq!(context.chars().count(), 85);
