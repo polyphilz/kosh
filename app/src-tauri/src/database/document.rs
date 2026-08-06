@@ -9,6 +9,9 @@ const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BLOCKS: usize = 100_000;
 const MAX_BLOCK_ID_BYTES: usize = 256;
 const MAX_BLOCK_DEPTH: usize = 128;
+// Heading context is a derived search hint, not authored content. Bounding each active
+// level prevents a large heading from being cloned into every following block document.
+const MAX_HEADING_CONTEXT_BYTES_PER_LEVEL: usize = 256;
 const SUPPORTED_BLOCK_TYPES: &[&str] = &[
     "paragraph",
     "heading",
@@ -294,7 +297,11 @@ fn collect_searchable_blocks(
                 .and_then(|level| usize::try_from(level).ok())
                 .expect("validated heading has an integer level from 1 to 3")
         });
-        let heading_context = headings.iter().flatten().cloned().collect::<Vec<_>>();
+        let heading_context = headings
+            .iter()
+            .flatten()
+            .map(|heading| bounded_utf8_prefix(heading, MAX_HEADING_CONTEXT_BYTES_PER_LEVEL))
+            .collect::<Vec<_>>();
         let attachment_id = attachment_kind(block_type)
             .and_then(|_| string_prop(props, "attachmentId").map(ToOwned::to_owned));
         result.push(SearchableBlock {
@@ -316,6 +323,17 @@ fn collect_searchable_blocks(
             collect_searchable_blocks(children, headings, result);
         }
     }
+}
+
+fn bounded_utf8_prefix(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 fn inline_text(value: Option<&Value>) -> String {
@@ -371,7 +389,10 @@ fn invalid<T>(message: &str) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_attachments, extract_searchable_blocks, validate, AttachmentBlockKind};
+    use super::{
+        extract_attachments, extract_searchable_blocks, validate, AttachmentBlockKind,
+        MAX_HEADING_CONTEXT_BYTES_PER_LEVEL,
+    };
 
     #[test]
     fn accepts_versioned_documents_with_nested_unique_ids() {
@@ -481,5 +502,30 @@ mod tests {
         .unwrap();
         assert!(blocks[1].authored_text.is_empty());
         assert_eq!(blocks[1].heading_context, ["Context"]);
+    }
+
+    #[test]
+    fn inherited_heading_context_is_bounded_without_splitting_utf8() {
+        let heading = "力".repeat(MAX_HEADING_CONTEXT_BYTES_PER_LEVEL);
+        let document = serde_json::json!({
+            "schemaVersion": 1,
+            "blocks": [
+                {
+                    "id": "heading",
+                    "type": "heading",
+                    "props": {"level": 1},
+                    "content": [{"type": "text", "text": heading}],
+                },
+                {"id": "paragraph", "type": "paragraph", "content": []},
+            ],
+        })
+        .to_string();
+
+        let blocks = extract_searchable_blocks(&document).expect("searchable blocks");
+        let context = &blocks[1].heading_context[0];
+        assert_eq!(context.len(), 255);
+        assert_eq!(context.chars().count(), 85);
+        assert!(heading.starts_with(context));
+        assert_eq!(blocks[0].authored_text, heading);
     }
 }

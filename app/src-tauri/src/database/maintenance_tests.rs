@@ -78,10 +78,41 @@ fn diagnostics_and_rebuilds_preserve_authored_history_and_citations() {
     assert!(before.authored_passages >= 2);
     assert_eq!(before.block_search_documents, 1);
 
+    let rebuild_probe = connection::open_writer(
+        &library.database.paths().main,
+        DatabaseKind::Main,
+        FileState::Existing,
+    )
+    .expect("rebuild probe writer");
+    rebuild_probe
+        .execute_batch(
+            "CREATE TABLE block_rebuild_probe(inserts INTEGER NOT NULL);
+             INSERT INTO block_rebuild_probe(inserts) VALUES(0);
+             CREATE TRIGGER count_block_rebuild_inserts
+             AFTER INSERT ON block_search_document
+             BEGIN
+                 UPDATE block_rebuild_probe SET inserts = inserts + 1;
+             END;",
+        )
+        .expect("install rebuild probe");
+    drop(rebuild_probe);
+
     assert_eq!(client.rebuild_search().expect("first search rebuild"), 1);
     assert_eq!(
         client.rebuild_search().expect("idempotent search rebuild"),
         1
+    );
+    assert_eq!(
+        library
+            .database
+            .open_main_read_only()
+            .expect("rebuild probe reader")
+            .query_row("SELECT inserts FROM block_rebuild_probe", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("rebuild probe count"),
+        2,
+        "each rebuild must populate the block index exactly once"
     );
     let after_search = client
         .maintenance_snapshot()

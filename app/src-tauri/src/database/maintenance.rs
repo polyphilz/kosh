@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 
-use super::{block_search, embedding_index, search, DatabaseError, Result};
+use super::{embedding_index, search, DatabaseError, Result};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,7 +93,6 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
 pub(super) fn rebuild_search(connection: &mut Connection) -> Result<u64> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     search::rebuild_documents(&transaction)?;
-    block_search::rebuild_documents(&transaction)?;
     let block_documents =
         transaction.query_row("SELECT count(*) FROM block_search_document", [], |row| {
             nonnegative(row.get(0)?)
