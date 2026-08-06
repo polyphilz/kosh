@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 
-use super::{embedding_index, search, DatabaseError, Result};
+use super::{block_embedding_index, embedding_index, search, DatabaseError, Result};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,6 +108,7 @@ pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Re
         ));
     }
     embedding_index::ensure_vector_table(connection)?;
+    block_embedding_index::ensure_vector_table(connection)?;
     let manifest = embedding_index::manifest();
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let queued_vectors = transaction.execute(
@@ -126,8 +127,31 @@ pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Re
         "DELETE FROM passage_embedding WHERE embedding_index_id = ?1",
         params![manifest.id.as_str()],
     )? as u64;
+    let queued_block_vectors = transaction.execute(
+        "INSERT INTO block_embedding_reap_queue(block_rowid)
+         SELECT rowid FROM block_embedding_vec_jina_v1 WHERE rowid > 0
+         ON CONFLICT(block_rowid) DO NOTHING",
+        [],
+    )? as u64;
+    let queued_block_documents = transaction.execute(
+        "INSERT INTO block_embedding_reap_queue(block_rowid)
+         SELECT rowid FROM block_search_document WHERE true
+         ON CONFLICT(block_rowid) DO NOTHING",
+        [],
+    )? as u64;
+    let invalidated_blocks = transaction.execute(
+        "DELETE FROM block_embedding WHERE embedding_index_id = ?1",
+        params![manifest.id.as_str()],
+    )? as u64;
     transaction.execute(
         "UPDATE passage_embedding_settings
+         SET active_embedding_index_id = NULL,
+             updated_at = max(updated_at + 1, ?1)
+         WHERE singleton_id = 1",
+        params![now_ms],
+    )?;
+    transaction.execute(
+        "UPDATE block_embedding_settings
          SET active_embedding_index_id = NULL,
              updated_at = max(updated_at + 1, ?1)
          WHERE singleton_id = 1",
@@ -146,8 +170,26 @@ pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Re
             reason: "PASSAGE_EMBEDDING index state is missing or incompatible".into(),
         });
     }
+    let block_changed = transaction.execute(
+        "UPDATE index_state
+         SET status = 'DIRTY', cursor = NULL,
+             updated_at = max(updated_at, ?1), error = NULL
+         WHERE name = 'BLOCK_EMBEDDING' AND version = ?2",
+        params![now_ms, manifest.index_key.as_str()],
+    )?;
+    if block_changed != 1 {
+        return Err(DatabaseError::Validation {
+            kind: "main",
+            reason: "BLOCK_EMBEDDING index state is missing or incompatible".into(),
+        });
+    }
     transaction.commit()?;
-    Ok(invalidated.max(queued_vectors.saturating_add(queued_documents)))
+    Ok(invalidated.saturating_add(invalidated_blocks).max(
+        queued_vectors
+            .saturating_add(queued_documents)
+            .saturating_add(queued_block_vectors)
+            .saturating_add(queued_block_documents),
+    ))
 }
 
 pub(super) fn retry_failed_extractions(

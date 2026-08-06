@@ -622,22 +622,34 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
         .expect("complete OCR");
 
     let main = library.database.open_main_read_only().expect("main reader");
-    let indexed_ocr: String = main
+    let (image_block_id, indexed_ocr): (String, String) = main
         .query_row(
-            "SELECT document.extracted_text
+            "SELECT document.block_id, document.extracted_text
              FROM block_search_document AS document
              JOIN tidbit_revision_attachment AS membership
                ON membership.tidbit_revision_id = document.tidbit_revision_id
               AND membership.block_id = document.block_id
              WHERE membership.attachment_id = ?1",
             params![image.attachment.id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("image block OCR document");
     assert_eq!(
         indexed_ocr,
         "Event sourcing preserves exact image evidence\nSecond OCR region remains ordered"
     );
+    let image_embedding = client
+        .load_block_embedding_reconciliation_batch(32)
+        .expect("load image block embedding input")
+        .into_iter()
+        .find(|block| block.block_id == image_block_id)
+        .expect("image block is pending embedding");
+    assert!(image_embedding
+        .content
+        .contains("Event sourcing preserves exact image evidence"));
+    assert!(image_embedding
+        .content
+        .contains("Second OCR region remains ordered"));
 
     let loaded = client
         .load_tidbit(tidbit.id.clone())

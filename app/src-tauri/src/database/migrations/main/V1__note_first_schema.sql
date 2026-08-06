@@ -864,7 +864,7 @@ BEGIN
           AND segment.content_hash = new.content_hash
     );
 END;
-CREATE TABLE passage_embedding_index (
+CREATE TABLE text_embedding_index (
     id TEXT PRIMARY KEY CHECK (length(id) > 0),
     created_at INTEGER NOT NULL CHECK (created_at >= 0),
     index_key TEXT NOT NULL UNIQUE CHECK (length(index_key) > 0),
@@ -880,7 +880,7 @@ CREATE TABLE passage_embedding_index (
         AND json_type(config_json) = 'object'
     )
 ) STRICT;
-INSERT INTO passage_embedding_index (
+INSERT INTO text_embedding_index (
     id,
     created_at,
     index_key,
@@ -905,15 +905,15 @@ INSERT INTO passage_embedding_index (
     1,
     '{"schemaVersion":1,"modelFile":"v5-nano-retrieval-Q8_0.gguf","modelFileSize":232883776,"quantization":"Q8_0","pooling":"last","normalization":"L2","queryPrefix":"Query: ","documentPrefix":"Document: ","documentConstructionVersion":1}'
 );
-CREATE TRIGGER passage_embedding_index_prevent_update
-BEFORE UPDATE ON passage_embedding_index
+CREATE TRIGGER text_embedding_index_prevent_update
+BEFORE UPDATE ON text_embedding_index
 BEGIN
-    SELECT RAISE(ABORT, 'passage embedding index definitions are immutable');
+    SELECT RAISE(ABORT, 'text embedding index definitions are immutable');
 END;
-CREATE TRIGGER passage_embedding_index_prevent_delete
-BEFORE DELETE ON passage_embedding_index
+CREATE TRIGGER text_embedding_index_prevent_delete
+BEFORE DELETE ON text_embedding_index
 BEGIN
-    SELECT RAISE(ABORT, 'passage embedding index definitions are retained');
+    SELECT RAISE(ABORT, 'text embedding index definitions are retained');
 END;
 CREATE TABLE passage_embedding (
     passage_id TEXT NOT NULL,
@@ -923,7 +923,7 @@ CREATE TABLE passage_embedding (
     PRIMARY KEY (embedding_index_id, passage_id),
     FOREIGN KEY (passage_id) REFERENCES passage(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
-    FOREIGN KEY (embedding_index_id) REFERENCES passage_embedding_index(id)
+    FOREIGN KEY (embedding_index_id) REFERENCES text_embedding_index(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 ) STRICT, WITHOUT ROWID;
 CREATE TRIGGER passage_embedding_provenance_validate
@@ -933,8 +933,8 @@ BEGIN
     WHERE NOT EXISTS (
         SELECT 1
         FROM passage
-        JOIN passage_embedding_index
-          ON passage_embedding_index.id = new.embedding_index_id
+        JOIN text_embedding_index
+          ON text_embedding_index.id = new.embedding_index_id
         WHERE passage.id = new.passage_id
           AND passage.content_hash = new.passage_content_hash
     );
@@ -948,7 +948,7 @@ CREATE TABLE passage_embedding_settings (
     singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
     active_embedding_index_id TEXT,
     updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
-    FOREIGN KEY (active_embedding_index_id) REFERENCES passage_embedding_index(id)
+    FOREIGN KEY (active_embedding_index_id) REFERENCES text_embedding_index(id)
         ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE passage_embedding_reap_queue (
@@ -1003,6 +1003,81 @@ BEGIN
         cursor = NULL,
         error = CASE WHEN status = 'FAILED' THEN error ELSE NULL END
     WHERE name = 'PASSAGE_EMBEDDING';
+END;
+CREATE TABLE block_embedding (
+    tidbit_id TEXT NOT NULL,
+    block_id TEXT NOT NULL,
+    embedding_index_id TEXT NOT NULL,
+    block_content_hash BLOB NOT NULL CHECK (length(block_content_hash) = 32),
+    created_at INTEGER NOT NULL CHECK (created_at >= 0),
+    PRIMARY KEY (embedding_index_id, tidbit_id, block_id),
+    FOREIGN KEY (tidbit_id) REFERENCES tidbit(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (embedding_index_id) REFERENCES text_embedding_index(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER block_embedding_provenance_validate
+BEFORE INSERT ON block_embedding
+BEGIN
+    SELECT RAISE(ABORT, 'block embedding provenance mismatch')
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM block_search_document AS document
+        JOIN text_embedding_index
+          ON text_embedding_index.id = new.embedding_index_id
+        WHERE document.tidbit_id = new.tidbit_id
+          AND document.block_id = new.block_id
+          AND document.content_hash = new.block_content_hash
+    );
+END;
+CREATE TRIGGER block_embedding_prevent_update
+BEFORE UPDATE ON block_embedding
+BEGIN
+    SELECT RAISE(ABORT, 'block embeddings are immutable');
+END;
+CREATE TABLE block_embedding_settings (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    active_embedding_index_id TEXT,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+    FOREIGN KEY (active_embedding_index_id) REFERENCES text_embedding_index(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE block_embedding_reap_queue (
+    block_rowid INTEGER PRIMARY KEY CHECK (block_rowid > 0)
+) STRICT;
+CREATE TRIGGER block_embedding_settings_prevent_delete
+BEFORE DELETE ON block_embedding_settings
+BEGIN
+    SELECT RAISE(ABORT, 'block embedding settings singleton cannot be deleted');
+END;
+CREATE TRIGGER block_embedding_invalidate_after_search_delete
+AFTER DELETE ON block_search_document
+BEGIN
+    INSERT INTO block_embedding_reap_queue(block_rowid)
+    VALUES(old.rowid)
+    ON CONFLICT(block_rowid) DO NOTHING;
+    DELETE FROM block_embedding
+    WHERE tidbit_id = old.tidbit_id AND block_id = old.block_id;
+    UPDATE index_state
+    SET status = CASE
+            WHEN status IN ('RUNNING', 'FAILED') THEN status
+            ELSE 'DIRTY'
+        END,
+        cursor = NULL,
+        error = CASE WHEN status = 'FAILED' THEN error ELSE NULL END
+    WHERE name = 'BLOCK_EMBEDDING';
+END;
+CREATE TRIGGER block_embedding_dirty_after_search_insert
+AFTER INSERT ON block_search_document
+BEGIN
+    UPDATE index_state
+    SET status = CASE
+            WHEN status IN ('RUNNING', 'FAILED') THEN status
+            ELSE 'DIRTY'
+        END,
+        cursor = NULL,
+        error = CASE WHEN status = 'FAILED' THEN error ELSE NULL END
+    WHERE name = 'BLOCK_EMBEDDING';
 END;
 CREATE TABLE "attachment" (
     id TEXT PRIMARY KEY
@@ -2046,15 +2121,24 @@ CREATE TRIGGER offsite_clock_passage_delete AFTER DELETE ON passage BEGIN UPDATE
 CREATE TRIGGER offsite_clock_passage_embedding_insert AFTER INSERT ON passage_embedding BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_update AFTER UPDATE ON passage_embedding BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_delete AFTER DELETE ON passage_embedding BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_passage_embedding_index_insert AFTER INSERT ON passage_embedding_index BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_passage_embedding_index_update AFTER UPDATE ON passage_embedding_index BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
-CREATE TRIGGER offsite_clock_passage_embedding_index_delete AFTER DELETE ON passage_embedding_index BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_text_embedding_index_insert AFTER INSERT ON text_embedding_index BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_text_embedding_index_update AFTER UPDATE ON text_embedding_index BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_text_embedding_index_delete AFTER DELETE ON text_embedding_index BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_reap_queue_insert AFTER INSERT ON passage_embedding_reap_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_reap_queue_update AFTER UPDATE ON passage_embedding_reap_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_reap_queue_delete AFTER DELETE ON passage_embedding_reap_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_settings_insert AFTER INSERT ON passage_embedding_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_settings_update AFTER UPDATE ON passage_embedding_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_embedding_settings_delete AFTER DELETE ON passage_embedding_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_insert AFTER INSERT ON block_embedding BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_update AFTER UPDATE ON block_embedding BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_delete AFTER DELETE ON block_embedding BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_reap_queue_insert AFTER INSERT ON block_embedding_reap_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_reap_queue_update AFTER UPDATE ON block_embedding_reap_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_reap_queue_delete AFTER DELETE ON block_embedding_reap_queue BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_settings_insert AFTER INSERT ON block_embedding_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_settings_update AFTER UPDATE ON block_embedding_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
+CREATE TRIGGER offsite_clock_block_embedding_settings_delete AFTER DELETE ON block_embedding_settings BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_search_document_insert AFTER INSERT ON passage_search_document BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_search_document_update AFTER UPDATE ON passage_search_document BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
 CREATE TRIGGER offsite_clock_passage_search_document_delete AFTER DELETE ON passage_search_document BEGIN UPDATE offsite_backup_content_clock SET revision = revision + 1 WHERE singleton_id = 1; END;
@@ -2169,8 +2253,10 @@ CREATE TRIGGER passage_prevent_delete BEFORE DELETE ON passage BEGIN SELECT RAIS
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('PASSAGE_FTS', 'lexical-v4', 'IDLE', NULL, 0, NULL);
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('BLOCK_FTS', 'block-lexical-v1', 'IDLE', NULL, 0, NULL);
 INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('PASSAGE_EMBEDDING', 'jina_v1', 'DIRTY', NULL, 0, NULL);
+INSERT INTO index_state(name, version, status, cursor, updated_at, error) VALUES('BLOCK_EMBEDDING', 'jina_v1', 'DIRTY', NULL, 0, NULL);
 INSERT INTO attachment_extractor_config(extractor, version, passage_construction_version, updated_at) VALUES('ocr', '1', 'ocr-region-v1', 0);
 INSERT INTO passage_embedding_settings(singleton_id, active_embedding_index_id, updated_at) VALUES(1, NULL, 0);
+INSERT INTO block_embedding_settings(singleton_id, active_embedding_index_id, updated_at) VALUES(1, NULL, 0);
 INSERT INTO shortcut_settings(singleton_id, revision, automatic_update_checks_enabled) VALUES(1, 1, 1);
 INSERT INTO keyboard_binding(command, accelerator) VALUES('MAIN_WINDOW', 'control+alt+super+KeyO'), ('QUICK_ADD', 'control+alt+super+KeyK');
 INSERT INTO offsite_backup_content_clock(singleton_id, revision) VALUES(1, 0);

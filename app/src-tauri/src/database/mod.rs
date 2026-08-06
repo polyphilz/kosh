@@ -1,5 +1,6 @@
 mod backup_media;
 mod backup_state;
+pub(crate) mod block_embedding_index;
 mod block_search;
 pub(crate) mod commands;
 pub(crate) mod connection;
@@ -25,6 +26,8 @@ mod writer;
 mod backup_media_tests;
 #[cfg(test)]
 mod backup_state_tests;
+#[cfg(test)]
+mod block_embedding_index_tests;
 #[cfg(test)]
 mod block_search_tests;
 #[cfg(test)]
@@ -188,6 +191,9 @@ impl Database {
         }
         if let Err(error) = embedding_index::ensure_vector_table(&main) {
             log::warn!("could not materialize the optional semantic vector table: {error}");
+        }
+        if let Err(error) = block_embedding_index::ensure_vector_table(&main) {
+            log::warn!("could not materialize the optional semantic block vector table: {error}");
         }
         // Reap capabilities never persist across launches. The single writer
         // creates and consumes them in one transaction after a live main-
@@ -568,6 +574,47 @@ fn writer_loop(
                 reply,
             } => {
                 let _ = reply.send(embedding_index::record_retryable_failure(
+                    &main,
+                    &error,
+                    failed_at_ms,
+                ));
+            }
+            WriterMessage::LoadBlockEmbeddingReconciliationBatch { limit, reply } => {
+                let _ = reply.send(block_embedding_index::load_reconciliation_batch(
+                    &mut main, limit,
+                ));
+            }
+            WriterMessage::InstallBlockEmbedding {
+                pending,
+                embedding,
+                created_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(block_embedding_index::install_embedding(
+                    &mut main,
+                    &pending,
+                    &embedding,
+                    created_at_ms,
+                ));
+            }
+            WriterMessage::BlockEmbeddingIndexNeedsReconciliation { reply } => {
+                let _ = reply.send(block_embedding_index::needs_reconciliation(&main));
+            }
+            WriterMessage::ActivateBlockEmbeddingIndexIfComplete {
+                activated_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(block_embedding_index::activate_if_complete(
+                    &mut main,
+                    activated_at_ms,
+                ));
+            }
+            WriterMessage::RecordBlockEmbeddingIndexFailure {
+                error,
+                failed_at_ms,
+                reply,
+            } => {
+                let _ = reply.send(block_embedding_index::record_retryable_failure(
                     &main,
                     &error,
                     failed_at_ms,

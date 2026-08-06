@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    block_search,
+    block_embedding_index, block_search,
     connection::{self, DatabaseKind},
     embedding_index,
     error::{DatabaseError, Result},
@@ -21,6 +21,9 @@ const MAIN_TABLES: &[&str] = &[
     "block_fts_short",
     "block_fts_trigram",
     "block_fts_word",
+    "block_embedding",
+    "block_embedding_reap_queue",
+    "block_embedding_settings",
     "block_search_document",
     "draft",
     "draft_media_lease",
@@ -39,7 +42,6 @@ const MAIN_TABLES: &[&str] = &[
     "offsite_media_upload",
     "passage",
     "passage_embedding",
-    "passage_embedding_index",
     "passage_embedding_reap_queue",
     "passage_embedding_settings",
     "passage_fts_short",
@@ -53,6 +55,7 @@ const MAIN_TABLES: &[&str] = &[
     "tidbit_revision",
     "tidbit_revision_attachment",
     "tidbit_revision_source",
+    "text_embedding_index",
 ];
 
 const MEDIA_TABLES: &[&str] = &[
@@ -87,7 +90,7 @@ pub fn validate_migrated_pair(
     validate_strict_tables(media, DatabaseKind::Media, MEDIA_TABLES.iter().copied())?;
     validate_content_clock_triggers(main)?;
     recover_interrupted_derived_work(main)?;
-    validate_optional_embedding_index(main);
+    validate_optional_embedding_indexes(main);
     validate_foreign_keys(main, DatabaseKind::Main)?;
     validate_foreign_keys(media, DatabaseKind::Media)?;
     validate_media_relationship(main, media)?;
@@ -154,26 +157,34 @@ fn validate_required_features(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn validate_optional_embedding_index(connection: &mut Connection) {
-    let result = (|| {
-        let vec_version: String =
-            connection.query_row("SELECT vec_version()", [], |row| row.get(0))?;
-        if vec_version != "v0.1.9" {
-            return invalid(
-                DatabaseKind::Main,
-                format!("sqlite-vec version is {vec_version}, expected v0.1.9"),
-            );
-        }
-        if !table_exists(connection, embedding_index::JINA_V1_VEC_TABLE)? {
-            return invalid(
-                DatabaseKind::Main,
-                "the Jina v1 vector table is missing".into(),
-            );
-        }
-        embedding_index::validate_definition(connection)?;
-        validate_vec_smoke_test(connection)
-    })();
-    match result {
+fn validate_optional_embedding_indexes(connection: &mut Connection) {
+    let vec_result = connection
+        .query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0))
+        .map_err(DatabaseError::from)
+        .and_then(|version| {
+            if version == "v0.1.9" {
+                Ok(())
+            } else {
+                invalid(
+                    DatabaseKind::Main,
+                    format!("sqlite-vec version is {version}, expected v0.1.9"),
+                )
+            }
+        });
+    let passage_result = vec_result
+        .as_ref()
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            if !table_exists(connection, embedding_index::JINA_V1_VEC_TABLE)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("the Jina v1 passage vector table is missing".into());
+            }
+            embedding_index::validate_definition(connection).map_err(|error| error.to_string())?;
+            validate_vec_smoke_test(connection, embedding_index::JINA_V1_VEC_TABLE)
+                .map_err(|error| error.to_string())
+        });
+    match passage_result {
         Ok(()) => {
             let _ = embedding_index::release_quarantine(connection);
         }
@@ -186,27 +197,49 @@ fn validate_optional_embedding_index(connection: &mut Connection) {
             );
         }
     }
+    let block_result = vec_result
+        .as_ref()
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            if !table_exists(connection, block_embedding_index::JINA_V1_VEC_TABLE)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("the Jina v1 block vector table is missing".into());
+            }
+            block_embedding_index::validate_definition(connection)
+                .map_err(|error| error.to_string())?;
+            validate_vec_smoke_test(connection, block_embedding_index::JINA_V1_VEC_TABLE)
+                .map_err(|error| error.to_string())
+        });
+    match block_result {
+        Ok(()) => {
+            let _ = block_embedding_index::release_quarantine(connection);
+        }
+        Err(error) => {
+            log::warn!("semantic block index is unavailable at startup: {error}");
+            let _ = block_embedding_index::quarantine(
+                connection,
+                "semantic block index is unavailable; repair is required",
+                0,
+            );
+        }
+    }
 }
 
-fn validate_vec_smoke_test(connection: &mut Connection) -> Result<()> {
+fn validate_vec_smoke_test(connection: &mut Connection, table: &str) -> Result<()> {
     let manifest = embedding_index::manifest();
     let mut vector = vec![0.0_f32; manifest.dimension as usize];
     vector[0] = 1.0;
     let vector_json = serde_json::to_string(&vector)?;
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute(&format!("DELETE FROM {table} WHERE rowid = -1"), [])?;
     transaction.execute(
-        "DELETE FROM passage_embedding_vec_jina_v1 WHERE rowid = -1",
-        [],
-    )?;
-    transaction.execute(
-        "INSERT INTO passage_embedding_vec_jina_v1(rowid, embedding) VALUES(-1, ?1)",
+        &format!("INSERT INTO {table}(rowid, embedding) VALUES(-1, ?1)"),
         params![vector_json.as_str()],
     )?;
     let rowid: i64 = transaction.query_row(
-        "SELECT rowid
-         FROM passage_embedding_vec_jina_v1
-         WHERE embedding MATCH ?1 AND k = 1",
+        &format!("SELECT rowid FROM {table} WHERE embedding MATCH ?1 AND k = 1"),
         params![vector_json.as_str()],
         |row| row.get(0),
     )?;
