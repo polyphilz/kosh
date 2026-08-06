@@ -30,7 +30,7 @@ pub struct MaintenanceDatabaseSnapshot {
     pub revisions: u64,
     pub authored_passages: u64,
     pub attachment_passages: u64,
-    pub search_documents: u64,
+    pub block_search_documents: u64,
     pub attachments: u64,
     pub attachment_bytes: u64,
     pub image_ocr: QueueCounts,
@@ -82,7 +82,7 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
         revisions: count(connection, "tidbit_revision")?,
         authored_passages: count_where(connection, "passage", "owner_kind = 'AUTHOR'")?,
         attachment_passages: count_where(connection, "passage", "owner_kind = 'ATTACHMENT'")?,
-        search_documents: count(connection, "passage_search_document")?,
+        block_search_documents: count(connection, "block_search_document")?,
         attachments,
         attachment_bytes,
         image_ocr: queue_counts(connection, "image_ocr_queue", "ocr")?,
@@ -93,12 +93,12 @@ pub(super) fn snapshot(connection: &Connection) -> Result<MaintenanceDatabaseSna
 pub(super) fn rebuild_search(connection: &mut Connection) -> Result<u64> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     search::rebuild_documents(&transaction)?;
-    let documents =
-        transaction.query_row("SELECT count(*) FROM passage_search_document", [], |row| {
+    let block_documents =
+        transaction.query_row("SELECT count(*) FROM block_search_document", [], |row| {
             nonnegative(row.get(0)?)
         })?;
     transaction.commit()?;
-    Ok(documents)
+    Ok(block_documents)
 }
 
 pub(super) fn rebuild_embeddings(connection: &mut Connection, now_ms: i64) -> Result<u64> {

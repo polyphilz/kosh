@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{
+    connection::{self, DatabaseKind, FileState},
     media::{
         media_blob_reclamation_preflight, recover_media_lifecycle_batch, referenced_attachments,
         validate_filename, AttachmentDisplayRole, CanonicalImage, ImageOcrRegion, ImageOcrStatus,
@@ -18,11 +19,12 @@ use super::{
         MediaBlobReclamationPreflight, MediaByteRange, MediaRangeRequest, StagedAttachment,
         MEDIA_RECONCILE_BATCH_SIZE,
     },
+    search,
     working_copies::{CheckpointWorkingCopyWrite, SaveWorkingCopyWrite},
     AttachmentIngestInput, AttachmentKind, CheckpointWorkingCopyInput, CitationLocator, Database,
-    DatabaseClient, DatabaseError, DatabasePaths, DiscardWorkingCopyInput, LexicalSearchMode,
-    MediaLimits, MediaMaintenanceReport, SaveWorkingCopyInput, SearchField, SearchPassagesInput,
-    SourceDraft, Tidbit,
+    DatabaseClient, DatabaseError, DatabasePaths, DeleteTidbitInput, DiscardWorkingCopyInput,
+    LexicalSearchMode, MediaLimits, MediaMaintenanceReport, RestoreTidbitInput,
+    SaveWorkingCopyInput, SearchField, SearchPassagesInput, SourceDraft, Tidbit,
 };
 
 const CAPTURE_DRAFT_ID: &str = "019f547b-6200-7000-8000-000000007001";
@@ -389,6 +391,64 @@ fn image_ingestion_preserves_originals_deduplicates_previews_and_serves_only_pre
 }
 
 #[test]
+fn file_search_indexes_only_the_attachment_filename() {
+    let library = TestLibrary::new();
+    let archive = library.ingest(
+        (0x900, 0x901, 0x902),
+        "chapter-archive.bin",
+        "application/octet-stream",
+        b"secret binary contents",
+        11,
+        MediaLimits::default(),
+    );
+    let body = format!("Chapter notes.\n\n{{{{kosh:attachment:{}}}}}", archive.id);
+    library.save_capture_with_sources(&body, Vec::new(), 12);
+    library.checkpoint_capture(12, 13, id(0x905), Vec::new());
+
+    let client = library.database.client();
+    let filename_results = client
+        .search_passages(SearchPassagesInput {
+            query: "chapter-archive.bin".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("search file filename");
+    assert_eq!(filename_results.len(), 1);
+    assert!(filename_results[0]
+        .matched_fields
+        .contains(&SearchField::AttachmentName));
+    assert!(client
+        .search_passages(SearchPassagesInput {
+            query: "secret binary contents".into(),
+            mode: LexicalSearchMode::Exact,
+            limit: 10,
+        })
+        .expect("file bytes are not searchable")
+        .is_empty());
+    let main = library.database.open_main_read_only().expect("main reader");
+    let file_block: (String, String) = main
+        .query_row(
+            "SELECT document.attachment_names, document.extracted_text
+             FROM block_search_document AS document
+             JOIN tidbit_revision_attachment AS membership
+               ON membership.tidbit_revision_id = document.tidbit_revision_id
+              AND membership.block_id = document.block_id
+             WHERE membership.attachment_id = ?1",
+            params![archive.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("file block search document");
+    assert_eq!(file_block, ("chapter-archive.bin".into(), String::new()));
+    assert_eq!(
+        client
+            .load_media_payload(archive.id, 14, None, 64)
+            .expect("original file remains available")
+            .bytes,
+        b"secret binary contents"
+    );
+}
+
+#[test]
 fn image_ingestion_rolls_back_base_attachment_when_image_setup_fails() {
     let library = TestLibrary::new();
     library.ingest_image(
@@ -456,6 +516,65 @@ fn image_ingestion_rolls_back_base_attachment_when_image_setup_fails() {
 }
 
 #[test]
+fn media_only_notes_leave_and_reenter_block_search_with_the_note_lifecycle() {
+    let library = TestLibrary::new();
+    let image = library.ingest_image(
+        (0x770, 0x771, 0x772, 0x773),
+        b"media-only image",
+        b"media-only preview",
+        11,
+    );
+    let body = format!(
+        "{{{{kosh:image:{};width=70%;alt=Restorable%20diagram}}}}",
+        image.attachment.id
+    );
+    library.save_capture(&body, 12);
+    let tidbit = library.checkpoint_capture(12, 13, id(0x774), Vec::new());
+    let client = library.database.client();
+
+    let indexed_blocks = |library: &TestLibrary| {
+        library
+            .database
+            .open_main_read_only()
+            .expect("main reader")
+            .query_row(
+                "SELECT count(*)
+                 FROM block_search_document AS document
+                 JOIN tidbit_revision_attachment AS membership
+                   ON membership.tidbit_revision_id = document.tidbit_revision_id
+                  AND membership.block_id = document.block_id
+                 WHERE membership.attachment_id = ?1",
+                params![&image.attachment.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("media-only block search count")
+    };
+    assert_eq!(indexed_blocks(&library), 1);
+
+    client
+        .delete_tidbit(
+            DeleteTidbitInput {
+                id: tidbit.id.clone(),
+                expected_revision_id: tidbit.current_revision_id.clone(),
+            },
+            14,
+        )
+        .expect("delete media-only note");
+    assert_eq!(indexed_blocks(&library), 0);
+
+    client
+        .restore_tidbit(
+            RestoreTidbitInput {
+                id: tidbit.id,
+                expected_revision_id: tidbit.current_revision_id,
+            },
+            15,
+        )
+        .expect("restore media-only note");
+    assert_eq!(indexed_blocks(&library), 1);
+}
+
+#[test]
 fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revision() {
     let library = TestLibrary::new();
     let image = library.ingest_image(
@@ -482,16 +601,43 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
     client
         .complete_image_ocr(
             job,
-            Ok(vec![ImageOcrRegion {
-                text: "Event sourcing preserves exact image evidence".into(),
-                x: 0.125,
-                y: 0.25,
-                width: 0.5,
-                height: 0.375,
-            }]),
+            Ok(vec![
+                ImageOcrRegion {
+                    text: "Event sourcing preserves exact image evidence".into(),
+                    x: 0.125,
+                    y: 0.25,
+                    width: 0.5,
+                    height: 0.375,
+                },
+                ImageOcrRegion {
+                    text: "Second OCR region remains ordered".into(),
+                    x: 0.25,
+                    y: 0.125,
+                    width: 0.375,
+                    height: 0.25,
+                },
+            ]),
             15,
         )
         .expect("complete OCR");
+
+    let main = library.database.open_main_read_only().expect("main reader");
+    let indexed_ocr: String = main
+        .query_row(
+            "SELECT document.extracted_text
+             FROM block_search_document AS document
+             JOIN tidbit_revision_attachment AS membership
+               ON membership.tidbit_revision_id = document.tidbit_revision_id
+              AND membership.block_id = document.block_id
+             WHERE membership.attachment_id = ?1",
+            params![image.attachment.id],
+            |row| row.get(0),
+        )
+        .expect("image block OCR document");
+    assert_eq!(
+        indexed_ocr,
+        "Event sourcing preserves exact image evidence\nSecond OCR region remains ordered"
+    );
 
     let loaded = client
         .load_tidbit(tidbit.id.clone())
@@ -522,11 +668,58 @@ fn image_ocr_creates_searchable_region_citations_without_mutating_authored_revis
     }
     assert_eq!(
         client
-            .load_image_status(image.attachment.id)
+            .load_image_status(image.attachment.id.clone())
             .expect("ready image status")
             .ocr_status,
         ImageOcrStatus::Ready
     );
+
+    let writer =
+        connection::open_writer(&library.paths.main, DatabaseKind::Main, FileState::Existing)
+            .expect("open configured writer");
+    writer
+        .execute(
+            "UPDATE attachment_extractor_config
+             SET version = '2', updated_at = 16
+             WHERE extractor = 'ocr'",
+            [],
+        )
+        .expect("advance OCR extractor version");
+    drop(writer);
+
+    let main = library.database.open_main_read_only().expect("main reader");
+    let invalidated_ocr: String = main
+        .query_row(
+            "SELECT document.extracted_text
+             FROM block_search_document AS document
+             JOIN tidbit_revision_attachment AS membership
+               ON membership.tidbit_revision_id = document.tidbit_revision_id
+              AND membership.block_id = document.block_id
+             WHERE membership.attachment_id = ?1",
+            params![image.attachment.id],
+            |row| row.get(0),
+        )
+        .expect("invalidated image block OCR document");
+    assert!(invalidated_ocr.is_empty());
+    for index in ["block_fts_word", "block_fts_trigram"] {
+        let matches: i64 = main
+            .query_row(
+                &format!("SELECT count(*) FROM {index} WHERE {index} MATCH 'sourcing'"),
+                [],
+                |row| row.get(0),
+            )
+            .expect("query invalidated block FTS evidence");
+        assert_eq!(matches, 0, "{index} retained stale OCR evidence");
+    }
+    let matches: i64 = main
+        .query_row(
+            "SELECT count(*) FROM block_fts_short
+             WHERE block_fts_short MATCH ?1",
+            params![search::short_grams_for_search("sourcing")],
+            |row| row.get(0),
+        )
+        .expect("query invalidated short block FTS evidence");
+    assert_eq!(matches, 0, "block_fts_short retained stale OCR evidence");
 }
 
 #[test]

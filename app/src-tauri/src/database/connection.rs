@@ -10,6 +10,7 @@ use std::{
 use rusqlite::{functions::FunctionFlags, limits::Limit, Connection, OpenFlags};
 
 use super::{
+    block_search,
     error::{DatabaseError, Result},
     media, search,
 };
@@ -230,6 +231,22 @@ fn configure_writer(
             |context| {
                 let value = context.get::<String>(0)?;
                 Ok(search::short_grams_for_search(&value))
+            },
+        )?;
+        connection.create_scalar_function(
+            "kosh_block_search_content_hash",
+            5,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
+            |context| {
+                Ok(block_search::search_content_hash(
+                    &context.get::<String>(0)?,
+                    &context.get::<String>(1)?,
+                    &context.get::<String>(2)?,
+                    &context.get::<String>(3)?,
+                    &context.get::<String>(4)?,
+                ))
             },
         )?;
         connection.create_scalar_function(

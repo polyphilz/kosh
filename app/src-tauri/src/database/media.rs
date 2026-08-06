@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{document, DatabaseError, Result};
+use super::{document, search, DatabaseError, Result};
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_FILENAME_CHARS: usize = 255;
@@ -1400,6 +1400,7 @@ pub(crate) fn complete_image_ocr(
                  WHERE id = ?2",
                 params![completed_at_ms, &job.attachment_id],
             )?;
+            search::replace_attachment_documents_in_transaction(&transaction, &job.attachment_id)?;
         }
         Err(error) => {
             let error = truncate_ocr_error(&error);

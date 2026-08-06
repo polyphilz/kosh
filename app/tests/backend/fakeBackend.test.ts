@@ -13,7 +13,7 @@ describe("FakeBackend tidbits", () => {
     expect(diagnostics.library).toMatchObject({
       activeTidbits: 1,
       revisions: 1,
-      searchDocuments: 1,
+      blockSearchDocuments: 1,
     });
     expect(diagnostics.storage.dataRoot).toBe("/tmp/kosh-browser-fixture");
     expect(diagnostics.backupPhase).toBe("AVAILABLE");

@@ -262,8 +262,8 @@ export function SettingsDiagnostics() {
           />
           <DiagnosticItem
             detail={`${diagnostics.library.authoredPassages.toLocaleString()} authored · ${diagnostics.library.attachmentPassages.toLocaleString()} attachment`}
-            label="Search passages"
-            value={`${diagnostics.library.searchDocuments.toLocaleString()} indexed`}
+            label="Search blocks"
+            value={`${diagnostics.library.blockSearchDocuments.toLocaleString()} indexed`}
             warning={unhealthyIndexes > 0}
           />
           <DiagnosticItem
