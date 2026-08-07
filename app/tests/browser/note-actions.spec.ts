@@ -251,6 +251,37 @@ test("a queued Command-F request does not leak after leaving a loading note", as
   await expect(page.getByRole("search", { name: "Find in note" })).toHaveCount(0);
 });
 
+test("the collapsed sidebar keeps the note canvas at full width", async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 640 });
+  await page.goto("/#/");
+  await page.getByRole("button", { name: "Hide sidebar" }).click();
+
+  const content = page.locator(".app-content");
+  const editor = page.getByRole("textbox", { name: "Note" });
+  const contentBox = await content.boundingBox();
+  const editorBox = await editor.boundingBox();
+  if (!contentBox || !editorBox) throw new Error("collapsed note layout was not measurable");
+
+  expect(contentBox.width).toBeGreaterThan(500);
+  expect(editorBox.width).toBeGreaterThan(300);
+  await expect
+    .poll(async () => {
+      const settledBox = await content.boundingBox();
+      return settledBox
+        ? { width: Math.round(settledBox.width), x: Math.round(settledBox.x) }
+        : null;
+    })
+    .toEqual({ width: 720, x: 0 });
+
+  await editor.fill("Writing remains horizontal when the sidebar is collapsed.");
+  const paragraphBox = await page
+    .locator('.bn-block-content[data-content-type="paragraph"]')
+    .first()
+    .boundingBox();
+  if (!paragraphBox) throw new Error("collapsed note paragraph was not measurable");
+  expect(paragraphBox.height).toBeLessThan(50);
+});
+
 test("note link shortcuts copy clean and exact routes", async ({ page }) => {
   await page.goto("/#/");
   const editor = page.getByRole("textbox", { name: "Note" });
