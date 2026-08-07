@@ -62,6 +62,7 @@ describe("tauriBackend tidbit gateway", () => {
       expectedRevision: 1,
     };
 
+    await tauriBackend.copyText("http://tauri.localhost/#/notes/tidbit-1");
     await tauriBackend.loadTidbit("tidbit-1");
     await tauriBackend.deleteTidbit(deletion);
     await tauriBackend.restoreTidbit(restoration);
@@ -93,6 +94,7 @@ describe("tauriBackend tidbit gateway", () => {
     await tauriBackend.discardFileDropSelections(["file-selection-2"]);
 
     expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["copy_text", { text: "http://tauri.localhost/#/notes/tidbit-1" }],
       ["load_tidbit", { id: "tidbit-1" }],
       ["delete_tidbit", { input: deletion }],
       ["restore_tidbit", { input: restoration }],

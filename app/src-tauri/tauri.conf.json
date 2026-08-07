@@ -4,6 +4,11 @@
   "version": "0.1.0",
   "identifier": "com.rohan.kosh",
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["kosh"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYzQ0IzNzM5RDUwNjY0QTEKUldTaFpBYlZPVGZMODNiTWFFUlg0MW9MRjNpS2RCRlpzUzRteWxjWFZHT09oYnBiWTIzMHZsbDMK",
       "endpoints": ["https://github.com/polyphilz/kosh/releases/latest/download/latest.json"]

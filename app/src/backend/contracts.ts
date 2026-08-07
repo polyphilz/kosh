@@ -600,6 +600,7 @@ export interface TidbitRecord {
 }
 
 export interface Backend {
+  copyText(text: string): Promise<void>;
   runtimeProbe(): Promise<RuntimeProbe>;
   loadBackupSettings(): Promise<BackupSettingsSnapshot>;
   testBackupConnection(input: TestBackupConnectionInput): Promise<BackupConnectionTestResult>;

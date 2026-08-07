@@ -12,6 +12,7 @@ export const TauriCommand = {
   DrillBackupRestore: "drill_backup_restore",
   DiscardFileDropSelections: "discard_file_drop_selections",
   CompleteQuickAddDismiss: "complete_quick_add_dismiss",
+  CopyText: "copy_text",
   ImageOcrDiagnostics: "image_ocr_diagnostics",
   ImageStatus: "image_status",
   IngestClipboardImage: "ingest_clipboard_image",

@@ -1,5 +1,6 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TidbitRecord } from "./backend/contracts";
 import { useBackend } from "./backend/context";
@@ -8,11 +9,20 @@ import { clearFindInNoteRequest, requestFindInNote } from "./editor/findInNote";
 import { createUuidV7 } from "./notes/autosave";
 import { NoteDeletionContext } from "./notes/deletion";
 import { SearchOverlay } from "./search/SearchOverlay";
-import { ShortcutSettingsProvider } from "./shortcuts/context";
+import { checkpointBeforeSearch } from "./search/checkpoint";
+import { ShortcutSettingsProvider, useShortcutSettings } from "./shortcuts/context";
+import {
+  LocalShortcutCommand,
+  keyboardEventMatchesAccelerator,
+  localBindingFor,
+  noteLinkForLocation,
+  noteTargetForDeepLink,
+} from "./shortcuts/localShortcuts";
 import { TauriEvent } from "./tauriProtocol";
 import { AppUpdater } from "./updater";
 
 const NOTE_UNDO_DURATION_MS = 10_000;
+const LINK_COPY_NOTICE_DURATION_MS = 1_800;
 const SIDEBAR_OPEN_STORAGE_KEY = "kosh.sidebar.open.v1";
 
 export function App() {
@@ -26,6 +36,7 @@ export function App() {
 
 function AppShell() {
   const backend = useBackend();
+  const { activeLocalBindings } = useShortcutSettings();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [searchOpen, setSearchOpen] = useState(false);
@@ -35,7 +46,12 @@ function AppShell() {
   const [deletedNote, setDeletedNote] = useState<TidbitRecord | null>(null);
   const [undoing, setUndoing] = useState(false);
   const [undoError, setUndoError] = useState<string | null>(null);
+  const [linkCopyNotice, setLinkCopyNotice] = useState<{
+    message: string;
+    tone: "danger" | "success";
+  } | null>(null);
   const undoTimer = useRef<number | null>(null);
+  const linkCopyTimer = useRef<number | null>(null);
   const openNewNote = useCallback(
     () =>
       navigate({
@@ -75,6 +91,13 @@ function AppShell() {
 
   useEffect(() => () => clearFindInNoteRequest(pathname), [pathname]);
 
+  useEffect(
+    () => () => {
+      if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+    },
+    [],
+  );
+
   useEffect(() => {
     try {
       window.localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, sidebarOpen ? "true" : "false");
@@ -93,6 +116,42 @@ function AppShell() {
       if (active) unlisten = stop;
       else stop();
     });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    const openDeepLink = (urls: string[], replace: boolean) => {
+      if (!active) return;
+      const target = urls.map(noteTargetForDeepLink).find((candidate) => candidate !== null);
+      if (!target) return;
+      setSearchOpen(false);
+      void navigate({
+        to: "/notes/$noteId",
+        params: { noteId: target.noteId },
+        search: {
+          ...(target.passage ? { passage: target.passage } : {}),
+          ...(target.query ? { query: target.query } : {}),
+        },
+        replace,
+      });
+    };
+    void getCurrent()
+      .then((urls) => {
+        if (urls) openDeepLink(urls, true);
+      })
+      .catch((reason: unknown) => console.error("Could not read the launch link", reason));
+    void onOpenUrl((urls) => openDeepLink(urls, false))
+      .then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      })
+      .catch((reason: unknown) => console.error("Could not listen for note links", reason));
     return () => {
       active = false;
       unlisten?.();
@@ -122,6 +181,60 @@ function AppShell() {
       unlisten?.();
     };
   }, [openNewNote, openSearch, toggleSidebar]);
+
+  useEffect(() => {
+    const copyNoteLink = localBindingFor(activeLocalBindings, LocalShortcutCommand.CopyNoteLink);
+    const copyExactNoteLink = localBindingFor(
+      activeLocalBindings,
+      LocalShortcutCommand.CopyExactNoteLink,
+    );
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!noteRouteOpen || event.isComposing || event.repeat) return;
+      const exact =
+        copyExactNoteLink !== undefined &&
+        keyboardEventMatchesAccelerator(event, copyExactNoteLink.accelerator);
+      const clean =
+        copyNoteLink !== undefined &&
+        keyboardEventMatchesAccelerator(event, copyNoteLink.accelerator);
+      if (!exact && !clean) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void checkpointBeforeSearch()
+        .then(async () => {
+          const link = noteLinkForLocation(window.location.href, exact);
+          const target = noteTargetForDeepLink(link);
+          if (!target) throw new Error("The current page is not a linkable note.");
+          await backend.loadTidbit(target.noteId);
+          await backend.copyText(link);
+        })
+        .then(
+          () => {
+            if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+            setLinkCopyNotice({
+              message: exact ? "Exact note link copied" : "Note link copied",
+              tone: "success",
+            });
+            linkCopyTimer.current = window.setTimeout(() => {
+              linkCopyTimer.current = null;
+              setLinkCopyNotice(null);
+            }, LINK_COPY_NOTICE_DURATION_MS);
+          },
+          (reason: unknown) => {
+            if (linkCopyTimer.current !== null) window.clearTimeout(linkCopyTimer.current);
+            setLinkCopyNotice({
+              message: `Could not copy note link: ${errorMessage(reason)}`,
+              tone: "danger",
+            });
+            linkCopyTimer.current = window.setTimeout(() => {
+              linkCopyTimer.current = null;
+              setLinkCopyNotice(null);
+            }, LINK_COPY_NOTICE_DURATION_MS);
+          },
+        );
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [activeLocalBindings, backend, noteRouteOpen]);
 
   useEffect(() => {
     let pendingFrame: number | null = null;
@@ -328,6 +441,15 @@ function AppShell() {
               >
                 ×
               </button>
+            </div>
+          )}
+          {linkCopyNotice && (
+            <div
+              className="link-copy-notice"
+              data-tone={linkCopyNotice.tone}
+              role={linkCopyNotice.tone === "danger" ? "alert" : "status"}
+            >
+              {linkCopyNotice.message}
             </div>
           )}
         </div>

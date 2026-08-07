@@ -1,10 +1,10 @@
 /// <reference types="vite/client" />
 
-import type { Backend } from "./backend/contracts";
+import type { FakeBackend } from "./backend/fakeBackend";
 
 declare global {
   interface Window {
-    __KOSH_FAKE_BACKEND__?: Backend;
+    __KOSH_FAKE_BACKEND__?: FakeBackend;
   }
 }
 

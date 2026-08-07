@@ -1,5 +1,6 @@
 mod attachments;
 pub mod backup;
+mod clipboard;
 mod database;
 #[cfg(target_os = "macos")]
 mod distribution_signing;
@@ -21,6 +22,7 @@ use std::path::PathBuf;
 
 use runtime::RuntimeState;
 use tauri::{Builder, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 const DATA_DIR_ENV: &str = "KOSH_DATA_DIR";
 
@@ -42,6 +44,7 @@ fn select_data_dir(
 fn with_commands(builder: Builder<tauri::Wry>) -> Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        clipboard::copy_text,
         backup::checkpoint::checkpoint_backup_status,
         backup::checkpoint::backup_now,
         backup::settings::load_backup_settings,
@@ -115,6 +118,7 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
     // logic is covered by the platform unit tests in windows.rs.
     builder.invoke_handler(tauri::generate_handler![
         runtime::runtime_probe,
+        clipboard::copy_text,
         backup::checkpoint::checkpoint_backup_status,
         backup::checkpoint::backup_now,
         backup::settings::load_backup_settings,
@@ -173,8 +177,6 @@ fn with_commands<R: tauri::Runtime>(builder: Builder<R>) -> Builder<R> {
 pub fn run() {
     let app = with_commands(
         tauri::Builder::default()
-            .plugin(tauri_plugin_process::init())
-            .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_single_instance::init(
                 |app, _arguments, _working_directory| {
                     if let Err(error) = windows::show_main(app.clone()) {
@@ -182,6 +184,9 @@ pub fn run() {
                     }
                 },
             ))
+            .plugin(tauri_plugin_deep_link::init())
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .register_uri_scheme_protocol("kosh-media", |context, request| {
                 media::protocol_response(context.app_handle(), request)
@@ -192,6 +197,12 @@ pub fn run() {
             }),
     )
     .setup(|app| {
+        let deep_link_app = app.handle().clone();
+        app.deep_link().on_open_url(move |_| {
+            if let Err(error) = windows::show_main(deep_link_app.clone()) {
+                log::error!("failed to show Kosh for a deep link: {error}");
+            }
+        });
         let data_dir = select_data_dir(
             app.path().app_data_dir()?,
             std::env::var_os(DATA_DIR_ENV).map(PathBuf::from),

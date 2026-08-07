@@ -78,6 +78,7 @@ const FAKE_BACKUP_OWNER_WRITER_ID = "fixture-current-installation-writer";
 const FAKE_BACKUP_OWNER_VERSION = '"fixture-owner-v1"';
 
 export class FakeBackend implements Backend {
+  private copiedText: string | null = null;
   private readonly probe: RuntimeProbe;
   private semanticStatus: SemanticRuntimeStatus = {
     phase: "NOT_DOWNLOADED",
@@ -159,6 +160,14 @@ export class FakeBackend implements Backend {
         }
       }
     }
+  }
+
+  async copyText(text: string): Promise<void> {
+    this.copiedText = text;
+  }
+
+  copiedTextForTest(): string | null {
+    return this.copiedText;
   }
 
   async runtimeProbe(): Promise<RuntimeProbe> {
