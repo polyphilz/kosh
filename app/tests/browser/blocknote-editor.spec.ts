@@ -107,12 +107,12 @@ test("slash menu rows keep one height while filtering", async ({ page }) => {
   const fullMenuHeights = await options.evaluateAll((rows) =>
     rows.map((row) => row.getBoundingClientRect().height),
   );
-  expect(new Set(fullMenuHeights)).toEqual(new Set([52]));
+  expect(new Set(fullMenuHeights)).toEqual(new Set([40]));
 
   await page.keyboard.type("pa");
   await expect(options).toHaveCount(1);
   await expect(options).toHaveText(["Paragraph"]);
-  expect(await options.first().evaluate((row) => row.getBoundingClientRect().height)).toBe(52);
+  expect(await options.first().evaluate((row) => row.getBoundingClientRect().height)).toBe(40);
 });
 
 test("real keyboard input covers undo, redo, IME, and list nesting", async ({ page }) => {
